@@ -24,7 +24,7 @@ describe("plugin config", () => {
       workgroup_password: "pw",
       display_name: "pod-a",
       port: 0,
-      endpoint: "http://127.0.0.1:9000",
+      endpoints: ["http://127.0.0.1:9000"],
       data_root: "/tmp/orca",
       peers: ["http://127.0.0.1:11811"],
     })

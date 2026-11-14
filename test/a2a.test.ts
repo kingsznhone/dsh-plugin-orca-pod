@@ -16,7 +16,7 @@ async function twoNodes(): Promise<{ origin: OrcaNode; target: OrcaNode; targetU
   mesh = await createMesh({ orcaNodes: 2 });
   const [origin, target] = mesh.orcaNodes;
   if (!origin || !target) throw new Error("mesh did not create two orca nodes");
-  return { origin, target, targetUrl: target.endpoint };
+  return { origin, target, targetUrl: target.endpoints[0]! };
 }
 
 async function waitForState(
@@ -149,7 +149,7 @@ describe("A2A task surface", () => {
     mesh = await createMesh({ orcaNodes: 3 });
     const [origin, target, other] = mesh.orcaNodes;
     if (!origin || !target || !other) throw new Error("mesh did not create three orca nodes");
-    const targetUrl = target.endpoint;
+    const targetUrl = target.endpoints[0]!;
     const submitted = await origin.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { final: { state: "hang", text: "" } } },

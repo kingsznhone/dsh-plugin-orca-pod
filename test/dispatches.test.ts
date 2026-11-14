@@ -99,9 +99,9 @@ describe("origin dispatch log (13.4)", () => {
     let origin = createOrcaNode({ config: originConfig, storage: createPersistentStorage(originConfig) });
     await origin.start();
     nodes.push(origin);
-    await origin.join(peer.endpoint);
+    await origin.join(peer.endpoints[0]!);
 
-    const view = await origin.sendTask(peer.endpoint, {
+    const view = await origin.sendTask(peer.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "slow echo" }] },
       metadata: {
         echo: {
@@ -117,7 +117,7 @@ describe("origin dispatch log (13.4)", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       record = origin.listDispatches().find((item) => item.task_id === view.id);
     }
-    expect(record).toMatchObject({ peer: peer.endpoint, state: "working" });
+    expect(record).toMatchObject({ peer: peer.endpoints[0]!, state: "working" });
 
     // Restart the origin: in-flight dispatches become unknown, never "failed".
     await origin.stop();
@@ -127,6 +127,6 @@ describe("origin dispatch log (13.4)", () => {
     nodes.push(origin);
 
     const recovered = origin.listDispatches().find((item) => item.task_id === view.id);
-    expect(recovered).toMatchObject({ state: "unknown", last_error: "origin_restart", peer: peer.endpoint });
+    expect(recovered).toMatchObject({ state: "unknown", last_error: "origin_restart", peer: peer.endpoints[0]! });
   });
 });

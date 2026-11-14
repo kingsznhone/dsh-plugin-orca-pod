@@ -28,14 +28,16 @@ function newWorkgroupId(): string {
  * runner cannot keep every link inside a 150ms suspect window, so the scale
  * case gets proportionally slower timings.
  */
+// Ten nodes are 90 heartbeat links; under a loaded CI box timers slip, so the
+// windows are generous on purpose (the test asserts convergence, not latency).
 const TEN_NODE_TIMINGS: Partial<MembershipTimings> = {
-  intervalMs: 120,
-  suspectAfterMs: 800,
-  offlineAfterMs: 1600,
-  recoverProbeMs: 300,
-  maxRecoverProbeMs: 600,
-  recordTtlMs: 10_000,
-  tombstoneMs: 10_000,
+  intervalMs: 250,
+  suspectAfterMs: 3000,
+  offlineAfterMs: 6000,
+  recoverProbeMs: 800,
+  maxRecoverProbeMs: 1600,
+  recordTtlMs: 30_000,
+  tombstoneMs: 30_000,
 };
 
 function makeNode(workgroupId: string, password: string, options: Partial<Pick<OrcaNodeConfig, "data_root" | "orca_node_id" | "display_name">> = {}): OrcaNode {
@@ -194,7 +196,7 @@ describe("mesh formation", () => {
 
         await waitFor(() =>
           a.members().some(
-            (peer) => peer.orca_node_id === restarted.orcaNodeId && peer.state === "online" && peer.endpoints.includes(restarted.endpoint),
+            (peer) => peer.orca_node_id === restarted.orcaNodeId && peer.state === "online" && peer.endpoints.includes(restarted.endpoints[0]!),
           ),
         );
         expect(a.members().filter((peer) => peer.orca_node_id === restarted.orcaNodeId)).toHaveLength(1);
@@ -217,7 +219,7 @@ describe("mesh formation", () => {
             const members = orcaNode.members();
             return members.length === 9 && members.every((peer) => peer.state === "online");
           }),
-        10_000,
+        25_000,
       );
       const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest()));
       expect(digests.size).toBe(1);
@@ -225,7 +227,7 @@ describe("mesh formation", () => {
     } finally {
       await mesh.stop();
     }
-  });
+  }, 40_000);
 
   it("rejoins at most once when a peer answers 404", async () => {
     const counts = { heartbeat: 0, join: 0 };

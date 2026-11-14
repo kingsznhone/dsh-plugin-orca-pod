@@ -176,10 +176,9 @@ export const MAX_ENDPOINTS = 8;
  * trailing slash, deduplicated, order preserved (first is preferred).
  */
 export function normalizeEndpoints(value: unknown): string[] | null {
-  const input = Array.isArray(value) ? value : typeof value === "string" ? [value] : null;
-  if (input === null || input.length === 0 || input.length > MAX_ENDPOINTS) return null;
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ENDPOINTS) return null;
   const endpoints: string[] = [];
-  for (const item of input) {
+  for (const item of value) {
     if (!isHttpEndpoint(item)) return null;
     const endpoint = item.endsWith("/") ? item.slice(0, -1) : item;
     if (!endpoints.includes(endpoint)) endpoints.push(endpoint);

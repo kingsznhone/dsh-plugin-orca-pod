@@ -209,9 +209,9 @@ describe("isHttpEndpoint", () => {
 });
 
 describe("normalizeEndpoints", () => {
-  it("accepts a list and a single string, preserving order", () => {
+  it("accepts an ordered list and rejects a bare string", () => {
     expect(normalizeEndpoints(["http://a:1", "http://b:2"])).toEqual(["http://a:1", "http://b:2"]);
-    expect(normalizeEndpoints("http://a:1")).toEqual(["http://a:1"]);
+    expect(normalizeEndpoints("http://a:1")).toBeNull();
   });
 
   it("strips one trailing slash and deduplicates", () => {

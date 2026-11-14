@@ -49,7 +49,7 @@ describe("heartbeat loop and watchdog", () => {
       );
 
       await expect(
-        survivors[0]!.sendTask(victim.endpoint, {
+        survivors[0]!.sendTask(victim.endpoints[0]!, {
           message: { role: "user", parts: [{ kind: "text", text: "hello?" }] },
         }),
       ).rejects.toMatchObject({ code: "peer_not_online" });

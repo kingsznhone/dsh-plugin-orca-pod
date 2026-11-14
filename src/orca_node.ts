@@ -148,8 +148,7 @@ export interface OrcaNode {
   readonly config: OrcaNodeConfig;
   /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); first is primary. */
   readonly endpoints: string[];
-  /** Primary advertised base URL; shorthand for `endpoints[0]`. */
-  readonly endpoint: string;
+
   start(): Promise<{ url: string; port: number }>;
   stop(): Promise<void>;
   self(): SelfRecord;
@@ -711,9 +710,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     get endpoints(): string[] {
       return [...actualEndpoints];
     },
-    get endpoint(): string {
-      return actualEndpoints[0] ?? "";
-    },
+
     start,
     stop,
     self,

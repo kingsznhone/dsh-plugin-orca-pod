@@ -69,12 +69,12 @@ describe("automatic chain ascent (7.12)", () => {
       createHeadlessExecutor({ command: process.execPath, extra_args: [FAKE_DSH] }),
     );
 
-    const parentView = await root.sendTask(middle.endpoint, {
+    const parentView = await root.sendTask(middle.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "parent keeps working" }] },
     });
-    await waitForState(root, middle.endpoint, parentView.id, "working");
+    await waitForState(root, middle.endpoints[0]!, parentView.id, "working");
 
-    const childView = await middle.sendTask(leaf.endpoint, {
+    const childView = await middle.sendTask(leaf.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },
       metadata: {
         echo: {
@@ -88,22 +88,22 @@ describe("automatic chain ascent (7.12)", () => {
         },
       },
     });
-    await waitForState(root, leaf.endpoint, childView.id, "input-required");
+    await waitForState(root, leaf.endpoints[0]!, childView.id, "input-required");
 
     // The CLI does this on `send --local-task`; here we call it directly.
-    middle.linkChildTask(parentView.id, leaf.endpoint, childView.id);
+    middle.linkChildTask(parentView.id, leaf.endpoints[0]!, childView.id);
 
-    const parkedParent = await waitForState(root, middle.endpoint, parentView.id, "input-required");
+    const parkedParent = await waitForState(root, middle.endpoints[0]!, parentView.id, "input-required");
     const request = permissionRequestOf(parkedParent);
     expect(request?.tool).toBe("write_file");
     expect(request?.requested_by).toBe(middle.orcaNodeId);
     expect(request?.upstream).toEqual([leaf.orcaNodeId]);
 
-    await root.approveTask(middle.endpoint, parkedParent);
-    const childDone = await waitForState(root, leaf.endpoint, childView.id, "completed");
+    await root.approveTask(middle.endpoints[0]!, parkedParent);
+    const childDone = await waitForState(root, leaf.endpoints[0]!, childView.id, "completed");
     expect(childDone.status.message?.parts).toContainEqual({ kind: "text", text: "child done" });
     // The parent's executor was never stopped, so it goes back to working.
-    await waitForState(root, middle.endpoint, parentView.id, "working");
+    await waitForState(root, middle.endpoints[0]!, parentView.id, "working");
 
     const linked = middle
       .listDispatches()

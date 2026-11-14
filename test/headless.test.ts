@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,9 +128,19 @@ describe("HeadlessExecutor", () => {
 
   it("aborts the child process when the task is cancelled", async () => {
     const pod = await podDir();
+    const argsFile = join(pod, "spawned.json");
+    process.env.FAKE_DSH_ARGS_FILE = argsFile;
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 300).unref();
-    const { error } = await withMode("hang", () => collect(executor().run(input(pod), controller.signal)));
+    const running = withMode("hang", () => collect(executor().run(input(pod), controller.signal)));
+    // Abort only once the fake dsh is actually running: a fixed timer races the
+    // spawn when the machine is loaded.
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(argsFile) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(existsSync(argsFile)).toBe(true);
+    controller.abort();
+    const { error } = await running;
     expect(error?.name).toBe("AbortError");
   });
 
@@ -150,15 +161,15 @@ describe("HeadlessExecutor", () => {
     await node.start();
     const sendAndWait = async (text: string) => {
       const submitted = await withMode("ok", () =>
-        node.sendTask(node.endpoint, {
+        node.sendTask(node.endpoints[0]!, {
           message: { role: "user", parts: [{ kind: "text", text }], contextId: "ctx-1" },
         }),
       );
       const deadline = Date.now() + 5_000;
-      let view = await node.getTask(node.endpoint, submitted.id);
+      let view = await node.getTask(node.endpoints[0]!, submitted.id);
       while (view.status.state !== "completed" && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 20));
-        view = await node.getTask(node.endpoint, submitted.id);
+        view = await node.getTask(node.endpoints[0]!, submitted.id);
       }
       expect(view.status.state).toBe("completed");
       return view;

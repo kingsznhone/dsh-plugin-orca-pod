@@ -78,7 +78,7 @@ describe("acceptance: membership under partition", () => {
         a.members().length === 2 && a.members().every((peer) => peer.state === "online"),
       );
 
-      blockedPort = new URL(b.endpoint).port;
+      blockedPort = new URL(b.endpoints[0]!).port;
       blockedIndex = 1;
       await waitFor("B offline at A and C", () =>
         stateOf(a, b.orcaNodeId) === "offline" && stateOf(c, b.orcaNodeId) === "offline",
@@ -99,18 +99,18 @@ describe("acceptance: membership under partition", () => {
     try {
       const [a, b, c] = mesh.orcaNodes;
       if (a === undefined || b === undefined || c === undefined) throw new Error("mesh is short");
-      const created = await a.sendTask(b.endpoint, {
+      const created = await a.sendTask(b.endpoints[0]!, {
         message: { role: "user", parts: [{ kind: "text", text: "hello" }] },
         metadata: { echo: { final: { state: "completed", text: "from b" } } },
       });
-      let view = await a.getTask(b.endpoint, created.id);
+      let view = await a.getTask(b.endpoints[0]!, created.id);
       for (let i = 0; i < 100 && view.status.state !== "completed"; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 20));
-        view = await a.getTask(b.endpoint, created.id);
+        view = await a.getTask(b.endpoints[0]!, created.id);
       }
       expect(view.status.state).toBe("completed");
 
-      const asC = await c.getTask(b.endpoint, created.id);
+      const asC = await c.getTask(b.endpoints[0]!, created.id);
       expect(asC.id).toBe(created.id);
       expect(asC.status.state).toBe("completed");
     } finally {
@@ -132,7 +132,7 @@ describe("acceptance: single slot concurrency", () => {
     await node.start();
     try {
       const results = await Promise.allSettled(
-        Array.from({ length: 10 }, () => node.sendTask(node.endpoint, hangTask())),
+        Array.from({ length: 10 }, () => node.sendTask(node.endpoints[0]!, hangTask())),
       );
       const accepted = results.filter((result) => result.status === "fulfilled");
       const rejected = results.filter((result) => result.status === "rejected");
@@ -144,7 +144,7 @@ describe("acceptance: single slot concurrency", () => {
       }
       const running = accepted[0];
       if (running?.status === "fulfilled") {
-        await node.cancelTask(node.endpoint, running.value.id);
+        await node.cancelTask(node.endpoints[0]!, running.value.id);
       }
     } finally {
       await node.stop();
@@ -173,7 +173,7 @@ describe("acceptance: password rotation", () => {
     const b = createOrcaNode({ config: configB, storage: createPersistentStorage(configB) });
     await a1.start();
     await b.start();
-    await b.join(a1.endpoint);
+    await b.join(a1.endpoints[0]!);
     await a1.stop();
     await b.stop();
 
@@ -189,7 +189,7 @@ describe("acceptance: password rotation", () => {
     await a2.start();
     await b2.start();
     try {
-      await expect(b2.join(a2.endpoint)).rejects.toMatchObject({ status: 401 });
+      await expect(b2.join(a2.endpoints[0]!)).rejects.toMatchObject({ status: 401 });
       expect(b2.members().some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(false);
     } finally {
       await a2.stop();

@@ -49,13 +49,13 @@ async function startNode(config: OrcaNodeConfig): Promise<OrcaNode> {
 }
 
 async function send(node: OrcaNode, text: string, contextId = "ctx-1"): Promise<TaskView> {
-  return node.sendTask(node.endpoint, {
+  return node.sendTask(node.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text }], contextId },
   });
 }
 
 async function waitForState(node: OrcaNode, taskId: string, wanted: readonly string[], timeoutMs = 10_000): Promise<TaskView> {
-  return waitForRemoteState(node, node.endpoint, taskId, wanted, timeoutMs);
+  return waitForRemoteState(node, node.endpoints[0]!, taskId, wanted, timeoutMs);
 }
 
 async function waitForRemoteState(
@@ -130,7 +130,7 @@ describe("AcpExecutor", () => {
     expect(request?.tool).toBe("write file");
     expect(request?.requested_by).toBe(node.orcaNodeId);
 
-    await node.approveTask(node.endpoint, suspended);
+    await node.approveTask(node.endpoints[0]!, suspended);
     const done = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(done)).toContain("allowed");
   }, 15_000);
@@ -140,7 +140,7 @@ describe("AcpExecutor", () => {
     const node = await startNode(configFor(root, "hang"));
     const submitted = await send(node, "never finish");
     await waitForState(node, submitted.id, ["working"]);
-    await node.cancelTask(node.endpoint, submitted.id);
+    await node.cancelTask(node.endpoints[0]!, submitted.id);
     const view = await waitForState(node, submitted.id, ["canceled"]);
     expect(view.status.state).toBe("canceled");
     const cancelled = await waitForLog(join(root, "acp.log"), (entry) => entry.method === "session/cancel");
@@ -196,11 +196,11 @@ describe("AcpExecutor in a chain", () => {
     const c = await startNode(configFor(rootC, "permission"));
 
     // B (mid node) creates the child task on C; C's ACP agent asks for permission.
-    const child = await b.sendTask(c.endpoint, {
+    const child = await b.sendTask(c.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write a file" }], contextId: "ctx-child" },
       metadata: { pod: { hop: 1, chain: [b.orcaNodeId] } },
     });
-    const childSuspended = await waitForRemoteState(b, c.endpoint, child.id, ["input-required"]);
+    const childSuspended = await waitForRemoteState(b, c.endpoints[0]!, child.id, ["input-required"]);
     const childRequest = permissionRequestOf(childSuspended);
     expect(childRequest?.tool).toBe("write file");
     expect(childRequest?.requested_by).toBe(c.orcaNodeId);
@@ -214,26 +214,26 @@ describe("AcpExecutor in a chain", () => {
             kind: "permission",
             tool: childRequest?.tool ?? "write file",
             requested: childRequest?.requested ?? {},
-            relay: { peer: c.endpoint, task_id: child.id, request: childRequest },
+            relay: { peer: c.endpoints[0]!, task_id: child.id, request: childRequest },
           },
         },
       ],
       final: { state: "completed", text: "parent done" },
     };
-    const parent = await a.sendTask(b.endpoint, {
+    const parent = await a.sendTask(b.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "delegate" }], contextId: "ctx-parent" },
       metadata: { echo: parentScript },
     });
-    const parentSuspended = await waitForRemoteState(a, b.endpoint, parent.id, ["input-required"]);
+    const parentSuspended = await waitForRemoteState(a, b.endpoints[0]!, parent.id, ["input-required"]);
     const parentRequest = permissionRequestOf(parentSuspended);
     expect(parentRequest?.requested_by).toBe(b.orcaNodeId);
     expect(parentRequest?.upstream).toEqual([c.orcaNodeId]);
 
-    await a.approveTask(b.endpoint, parentSuspended);
+    await a.approveTask(b.endpoints[0]!, parentSuspended);
 
-    const childDone = await waitForRemoteState(b, c.endpoint, child.id, ["completed"]);
+    const childDone = await waitForRemoteState(b, c.endpoints[0]!, child.id, ["completed"]);
     expect(taskText(childDone)).toContain("allowed");
-    const parentDone = await waitForRemoteState(a, b.endpoint, parent.id, ["completed"]);
+    const parentDone = await waitForRemoteState(a, b.endpoints[0]!, parent.id, ["completed"]);
     expect(taskText(parentDone)).toBe("parent done");
   }, 20_000);
 });

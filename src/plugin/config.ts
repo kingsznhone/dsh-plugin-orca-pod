@@ -116,14 +116,13 @@ export function validateConfigInput(value: unknown): Config {
   }
 
   let endpoints: string[] | undefined
-  const endpointsRaw = value["endpoints"] ?? value["endpoint"]
+  const endpointsRaw = value["endpoints"]
   if (endpointsRaw !== undefined) {
-    const list = typeof endpointsRaw === "string" ? [endpointsRaw] : endpointsRaw
-    if (!Array.isArray(list) || list.length === 0) {
+    if (!Array.isArray(endpointsRaw) || endpointsRaw.length === 0) {
       issues.push({ path: ["endpoints"], message: "must be a non-empty array of http(s) URLs" })
     } else {
       endpoints = []
-      list.forEach((candidate, index) => {
+      endpointsRaw.forEach((candidate, index) => {
         if (typeof candidate !== "string" || !isHttpEndpoint(candidate.trim())) {
           issues.push({ path: ["endpoints", index], message: "must be an http(s) URL" })
         } else {

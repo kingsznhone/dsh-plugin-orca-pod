@@ -427,7 +427,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       return badRequest(reply, "display_name must be a string");
     }
 
-    const endpoints = normalizeEndpoints(body["endpoints"] ?? body["endpoint"]);
+    const endpoints = normalizeEndpoints(body["endpoints"]);
     if (endpoints === null) {
       return badRequest(reply, "endpoints must be a non-empty array of http(s) URLs");
     }

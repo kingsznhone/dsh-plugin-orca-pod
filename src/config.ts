@@ -283,7 +283,7 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   const bind = record["bind"];
   if (typeof bind !== "object" || bind === null) throw new Error("config.bind must be an object");
   const bindRecord = bind as Record<string, unknown>;
-  const rawEndpoints = record["endpoints"] ?? record["endpoint"];
+  const rawEndpoints = record["endpoints"];
   const normalizedEndpoints = normalizeEndpoints(rawEndpoints ?? []);
   const emptyEndpoints = Array.isArray(rawEndpoints) && rawEndpoints.length === 0;
   if (normalizedEndpoints === null && rawEndpoints !== undefined && !emptyEndpoints) {

@@ -140,7 +140,7 @@ describe("budget advertisement", () => {
     const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     await node.start();
     try {
-      const card = (await (await fetch(`${node.endpoint}/.well-known/agent-card.json`)).json()) as {
+      const card = (await (await fetch(`${node.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
         max_task_ttl_s?: number;
       };
       expect(card.max_task_ttl_s).toBe(900);
@@ -155,7 +155,7 @@ describe("budget advertisement", () => {
       const other = createOrcaNode({ config: otherConfig, storage: createPersistentStorage(otherConfig) });
       await other.start();
       try {
-        await other.join(node.endpoint);
+        await other.join(node.endpoints[0]!);
         const peer = node.members().find((candidate) => candidate.orca_node_id === other.orcaNodeId);
         expect(peer?.max_task_ttl_s).toBe(3600);
       } finally {

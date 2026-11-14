@@ -34,7 +34,7 @@ async function threeNodes(): Promise<ApprovalMesh> {
   mesh = await createMesh({ orcaNodes: 3, workgroupId: WORKGROUP, password: PASSWORD });
   const [origin, target, outsider] = mesh.orcaNodes;
   if (!origin || !target || !outsider) throw new Error("mesh did not create three orca nodes");
-  return { origin, target, outsider, targetUrl: target.endpoint, key: deriveWorkgroupKey(WORKGROUP, PASSWORD) };
+  return { origin, target, outsider, targetUrl: target.endpoints[0]!, key: deriveWorkgroupKey(WORKGROUP, PASSWORD) };
 }
 
 const permissionEcho = {
@@ -143,7 +143,7 @@ describe("pod_approve tool", () => {
   ): ToolDefinition {
     const handle: PodHandle = {
       ready: Promise.resolve(),
-      runtime: { orcaNode: origin, url: origin.endpoint, port: null, started_at: null, error: null },
+      runtime: { orcaNode: origin, url: origin.endpoints[0]!, port: null, started_at: null, error: null },
     };
     const tracker = createTracker(() => null, { intervalMs: 60_000 });
     const tools = createPodTools(handle, tracker, approval === undefined ? {} : { approval: approval as never });
@@ -350,10 +350,10 @@ describe("Phase 3 approval round trip", () => {
     mesh = await createMesh({ orcaNodes: 2, workgroupId: WORKGROUP, password: PASSWORD, approvalTimeoutS: 1 });
     const [origin, target] = mesh.orcaNodes;
     if (!origin || !target) throw new Error("mesh did not create two orca nodes");
-    const submitted = await submit(origin, target.endpoint);
-    await waitForState(origin, target.endpoint, submitted.id, "input-required");
+    const submitted = await submit(origin, target.endpoints[0]!);
+    await waitForState(origin, target.endpoints[0]!, submitted.id, "input-required");
 
-    const failed = await waitForState(origin, target.endpoint, submitted.id, "failed", 4000);
+    const failed = await waitForState(origin, target.endpoints[0]!, submitted.id, "failed", 4000);
     expect(failed.status.reason).toBe("permission_timeout");
     expect(textOf(failed)).toContain("permission request timed out");
   });

@@ -48,11 +48,11 @@ describe("lazy discovery", () => {
     await a.start();
     const b = make("b");
     await b.start();
-    await b.join(a.endpoint);
+    await b.join(a.endpoints[0]!);
 
     const c = make("c");
     await c.start();
-    await c.join(a.endpoint);
+    await c.join(a.endpoints[0]!);
 
     // join 的目录里已经有 B，但 B 还不认识 C
     expect(c.members().some((member) => member.orca_node_id === b.orcaNodeId)).toBe(true);
@@ -75,15 +75,15 @@ describe("lazy discovery", () => {
     await a.start();
     const b = make("b");
     await b.start();
-    await b.join(a.endpoint);
+    await b.join(a.endpoints[0]!);
 
     // A 侧来了 C，B 侧来了 D：双方只看 join 快照时谁也看不到对面
     const c = make("c");
     await c.start();
-    await c.join(a.endpoint);
+    await c.join(a.endpoints[0]!);
     const d = make("d");
     await d.start();
-    await d.join(b.endpoint);
+    await d.join(b.endpoints[0]!);
 
     // 心跳里只带摘要；摘要不一致时对端回目录，orca node 据此补齐候选并建立心跳边
     await waitFor(() =>

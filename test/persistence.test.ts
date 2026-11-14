@@ -48,19 +48,19 @@ describe("orca node persistence", () => {
     const dataRoot = tempDir();
     const first = nodeFor(dataRoot);
     await first.start();
-    const task = await first.sendTask(first.endpoint, {
+    const task = await first.sendTask(first.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
       metadata: { echo: { final: { state: "completed", text: "from sqlite" } } },
     });
     await waitFor(async () => {
-      const view = await first.getTask(first.endpoint, task.id);
+      const view = await first.getTask(first.endpoints[0]!, task.id);
       return view.status.state === "completed";
     });
     await first.stop();
 
     const second = nodeFor(dataRoot);
     await second.start();
-    const after = await second.getTask(second.endpoint, task.id);
+    const after = await second.getTask(second.endpoints[0]!, task.id);
     expect(after.status.state).toBe("completed");
   });
 
@@ -68,19 +68,19 @@ describe("orca node persistence", () => {
     const dataRoot = tempDir();
     const first = nodeFor(dataRoot);
     await first.start();
-    const task = await first.sendTask(first.endpoint, {
+    const task = await first.sendTask(first.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { steps: [], final: { state: "hang", text: "" } } },
     });
     await waitFor(async () => {
-      const view: TaskView = await first.getTask(first.endpoint, task.id);
+      const view: TaskView = await first.getTask(first.endpoints[0]!, task.id);
       return view.status.state === "working";
     });
     await first.stop();
 
     const second = nodeFor(dataRoot);
     await second.start();
-    const after = await second.getTask(second.endpoint, task.id);
+    const after = await second.getTask(second.endpoints[0]!, task.id);
     expect(after.status.state).toBe("failed");
     expect(after.status.reason).toBe("node_restart");
   });

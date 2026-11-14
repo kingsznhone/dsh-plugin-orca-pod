@@ -84,7 +84,7 @@ async function join(args: Args): Promise<void> {
   console.log(`digest=${response.members_digest}`);
   for (const member of orcaNode.members()) {
     const [memberEndpoint] = member.endpoints;
-    if (memberEndpoint && memberEndpoint !== orcaNode.endpoint) {
+    if (memberEndpoint && memberEndpoint !== orcaNode.endpoints[0]!) {
       await orcaNode.heartbeat(memberEndpoint).catch((error: unknown) => {
         console.log(`heartbeat ${memberEndpoint} failed: ${String(error)}`);
       });

@@ -82,29 +82,29 @@ async function scenario(): Promise<{
   const b = await makeNode();
   const c = await makeNode();
 
-  const child = await b.sendTask(c.endpoint, {
+  const child = await b.sendTask(c.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text: "child" }], contextId: "ctx-child" },
     metadata: { pod: { hop: 1, chain: [b.orcaNodeId] }, echo: permissionEcho },
   });
-  await waitForState(c, c.endpoint, child.id, "input-required");
+  await waitForState(c, c.endpoints[0]!, child.id, "input-required");
 
-  const parent = await a.sendTask(b.endpoint, {
+  const parent = await a.sendTask(b.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text: "parent" }], contextId: "ctx-parent" },
     metadata: { echo: hangEcho },
   });
-  await waitForState(b, b.endpoint, parent.id, "working");
+  await waitForState(b, b.endpoints[0]!, parent.id, "working");
   return { a, b, c, parentId: parent.id, childId: child.id };
 }
 
 describe("escalating a child permission to the task origin (§7.12)", () => {
   it("parks the parent task and derives a child grant on approval", async () => {
     const { a, b, c, parentId, childId } = await scenario();
-    const childView = await b.getTask(c.endpoint, childId);
+    const childView = await b.getTask(c.endpoints[0]!, childId);
     const childRequest = permissionRequestOf(childView);
     expect(childRequest).not.toBeNull();
 
-    const parked = await b.escalateTask(b.endpoint, parentId, {
-      peer: c.endpoint,
+    const parked = await b.escalateTask(b.endpoints[0]!, parentId, {
+      peer: c.endpoints[0]!,
       task_id: childId,
       request: childRequest!,
     });
@@ -114,35 +114,35 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
     expect(upstream?.upstream).toEqual([c.orcaNodeId]);
     expect(upstream?.tool).toBe("write_file");
 
-    const working = await a.approveTask(b.endpoint, parked);
+    const working = await a.approveTask(b.endpoints[0]!, parked);
     expect(working.status.state).toBe("working");
 
-    const childDone = await waitForState(c, c.endpoint, childId, "completed");
+    const childDone = await waitForState(c, c.endpoints[0]!, childId, "completed");
     expect(childDone.status.state).toBe("completed");
     expect(permissionRequestOf(childDone)).toBeNull();
   });
 
   it("propagates a denial down to the child", async () => {
     const { a, b, c, parentId, childId } = await scenario();
-    const childRequest = permissionRequestOf(await b.getTask(c.endpoint, childId));
+    const childRequest = permissionRequestOf(await b.getTask(c.endpoints[0]!, childId));
     expect(childRequest).not.toBeNull();
-    const parked = await b.escalateTask(b.endpoint, parentId, {
-      peer: c.endpoint,
+    const parked = await b.escalateTask(b.endpoints[0]!, parentId, {
+      peer: c.endpoints[0]!,
       task_id: childId,
       request: childRequest!,
     });
 
-    const denied = await a.denyTask(b.endpoint, parked, "policy says no");
+    const denied = await a.denyTask(b.endpoints[0]!, parked, "policy says no");
     expect(denied.status.state).toBe("failed");
     expect(denied.status.reason).toBe("permission_denied");
 
-    const childDenied = await waitForState(c, c.endpoint, childId, "failed");
+    const childDenied = await waitForState(c, c.endpoints[0]!, childId, "failed");
     expect(childDenied.status.reason).toBe("permission_denied");
   });
 
   it("escalates from `orca-node wait --local-task` without a separate escalate call", async () => {
     const { a, b, c, parentId, childId } = await scenario();
-    await saveConfig(configPath(b.config.data_root), { ...b.config, endpoints: [b.endpoint] });
+    await saveConfig(configPath(b.config.data_root), { ...b.config, endpoints: [b.endpoints[0]!] });
     const run = promisify(execFile);
     const cli = join(import.meta.dirname, "..", "src", "cli.ts");
     const waiting = run(process.execPath, [
@@ -151,7 +151,7 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
       "--data-root",
       b.config.data_root,
       "--peer",
-      c.endpoint,
+      c.endpoints[0]!,
       "--task",
       childId,
       "--local-task",
@@ -162,10 +162,10 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
     ]);
     waiting.catch(() => undefined);
 
-    const parked = await waitForState(b, b.endpoint, parentId, "input-required");
+    const parked = await waitForState(b, b.endpoints[0]!, parentId, "input-required");
     expect(permissionRequestOf(parked)?.requested_by).toBe(b.orcaNodeId);
 
-    await a.approveTask(b.endpoint, parked);
+    await a.approveTask(b.endpoints[0]!, parked);
     const { stdout } = await waiting;
     const view = JSON.parse(stdout) as TaskView;
     expect(view.status.state).toBe("completed");
@@ -174,16 +174,16 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
   it("rejects escalation for a task that is not running", async () => {
     const b = await makeNode();
     const c = await makeNode();
-    const child = await b.sendTask(c.endpoint, {
+    const child = await b.sendTask(c.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "child" }], contextId: "ctx-child" },
       metadata: { pod: { hop: 1, chain: [b.orcaNodeId] }, echo: permissionEcho },
     });
-    const childView = await waitForState(c, c.endpoint, child.id, "input-required");
+    const childView = await waitForState(c, c.endpoints[0]!, child.id, "input-required");
     const request = permissionRequestOf(childView);
     expect(request).not.toBeNull();
 
     await expect(
-      b.escalateTask(b.endpoint, "missing-task", { peer: c.endpoint, task_id: child.id, request: request! }),
+      b.escalateTask(b.endpoints[0]!, "missing-task", { peer: c.endpoints[0]!, task_id: child.id, request: request! }),
     ).rejects.toMatchObject({ code: "task_not_found" });
   });
 });

@@ -47,7 +47,7 @@ const check = (ok: boolean, label: string): void => {
 
 async function runTask(text: string): Promise<{ state: string; result: string; ms: number }> {
   const started = Date.now();
-  const view = await node.sendTask(node.endpoint, {
+  const view = await node.sendTask(node.endpoints[0]!, {
     message: {
       role: "user",
       parts: [{ kind: "text", text }],
@@ -58,7 +58,7 @@ async function runTask(text: string): Promise<{ state: string; result: string; m
   let latest = view;
   for (let i = 0; i < 480; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
-    latest = await node.getTask(node.endpoint, view.id);
+    latest = await node.getTask(node.endpoints[0]!, view.id);
     if (["completed", "failed", "canceled"].includes(latest.status.state)) break;
   }
   const part = latest.status.message?.parts?.[0];

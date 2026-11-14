@@ -154,12 +154,12 @@ describe("permission mode execution", () => {
     const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     await node.start();
     try {
-      const view = await node.sendTask(node.endpoint, {
+      const view = await node.sendTask(node.endpoints[0]!, {
         message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
         metadata: { pod: { permission_mode: "danger-full-access" } },
       });
       for (let i = 0; i < 100; i += 1) {
-        const current = await node.getTask(node.endpoint, view.id);
+        const current = await node.getTask(node.endpoints[0]!, view.id);
         if (current.status.state === "completed" || current.status.state === "failed") break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
