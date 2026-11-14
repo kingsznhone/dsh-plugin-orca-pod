@@ -195,15 +195,19 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
       return configView()
     },
     async saveConfig(patch) {
+      const rawPassword = patch["workgroup_password"]
+      if (rawPassword !== undefined && (typeof rawPassword !== "string" || rawPassword.trim().length === 0)) {
+        // A passwordless mesh is not supported: either set a password or omit
+        // the field to keep the current one.
+        throw new Error("a workgroup password is required; a passwordless mesh is not supported")
+      }
       const nextWorkgroup =
         typeof patch["workgroup_id"] === "string" ? patch["workgroup_id"].trim().toLowerCase() : null
       if (
         nextWorkgroup !== null &&
         nextWorkgroup !== handle.config.workgroup_id &&
-        patch["workgroup_password"] === undefined
+        rawPassword === undefined
       ) {
-        // An explicitly empty password opens the workgroup; an omitted one is a
-        // mistake when switching groups.
         throw new Error("changing the workgroup requires its password")
       }
       await handle.reconfigure(patch)

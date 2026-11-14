@@ -107,11 +107,12 @@ window.__ModuleLoader__.load({
         cfgWorkgroupId: "workgroup id",
         cfgWorkgroupIdHint: "Group ids are lowercase: WORKGROUP is saved as workgroup.",
         cfgPassword: "workgroup password",
-        cfgPasswordOpen: "blank = open mesh (no password)",
+        cfgPasswordOpen: "required",
         cfgPasswordKeep: "unchanged",
-        cfgPasswordHintWizard: "Leave blank for no password: anyone on the same network can join. Every node in the group must use the same password.",
-        cfgPasswordHintSet: "Leave blank to keep the current password; changing the workgroup requires a password (leave blank for an open mesh).",
-        cfgPasswordHintNone: "Leave blank for no password (open mesh).",
+        cfgPasswordHintWizard: "Required. Every node in this workgroup must use the same password; a passwordless open mesh is not supported.",
+        cfgPasswordHintSet: "Leave blank to keep the current password; changing the workgroup requires the new password.",
+        cfgPasswordHintNone: "A password is required before this node can start.",
+        cfgPasswordRequired: "Enter a workgroup password before saving.",
         cfgDisplayName: "display name",
         cfgDisplayNamePlaceholder: "blank = node id",
         cfgListenPort: "listen port",
@@ -125,7 +126,7 @@ window.__ModuleLoader__.load({
         cfgBack: "Back",
         cfgRunning: "running on ",
         cfgNotRunning: "not running",
-        cfgWizardIntro: "First run: choose a workgroup and an optional password to join or create a mesh.",
+        cfgWizardIntro: "First run: choose a workgroup and a password to join or create a mesh.",
         cfgResetIntro: "Full reset deletes the panel config (ui-config.json) and the node identity (config.json), returning to the first-run wizard. Tasks, blobs and workspace files are kept.",
         cfgReset: "Full reset",
         cfgResetConfirm: "Confirm reset (click again)",
@@ -185,11 +186,12 @@ window.__ModuleLoader__.load({
         cfgWorkgroupId: "工作组 id",
         cfgWorkgroupIdHint: "组名会统一转为小写：WORKGROUP 实际保存为 workgroup。",
         cfgPassword: "工作组密码",
-        cfgPasswordOpen: "留空 = 开放 mesh（无密码）",
+        cfgPasswordOpen: "必填",
         cfgPasswordKeep: "不修改",
-        cfgPasswordHintWizard: "留空表示不设密码：同网段任何人都能加入。组内所有节点必须使用同一密码。",
-        cfgPasswordHintSet: "留空表示保持原密码；换工作组时必须填写（留空即改为开放 mesh）。",
-        cfgPasswordHintNone: "留空表示不设密码（开放 mesh）。",
+        cfgPasswordHintWizard: "必填。组内所有节点必须使用同一密码；不支持无密码的开放 mesh。",
+        cfgPasswordHintSet: "留空表示保持原密码；换工作组时必须填写新密码。",
+        cfgPasswordHintNone: "启动节点前必须设置密码。",
+        cfgPasswordRequired: "请先填写工作组密码再保存。",
         cfgDisplayName: "显示名称",
         cfgDisplayNamePlaceholder: "留空则使用节点 id",
         cfgListenPort: "监听端口",
@@ -659,8 +661,13 @@ window.__ModuleLoader__.load({
 
       async function save(event) {
         if (event) event.preventDefault();
-        setBusy(true);
         setError(null);
+        const needsPassword = password.length === 0 && (wizard || !config.password_set);
+        if (needsPassword) {
+          setError(t("cfgPasswordRequired"));
+          return;
+        }
+        setBusy(true);
         try {
           const patch = {
             workgroup_id: workgroupId.trim().toLowerCase(),

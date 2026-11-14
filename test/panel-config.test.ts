@@ -269,6 +269,38 @@ describe("panel admin configuration", () => {
     }
   });
 
+  it("keeps the node idle while the workgroup password is missing", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod({ ...baseConfig(root), workgroup_password: "" }, logger);
+    await handle.ready;
+    try {
+      const view = adminFor(handle).config();
+      expect(view.running).toBe(false);
+      expect(view.configured).toBe(false);
+      expect(view.password_set).toBe(false);
+      expect(view.error).toBeNull();
+      expect(handle.runtime.orcaNode).toBeNull();
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("rejects saving a blank workgroup password", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod(baseConfig(root), logger);
+    await handle.ready;
+    try {
+      await expect(adminFor(handle).saveConfig({ workgroup_password: "" })).rejects.toThrow(
+        /password is required/,
+      );
+      await expect(adminFor(handle).saveConfig({ workgroup_password: "   " })).rejects.toThrow(
+        /password is required/,
+      );
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
   it("disconnects: leaves known peers and forgets them", async () => {
     const rootA = await tempRoot("orca-panel-a-");
     const rootB = await tempRoot("orca-panel-b-");

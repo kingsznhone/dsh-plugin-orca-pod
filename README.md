@@ -59,7 +59,7 @@ the config afterwards.
 | Field                | Required | Default                         | Meaning                                                                 |
 | -------------------- | -------- | ------------------------------- | ----------------------------------------------------------------------- |
 | `workgroup_id`       | no       | `""` (first-run wizard)         | Workgroup to join; `[a-z0-9][a-z0-9-]{1,31}`. Empty keeps the node idle until the panel wizard supplies it |
-| `workgroup_password` | no       | `""`                            | Shared password; the orca node key is derived from it (prototype: plaintext). Empty = open workgroup (§7.8) |
+| `workgroup_password` | no       | `""`                            | Shared password; the orca node key is derived from it (prototype: plaintext). Blank is rejected: the node stays unconfigured and the first-run wizard requires a password (§7.8) |
 | `display_name`       | no       | the orca node id                | Human-readable orca node name                                              |
 | `port`               | no       | `11811`                         | Local listen port (`0` = OS-assigned)                                   |
 | `bind_host`        | no       | `::` (all interfaces)         | Listen address; `::` accepts IPv4+IPv6 so LAN peers can connect (§4.1). `127.0.0.1` = single-machine / reverse-proxy only |

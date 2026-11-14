@@ -145,6 +145,15 @@ async function saveOverride(dataRoot: string, override: Override): Promise<void>
 }
 
 /** Merge a panel override over the bundle config, then re-validate the result. */
+/**
+ * A panel-configured orca node needs both a workgroup and a password. Empty
+ * values mean "not configured yet" and keep the node idle instead of opening a
+ * passwordless mesh; the first-run wizard fills them in.
+ */
+function needsSetup(config: Config): boolean {
+  return config.workgroup_id.length === 0 || config.workgroup_password.length === 0
+}
+
 function mergeOverride(base: Config, override: Override): Config {
   const merged: Record<string, unknown> = {
     workgroup_id: base.workgroup_id,
@@ -314,7 +323,7 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
         effective = merged
         handle.config = merged
         await stopNode(runtime, logger)
-        if (merged.workgroup_id.length === 0) {
+        if (needsSetup(merged)) {
           runtime.error = null
           return
         }
@@ -391,9 +400,9 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
     } catch (error) {
       logger.warn(`orca-pod: ignoring panel config: ${errorMessage(error)}`)
     }
-    if (effective.workgroup_id.length === 0) {
-      // No workgroup yet: the panel shows its first-run wizard and calls
-      // `reconfigure` once the user has picked an id.
+    if (needsSetup(effective)) {
+      // No workgroup or no password yet: the panel shows its first-run wizard
+      // and calls `reconfigure` once the user has picked both.
       logger.info("orca-pod: waiting for workgroup setup from the panel")
       return
     }

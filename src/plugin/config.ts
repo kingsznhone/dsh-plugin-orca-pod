@@ -24,7 +24,7 @@ export const DEFAULT_POD_PORT = DEFAULT_PORT
 export interface Config {
   /** Workgroup the orca node joins; empty means the panel has not been set up yet. */
   workgroup_id: string
-  /** Workgroup password used to derive the shared key; empty opens the workgroup (prototype). */
+  /** Workgroup password used to derive the shared key; empty means "not configured yet" and never starts a node. */
   workgroup_password: string
   /** Human-readable orca node name; defaults to the orca node id when omitted. */
   display_name?: string
@@ -92,8 +92,8 @@ export function validateConfigInput(value: unknown): Config {
     })
   }
 
-  // An empty password opens the workgroup: the derived key is public, so this
-  // is a LAN/prototype mode. The panel asks for a password before joining.
+  // An empty password means "not configured yet": the node stays idle and the
+  // panel's first-run wizard asks for one. A passwordless mesh is never started.
   const passwordRaw = value["workgroup_password"]
   const workgroup_password = typeof passwordRaw === "string" ? passwordRaw : ""
 
