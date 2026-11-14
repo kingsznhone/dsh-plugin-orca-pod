@@ -237,7 +237,7 @@ A（B 的 origin，也是人的位置）：tasks/get 看到 → 审批卡片显�
 
 规则：
 
-- **grant 逐跳收窄**：sub-grant 的 `permission_mode` 不高于父 grant、`limits` 不宽于父 grant、`expires_at` 不晚于父 grant，`chain` 追加当前跳；审计能回答“谁批给谁、绕过几跳”。
+- **grant 逐跳派生，派生必然收窄**：每一跳不转发父 grant，而是由当前 orca node 用自己持有的父 grant 派生一张新的 SignedGrant（绑定自己的 task 与 `target_orca_node`，`chain` 追加当前跳）——这就是“继承”。因为派生只能从父 grant 里取子集，`permission_mode` 不高于父 grant、`limits` 不宽于父 grant、`expires_at` 不晚于父 grant，所以结果必然收窄，不需要额外一步“裁剪”。父 grant 的 `task_id`/`target_orca_node` 绑定的是上一跳，原样转发给下一跳本来就会被 target 校验拒绝（既无效，也让审计失去“谁批给谁”）。
 - **请求逐跳上升**：`via` 只追加、不改写；每跳把自己的 `expires_in_s` 减一档，避免“最后一秒批下来、下游已超时”。任一跳超时 → 该跳 deny，逐跳向下传 `failed(permission_denied)` 或 `failed(permission_timeout)`。
 - **等待不占槽**：C 与 B 都停在 `input-required`（槽位释放）；A 长期无人 → 链上各级超时失败，不会挂住 B 或 C。
 - **链深有界**：`max_hop` 默认 0（链式默认不开）；打开后 `via` 长度 ≤ `max_hop`，超过即 deny（[§5.1](05-tasks.md#51-任务标识与元数据)）。
