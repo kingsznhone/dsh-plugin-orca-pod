@@ -155,7 +155,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
       endpoint: actualEndpoint,
       runtime,
     });
-    rememberMembers(response.members);
+    rememberMembers([response.self, ...response.members]);
     return response;
   }
 

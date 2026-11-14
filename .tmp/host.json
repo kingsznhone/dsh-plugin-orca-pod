@@ -1,0 +1,13 @@
+{
+  "node_id": "3V1GEA",
+  "display_name": "host-33896",
+  "workgroup_id": "orca-dev",
+  "endpoint": "http://127.0.0.1:11811",
+  "bind": {
+    "host": "127.0.0.1",
+    "port": 11811
+  },
+  "data_root": "C:\\Users\\kings\\.orca-pod",
+  "key_base64": "y2qN7b81w7Prif04FydYqPXlf5KtW/xGi1kVj011qss=",
+  "created_at": "2026-11-14T01:12:08.958Z"
+}
