@@ -74,7 +74,7 @@ export interface AgentNotice {
   id: string
   role: "user"
   content: [{ type: "text"; text: string }]
-  source: { kind: "orca-pod"; form: "notice"; summary: string }
+  source: { kind: "orca-pod" | "tool-jobs"; form: "notice"; summary: string }
 }
 
 /**

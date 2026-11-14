@@ -115,6 +115,7 @@ describe("createTracker", () => {
     await waitFor(() => agent.followed.length === 1)
     expect(agent.injected).toHaveLength(0)
     expect(agent.followed[0]!.content[0].text).toContain("01TASK")
+    expect(agent.followed[0]!.source.kind).toBe("tool-jobs")
     expect(tracker.size()).toBe(0)
     tracker.stop()
   })

@@ -260,28 +260,32 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   }
 
   function flush(): void {
-    const batches = new Map<string, { agent: TrackerAgent; lines: string[]; force: boolean }>()
+    const batches = new Map<string, { agent: TrackerAgent; lines: string[]; force: boolean; permission: boolean }>()
     for (const task of finished.splice(0)) {
-      const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [], force: false }
+      const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [], force: false, permission: false }
       if (task.kind === "permission" && task.request !== undefined) {
         batch.lines.push(permissionNoticeLine(task.request, task.peer))
         batch.force = true
+        batch.permission = true
       } else {
         batch.lines.push(taskNoticeLine(task.view, task.peer))
       }
       batches.set(task.agent.id, batch)
     }
-    for (const { agent, lines, force } of batches.values()) deliver(agent, lines, force)
+    for (const { agent, lines, force, permission } of batches.values()) deliver(agent, lines, force, permission)
   }
 
-  function deliver(agent: TrackerAgent, lines: string[], force = false): void {
+  function deliver(agent: TrackerAgent, lines: string[], force = false, permission = false): void {
     const text = lines.map((line) => `[orca-pod] ${line}`).join("\n")
     const summary = lines.length === 1 ? lines[0]! : `${lines.length} background tasks need attention`
+    // DSH renders a turn-trigger card whose title is chosen by `source.kind`.
+    // A known task-status kind labels the receipt "background task status updated";
+    // permission requests keep the generic "execution requested" request framing.
     const message: TrackerMessage = {
       id: randomUUID(),
       role: "user",
       content: [{ type: "text", text }],
-      source: { kind: "orca-pod", form: "notice", summary: clampSummary(summary) },
+      source: { kind: permission ? "orca-pod" : "tool-jobs", form: "notice", summary: clampSummary(summary) },
     }
     try {
       // A permission request blocks the remote task, so it always wakes the
