@@ -23,8 +23,8 @@ Read docs/README.md and docs/01-overview.md first, then 02 → 03 → 04 as need
 Hard constraints that must not be undone:
 - Topology is full mesh only. There is no ring, no gossip, no coordinator.
 - There is no epoch, no incarnation, no global membership table.
-  A node's table contains only peers it directly heard from; hints are endpoint
-  candidates, never liveness claims.
+  A node's table contains only peers it directly heard from; roster entries
+  carried by heartbeat are candidate endpoints, never liveness claims.
 - Listener is plain HTTP/1.1 with keep-alive. TLS is terminated by Caddy/nginx.
 - node_id is a 6-char Crockford base32 label generated at install, editable,
   persisted in plugin config. It is NOT a security principal.
@@ -89,6 +89,6 @@ Hard constraints that must not be undone:
 - 密码分发与轮换 runbook：07.3（[§7.3](07-security.md#73-密钥与密码的分发)）的附录。
 - Windows 路径 / 保留名 / 长路径测试矩阵：[10.6](10-roadmap.md#106-验收标准) 的展开。
 - EchoExecutor 场景脚本样例集：[06.3](06-execution.md#63-echoexecutor用脚本模拟任务) 的附录。
-- ADR：`0001-full-mesh-no-ring.md`、`0002-node-id-as-label.md`、`0003-password-derived-hmac.md`、`0004-approval-on-origin.md`、`0005-group-workspace.md`、`0006-fail-fast-on-node-loss.md`、`0007-hints-are-not-liveness.md`、`0008-plain-http-behind-proxy.md`、`0009-sqlite-task-store.md`。
+- ADR：`0001-full-mesh-no-ring.md`、`0002-node-id-as-label.md`、`0003-password-derived-hmac.md`、`0004-approval-on-origin.md`、`0005-group-workspace.md`、`0006-fail-fast-on-node-loss.md`、`0007-candidate-lists-are-not-liveness.md`、`0008-plain-http-behind-proxy.md`、`0009-sqlite-task-store.md`。
 
 ---

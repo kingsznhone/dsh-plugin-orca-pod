@@ -158,8 +158,14 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
       signal,
     });
     if (!response.ok) {
-      const { code } = (await response.json()) as { code: string };
-      throw new Error(`${path} ${response.status}: ${code}`);
+      const { code } = (await response.json().catch(() => ({ code: "http_error" }))) as { code?: string };
+      const error = new Error(`${path} ${response.status}: ${code ?? "http_error"}`) as Error & {
+        status: number;
+        code: string;
+      };
+      error.status = response.status;
+      error.code = code ?? "http_error";
+      throw error;
     }
     return (await response.json()) as T;
   }
@@ -178,18 +184,30 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
     return response;
   }
 
+  function sendHeartbeat(peerUrl: string): Promise<HeartbeatResponse> {
+    return postSigned<HeartbeatResponse>(
+      peerUrl,
+      "/cluster/heartbeat",
+      { node_id: nodeId, busy: tasks.busy(), digest: currentDigest() },
+      AbortSignal.timeout(membership.timings.heartbeatTimeoutMs),
+    );
+  }
+
   async function heartbeat(peerUrl: string): Promise<HeartbeatResponse> {
     const peer = membership.findByEndpoint(peerUrl);
     try {
-      const response = await postSigned<HeartbeatResponse>(
-        peerUrl,
-        "/cluster/heartbeat",
-        { node_id: nodeId, busy: tasks.busy(), digest: currentDigest() },
-        AbortSignal.timeout(membership.timings.heartbeatTimeoutMs),
-      );
+      let response: HeartbeatResponse;
+      try {
+        response = await sendHeartbeat(peerUrl);
+      } catch (error) {
+        if ((error as { status?: number }).status !== 404) throw error;
+        // 对端已把本节点记录修剪掉：join 一次让它重新认识我，并带回它的目录。
+        await join(peerUrl);
+        response = await sendHeartbeat(peerUrl);
+      }
       membership.observeInbound(response.from);
       membership.observeOutboundOk(response.from);
-      membership.mergeRemote(response.members);
+      if (response.members) membership.mergeRemote(response.members);
       return response;
     } catch (error) {
       if (peer) membership.observeOutboundFail(peer.node_id);

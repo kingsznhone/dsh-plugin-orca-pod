@@ -362,6 +362,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const { roster, digest } = membership(deps);
     const response: HeartbeatResponse = {
       from: deps.node.node_id,
+      busy: deps.tasks.busy(),
       members_digest: digest,
       members: body["digest"] === digest ? null : roster,
     };

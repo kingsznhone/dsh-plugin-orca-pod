@@ -65,8 +65,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 | **Peer** | 同一 workgroup 内、本节点已知的另一个节点。 |
 | **SelfRecord** | 节点对自己的描述（endpoint、runtime、工作区用量、忙闲），只能由本人写。 |
 | **members_digest** | 排序后的成员记录摘要，用于“我落后了没有”的比对，不表达在线状态。 |
-| **hint** | 心跳里捎带的 `(node_id, endpoint)` 候选，**不是**在线声明，见 [§3.5](03-membership.md#35-hints候选与墓碑)。 |
-| **candidate** | 由 hint 引入、尚未直接收到其心跳的节点，不进正式成员表。 |
+| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(node_id, endpoint)`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。 |
 | **tombstone** | 本地的“别再试它”标记，带过期时间；不传播。 |
 | **workspace** | 节点上自动分配的持久目录，跨任务、跨 session 保留上下文。 |
 | **group workspace** | 就是上面那个 `workspace`；本文有时强调“单节点一份”时这么叫。 |

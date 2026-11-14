@@ -79,12 +79,15 @@ export type JoinResponse = {
 export type HeartbeatRequest = {
   node_id: NodeId;
   busy: BusyState | null;
+  /** 本节点当前成员视图的摘要；与对端不一致时对端会回目录（候选端点）。 */
   digest: string | null;
 };
 
 export type HeartbeatResponse = {
   from: NodeId;
+  busy: BusyState | null;
   members_digest: string;
+  /** 仅当请求摘要与本地不一致时返回；只是候选端点，不声明在线。 */
   members: PeerView[] | null;
 };
 

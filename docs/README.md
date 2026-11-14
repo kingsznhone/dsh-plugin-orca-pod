@@ -15,7 +15,7 @@
 |---|---|---|
 | [01-overview.md](01-overview.md) | 1 | 概览、目标与非目标、术语、参考 |
 | [02-model.md](02-model.md) | 2 | 两个平面、节点职责与部署、短 id、SelfRecord、runtime |
-| [03-membership.md](03-membership.md) | 3 | 成员状态判定、加入、心跳与看门狗、收敛、hints 与墓碑 |
+| [03-membership.md](03-membership.md) | 3 | 成员状态判定、加入、心跳与看门狗、收敛、候选端点与墓碑 |
 | [04-transport.md](04-transport.md) | 4 | 监听与路由、反向代理、A2A 面、任务状态机 |
 | [05-tasks.md](05-tasks.md) | 5 | 任务元数据、回报与唤醒、取消、存储、blob 通道、接续 |
 | [06-execution.md](06-execution.md) | 6 | LocalExecutor、EchoExecutor、ACP、工作区、单槽、结果与产物 |

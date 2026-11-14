@@ -90,7 +90,7 @@ origin 轮询 tasks/get
 - `pod_peer_state{peer,state}` gauge（online/suspect/unreachable/offline/unknown）
 - `pod_peer_last_recv_age_seconds{peer}`、`pod_peer_last_ok_age_seconds{peer}`
 - `pod_members_known`、`pod_members_digest_changes_total`
-- `pod_hint_accepted_total`、`pod_hint_rejected_total{reason}`、`pod_tombstones_active`
+- `pod_candidate_accepted_total`、`pod_candidate_rejected_total{reason}`、`pod_tombstones_active`
 - `pod_join_total{result}`、`pod_join_failures_total{reason}`
 - `pod_auth_failures_total{reason}`
 - `pod_tasks_submitted_total{target,workspace_kind}`

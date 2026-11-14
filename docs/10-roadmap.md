@@ -23,16 +23,16 @@
 
 - 新节点 join 任意节点 → 按目录对每个 peer 各 join 一次（幂等）→ 自动补全 mesh。
 - 双向看门狗（6s/12s）、单调时钟、`unreachable` 状态。
-- hints/候选/墓碑（[§3.5](03-membership.md#35-hints候选与墓碑)）：验证“死节点不会互相刷活”。
+- 候选端点与墓碑（[§3.5](03-membership.md#35-候选端点与墓碑)）：验证“死节点不会互相刷活”。
 - `runtime` 采集与展示；`members_digest` 比对。
 - id 冲突 409；leave；记录修剪。
 - 验收：C 加入 A 后 2s 内 A/B/C 互相可见；kill B 后 6s suspect、12s offline；拔掉 B 的网线后 A/C 不会把 B 互相刷回在线；B 重启并重新发心跳后 15s 内恢复。
 
 **Phase 1 进展**
 
-- 已实现：2s 心跳循环（±20% 抖动）、双向看门狗（3 次 ≈6s suspect、6 次 ≈12s offline）、单调时钟、`suspect(unreachable)`、offline 探测退避（15s→30s）、墓碑与 `record_ttl` 修剪、`members_digest` 差异拉全量；只有 `online` 接受新任务（`peer_not_online`）。
+- 已实现：2s 心跳循环（±20% 抖动）、双向看门狗（3 次 ≈6s suspect、6 次 ≈12s offline）、单调时钟、`suspect(unreachable)`、offline 探测退避（15s→30s）、墓碑与 `record_ttl` 修剪、摘要差异回目录（候选端点）与 404 重 join；只有 `online` 接受新任务（`peer_not_online`）。
 - 测试：`membership.test.ts`（注入时钟 5 条）与 `watchdog.test.ts`（三节点收敛、停节点→offline→修剪，2 条）。
-- 未实现：hints/候选端点、故障注入场景 DSL、真实进程 `npm run harness`。
+- 未实现：故障注入场景 DSL、真实进程 `npm run harness`。
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
@@ -86,7 +86,7 @@
 #### 三台节点
 
 - [x] C join A 后 2s 内三向可见（C 按目录自行补全到 B 的边）
-- [ ] 拔掉 B 的网线：A 与 C 都判 offline，且不会通过 hints 互相把 B 刷回 online
+- [ ] 拔掉 B 的网线：A 与 C 都判 offline，且不会把 B 刷回 online（目录条目只能进候选）
 - [ ] B 恢复后仅凭自己的心跳回到 online（无人手动清缓存）
 - [x] B 离线 7 天后记录被修剪（测试用缩短 `record_ttl` 的等价修剪）
 - [x] 目标非 online 时拒绝派发（`peer_not_online`）
@@ -134,7 +134,7 @@
 - [ ] 密码不出现在配置、日志、错误信息中
 - [ ] 改密码后旧签名立即失效
 - [x] 重放请求（同 nonce）被拒
-- [ ] hint 指向 `169.254.169.254` 被拒
+- [ ] 候选端点指向 `169.254.169.254` 被拒
 
 #### 10 节点
 
