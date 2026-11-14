@@ -43,27 +43,41 @@ window.__ModuleLoader__.load({
       return panelOpen;
     }
 
-    /** Styles shared by every table cell. */
+    /** DSH design-platform typography: 14/22 body, 13/20 secondary, 12/18 hint. */
+    const FONT_FAMILY = "var(--dsw-font-family)";
+    const MONO_FONT = "var(--dsw-font-markdown-code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace)";
     const CELL = {
-      padding: "4px 10px 4px 0",
-      fontSize: 12,
+      padding: "6px 14px 6px 0",
+      fontFamily: FONT_FAMILY,
+      fontSize: 14,
+      lineHeight: "22px",
       verticalAlign: "top",
       color: "var(--dsw-alias-label-primary)",
       whiteSpace: "nowrap",
     };
     const MUTED = { ...CELL, color: "var(--dsw-alias-label-secondary)" };
-    const SECTION = { marginTop: 16 };
+    const SECTION = { marginTop: 22 };
+    const TITLE = { fontFamily: FONT_FAMILY, fontSize: 18, fontWeight: 600, lineHeight: "26px" };
     const H2 = {
-      fontSize: 13,
+      fontFamily: FONT_FAMILY,
+      fontSize: 14,
       fontWeight: 600,
-      margin: "0 0 6px",
+      lineHeight: "22px",
+      margin: "0 0 8px",
       color: "var(--dsw-alias-label-primary)",
     };
     const BUTTON = {
       cursor: "pointer",
-      borderRadius: 8,
-      padding: "3px 10px",
-      fontSize: 12,
+      boxSizing: "border-box",
+      height: 34,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: "var(--dsw-radius-sm, 8px)",
+      padding: "0 14px",
+      fontFamily: FONT_FAMILY,
+      fontSize: 14,
+      lineHeight: "22px",
       border: "1px solid var(--dsw-alias-border-l2)",
       background: "transparent",
       color: "var(--dsw-alias-label-primary)",
@@ -78,42 +92,74 @@ window.__ModuleLoader__.load({
     const INPUT = {
       width: "100%",
       boxSizing: "border-box",
-      padding: "6px 8px",
-      borderRadius: 8,
+      minHeight: 34,
+      padding: "6px 10px",
+      borderRadius: "var(--dsw-radius-sm, 8px)",
       border: "1px solid var(--dsw-alias-border-l2)",
       background: "var(--dsw-alias-bg-base)",
       color: "var(--dsw-alias-label-primary)",
-      fontSize: 12,
+      fontFamily: FONT_FAMILY,
+      fontSize: 14,
+      lineHeight: "22px",
     };
-    const FIELD = { marginBottom: 10 };
-    const LABEL = { display: "block", fontSize: 11, marginBottom: 3, color: "var(--dsw-alias-label-secondary)" };
-    const HINT = { fontSize: 11, color: "var(--dsw-alias-label-secondary)", marginTop: 2 };
+    const FIELD = { marginBottom: 14 };
+    const LABEL = {
+      display: "block",
+      fontFamily: FONT_FAMILY,
+      fontSize: 13,
+      lineHeight: "20px",
+      marginBottom: 4,
+      color: "var(--dsw-alias-label-secondary)",
+    };
+    const HINT = { fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px", color: "var(--dsw-alias-label-secondary)", marginTop: 4 };
     const CARD = {
+      position: "relative",
       pointerEvents: "auto",
-      width: "min(460px, calc(100vw - 32px))",
-      maxHeight: "calc(100vh - 128px)",
+      width: "min(720px, calc(100vw - 48px))",
+      maxHeight: "min(78vh, 820px)",
       overflow: "auto",
-      borderRadius: 12,
+      boxSizing: "border-box",
+      padding: "24px 26px 22px",
+      borderRadius: "var(--dsw-radius-lg, 16px)",
       border: "1px solid var(--dsw-alias-border-l1)",
-      background: "var(--dsw-alias-bg-layer-1)",
-      boxShadow: "0 18px 48px rgba(0, 0, 0, 0.28)",
+      background: "var(--dsw-alias-bg-overlay)",
+      boxShadow: "0 24px 64px rgba(0, 0, 0, 0.35)",
       color: "var(--dsw-alias-label-primary)",
     };
     const OVERLAY = {
       position: "fixed",
       inset: 0,
       display: "flex",
-      alignItems: "flex-end",
-      justifyContent: "flex-end",
-      padding: "0 16px 56px 0",
-      pointerEvents: "none",
-      zIndex: 900,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      zIndex: 1000,
+      background: "rgba(0, 0, 0, 0.32)",
+    };
+    const CLOSE_BUTTON = {
+      position: "absolute",
+      top: 14,
+      right: 14,
+      width: 28,
+      height: 28,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "pointer",
+      border: "none",
+      borderRadius: "var(--dsw-radius-sm, 8px)",
+      background: "transparent",
+      color: "var(--dsw-alias-label-secondary)",
+      fontFamily: FONT_FAMILY,
+      fontSize: 18,
+      lineHeight: 1,
     };
     const ICON_BUTTON = {
       ...BUTTON,
-      padding: "2px 8px",
-      fontSize: 14,
-      lineHeight: 1.2,
+      width: 32,
+      padding: 0,
+      fontSize: 16,
+      lineHeight: 1,
     };
     const FOOTER_ACTION = {
       cursor: "pointer",
@@ -121,12 +167,14 @@ window.__ModuleLoader__.load({
       alignItems: "center",
       gap: 8,
       width: "100%",
-      padding: "6px 8px",
-      borderRadius: 8,
+      padding: "8px 10px",
+      borderRadius: "var(--dsw-radius-sm, 8px)",
       border: "1px solid transparent",
       background: "transparent",
       color: "var(--dsw-alias-label-secondary)",
-      fontSize: 13,
+      fontFamily: FONT_FAMILY,
+      fontSize: 14,
+      lineHeight: "22px",
       textAlign: "left",
     };
 
@@ -221,7 +269,7 @@ window.__ModuleLoader__.load({
     function stateBadge(value) {
       return h(
         "span",
-        { style: { color: STATE_COLOR[value] || "var(--dsw-alias-label-secondary)", fontSize: 12 } },
+        { style: { color: STATE_COLOR[value] || "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "20px" } },
         typeof value === "string" ? value : "-",
       );
     }
@@ -291,7 +339,7 @@ window.__ModuleLoader__.load({
           return h(
             Row,
             { key: task.id },
-            h("td", { style: { ...CELL, fontFamily: "monospace" } }, short(task.id)),
+            h("td", { style: { ...CELL, fontFamily: MONO_FONT } }, short(task.id)),
             h("td", { style: CELL }, stateBadge(task.status ? task.status.state : "-")),
             h("td", { style: MUTED }, task.metadata && task.metadata.pod && task.metadata.pod.origin ? short(task.metadata.pod.origin) : "-"),
             h("td", { style: MUTED }, age(task.status ? task.status.timestamp : null)),
@@ -334,7 +382,7 @@ window.__ModuleLoader__.load({
       return h(
         "div",
         { style: { fontSize: 12, color: "var(--dsw-alias-label-secondary)" } },
-        h("div", { style: { fontFamily: "monospace", wordBreak: "break-all" } }, workspace.root),
+        h("div", { style: { fontFamily: MONO_FONT, wordBreak: "break-all" } }, workspace.root),
         h("div", { style: { marginTop: 4 } }, "notes: " + (workspace.notes_files.length > 0 ? workspace.notes_files.join(", ") : "empty")),
         h(
           "div",
@@ -436,7 +484,7 @@ window.__ModuleLoader__.load({
 
       return h(
         "form",
-        { onSubmit: save },
+        { onSubmit: save, style: { paddingRight: 32 } },
         wizard
           ? h("div", { style: { ...MUTED, marginBottom: 12 } }, "首次启动：填写 workgroup 与密码，加入或创建一个 mesh。")
           : null,
@@ -476,7 +524,7 @@ window.__ModuleLoader__.load({
           { style: FIELD },
           h("label", { style: LABEL }, "advertised endpoints (one per line, best first)"),
           h("textarea", {
-            style: { ...INPUT, minHeight: 48, fontFamily: "monospace" },
+            style: { ...INPUT, minHeight: 48, fontFamily: MONO_FONT },
             value: endpoints,
             onChange: (event) => setEndpoints(event.target.value),
             placeholder: "http://192.168.1.11:11811\nhttps://desk.example.com",
@@ -487,7 +535,7 @@ window.__ModuleLoader__.load({
           "div",
           { style: FIELD },
           h("label", { style: LABEL }, "peers (one per line)"),
-          h("textarea", { style: { ...INPUT, minHeight: 48, fontFamily: "monospace" }, value: peers, onChange: (event) => setPeers(event.target.value) }),
+          h("textarea", { style: { ...INPUT, minHeight: 48, fontFamily: MONO_FONT }, value: peers, onChange: (event) => setPeers(event.target.value) }),
           h(
             "div",
             { style: { display: "flex", gap: 6, marginTop: 6 } },
@@ -522,20 +570,20 @@ window.__ModuleLoader__.load({
         null,
         h(
           "div",
-          { style: { display: "flex", alignItems: "baseline", gap: 10 } },
-          h("div", { style: { fontSize: 16, fontWeight: 600 } }, "Orca Pod"),
-          h("div", { style: { ...MUTED, fontFamily: "monospace" } }, self ? self.orca_node_id : "node not running"),
+          { style: { display: "flex", alignItems: "center", gap: 12, paddingRight: 26 } },
+          h("div", { style: TITLE }, "Orca Pod"),
+          h("div", { style: { ...MUTED, fontFamily: MONO_FONT } }, self ? self.orca_node_id : "node not running"),
           self ? stateBadge(self.state) : null,
           h("div", { style: { flex: 1 } }),
           h("button", { type: "button", style: ICON_BUTTON, title: "设置", onClick: props.onOpenSettings }, "⚙"),
         ),
-        h("div", { style: MUTED }, "workgroup " + (config.workgroup_id || (self ? self.workgroup_id : "-"))),
-        props.error ? h("div", { style: { marginTop: 8, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" } }, props.error) : null,
+        h("div", { style: { ...MUTED, marginTop: 2 } }, "workgroup " + (config.workgroup_id || (self ? self.workgroup_id : "-"))),
+        props.error ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, props.error) : null,
         h("div", { style: SECTION }, h("div", { style: H2 }, "Pending approvals"), h(Approvals, { approvals: state.approvals, busy: props.busy, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, "Recent tasks"), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, "Members"), h(Members, { members: state.members })),
         h("div", { style: SECTION }, h("div", { style: H2 }, "Workspace"), h(Workspace, { workspace: state.workspace })),
-        h("div", { style: SECTION }, h("div", { style: { ...MUTED, fontSize: 11 } }, "updated " + age(state.now) + " ago")),
+        h("div", { style: { ...SECTION, color: "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px" } }, "updated " + age(state.now) + " ago"),
       );
     }
 
@@ -544,7 +592,7 @@ window.__ModuleLoader__.load({
       const [view, setView] = React.useState("status");
 
       if (!state) {
-        return h("div", { style: { padding: 16, fontSize: 13, color: "var(--dsw-alias-label-secondary)" } }, error ? "orca-pod: " + error : "connecting to orca-pod…");
+        return h("div", { style: { padding: "4px 0", ...MUTED } }, error ? "orca-pod: " + error : "connecting to orca-pod…");
       }
       const config = state.config || {};
       const content = !config.configured
@@ -567,7 +615,7 @@ window.__ModuleLoader__.load({
             })
           : h(StatusPage, { state, error, busy, onAct: act, onOpenSettings: () => setView("settings") });
 
-      return h("div", { style: { padding: "14px 18px 16px" } }, content);
+      return h("div", { style: { minWidth: 0 } }, content);
     }
 
     /** Sidebar-foot button: opens the floating Orca Pod panel. */
@@ -581,12 +629,12 @@ window.__ModuleLoader__.load({
           title: "Orca Pod",
           onClick: () => setPanelOpen(!panelOpen),
         },
-        h("span", { style: { fontSize: 15, lineHeight: 1 } }, "◈"),
+        h("span", { style: { fontSize: 16, lineHeight: 1 } }, "◈"),
         wide ? h("span", null, "Orca Pod") : null,
       );
     }
 
-    /** Frame-wide floating panel docked above the bottom edge; Esc closes it. */
+    /** Centered modal panel; Esc and a backdrop click close it. */
     function OverlayPanel() {
       const open = usePanelOpen();
       React.useEffect(() => {
@@ -600,15 +648,16 @@ window.__ModuleLoader__.load({
       if (!open) return null;
       return h(
         "div",
-        { style: OVERLAY },
+        {
+          style: OVERLAY,
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) setPanelOpen(false);
+          },
+        },
         h(
           "div",
           { style: CARD },
-          h(
-            "div",
-            { style: { display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "8px 10px 0" } },
-            h("button", { type: "button", style: ICON_BUTTON, title: "Close", onClick: () => setPanelOpen(false) }, "×"),
-          ),
+          h("button", { type: "button", style: CLOSE_BUTTON, title: "Close", onClick: () => setPanelOpen(false) }, "×"),
           h(Panel),
         ),
       );
