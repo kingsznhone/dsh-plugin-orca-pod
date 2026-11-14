@@ -86,16 +86,17 @@ POST /cluster/heartbeat
 
 - 摘要不一致 → 对端顺势回一次目录（≤32 条）。接收方按 [§3.5](03-membership.md#35-候选端点与墓碑) 处理：只进候选，不声明在线。
 - 心跳同时是 keep-alive 与“我还活着”的证明；没有单独 ping。
-- 心跳超时（客户端侧）取 `interval` 的一半，别用 30s 默认值。
-- 心跳同时是 keep-alive 与“我还活着”的证明；没有单独 ping。
+- 心跳超时（客户端侧）取当前 `interval` 的一半，别用 30s 默认值。
+
+**节奏自适应**：`interval = N` 秒，`N` 是 workgroup 里的 orca node 数（含自己），夹在 2–10s。这样每个节点每秒只发约 1 个心跳，全集群总流量 ≈ `N req/s`——线性，而不是固定 2s 下的 `N(N-1)/2` 条链路（10 节点 ≈ 45 req/s）。代价是判定延迟随 `N` 增长：`suspect` ≈ 1 拍、`offline` ≈ 3 拍，10 节点时分别约 12.5s / 30s。成员数一变，下一拍自动换算；显式 pin `timings.intervalMs` 时不做自适应（测试用）。
 
 参数：
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `interval` | 2s（±20% 抖动） | 10 个 orca node = 45 条链路 ≈ 45 req/s |
-| `suspect_after` | 3 次 ≈ 6s | 连续未收到 |
-| `offline_after` | 6 次 ≈ 12s | 累计未收到，移出在线集 |
+| `interval` | `N` 秒，夹在 2–10s（±10% 抖动） | 集群总流量 ≈ `N req/s`，线性增长 |
+| `suspect_after` | 1 拍（`interval × 1.25`，留抖动余量） | 连续未收到一拍即可疑 |
+| `offline_after` | 3 拍（`interval × 3`） | 累计未收到，移出在线集 |
 | `recover_probe` | 15s → 30s 退避 | offline 后的探测 |
 | `record_ttl` | 7d | offline 记录保留上限，之后修剪 |
 | `candidate_retry` | 15s → 30s 退避 | 候选端点探测失败后的重试 |
@@ -105,13 +106,13 @@ POST /cluster/heartbeat
 状态机：
 
 ```text
-unknown ──(收到第一拍心跳)──────────────────────► online
-online  ──(连续 3 次未收到)─────────────────────► suspect(quiet)
-online  ──(连续 3 次发失败，但仍在收到心跳)──────► suspect(unreachable)
-suspect(unreachable) ──(某次发送成功)───────────► online
-suspect(unreachable) ──(开始也收不到)───────────► suspect(quiet)
-suspect(quiet) ──(再 3 次未收到，累计 6 次 ≈12s)─► offline
-suspect(quiet) ──(任何一次收到)─────────────────► online
+unknown ──(收到第一拍心跳)─────────────────────► online
+online  ──(漏掉 1 拍未收到)───────────────────► suspect(quiet)
+online  ──(连续 1 拍发失败，但仍在收到心跳)────► suspect(unreachable)
+suspect(unreachable) ──(某次发送成功)──────────► online
+suspect(unreachable) ──(开始也收不到)──────────► suspect(quiet)
+suspect(quiet) ──(再漏 2 拍，累计 3 拍)───────► offline
+suspect(quiet) ──(任何一次收到)────────────────► online
 offline ──(低频探测成功)────────────────────────► online
 offline ──(record_ttl 到期)─────────────────────► 修剪出表（本地）
 ```

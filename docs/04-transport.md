@@ -36,7 +36,7 @@
 - **Agent Card 公开可读，但不含敏感信息**：目标字段是名字、端点、skills、协议版本；Phase 0 的卡只有名字、端点、协议版本（见 §4.6）。runtime、忙闲、配额、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
 - 不提供 WebSocket：一条连接一种语义，WS 会变成第二套状态机。需要实时性时：
   - 任务进度 → `/a2a` 的 `message/stream`（SSE，同一 endpoint）；
-  - 成员变化 → 心跳周期（2s）已足够；UI 需要更实时就等下一次心跳。
+  - 成员变化 → 心跳周期（自适应 `N` 秒，[§3.3](03-membership.md#33-心跳与在线判定)）已足够；UI 需要更实时就等下一次心跳。
 - Agent Card 的 `url` 指向 `/a2a`，不是根路径。
 - 请求体上限（默认 8 MiB，artifact 走独立通道/引用）、读超时、连接数上限都要显式配置，别吃 Node 默认值。Phase 0 为了 blob 上传把全局 `bodyLimit` 放到 256 MiB，JSON 路由也一起放宽；后续应改成 blob 路由单独限额、JSON 回落到 8 MiB。
 

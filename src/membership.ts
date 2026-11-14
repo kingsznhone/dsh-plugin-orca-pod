@@ -9,6 +9,20 @@ import type { PeerStore } from "./storage.ts";
 
 export type SuspectReason = "quiet" | "unreachable";
 
+/**
+ * Adaptive heartbeat cadence (§3.3): one heartbeat per peer per `N` seconds,
+ * where N is the number of orca nodes in the workgroup. Cluster-wide traffic is
+ * then ~N requests/second (linear) instead of the quadratic cost of a fixed tick.
+ */
+export const HEARTBEAT_INTERVAL_MIN_MS = 2000;
+export const HEARTBEAT_INTERVAL_MAX_MS = 10_000;
+
+/** One second per orca node, clamped so detection stays bounded on large meshes. */
+export function heartbeatIntervalMsFor(orcaNodeCount: number): number {
+  const count = Number.isFinite(orcaNodeCount) ? Math.max(1, Math.round(orcaNodeCount)) : 1;
+  return Math.min(HEARTBEAT_INTERVAL_MAX_MS, Math.max(HEARTBEAT_INTERVAL_MIN_MS, count * 1000));
+}
+
 export type MembershipTimings = {
   /** Heartbeat period; each orca node sends one every interval (+-20% jitter). */
   intervalMs: number;
@@ -68,6 +82,8 @@ export type Membership = {
   readonly peers: PeerStore;
   readonly selfOrcaNodeId: OrcaNodeId;
   readonly timings: MembershipTimings;
+  /** Retarget the expected cadence; also rederives suspect/offline/timeout windows. */
+  setIntervalMs(intervalMs: number): void;
   /** Record an inbound signed message from `orcaNodeId`; returns false when unknown. */
   observeInbound(orcaNodeId: OrcaNodeId): boolean;
   observeOutboundOk(orcaNodeId: OrcaNodeId): void;
@@ -114,7 +130,14 @@ export function createMembership(options: CreateMembershipOptions): Membership {
   const wallIso = options.clock?.wallIso ?? (() => new Date().toISOString());
   const records = new Map<OrcaNodeId, PeerRecord>();
   const tombstones = new Map<OrcaNodeId, number>();
-  const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
+  /** One missed tick is suspect, three is offline; jitter means a tick needs slack. */
+  function setIntervalMs(intervalMs: number): void {
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return;
+    timings.intervalMs = Math.round(intervalMs);
+    timings.suspectAfterMs = Math.round(timings.intervalMs * 1.25);
+    timings.offlineAfterMs = timings.intervalMs * 3;
+    timings.heartbeatTimeoutMs = Math.max(100, Math.round(timings.intervalMs / 2));
+  }
 
   function createRecord(view: PeerView, state: PeerState, nowMs: number, origin: PeerOrigin): PeerRecord {
     return {
@@ -240,6 +263,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     }
     const recentlyHeard =
       record.last_recv_ms !== null && nowMs - record.last_recv_ms <= timings.offlineAfterMs;
+    const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
     if (record.fails >= missThreshold && recentlyHeard) {
       record.view.state = "suspect";
       record.suspect_reason = "unreachable";
@@ -319,6 +343,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     peers,
     selfOrcaNodeId,
     timings,
+    setIntervalMs,
     observeInbound,
     observeOutboundOk,
     observeOutboundFail,

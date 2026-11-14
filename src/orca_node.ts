@@ -17,7 +17,7 @@ import { createHeadlessExecutor } from "./headless.ts";
 import { candidateEndpointAllowed } from "./net.ts";
 import { createAcpExecutor } from "./acp.ts";
 import { createGateway } from "./gateway.ts";
-import { createMembership, type MembershipClock, type MembershipTimings } from "./membership.ts";
+import { createMembership, heartbeatIntervalMsFor, type MembershipClock, type MembershipTimings } from "./membership.ts";
 import {
   membersDigest as computeMembersDigest,
   permissionRequestOf,
@@ -148,6 +148,8 @@ export interface OrcaNode {
   readonly config: OrcaNodeConfig;
   /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); first is primary. */
   readonly endpoints: string[];
+  /** Current heartbeat period; adaptive to mesh size unless pinned (§3.3). */
+  readonly heartbeatIntervalMs: number;
 
   start(): Promise<{ url: string; port: number }>;
   stop(): Promise<void>;
@@ -224,6 +226,15 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     clock: options.clock,
   });
   const peers: PeerStore = membership.peers;
+  /**
+   * §3.3: cadence follows mesh size (one pulse per node per second) so cluster
+   * traffic stays linear. An explicit `timings.intervalMs` pins it for tests.
+   */
+  const adaptiveHeartbeat = options.timings?.intervalMs === undefined;
+  function refreshHeartbeatInterval(): void {
+    if (!adaptiveHeartbeat) return;
+    membership.setIntervalMs(heartbeatIntervalMsFor(membership.list().length + 1));
+  }
   const nonceCache = new NonceCache();
   const runtime = options.runtime ?? collectRuntime();
   const blobs = options.storage?.blobStore ?? createMemoryBlobStore();
@@ -595,7 +606,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   function scheduleHeartbeat(): void {
     if (heartbeatStopped) return;
     const { intervalMs } = membership.timings;
-    const delay = intervalMs * (0.8 + Math.random() * 0.4);
+    // ±10% jitter: senders must not stay phase-locked, and the receiver's
+    // suspect window (1.25 ticks) leaves room for this spread.
+    const delay = intervalMs * (0.9 + Math.random() * 0.2);
     heartbeatTimer = setTimeout(() => void heartbeatTick(), delay);
     heartbeatTimer.unref();
   }
@@ -655,6 +668,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
 
   async function heartbeatTick(): Promise<void> {
     if (heartbeatStopped) return;
+    refreshHeartbeatInterval();
     membership.evaluate();
     const now = membership.now();
     const targets = membership
@@ -709,6 +723,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     },
     get endpoints(): string[] {
       return [...actualEndpoints];
+    },
+    get heartbeatIntervalMs(): number {
+      return membership.timings.intervalMs;
     },
 
     start,

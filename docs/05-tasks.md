@@ -55,7 +55,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 - 初始 500ms，退避到 2s，加 ±20% 抖动；
 - 终态立即停；连续 `404` 说明目标重启丢了 task → 记 `failed(reason=task_lost)`；
-- 连续连接失败达到 `offline_after`（≈12s）→ origin 直接记 `failed(reason=node_unreachable, effects_unknown=true)`，**不重发**（[§8.2](08-reliability.md#82-orca-node-失联-任务失败不重发)）；
+- 连续连接失败达到 `offline_after`（自适应，约 3 拍）→ origin 直接记 `failed(reason=node_unreachable, effects_unknown=true)`，**不重发**（[§8.2](08-reliability.md#82-orca-node-失联-任务失败不重发)）；
 - 总时长受 `task_ttl_s` 约束（等待 `input-required` 时暂停、恢复后继续计时），超时记 `failed(reason=timeout)` 并发 `tasks/cancel`（若还能连上）。
 
 #### 轮询归 Host，不归 agent

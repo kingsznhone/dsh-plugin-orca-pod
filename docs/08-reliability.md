@@ -15,7 +15,7 @@
 
 ```text
 origin 轮询 tasks/get
-  → 连续连接失败达到 offline_after（≈12s）
+  → 连续连接失败达到 offline_after（自适应，约 3 拍）
   → task = failed(reason=node_unreachable, effects_unknown=true)
   → 停止轮询；不再派同一任务
 ```
@@ -60,7 +60,7 @@ origin 轮询 tasks/get
 
 1. **任务不转发**：orca node 只执行 origin 给它的任务，不把任务转给第三个 orca node；子任务必须由目标 orca node 上的 agent 显式新建（CLI/插件工具），executor 默认没有 pod 远程工具（[§6.4](06-execution.md#64-acp-的位置)）。
 2. **没有回调**：target 从不反连 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；完成靠 origin 轮询/SSE。不存在“B 做完叫醒 A、A 又叫醒 B”。
-3. **没有广播**：心跳固定 2s、单向；成员变化靠 digest 拉取（[§3.1](03-membership.md#31-成员状态的判定)）；没有 gossip、没有事件订阅、没有 completion webhook。
+3. **没有广播**：心跳自适应（`N` 秒）、单向；成员变化靠 digest 拉取（[§3.1](03-membership.md#31-成员状态的判定)）；没有 gossip、没有事件订阅、没有 completion webhook。
 
 多跳发生时的约束：
 
