@@ -35,7 +35,7 @@
 ```text
 D（新）                                            A（已在 mesh）
   POST http://A:11811/cluster/join
-  { workgroup_id, orca_node_id, display_name, endpoint,
+  { workgroup_id, orca_node_id, display_name, endpoints,
     self, nonce, ts, proof }
                                               ├ 校验 workgroup_id
                                               ├ 校验 proof（§7.2）
@@ -81,7 +81,7 @@ POST /cluster/heartbeat
 
 200 { "from": "N7K3QM", "busy": null,
       "members_digest": "sha256:...",
-      "members": [{ "orca_node_id": "Z3M4AQ", "endpoint": "http://192.168.1.13:11811" }] }  // 仅摘要不一致时
+      "members": [{ "orca_node_id": "Z3M4AQ", "endpoints": ["http://192.168.1.13:11811"] }] }  // 仅摘要不一致时
 ```
 
 - 摘要不一致 → 对端顺势回一次目录（≤32 条）。接收方按 [§3.5](03-membership.md#35-候选端点与墓碑) 处理：只进候选，不声明在线。
@@ -157,7 +157,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 
 具体规则：
 
-1. **候选**：未知 `orca_node_id` + endpoint 进表，`state=unknown`；探测循环对它拨一次（join），失败按 `recover_probe` 退避，成功则等对方回心跳自然转 online。
+1. **候选**：未知 `orca_node_id` + endpoints 进表，`state=unknown`；探测循环对它拨一次（join，按 endpoints 顺序逐个尝试），失败按 `recover_probe` 退避，成功则等对方回心跳自然转 online。
 2. **已知但 offline**：不复活，只按退避探测。
 3. **404 `unknown_orca_node`**：说明对端已经把我修剪掉；我重新 join 对端（join 会带回它的目录），再补一拍心跳。
 4. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。

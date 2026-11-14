@@ -62,7 +62,7 @@ the config afterwards.
 | `workgroup_password` | yes      | —                               | Shared password; the orca node key is derived from it (prototype: plaintext) |
 | `display_name`       | no       | `orca-<orca_node_id>` from node config | Human-readable orca node name                                              |
 | `port`               | no       | `11811`                         | Local listen port (`0` = OS-assigned)                                   |
-| `endpoint`           | no       | `http://<host>:<port>`          | Public endpoint advertised to peers                                     |
+| `endpoints`          | no       | `[]` = derive `http://<host>:<port>` | Ordered advertise list (1-8 URLs, primary first): IPv6/IPv4 and LAN/public addresses are dialed in order |
 | `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (orca node identity)             |
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
 | `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (headless/ACP profiles) find the CLI; set `false` to opt out |
@@ -92,7 +92,7 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 | `pod_send`    | `peer`, `text`, `echo?`  | `{task_id, state, peer}` immediately after the remote accepts   |
 | `pod_status`  | `peer`, `task_id`        | Remote `TaskView` plus a `terminal` flag                        |
 | `pod_cancel`  | `peer`, `task_id`        | Task view observed at cancel time plus `terminal`               |
-| `pod_members` | —                        | `{self, members, members_digest}` with id/name/endpoint/state   |
+| `pod_members` | —                        | `{self, members, members_digest}` with id/name/endpoints/state  |
 | `pod_approve` | `peer`, `task_id`, `decision`, `reason?` | Answers a suspended `permission_request`: opens the DSH approval card in the current turn and sends a grant or denial |
 
 `peer` 接受 `http(s)://host:port` 或裸 `host:port`；可选 `echo` 会作为 `metadata.echo` 转发确定性脚本（测试用；默认任务本身就会回显）。

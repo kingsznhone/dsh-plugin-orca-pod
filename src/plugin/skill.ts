@@ -64,7 +64,7 @@ as this orca node, and does **not** listen on a port or start a second process.
 Use it whenever a task has to leave this machine.
 
 \`\`\`bash
-${cli} members --json                     # known peers: id, endpoint, state
+${cli} members --json                     # known peers: id, endpoints, state
 ${cli} send --peer <host:port> --text -   # dispatch a task; text from stdin
 ${cli} wait --peer <host:port> --task <id> --local-task <this task> --timeout 120 --json
 ${cli} status --peer <host:port> --task <id> --json
@@ -76,7 +76,7 @@ running, \`3\` the target is waiting for a human decision.
 
 ## Rules
 
-- Endpoints come from \`members\`; a bare \`host:port\` is accepted.
+- Each peer in \`members\` carries an ordered \`endpoints\` list (primary first); pass any one to other commands. A bare \`host:port\` is accepted.
 - Pass \`--local-task <this task>\` to \`wait\` so a child permission request is
   escalated to your origin automatically; \`wait\` keeps going after the decision.
 - **Never approve your own escalation.** If \`wait\` exits \`3\`, run

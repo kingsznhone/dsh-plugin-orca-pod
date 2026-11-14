@@ -58,7 +58,7 @@ function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegist
     orca_node_id: orcaNodeId,
     display_name: "blob-test-orca-node",
     workgroup_id: "orca-dev",
-    endpoint: ENDPOINT,
+    endpoints: [ENDPOINT],
   };
   const deps: GatewayDeps = {
     orcaNode,

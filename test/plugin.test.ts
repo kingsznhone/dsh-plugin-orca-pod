@@ -30,7 +30,7 @@ describe("plugin config", () => {
     })
     expect(config.port).toBe(0)
     expect(config.display_name).toBe("pod-a")
-    expect(config.endpoint).toBe("http://127.0.0.1:9000")
+    expect(config.endpoints).toEqual(["http://127.0.0.1:9000"])
     expect(config.data_root).toBe("/tmp/orca")
     expect(config.peers).toEqual(["http://127.0.0.1:11811"])
   })

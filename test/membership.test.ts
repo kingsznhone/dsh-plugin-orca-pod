@@ -18,7 +18,7 @@ function peerView(orcaNodeId: string, overrides: Partial<PeerView> = {}): PeerVi
   return {
     orca_node_id: orcaNodeId,
     display_name: `orca-node-${orcaNodeId}`,
-    endpoint: `http://127.0.0.1:11811`,
+    endpoints: [`http://127.0.0.1:11811`],
     runtime: null,
     runtime_digest: `digest-${orcaNodeId}`,
     state: "online",

@@ -85,9 +85,9 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
     next = {
       ...stored,
       display_name: config.display_name ?? stored.display_name,
-      // The advertised endpoint is derived from bind/port unless explicitly
-      // configured: reusing a stored endpoint could advertise a stale port.
-      endpoint: config.endpoint ?? null,
+      // Advertised endpoints are derived from bind/port unless explicitly
+      // configured: reusing stored endpoints could advertise a stale port.
+      endpoints: config.endpoints === undefined ? [] : [...config.endpoints],
       data_root: dataRoot,
       bind: { host: stored.bind.host, port: config.port },
       key_base64: keyBase64,
@@ -99,7 +99,7 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       dataRoot,
       port: config.port,
       ...(config.display_name === undefined ? {} : { displayName: config.display_name }),
-      ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
+      ...(config.endpoints === undefined ? {} : { endpoints: config.endpoints }),
     })
   }
 

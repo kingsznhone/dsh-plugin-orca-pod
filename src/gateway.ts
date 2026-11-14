@@ -16,8 +16,8 @@ import {
 } from "./crypto.ts";
 import {
   PROTOCOL_VERSION,
-  isHttpEndpoint,
   membersDigest,
+  normalizeEndpoints,
   normalizeOrcaNodeId,
   runtimeDigest,
   TaskError,
@@ -41,7 +41,8 @@ export type GatewayOrcaNode = {
   orca_node_id: string;
   display_name: string;
   workgroup_id: string;
-  endpoint: string | null;
+  /** Advertised dial URLs, best first (§3.2). */
+  endpoints: string[];
   /** Per-task budget advertised to peers; origins size tasks to it (§6.9). */
   max_task_ttl_s?: number;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
@@ -159,7 +160,7 @@ function authenticate(
   });
 }
 
-/** Roster view incl. self; reads `deps.orcaNode.endpoint` live and digests self too. */
+/** Roster view incl. self; reads `deps.orcaNode.endpoints` live and digests self too. */
 function membership(deps: GatewayDeps): {
   self: SelfRecord;
   roster: PeerView[];
@@ -168,7 +169,7 @@ function membership(deps: GatewayDeps): {
   const self: SelfRecord = {
     orca_node_id: deps.orcaNode.orca_node_id,
     display_name: deps.orcaNode.display_name,
-    endpoint: deps.orcaNode.endpoint ?? "",
+    endpoints: deps.orcaNode.endpoints,
     workgroup_id: deps.orcaNode.workgroup_id,
     protocol_version: PROTOCOL_VERSION,
     runtime: deps.runtime,
@@ -216,14 +217,17 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
 
   app.get("/health", async () => ({ status: "ok", version: PROTOCOL_VERSION }));
 
-  app.get("/.well-known/agent-card.json", async () => ({
-    name: deps.orcaNode.display_name,
-    protocol_version: PROTOCOL_VERSION,
-    url: deps.orcaNode.endpoint ? `${deps.orcaNode.endpoint}/a2a` : "",
-    ...(deps.orcaNode.max_task_ttl_s === undefined
-      ? {}
-      : { max_task_ttl_s: deps.orcaNode.max_task_ttl_s }),
-  }));
+  app.get("/.well-known/agent-card.json", async () => {
+    const [primary] = deps.orcaNode.endpoints;
+    return {
+      name: deps.orcaNode.display_name,
+      protocol_version: PROTOCOL_VERSION,
+      url: primary ? `${primary}/a2a` : "",
+      ...(deps.orcaNode.max_task_ttl_s === undefined
+        ? {}
+        : { max_task_ttl_s: deps.orcaNode.max_task_ttl_s }),
+    };
+  });
 
   app.post("/a2a", async (request, reply) => {
     const auth = authenticate(request, deps);
@@ -397,8 +401,9 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const expiresAtMs = Date.now() + BLOB_LINK_TTL_S * 1000;
     const exp = String(Math.floor(expiresAtMs / 1000));
     const sig = blobLinkSignature(deps.key, blobId, exp);
+    const [primary] = deps.orcaNode.endpoints;
     return {
-      url: `${deps.orcaNode.endpoint ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
+      url: `${primary ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
       expires_at: new Date(expiresAtMs).toISOString(),
     };
   });
@@ -422,9 +427,9 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       return badRequest(reply, "display_name must be a string");
     }
 
-    const endpoint = body["endpoint"];
-    if (!isHttpEndpoint(endpoint)) {
-      return badRequest(reply, "endpoint must be an http(s) URL");
+    const endpoints = normalizeEndpoints(body["endpoints"] ?? body["endpoint"]);
+    if (endpoints === null) {
+      return badRequest(reply, "endpoints must be a non-empty array of http(s) URLs");
     }
 
     const runtimeValue = body["runtime"] ?? null;
@@ -437,7 +442,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     deps.peers.upsert({
       orca_node_id: orcaNodeId,
       display_name: displayName,
-      endpoint,
+      endpoints,
       runtime,
       runtime_digest: runtimeDigest(runtime),
       state: "online",

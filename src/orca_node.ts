@@ -53,15 +53,15 @@ import { createTaskRunner } from "./tasks.ts";
 import { createWorkspaceManager, type Workspace, type WorkspaceManager } from "./workspace.ts";
 
 /**
- * Gateway dependency record. `endpoint` is mutable: the gateway is built before
- * `listen()` (the port may be 0) and the bound endpoint is written back once the
- * listener is up, so the gateway reads the current value when it renders self.
+ * Gateway dependency record. `endpoints` is mutable: the gateway is built before
+ * `listen()` (the port may be 0) and the bound endpoints are written back once
+ * the listener is up, so the gateway reads the current value when it renders self.
  */
 type GatewayOrcaNodeInfo = {
   orca_node_id: string;
   display_name: string;
   workgroup_id: string;
-  endpoint: string | null;
+  endpoints: string[];
   max_task_ttl_s?: number;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
   linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
@@ -146,6 +146,9 @@ export interface ApprovalOptions {
 export interface OrcaNode {
   readonly orcaNodeId: string;
   readonly config: OrcaNodeConfig;
+  /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); first is primary. */
+  readonly endpoints: string[];
+  /** Primary advertised base URL; shorthand for `endpoints[0]`. */
   readonly endpoint: string;
   start(): Promise<{ url: string; port: number }>;
   stop(): Promise<void>;
@@ -188,22 +191,27 @@ export async function joinRoster(
   const joined: string[] = [];
   const failed: string[] = [];
   for (const member of members) {
-    if (member.orca_node_id === orcaNode.orcaNodeId || !member.endpoint) continue;
-    try {
-      await orcaNode.join(member.endpoint);
-      joined.push(member.orca_node_id);
-    } catch {
-      failed.push(member.orca_node_id);
+    if (member.orca_node_id === orcaNode.orcaNodeId || member.endpoints.length === 0) continue;
+    let ok = false;
+    for (const endpoint of member.endpoints) {
+      try {
+        await orcaNode.join(endpoint);
+        ok = true;
+        break;
+      } catch {
+        // Try the peer's next advertised URL (IPv6 unreachable, LAN vs public…).
+      }
     }
+    (ok ? joined : failed).push(member.orca_node_id);
   }
   return { joined, failed };
 }
 
-/** Address a remote orca node should dial: wildcard binds are reachable on loopback. */
-function endpointFrom(config: OrcaNodeConfig, port: number): string {
-  if (config.endpoint) return config.endpoint;
+/** Addresses a remote orca node should dial: explicit list, else derived from bind. */
+function endpointsFrom(config: OrcaNodeConfig, port: number): string[] {
+  if (config.endpoints.length > 0) return config.endpoints;
   const host = config.bind.host === "0.0.0.0" || config.bind.host === "::" ? "127.0.0.1" : config.bind.host;
-  return `http://${host}:${port}`;
+  return [`http://${host}:${port}`];
 }
 
 export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
@@ -255,13 +263,13 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   });
 
   let boundPort = config.bind.port;
-  let actualEndpoint = endpointFrom(config, boundPort);
+  let actualEndpoints = endpointsFrom(config, boundPort);
 
   const gatewayOrcaNode: GatewayOrcaNodeInfo = {
     orca_node_id: orcaNodeId,
     display_name: config.display_name,
     workgroup_id: config.workgroup_id,
-    endpoint: actualEndpoint,
+    endpoints: actualEndpoints,
     max_task_ttl_s: maxTaskTtlS,
     linkChildTask,
   };
@@ -280,7 +288,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return {
       orca_node_id: orcaNodeId,
       display_name: config.display_name,
-      endpoint: actualEndpoint,
+      endpoints: actualEndpoints,
       runtime,
       runtime_digest: runtimeDigest(runtime),
       state: "online",
@@ -341,7 +349,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       workgroup_id: config.workgroup_id,
       orca_node_id: orcaNodeId,
       display_name: config.display_name,
-      endpoint: actualEndpoint,
+      endpoints: actualEndpoints,
       runtime,
       max_task_ttl_s: maxTaskTtlS,
     });
@@ -360,7 +368,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     );
   }
 
-  async function heartbeat(peerUrl: string): Promise<HeartbeatResponse> {
+  /** `observeFailure: false` lets the caller count one failure per peer, not per URL. */
+  async function heartbeat(peerUrl: string, observeFailure = true): Promise<HeartbeatResponse> {
     const peer = membership.findByEndpoint(peerUrl);
     try {
       let response: HeartbeatResponse;
@@ -377,7 +386,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       if (response.members) membership.mergeRemote(response.members);
       return response;
     } catch (error) {
-      if (peer) membership.observeOutboundFail(peer.orca_node_id);
+      if (observeFailure && peer) membership.observeOutboundFail(peer.orca_node_id);
       throw error;
     }
   }
@@ -599,28 +608,50 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   };
   const candidateVerdicts = new Map<string, boolean>();
   const warnedCandidates = new Set<string>();
+  /** Last endpoint that worked per peer, tried first on the next round. */
+  const preferredEndpoints = new Map<string, string>();
 
   /** DNS lookups are not free, so each endpoint is judged once per process. */
-  async function candidateAllowed(peer: PeerView): Promise<boolean> {
-    const cached = candidateVerdicts.get(peer.endpoint);
+  async function endpointAllowed(peer: PeerView, endpoint: string): Promise<boolean> {
+    const cached = candidateVerdicts.get(endpoint);
     if (cached !== undefined) return cached;
-    const allowed = await candidateEndpointAllowed(peer.endpoint, candidatePolicy);
-    candidateVerdicts.set(peer.endpoint, allowed);
+    const allowed = await candidateEndpointAllowed(endpoint, candidatePolicy);
+    candidateVerdicts.set(endpoint, allowed);
     if (!allowed && !warnedCandidates.has(peer.orca_node_id)) {
       warnedCandidates.add(peer.orca_node_id);
-      console.warn(`orca-pod: refusing candidate endpoint ${peer.endpoint} from ${peer.orca_node_id} (§7.7)`);
+      console.warn(`orca-pod: refusing candidate endpoint ${endpoint} from ${peer.orca_node_id} (§7.7)`);
     }
     return allowed;
   }
 
-  async function dialableCandidates(peers: PeerView[]): Promise<PeerView[]> {
-    const allowed: PeerView[] = [];
-    for (const peer of peers) {
-      if (membership.originOf(peer.orca_node_id) !== "candidate" || (await candidateAllowed(peer))) {
-        allowed.push(peer);
+  /** Dialable URLs for one peer: screened if it came from a remote list, last good first. */
+  async function dialEndpoints(peer: PeerView): Promise<string[]> {
+    const candidate = membership.originOf(peer.orca_node_id) === "candidate";
+    const allowed: string[] = [];
+    for (const endpoint of peer.endpoints) {
+      if (!candidate || (await endpointAllowed(peer, endpoint))) allowed.push(endpoint);
+    }
+    const preferred = preferredEndpoints.get(peer.orca_node_id);
+    if (preferred === undefined || !allowed.includes(preferred)) return allowed;
+    return [preferred, ...allowed.filter((endpoint) => endpoint !== preferred)];
+  }
+
+  /**
+   * Heartbeat one peer by trying its advertised URLs in order (IPv4/IPv6, LAN,
+   * public): a single unreachable URL must not mark the peer offline (§7.7).
+   */
+  async function heartbeatPeer(peer: PeerView): Promise<void> {
+    const endpoints = await dialEndpoints(peer);
+    for (const endpoint of endpoints) {
+      try {
+        await heartbeat(endpoint, false);
+        preferredEndpoints.set(peer.orca_node_id, endpoint);
+        return;
+      } catch {
+        // Try the peer's next advertised URL.
       }
     }
-    return allowed;
+    membership.observeOutboundFail(peer.orca_node_id);
   }
 
   async function heartbeatTick(): Promise<void> {
@@ -629,9 +660,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const now = membership.now();
     const targets = membership
       .list()
-      .filter((peer) => peer.endpoint && membership.needsProbe(peer.orca_node_id, now));
-    const dialable = await dialableCandidates(targets);
-    await Promise.allSettled(dialable.map((peer) => heartbeat(peer.endpoint)));
+      .filter((peer) => peer.endpoints.length > 0 && membership.needsProbe(peer.orca_node_id, now));
+    await Promise.allSettled(targets.map((peer) => heartbeatPeer(peer)));
     scheduleHeartbeat();
   }
 
@@ -645,11 +675,11 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     childLinkStopped = false;
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });
     boundPort = Number(new URL(address).port);
-    actualEndpoint = endpointFrom(config, boundPort);
-    gatewayOrcaNode.endpoint = actualEndpoint;
+    actualEndpoints = endpointsFrom(config, boundPort);
+    gatewayOrcaNode.endpoints = actualEndpoints;
     heartbeatStopped = false;
     void heartbeatTick();
-    return { url: actualEndpoint, port: boundPort };
+    return { url: actualEndpoints[0] ?? address, port: boundPort };
   }
 
   async function stop(): Promise<void> {
@@ -678,8 +708,11 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     get config(): OrcaNodeConfig {
       return config;
     },
+    get endpoints(): string[] {
+      return [...actualEndpoints];
+    },
     get endpoint(): string {
-      return actualEndpoint;
+      return actualEndpoints[0] ?? "";
     },
     start,
     stop,

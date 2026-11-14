@@ -64,9 +64,9 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 | **workgroup_id** | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。 |
 | **orca_node_id** | 6 字符短 id，orca node 的显示标签；同一 workgroup 内唯一，非安全主体。 |
 | **Peer** | 同一 workgroup 内、本 orca node 已知的另一个 orca node。 |
-| **SelfRecord** | orca node 对自己的描述（endpoint、runtime、工作区用量、忙闲），只能由本人写。 |
+| **SelfRecord** | orca node 对自己的描述（`endpoints`、runtime、工作区用量、忙闲），只能由本人写。 |
 | **members_digest** | 排序后的成员记录摘要，用于“我落后了没有”的比对，不表达在线状态。 |
-| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(orca_node_id, endpoint)`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。 |
+| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(orca_node_id, endpoints[])`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。 |
 | **tombstone** | 本地的“别再试它”标记，带过期时间；不传播。 |
 | **workspace** | orca node 上自动分配的持久目录，跨任务、跨 session 保留上下文。 |
 | **group workspace** | 就是上面那个 `workspace`；本文有时强调“单 orca node 一份”时这么叫。 |

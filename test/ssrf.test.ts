@@ -8,7 +8,7 @@ function peer(orcaNodeId: string, endpoint: string): PeerView {
   return {
     orca_node_id: orcaNodeId,
     display_name: orcaNodeId,
-    endpoint,
+    endpoints: [endpoint],
     runtime: null,
     runtime_digest: "",
     state: "unknown",

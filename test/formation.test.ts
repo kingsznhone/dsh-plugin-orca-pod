@@ -194,7 +194,7 @@ describe("mesh formation", () => {
 
         await waitFor(() =>
           a.members().some(
-            (peer) => peer.orca_node_id === restarted.orcaNodeId && peer.state === "online" && peer.endpoint === restarted.endpoint,
+            (peer) => peer.orca_node_id === restarted.orcaNodeId && peer.state === "online" && peer.endpoints.includes(restarted.endpoint),
           ),
         );
         expect(a.members().filter((peer) => peer.orca_node_id === restarted.orcaNodeId)).toHaveLength(1);

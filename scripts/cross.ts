@@ -55,7 +55,7 @@ async function serve(args: Args): Promise<void> {
     displayName: args.get("name") ?? `host-${process.pid}`,
     host: args.get("host") ?? "0.0.0.0",
     port: Number(args.get("port") ?? 11811),
-    endpoint: args.get("endpoint") ?? null,
+    endpoints: args.get("endpoint") === null ? [] : [args.get("endpoint") as string],
   });
   if (!exists) await saveConfig(configFile, config);
   const orcaNode = createOrcaNode({ config });
@@ -74,18 +74,19 @@ async function join(args: Args): Promise<void> {
     displayName: args.get("name") ?? `guest-${process.pid}`,
     host: "0.0.0.0",
     port: Number(args.get("port") ?? 0),
-    endpoint: args.get("endpoint") ?? null,
+    endpoints: args.get("endpoint") === null ? [] : [args.get("endpoint") as string],
   });
   const orcaNode = createOrcaNode({ config });
   const { url } = await orcaNode.start();
   const response = await orcaNode.join(peer);
   console.log(`joined ${peer} as ${orcaNode.orcaNodeId} on ${url}`);
-  console.log(`members=${response.members.map((member) => `${member.orca_node_id}@${member.endpoint}`).join(",")}`);
+  console.log(`members=${response.members.map((member) => `${member.orca_node_id}@${member.endpoints[0] ?? "-"}`).join(",")}`);
   console.log(`digest=${response.members_digest}`);
   for (const member of orcaNode.members()) {
-    if (member.endpoint && member.endpoint !== orcaNode.endpoint) {
-      await orcaNode.heartbeat(member.endpoint).catch((error: unknown) => {
-        console.log(`heartbeat ${member.endpoint} failed: ${String(error)}`);
+    const [memberEndpoint] = member.endpoints;
+    if (memberEndpoint && memberEndpoint !== orcaNode.endpoint) {
+      await orcaNode.heartbeat(memberEndpoint).catch((error: unknown) => {
+        console.log(`heartbeat ${memberEndpoint} failed: ${String(error)}`);
       });
     }
   }

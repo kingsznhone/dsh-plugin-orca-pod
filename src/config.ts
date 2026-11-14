@@ -7,6 +7,7 @@ import {
   generateOrcaNodeId,
   isPermissionMode,
   isWorkgroupId,
+  normalizeEndpoints,
   type OrcaNodeId,
   type PermissionMode,
   type WorkgroupId,
@@ -49,7 +50,8 @@ export type OrcaNodeConfig = {
   orca_node_id: OrcaNodeId;
   display_name: string;
   workgroup_id: WorkgroupId;
-  endpoint: string | null;
+  /** Advertised dial URLs, best first; empty means derive from bind (§3.2). */
+  endpoints: string[];
   bind: BindConfig;
   data_root: string;
   key_base64: string;
@@ -83,7 +85,8 @@ export type CreateOrcaNodeConfigOptions = {
   port?: number;
   displayName?: string;
   orcaNodeId?: OrcaNodeId;
-  endpoint?: string | null;
+  /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); empty derives from bind. */
+  endpoints?: string[];
   executor?: ExecutorKind;
   headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
@@ -107,15 +110,15 @@ export function configPath(dataRoot: string): string {
 
 /**
  * Config to persist after `serve` learns its listen URL, or null when nothing
- * changes. An explicit `endpoint` (public URL behind a reverse proxy) always
- * wins over the listen address; only a null endpoint is learned, and a
- * `port: 0` bind still needs its real port written back.
+ * changes. Explicitly configured endpoints (public/LAN URLs) always win over
+ * the listen address; only an empty list is learned, and a `port: 0` bind still
+ * needs its real port written back.
  */
 export function endpointWriteback(config: OrcaNodeConfig, listenUrl: string): OrcaNodeConfig | null {
   const learned = Number(new URL(listenUrl).port);
   const port = Number.isInteger(learned) && learned > 0 ? learned : config.bind.port;
-  if (config.endpoint === null) {
-    return { ...config, endpoint: listenUrl, bind: { ...config.bind, port } };
+  if (config.endpoints.length === 0) {
+    return { ...config, endpoints: [listenUrl], bind: { ...config.bind, port } };
   }
   if (config.bind.port === 0 && port !== config.bind.port) {
     return { ...config, bind: { ...config.bind, port } };
@@ -150,11 +153,17 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     }
   }
   const key = deriveWorkgroupKey(options.workgroupId, options.password);
+  const requestedEndpoints = options.endpoints ?? [];
+  const normalized = normalizeEndpoints(requestedEndpoints);
+  if (normalized === null && requestedEndpoints.length > 0) {
+    throw new Error("endpoints must be 1-8 http(s) URLs");
+  }
+  const endpoints = normalized ?? [];
   return {
     orca_node_id: options.orcaNodeId ?? generateOrcaNodeId(),
     display_name: options.displayName ?? `orca-${generateOrcaNodeId()}`,
     workgroup_id: options.workgroupId,
-    endpoint: options.endpoint ?? null,
+    endpoints,
     bind: { host: options.host ?? "127.0.0.1", port: options.port ?? DEFAULT_PORT },
     data_root: options.dataRoot ?? defaultDataRoot(),
     key_base64: key.toString("base64"),
@@ -274,11 +283,18 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   const bind = record["bind"];
   if (typeof bind !== "object" || bind === null) throw new Error("config.bind must be an object");
   const bindRecord = bind as Record<string, unknown>;
+  const rawEndpoints = record["endpoints"] ?? record["endpoint"];
+  const normalizedEndpoints = normalizeEndpoints(rawEndpoints ?? []);
+  const emptyEndpoints = Array.isArray(rawEndpoints) && rawEndpoints.length === 0;
+  if (normalizedEndpoints === null && rawEndpoints !== undefined && !emptyEndpoints) {
+    throw new Error("config.endpoints must be 1-8 http(s) URLs");
+  }
+  const endpoints = normalizedEndpoints ?? [];
   const config: OrcaNodeConfig = {
     orca_node_id: String(record["orca_node_id"] ?? ""),
     display_name: String(record["display_name"] ?? ""),
     workgroup_id: String(record["workgroup_id"] ?? ""),
-    endpoint: typeof record["endpoint"] === "string" ? record["endpoint"] : null,
+    endpoints,
     bind: {
       host: String(bindRecord["host"] ?? "127.0.0.1"),
       port: Number(bindRecord["port"] ?? DEFAULT_PORT),

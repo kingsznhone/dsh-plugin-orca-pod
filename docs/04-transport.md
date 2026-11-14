@@ -47,10 +47,20 @@
 | SSE | 关闭响应缓冲（Caddy 默认 `flush_interval -1`；nginx `proxy_buffering off`、`X-Accel-Buffering: no`）；读超时 ≥ 心跳间隔 × 3 |
 | 心跳路径 | 不要给 `/cluster/heartbeat` 加缓存；代理层保持 keep-alive 到上游 |
 | 转发头 | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`/cluster/child-link` 带任何转发头直接拒绝 |
-| 对端地址 | 节点互通靠 **join 请求体里自报的 `endpoint`**，不靠来源 IP：反代部署必须把 `endpoint` 配成公网 URL（`https://a.example.com`），否则对端会记下 loopback 地址、心跳发不过来；`serve` 不会覆盖显式配置的 `endpoint` |
+| 对端地址 | 节点互通靠 **join 请求体里自报的 `endpoints`**（有序列表，可含 IPv6/IPv4、局域网与公网地址），不靠来源 IP：反代部署必须把公网 URL 配进 `endpoints`，否则对端会记下 loopback 地址、心跳发不过来；`serve` 不会覆盖显式配置；对端按顺序逐个尝试，一个地址不可达不代表 orca node 离线 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权 |
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的 |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放 |
+
+`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、blob 直链、CLI 展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
+
+```json
+{
+  "endpoints": ["http://[fd00::11]:11811", "http://192.168.1.11:11811", "https://desk.example.com"]
+}
+```
+
+对端 join 时拿到整张列表，此后每次心跳按顺序逐个尝试：任何一跳成功即视为可达，并记住成功的地址下一轮排到最前；全部失败才计一次心跳失败——单个地址不可达不等于 orca node 离线。监听地址仍由 `bind` 决定，`endpoints` 只回答“别人怎么拨我”。
 
 ### 4.4 公网暴露清单
 
@@ -87,7 +97,7 @@
 }
 ```
 
-**Phase 0 实现**：当前 `url` 已指向 `<endpoint>/a2a`；网关返回 `name`、`protocol_version`、`url`、`max_task_ttl_s` 四个字段（实现用 snake_case `protocol_version`，值为 `0.1.0`），其余字段尚未实现。完整 Card 字段与 A2A schema 的对齐是后续里程碑。
+**Phase 0 实现**：当前 `url` 已指向 `<primary endpoint>/a2a`（primary = `endpoints[0]`）；网关返回 `name`、`protocol_version`、`url`、`max_task_ttl_s` 四个字段（实现用 snake_case `protocol_version`，值为 `0.1.0`），其余字段尚未实现。完整 Card 字段与 A2A schema 的对齐是后续里程碑。
 
 要求：
 

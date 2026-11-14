@@ -133,7 +133,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
 
   function profilePatch(record: PeerRecord, view: PeerView): void {
     record.view.display_name = view.display_name;
-    record.view.endpoint = view.endpoint;
+    record.view.endpoints = view.endpoints;
     record.view.runtime = view.runtime;
     record.view.runtime_digest = view.runtime_digest;
     record.view.busy = view.busy ?? null;
@@ -305,7 +305,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
 
   function findByEndpoint(endpoint: string): PeerView | null {
     for (const record of records.values()) {
-      if (record.view.endpoint === endpoint) return toView(record);
+      if (record.view.endpoints.includes(endpoint)) return toView(record);
     }
     return null;
   }

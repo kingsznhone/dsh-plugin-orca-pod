@@ -49,7 +49,8 @@ export type BusyState = {
 export type PeerView = {
   orca_node_id: OrcaNodeId;
   display_name: string;
-  endpoint: string;
+  /** Base URLs peers may dial, best first; one entry is the common case (§3.2). */
+  endpoints: string[];
   runtime: RuntimeInfo | null;
   runtime_digest: string;
   state: PeerState;
@@ -68,7 +69,7 @@ export type JoinRequest = {
   workgroup_id: WorkgroupId;
   orca_node_id: OrcaNodeId;
   display_name: string;
-  endpoint: string;
+  endpoints: string[];
   runtime: RuntimeInfo | null;
 };
 
@@ -149,9 +150,11 @@ export function runtimeDigest(runtime: RuntimeInfo | null): string {
 }
 
 export function membersDigest(
-  peers: ReadonlyArray<Pick<PeerView, "orca_node_id" | "endpoint" | "runtime_digest">>,
+  peers: ReadonlyArray<Pick<PeerView, "orca_node_id" | "endpoints" | "runtime_digest">>,
 ): string {
-  const lines = peers.map((peer) => `${peer.orca_node_id}|${peer.endpoint}|${peer.runtime_digest}`).sort();
+  const lines = peers
+    .map((peer) => `${peer.orca_node_id}|${peer.endpoints.join(",")}|${peer.runtime_digest}`)
+    .sort();
   return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
 
@@ -163,6 +166,25 @@ export function isHttpEndpoint(value: unknown): value is string {
   } catch {
     return false;
   }
+}
+
+/** Max advertised base URLs per orca node; enough for IPv4/IPv6/LAN/public. */
+export const MAX_ENDPOINTS = 8;
+
+/**
+ * Validate and normalize an advertised endpoint list: http(s) base URLs with no
+ * trailing slash, deduplicated, order preserved (first is preferred).
+ */
+export function normalizeEndpoints(value: unknown): string[] | null {
+  const input = Array.isArray(value) ? value : typeof value === "string" ? [value] : null;
+  if (input === null || input.length === 0 || input.length > MAX_ENDPOINTS) return null;
+  const endpoints: string[] = [];
+  for (const item of input) {
+    if (!isHttpEndpoint(item)) return null;
+    const endpoint = item.endsWith("/") ? item.slice(0, -1) : item;
+    if (!endpoints.includes(endpoint)) endpoints.push(endpoint);
+  }
+  return endpoints.length > 0 ? endpoints : null;
 }
 
 // ---------------------------------------------------------------------------

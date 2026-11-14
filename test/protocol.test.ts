@@ -5,7 +5,9 @@ import {
   isHttpEndpoint,
   isOrcaNodeId,
   isWorkgroupId,
+  MAX_ENDPOINTS,
   membersDigest,
+  normalizeEndpoints,
   normalizeOrcaNodeId,
   runtimeDigest,
   type PeerView,
@@ -25,10 +27,10 @@ function makeRuntime(): RuntimeInfo {
   };
 }
 
-type DigestPeer = Pick<PeerView, "orca_node_id" | "endpoint" | "runtime_digest">;
+type DigestPeer = Pick<PeerView, "orca_node_id" | "endpoints" | "runtime_digest">;
 
-function makePeer(orcaNodeId: string, endpoint: string, runtime: RuntimeInfo): DigestPeer {
-  return { orca_node_id: orcaNodeId, endpoint, runtime_digest: runtimeDigest(runtime) };
+function makePeer(orcaNodeId: string, endpoints: string[], runtime: RuntimeInfo): DigestPeer {
+  return { orca_node_id: orcaNodeId, endpoints, runtime_digest: runtimeDigest(runtime) };
 }
 
 describe("generateOrcaNodeId", () => {
@@ -151,8 +153,8 @@ describe("runtimeDigest", () => {
 
 describe("membersDigest", () => {
   const runtime = makeRuntime();
-  const alpha = makePeer("ABC123", "http://127.0.0.1:11811", runtime);
-  const beta = makePeer("XYZ789", "http://127.0.0.1:11812", runtime);
+  const alpha = makePeer("ABC123", ["http://127.0.0.1:11811"], runtime);
+  const beta = makePeer("XYZ789", ["http://127.0.0.1:11812"], runtime);
 
   it("is independent of input order", () => {
     expect(membersDigest([alpha, beta])).toBe(membersDigest([beta, alpha]));
@@ -166,7 +168,7 @@ describe("membersDigest", () => {
 
   it("changes when an endpoint changes", () => {
     expect(
-      membersDigest([{ ...alpha, endpoint: "http://127.0.0.1:11813" }, beta]),
+      membersDigest([{ ...alpha, endpoints: ["http://127.0.0.1:11813"] }, beta]),
     ).not.toBe(membersDigest([alpha, beta]));
   });
 
@@ -203,5 +205,27 @@ describe("isHttpEndpoint", () => {
     expect(isHttpEndpoint(42)).toBe(false);
     expect(isHttpEndpoint(null)).toBe(false);
     expect(isHttpEndpoint(undefined)).toBe(false);
+  });
+});
+
+describe("normalizeEndpoints", () => {
+  it("accepts a list and a single string, preserving order", () => {
+    expect(normalizeEndpoints(["http://a:1", "http://b:2"])).toEqual(["http://a:1", "http://b:2"]);
+    expect(normalizeEndpoints("http://a:1")).toEqual(["http://a:1"]);
+  });
+
+  it("strips one trailing slash and deduplicates", () => {
+    expect(normalizeEndpoints(["http://a:1/", "http://a:1", "http://b:2/"])).toEqual([
+      "http://a:1",
+      "http://b:2",
+    ]);
+  });
+
+  it("rejects empty, malformed and oversized lists", () => {
+    expect(normalizeEndpoints([])).toBeNull();
+    expect(normalizeEndpoints(undefined)).toBeNull();
+    expect(normalizeEndpoints(["ftp://a:1"])).toBeNull();
+    expect(normalizeEndpoints(["http://a:1", "nope"])).toBeNull();
+    expect(normalizeEndpoints(Array.from({ length: MAX_ENDPOINTS + 1 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
   });
 });

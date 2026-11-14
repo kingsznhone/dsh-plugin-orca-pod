@@ -93,7 +93,7 @@ function peerSummary(peer: PeerView): Record<string, unknown> {
   return {
     orca_node_id: peer.orca_node_id,
     display_name: peer.display_name,
-    endpoint: peer.endpoint,
+    endpoints: peer.endpoints,
     state: peer.state,
   }
 }

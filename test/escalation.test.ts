@@ -142,7 +142,7 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
 
   it("escalates from `orca-node wait --local-task` without a separate escalate call", async () => {
     const { a, b, c, parentId, childId } = await scenario();
-    await saveConfig(configPath(b.config.data_root), { ...b.config, endpoint: b.endpoint });
+    await saveConfig(configPath(b.config.data_root), { ...b.config, endpoints: [b.endpoint] });
     const run = promisify(execFile);
     const cli = join(import.meta.dirname, "..", "src", "cli.ts");
     const waiting = run(process.execPath, [

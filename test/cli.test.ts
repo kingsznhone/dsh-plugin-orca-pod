@@ -53,7 +53,7 @@ describe("orca-node CLI", () => {
     node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     endpoint = (await node.start()).url;
     // `serve` records the listen address; tests start the node in-process, so do it here.
-    await saveConfig(configPath(root), { ...config, endpoint });
+    await saveConfig(configPath(root), { ...config, endpoints: [endpoint] });
   });
 
   afterAll(async () => {

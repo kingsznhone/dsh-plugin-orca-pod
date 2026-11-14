@@ -115,7 +115,7 @@ function normalizePeer(peer: string): string {
 }
 
 function localEndpoint(config: OrcaNodeConfig): string {
-  return config.endpoint ?? `http://${config.bind.host}:${config.bind.port}`;
+  return config.endpoints[0] ?? `http://${config.bind.host}:${config.bind.port}`;
 }
 
 /**
@@ -380,9 +380,9 @@ async function publish(args: string[]): Promise<number> {
   const expiresAtMs = Date.now() + 24 * 3600 * 1000;
   const exp = String(Math.floor(expiresAtMs / 1000));
   const sig = blobLinkSignature(workgroupKey(config), blob.blob_id, exp);
-  const base = config.endpoint ?? (config.bind.port > 0 ? localEndpoint(config) : null);
+  const base = config.endpoints[0] ?? (config.bind.port > 0 ? localEndpoint(config) : null);
   if (base === null) {
-    throw new Error("publish needs a known endpoint: set `endpoint` in the config or run `orca-node serve` once");
+    throw new Error("publish needs a known endpoint: set `endpoints` in the config or run `orca-node serve` once");
   }
   const result = {
     blob_id: blob.blob_id,
@@ -538,7 +538,7 @@ async function members(args: string[]): Promise<number> {
   process.stdout.write(`members ${response.members.length} digest ${response.members_digest.slice(0, 12)}\n`);
   for (const peerView of response.members) {
     const marker = peerView.orca_node_id === self ? "*" : " ";
-    process.stdout.write(`${marker} ${peerView.orca_node_id}\t${peerView.endpoint ?? "-"}\t${peerView.state}\t${peerView.display_name}\n`);
+    process.stdout.write(`${marker} ${peerView.orca_node_id}\t${peerView.endpoints.join(",") || "-"}\t${peerView.state}\t${peerView.display_name}\n`);
   }
   return 0;
 }

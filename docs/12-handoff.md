@@ -40,7 +40,8 @@ Hard constraints that must not be undone:
   published-root concept. One task at a time per orca node (single slot), otherwise
   429 orca_node_busy with retry_after and holder; the calling model decides whether
   to retry, switch orca node, or report back to the user. No server-side queue.
-  One endpoint per orca node. Absolute paths from origin are rejected.
+  Endpoints are an ordered list (1-8, primary first); peers dial them in order.
+  Absolute paths from origin are rejected.
 - Tasks are never forwarded: a child task is a new task an agent creates
   explicitly (CLI or plugin tool). The gateway, not the agent, decides
   hop/chain/root; there is no depth limit (a workgroup is a few machines) and the

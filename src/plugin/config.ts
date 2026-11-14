@@ -30,8 +30,8 @@ export interface Config {
   display_name?: string
   /** Local listen port; defaults to 11811 (0 picks a free port). */
   port: number
-  /** Public endpoint advertised to peers; defaults to `http://<host>:<port>`. */
-  endpoint?: string
+  /** Advertised dial URLs, best first; defaults to `http://<host>:<port>`. */
+  endpoints?: string[]
   /** Directory for the persisted orca node config; defaults to `defaultDataRoot()`. */
   data_root?: string
   /**
@@ -115,13 +115,21 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
-  let endpoint: string | undefined
-  const endpointRaw = value["endpoint"]
-  if (endpointRaw !== undefined) {
-    if (typeof endpointRaw !== "string" || !isHttpEndpoint(endpointRaw.trim())) {
-      issues.push({ path: ["endpoint"], message: "must be an http(s) URL" })
+  let endpoints: string[] | undefined
+  const endpointsRaw = value["endpoints"] ?? value["endpoint"]
+  if (endpointsRaw !== undefined) {
+    const list = typeof endpointsRaw === "string" ? [endpointsRaw] : endpointsRaw
+    if (!Array.isArray(list) || list.length === 0) {
+      issues.push({ path: ["endpoints"], message: "must be a non-empty array of http(s) URLs" })
     } else {
-      endpoint = endpointRaw.trim()
+      endpoints = []
+      list.forEach((candidate, index) => {
+        if (typeof candidate !== "string" || !isHttpEndpoint(candidate.trim())) {
+          issues.push({ path: ["endpoints", index], message: "must be an http(s) URL" })
+        } else {
+          endpoints!.push(candidate.trim())
+        }
+      })
     }
   }
 
@@ -165,7 +173,7 @@ export function validateConfigInput(value: unknown): Config {
 
   const config: Config = { workgroup_id, workgroup_password, port, skill_injection, peers }
   if (display_name !== undefined) config.display_name = display_name
-  if (endpoint !== undefined) config.endpoint = endpoint
+  if (endpoints !== undefined) config.endpoints = endpoints
   if (data_root !== undefined) config.data_root = data_root
   return config
 }
