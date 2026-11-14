@@ -1,10 +1,12 @@
+import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
+import { configPath, createOrcaNodeConfig, saveConfig } from "../src/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol.ts";
 
@@ -138,6 +140,37 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
 
     const childDenied = await waitForState(c, c.endpoint, childId, "failed");
     expect(childDenied.status.reason).toBe("permission_denied");
+  });
+
+  it("escalates from `orca-node wait --local-task` without a separate escalate call", async () => {
+    const { a, b, c, parentId, childId } = await scenario();
+    await saveConfig(configPath(b.config.data_root), { ...b.config, endpoint: b.endpoint });
+    const run = promisify(execFile);
+    const cli = join(import.meta.dirname, "..", "src", "cli.ts");
+    const waiting = run(process.execPath, [
+      cli,
+      "wait",
+      "--data-root",
+      b.config.data_root,
+      "--peer",
+      c.endpoint,
+      "--task",
+      childId,
+      "--local-task",
+      parentId,
+      "--timeout",
+      "20",
+      "--json",
+    ]);
+    waiting.catch(() => undefined);
+
+    const parked = await waitForState(b, b.endpoint, parentId, "input-required");
+    expect(permissionRequestOf(parked)?.requested_by).toBe(b.orcaNodeId);
+
+    await a.approveTask(b.endpoint, parked);
+    const { stdout } = await waiting;
+    const view = JSON.parse(stdout) as TaskView;
+    expect(view.status.state).toBe("completed");
   });
 
   it("rejects escalation for a task that is not running", async () => {

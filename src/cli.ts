@@ -14,7 +14,7 @@ Usage:
   orca-node serve   --config <path>                     start an orca node from a config file
   orca-node send    --peer <url> --text <text|-> [--context <id>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
-  orca-node wait    --peer <url> --task <id> [--timeout <seconds>] [--json]
+  orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
   orca-node members [--peer <url>] [--json]
   orca-node --help                                      show this help
@@ -25,6 +25,8 @@ Common options:
 
 Exit codes (wait):
   0 completed    1 failed/canceled    2 still running    3 input-required
+  With --local-task, a child permission request is escalated to this task's origin
+  automatically; wait keeps going after the decision (3 only if it cannot escalate).
 
 Exit codes (escalate):
   0 approved and this task is working again    1 denied/failed    2 timed out
@@ -212,21 +214,67 @@ async function status(args: string[]): Promise<number> {
   return 0;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Push a child's pending permission request up to the origin of `localTask`
+ * (§7.12). Resolves once the local task leaves `input-required`.
+ */
+async function escalateToOrigin(
+  config: OrcaNodeConfig,
+  childPeer: string,
+  childTask: string,
+  localTask: string,
+  timeoutS: number,
+): Promise<{ state: string; view: TaskView }> {
+  const child = await a2a<TaskView>(config, childPeer, "tasks/get", { id: childTask });
+  const request = permissionRequestOf(child);
+  if (request === null) throw new Error(`task ${childTask} on ${childPeer} is not waiting for permission`);
+  const relay: TaskRelay = { peer: normalizePeer(childPeer), task_id: childTask, request };
+  const local = localEndpoint(config);
+  let view = await a2a<TaskView>(config, local, "tasks/escalate", { taskId: localTask, relay });
+  const deadline = Date.now() + timeoutS * 1000;
+  while (view.status.state === "input-required") {
+    if (Date.now() >= deadline) return { state: view.status.state, view };
+    await sleep(500);
+    view = await a2a<TaskView>(config, local, "tasks/get", { id: localTask });
+  }
+  return { state: view.status.state, view };
+}
+
 async function wait(args: string[]): Promise<number> {
   const flags = parseFlags(args);
   const config = await loadNodeConfig(flags);
   const peer = requireFlag(flags, "peer");
   const task = requireFlag(flags, "task");
+  const localTask = flag(flags, "local-task");
   const timeoutS = Number(flag(flags, "timeout") ?? "30");
   if (!Number.isFinite(timeoutS) || timeoutS <= 0) throw new Error("--timeout must be a positive number of seconds");
   const deadline = Date.now() + timeoutS * 1000;
+  const escalated = new Set<string>();
   let view = await a2a<TaskView>(config, peer, "tasks/get", { id: task });
-  while (!TERMINAL.has(view.status.state) && view.status.state !== "input-required") {
+  for (;;) {
+    if (TERMINAL.has(view.status.state)) break;
+    if (view.status.state === "input-required") {
+      const request = permissionRequestOf(view);
+      if (request === null || localTask === undefined) break;
+      if (!escalated.has(request.request_id)) {
+        escalated.add(request.request_id);
+        const seconds = Math.max(1, Math.round((deadline - Date.now()) / 1000));
+        const outcome = await escalateToOrigin(config, peer, task, localTask, seconds);
+        if (outcome.state === "input-required") {
+          printView(view, wantsJson(flags));
+          return 2;
+        }
+        view = await a2a<TaskView>(config, peer, "tasks/get", { id: task });
+        continue;
+      }
+    }
     if (Date.now() >= deadline) {
       printView(view, wantsJson(flags));
       return 2;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await sleep(500);
     view = await a2a<TaskView>(config, peer, "tasks/get", { id: task });
   }
   printView(view, wantsJson(flags));
@@ -244,25 +292,10 @@ async function escalate(args: string[]): Promise<number> {
   const timeoutS = Number(flag(flags, "timeout") ?? "120");
   if (!Number.isFinite(timeoutS) || timeoutS <= 0) throw new Error("--timeout must be a positive number of seconds");
 
-  const child = await a2a<TaskView>(config, peer, "tasks/get", { id: childTask });
-  const request = permissionRequestOf(child);
-  if (request === null) throw new Error(`task ${childTask} on ${peer} is not waiting for permission`);
-  const relay: TaskRelay = { peer: normalizePeer(peer), task_id: childTask, request };
-
-  const local = localEndpoint(config);
-  let view = await a2a<TaskView>(config, local, "tasks/escalate", { taskId: localTask, relay });
-  const deadline = Date.now() + timeoutS * 1000;
-  while (view.status.state === "input-required") {
-    if (Date.now() >= deadline) {
-      printView(view, wantsJson(flags));
-      return 2;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    view = await a2a<TaskView>(config, local, "tasks/get", { id: localTask });
-  }
-  printView(view, wantsJson(flags));
-  if (view.status.state === "working" || view.status.state === "completed") return 0;
-  return 1;
+  const outcome = await escalateToOrigin(config, peer, childTask, localTask, timeoutS);
+  printView(outcome.view, wantsJson(flags));
+  if (outcome.state === "working" || outcome.state === "completed") return 0;
+  return outcome.state === "input-required" ? 2 : 1;
 }
 
 async function members(args: string[]): Promise<number> {

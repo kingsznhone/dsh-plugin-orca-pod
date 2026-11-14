@@ -100,7 +100,8 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 echo "compile and run the tests" | orca-node send --peer 192.168.86.252:11811 --text - --json
 
 # 等结果：0 completed / 1 failed|canceled / 2 仍在跑 / 3 需要权限
-orca-node wait --peer 192.168.86.252:11811 --task <id> --timeout 60 --json
+# --local-task 让 wait 在子任务要权限时自动 escalate 到本 task 的 origin
+orca-node wait --peer 192.168.86.252:11811 --task <id> --local-task <this task> --timeout 60 --json
 
 orca-node status --peer 192.168.86.252:11811 --task <id> --json
 orca-node members --json

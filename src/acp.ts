@@ -34,10 +34,10 @@ function promptWithPreamble(input: ExecuteInput, dataRoot: string | undefined, t
     `[orca-pod] You are executing task ${input.taskId}${who}.`,
     `To delegate to another orca node, use the CLI instead of raw HTTP:`,
     `  ${cli} send${rootFlag} --peer <host:port> --text - --json`,
-    `Check it with: ${cli} wait${rootFlag} --peer <host:port> --task <id> --json`,
+    `Check it with: ${cli} wait${rootFlag} --peer <host:port> --task <id> --local-task ${input.taskId} --json`,
     `  (exit 0 completed, 1 failed/canceled, 2 still running, 3 needs permission)`,
-    `If wait exits 3, escalate the child's request to your origin with:`,
-    `  ${cli} escalate${rootFlag} --peer <child:port> --task <child task id> --local-task ${input.taskId} --json`,
+    `With --local-task, wait pushes a child permission request up to this task's origin`,
+    `automatically; if you need to retry it by hand: ${cli} escalate${rootFlag} --peer <child:port> --task <child task id> --local-task ${input.taskId} --json`,
     "",
     text,
   ].join("\n");
