@@ -98,6 +98,8 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 - 允许 RFC1918、`100.64/10`、`fd00::/8`；公网地址需要 `allow_public_peers: true`；
 - 探测失败按 `recover_probe`（15s→30s）退避；候选探测单独计数，防止被当作端口扫描器。
 
+**实现状态**：SSRF 过滤尚未实现。当前 join/心跳只使用显式配置的端点与目录返回的端点，没有“候选端点”标记，因此上面的 IP 段清单还没有落到拨号前检查；本地回环在测试与同机多 orca node 场景中是合法目标。等引入候选标记后按本清单在 `heartbeat`/`joinRoster` 拨号前过滤。
+
 ### 7.8 审计
 
 - 落盘 JSONL，按天轮转；字段：`ts, actor_node, action, target, result, task_id, grant_id`；

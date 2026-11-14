@@ -14,7 +14,7 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 178 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 10、skill 3、approval 12、chain 13、headless 7、acp 7、cli 8、escalation 4、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 182 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 10、skill 3、approval 12、chain 13、headless 7、acp 7、cli 8、escalation 4、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（5 个非阻塞工具 + 后台 tracker/inject/followup）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`；权限、工作区与 session 已在 Phase 2/3 落地。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
@@ -47,7 +47,7 @@
 **Phase 2 进展**
 
 - 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用），并在 Windows 本机用真实 `dsh` + 模型凭据跑通（`scripts/e2e-headless.ts`：两任务 `completed`，第二个复用 session）；`AcpExecutor`（[§6.15](06-execution.md#615-acpexecutorphase-23-长任务执行器)，`dsh --profile acp` stdio、`session/update`→文本、`session/request_permission`→`input-required`、grant 回 allow-once、`session/cancel` 取消、session 复用与重启 `session/resume`）；`orca-node` CLI（`send`/`status`/`wait`/`members`，签名打本机或对端 `/a2a`，`--json`、`--text -` 读 stdin、退出码 0/1/2/3）与 AcpExecutor 的 prompt preamble（把 CLI 绝对路径、task id 与用法注入 ACP 会话，agent 用自带 shell 调用），ACP 会话因此不需要 MCP schema 常驻。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh）、`acp.test.ts` 7 条（假 ACP server；含一条 ACP 叶子经 relay 链升级的端到端），`cli.test.ts` 8 条（真实 HTTP + 子进程，含 `escalate` 错误路径），`escalation.test.ts` 4 条（父任务挂起、批准派生 child grant、拒绝向下传播、CLI `wait --local-task` 自动上升），`skill.test.ts` 3 条（技能内容/幂等安装/DSH_HOME 解析），`permission-mode.test.ts` 8 条（rank/取窄、`pod.permission_mode` 校验、子任务继承、headless argv、ACP 自动拒绝/允许/无模式挂起、本地上限收窄），全套 178 通过。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh）、`acp.test.ts` 7 条（假 ACP server；含一条 ACP 叶子经 relay 链升级的端到端），`cli.test.ts` 8 条（真实 HTTP + 子进程，含 `escalate` 错误路径），`escalation.test.ts` 4 条（父任务挂起、批准派生 child grant、拒绝向下传播、CLI `wait --local-task` 自动上升），`skill.test.ts` 3 条（技能内容/幂等安装/DSH_HOME 解析），`permission-mode.test.ts` 8 条（rank/取窄、`pod.permission_mode` 校验、子任务继承、headless argv、ACP 自动拒绝/允许/无模式挂起、本地上限收窄），`acceptance.test.ts` 4 条（双向断链→offline→恢复、同组成员凭 `task_id` 读结果、并发 10 请求只建 1 个 agent、旧密码被拒），全套 182 通过。
 - 未实现：`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
@@ -111,7 +111,7 @@
 #### 三台 orca node
 
 - [x] C join A 后 2s 内三向可见（C 按目录自行补全到 B 的边）
-- [ ] 拔掉 B 的网线：A 与 C 都判 offline，且不会把 B 刷回 online（目录条目只能进候选）
+- [x] 拔掉 B 的网线：A 与 C 都判 offline，且不会把 B 刷回 online（`test/acceptance.test.ts` 用可注入 fetch 模拟双向断链并恢复）
 - [ ] B 恢复后仅凭自己的心跳回到 online（无人手动清缓存）
 - [x] B 离线 7 天后记录被修剪（测试用缩短 `record_ttl` 的等价修剪）
 - [x] 目标非 online 时拒绝派发（`peer_not_online`）
@@ -127,7 +127,7 @@
 - [ ] `credential_readback=ask` 时私钥内容回传需 origin 批准
 - [ ] 绝对路径与 `..` 被拒（协议层根本不接受路径）
 - [x] orca node 忙时第二个任务返回 429 `orca_node_busy` + `Retry-After`，调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换 orca node 或向用户回报（UI 显示持有者尚未实现）
-- [ ] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举
+- [x] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举（`tasks/get` 只认 id，无列表接口）
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
 - [ ] 链式升级：A→B→C 时 C 的越界请求经 B 上升为 A 的 `input-required`（`via` 带来源、`expires_in_s` 逐跳递减、等待期间 B/C 槽位都释放），A 批准后 grant 逐跳收窄下发、C 继续；任一跳超时则整链失败且不挂住节点（第一版已做 hop/祖先校验与 child grant 派生，并有 Echo relay 原型；ACP 执行器的自动上升未实现）
@@ -160,7 +160,7 @@
 
 - [x] 无密码不能创建 workgroup
 - [ ] 密码不出现在配置、日志、错误信息中
-- [ ] 改密码后旧签名立即失效
+- [x] 改密码后旧签名立即失效（旧密码的 orca node `join` 新组的 orca node 得到 `401`）
 - [x] 重放请求（同 nonce）被拒
 - [ ] 候选端点指向 `169.254.169.254` 被拒
 
@@ -169,13 +169,13 @@
 - [ ] 45 条心跳链路稳定 24h，CPU/内存无泄漏
 - [ ] 单 orca node 故障不影响其余 orca node 任务
 - [ ] 任务延迟与 2 个 orca node 相比无数量级退化
-- [ ] 默认 `delegation` 关：构造 `pod.hop=1` 的任务被 `400 hop_limit`；目标 orca node 已在 `chain` 中被 `403 ancestor_call_forbidden`
+- [x] 默认 `delegation` 关：构造 `pod.hop=1` 的任务被 `400 hop_limit`；目标 orca node 已在 `chain` 中被 `403 ancestor_call_forbidden`（`test/chain.test.ts`）
 - [ ] 开 `max_hop=1` 后一跳子任务能跑通（子任务 `hop=1`、`chain` 追加自身、`root` 不变）；`hop=2` 被拒
 - [ ] 开 `max_hop=2` 后二跳任务能跑通（子任务 `hop=2`）；`hop=3` 被拒
-- [ ] 子任务目标集合排除 `chain` 中 orca node 与自身：B 尝试调 A → `403 ancestor_call_forbidden`，不建 task
+- [x] 子任务目标集合排除 `chain` 中 orca node 与自身：B 尝试调 A → `403 ancestor_call_forbidden`，不建 task（`test/chain.test.ts`）
 - [ ] B 卡住 → task 变 `input-required` 且 `blocked` 可读；B 的槽已释放（其他 origin 能立刻建 task）；A 回复后任务继续
 - [ ] B、C 互调：后到的一方拿到 `429 orca_node_busy` 并能把它写进 `blocked` 回报 A；不出现两边都卡到 TTL
-- [ ] origin 对同一 target 并发 10 个请求：target 只创建 1 个 agent 进程，其余 429
+- [x] origin 对同一 target 并发 10 个请求：target 只创建 1 个 agent 进程，其余 429（`test/acceptance.test.ts`）
 - [ ] 一个 origin 连续快速失败后进入退避，不出现“越失败越发”的请求上升
 
 ### 10.7 构建顺序
