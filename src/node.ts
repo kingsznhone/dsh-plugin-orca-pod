@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
+import { join } from "node:path";
 
 import { workgroupKey, type NodeConfig } from "./config.ts";
 import { buildAuthHeader, NonceCache } from "./crypto.ts";
@@ -19,8 +20,17 @@ import {
   type SubmitTaskInput,
   type TaskView,
 } from "./protocol.ts";
-import { createMemoryBlobStore, type PeerStore } from "./storage.ts";
+import { createSqliteTaskStore } from "./sqlite.ts";
+import {
+  createFsBlobStore,
+  createMemoryBlobStore,
+  DEFAULT_BLOB_TTL_MS,
+  type BlobStore,
+  type PeerStore,
+  type TaskStore,
+} from "./storage.ts";
 import { createTaskRunner } from "./tasks.ts";
+import { createWorkspaceManager, type Workspace, type WorkspaceManager } from "./workspace.ts";
 
 /**
  * Gateway dependency record. `endpoint` is mutable: the gateway is built before
@@ -55,6 +65,26 @@ export function collectRuntime(): RuntimeInfo {
   };
 }
 
+/** Durable stores and the group workspace; absent => in-memory (tests, harness). */
+export type NodeStorage = {
+  taskStore?: TaskStore;
+  blobStore?: BlobStore;
+  workspace?: WorkspaceManager;
+};
+
+/**
+ * Phase 2 defaults: SQLite task store, disk blobs and the group workspace under
+ * `<data_root>` (§5.5, §5.6, §6.7). The CLI and the DSH plugin opt in; tests do
+ * not, so they stay isolated and fast.
+ */
+export function createPersistentStorage(config: NodeConfig): NodeStorage {
+  return {
+    taskStore: createSqliteTaskStore(join(config.data_root, "tasks.db")),
+    blobStore: createFsBlobStore(join(config.data_root, "blobs"), { ttlMs: DEFAULT_BLOB_TTL_MS }),
+    workspace: createWorkspaceManager({ dataRoot: config.data_root, workgroupId: config.workgroup_id }),
+  };
+}
+
 export type CreateNodeOptions = {
   config: NodeConfig;
   runtime?: RuntimeInfo;
@@ -62,6 +92,8 @@ export type CreateNodeOptions = {
   clock?: MembershipClock;
   /** Outbound HTTP for peer calls; tests inject packet loss / delay / partitions. */
   fetch?: FetchLike;
+  /** Durable stores; omit for an in-memory node. */
+  storage?: NodeStorage;
 };
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
@@ -125,8 +157,15 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   const peers: PeerStore = membership.peers;
   const nonceCache = new NonceCache();
   const runtime = options.runtime ?? collectRuntime();
-  const blobs = createMemoryBlobStore();
-  const tasks = createTaskRunner({ executor: new EchoExecutor(), blobs });
+  const blobs = options.storage?.blobStore ?? createMemoryBlobStore();
+  const workspaceManager = options.storage?.workspace ?? null;
+  const workspace: Workspace | null = workspaceManager?.get() ?? null;
+  const tasks = createTaskRunner({
+    executor: new EchoExecutor(),
+    blobs,
+    ...(options.storage?.taskStore ? { store: options.storage.taskStore } : {}),
+    ...(workspace ? { workspace } : {}),
+  });
 
   let boundPort = config.bind.port;
   let actualEndpoint = endpointFrom(config, boundPort);
@@ -310,6 +349,9 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   }
 
   async function start(): Promise<{ url: string; port: number }> {
+    workspaceManager?.ensure();
+    blobs.gc?.();
+    tasks.recover();
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });
     boundPort = Number(new URL(address).port);
     actualEndpoint = endpointFrom(config, boundPort);
@@ -326,6 +368,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
       heartbeatTimer = null;
     }
     await app.close();
+    options.storage?.taskStore?.close?.();
   }
 
   return {

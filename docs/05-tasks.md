@@ -45,7 +45,7 @@
 origin: POST message/send（带 grant）→ { task_id }
 origin: 本地任务日志落库（state=dispatched）
 origin: 轮询 tasks/get，500ms 起，指数退避到 2s
-target: task store（Phase 0 为进程内存；SQLite 见 §5.5）推进 submitted/working/completed
+target: task store（SQLite，见 §5.5）推进 submitted/working/completed
 origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 ```
 
@@ -143,11 +143,9 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 每个节点的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个节点不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
-**Phase 0 现状**：task store 是 `tasks.ts` 进程内的内存 `Map`（`src/tasks.ts`），不落盘；进程退出或重启后 task 全部丢失，`tasks/get` 返回 `task_not_found`。peer store 与 blob store 同样是内存实现。因此当前实现只适合单次联调，不能把“任务持久化”当成已具备的能力。
+**Phase 2 现状（已实现）**：`storage.ts` 定义 `TaskStore` 接口（`save/load/list`），`sqlite.ts` 用 Node 内置 `node:sqlite` 的 `DatabaseSync` 实现：`<data_root>/tasks.db`、WAL 模式、`synchronous=NORMAL`，一条 task 记录序列化进 `tasks(task_id, payload, updated_at)`。`tasks.ts` 在每次状态变迁后写入，并在节点启动时把库里所有非终态 task 标成 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）；`tasks/get` 对不在内存的 task 回落到 SQLite，因此重启后仍可查。内存 `TaskStore` 保留给单测与 harness。尚未做：`task_events` 表、origin 侧本地任务日志、`blobs` 表（blob 元数据目前在 fs sidecar 里）。
 
-**目标设计（SQLite，后续里程碑）**
-
-字段：
+**目标字段**（当前 payload JSON 已包含其中的视图部分，`target_node/workgroup_id/session_id/grant_id` 等字段随里程碑补齐）：
 
 ```text
 task_id, context_id, origin_node, target_node,
@@ -159,10 +157,10 @@ workgroup_id, session_id, artifacts, error, reason
 持久化：
 
 - **单机 SQLite**：`<data_root>/tasks.db`，WAL 模式，`synchronous=NORMAL`；
-- 表：`tasks`（状态与元数据）、`task_events`（状态变迁与错误）、`blobs`（blob_id + size + name + refs + expires_at）；
+- 表：`tasks`（状态与元数据，已实现）、`task_events`（状态变迁与错误，未实现）、`blobs`（blob_id + size + name + refs + expires_at，未实现；当前在 fs sidecar）；
 - 一个进程独占写；不做连接池、不做服务、不共享库；
 - 备份 = 拷贝 db（WAL 下先 checkpoint）；损坏时允许丢未落盘的最近事件，不允许静默重建；
-- 内存 store 只用于协议单测（SQLite 落地后；Phase 0 它就是主存储）。
+- 内存 store 只用于协议单测与 harness。
 
 发起节点另有**本地任务日志**（同一张表的 `role=origin` 行或独立表），只记录“我派过什么、最后一次看到什么”，不与目标库对账（[§8.2](08-reliability.md#82-节点失联-任务失败不重发)）。
 
@@ -217,7 +215,7 @@ Authorization: Pod ...
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。跨节点交接产物就是传一个 id；id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新 blob。
 
-**Phase 0 实现**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现，存储是进程内存（重启即丢）；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。**未实现**：每 workgroup 5 GiB 配额、7 天 GC 与引用延期、`Content-Disposition` 文件名恢复、断点续传。
+**实现状态**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现；存储默认 fs（内容寻址目录 + sidecar 元数据 + 临时文件 rename），`gc()` 在节点启动时跑一次，默认 7 天过期；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。**未实现**：每 workgroup 5 GiB 配额、引用延期（目前只看 ttl 不看任务引用）、`Content-Disposition` 文件名恢复、断点续传。
 
 **输入**：origin 先把素材 `POST /blobs` 到 target，任务消息里带 `inputs: [{blob_id, name, media_type}]`；target 直接读本地已落盘的 blob（上传即到达），不需要回源。小于 64 KiB 的可以直接内联 `bytes`（A2A file part），省一次往返。
 

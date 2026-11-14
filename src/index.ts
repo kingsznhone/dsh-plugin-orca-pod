@@ -8,6 +8,8 @@ export * from "./protocol.ts";
 export * from "./crypto.ts";
 export * from "./config.ts";
 export * from "./storage.ts";
+export * from "./sqlite.ts";
+export * from "./workspace.ts";
 export * from "./gateway.ts";
 export * from "./membership.ts";
 export * from "./executor.ts";

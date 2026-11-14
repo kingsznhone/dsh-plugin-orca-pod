@@ -28,6 +28,9 @@ const idleTasks: TaskRunner = {
   busy() {
     return null;
   },
+  recover() {
+    return 0;
+  },
 };
 
 type Harness = {
@@ -202,6 +205,9 @@ describe("a2a busy response", () => {
       },
       busy() {
         return holder;
+      },
+      recover() {
+        return 0;
       },
     };
     const harness = createHarness(tasks);

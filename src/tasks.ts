@@ -10,12 +10,14 @@ import {
   type TaskState,
   type TaskView,
 } from "./protocol.ts";
-import type { BlobStore } from "./storage.ts";
+import { createMemoryTaskStore, type BlobStore, type TaskStore } from "./storage.ts";
+import type { Workspace } from "./workspace.ts";
 
 type Running = {
   view: TaskView;
   metadata: Record<string, unknown> | undefined;
   origin_node: string;
+  created_at: string;
   since: string;
   abort: AbortController;
   iterator: AsyncGenerator<ExecutorEvent, void, unknown> | null;
@@ -56,6 +58,10 @@ function suspendMessage(suspend: ExecutorEvent & { type: "suspend" }): A2AMessag
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
   blobs: BlobStore;
+  /** Durable store (§5.5). Defaults to memory so protocol tests stay isolated. */
+  store?: TaskStore;
+  /** Group workspace; becomes the executor cwd when present (§6.7). */
+  workspace?: Workspace;
   defaultTtlS?: number;
 };
 
@@ -65,8 +71,18 @@ export type TaskRunnerDeps = {
  */
 export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const tasks = new Map<string, Running>();
+  const store = deps.store ?? createMemoryTaskStore();
   const defaultTtlS = deps.defaultTtlS ?? 3600;
   let activeTaskId: string | null = null;
+
+  function persist(rec: Running): void {
+    store.save({
+      view: cloneView(rec.view),
+      origin_node: rec.origin_node,
+      created_at: rec.created_at,
+      updated_at: nowIso(),
+    });
+  }
 
   function releaseSlot(rec: Running): void {
     if (activeTaskId === rec.view.id) activeTaskId = null;
@@ -83,15 +99,24 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     rec.view.status = { state, timestamp: nowIso(), ...(message ? { message } : {}), ...(reason ? { reason } : {}) };
     clearTtl(rec);
     releaseSlot(rec);
+    persist(rec);
   }
 
   async function pump(rec: Running, resume?: A2AMessage): Promise<void> {
-    const iterator = rec.iterator ?? deps.executor.run(
-      { taskId: rec.view.id, contextId: rec.view.contextId, metadata: rec.metadata },
-      rec.abort.signal,
-    );
+    const iterator =
+      rec.iterator ??
+      deps.executor.run(
+        {
+          taskId: rec.view.id,
+          contextId: rec.view.contextId,
+          metadata: rec.metadata,
+          ...(deps.workspace ? { workspaceDir: deps.workspace.work } : {}),
+        },
+        rec.abort.signal,
+      );
     rec.iterator = iterator;
     rec.view.status = { state: "working", timestamp: nowIso() };
+    persist(rec);
     try {
       let step = resume === undefined ? await iterator.next() : await iterator.next(resume);
       while (!step.done) {
@@ -99,6 +124,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         if (event.type === "suspend") {
           rec.view.status = { state: "input-required", timestamp: nowIso(), message: suspendMessage(event) };
           releaseSlot(rec);
+          persist(rec);
           return;
         }
         if (event.type === "artifact") {
@@ -107,6 +133,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
             ...(rec.view.artifacts ?? []),
             { artifactId: blob.blob_id, name: event.name, mediaType: "text/plain", bytes: blob.size },
           ];
+          persist(rec);
         } else if (event.type === "completed") {
           finish(rec, "completed", textMessage(event.text));
           return;
@@ -137,23 +164,26 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     }
     const id = newTaskId();
     const contextId = input.message.contextId ?? id;
+    const createdAt = nowIso();
     const rec: Running = {
       view: {
         kind: "task",
         id,
         contextId,
-        status: { state: "submitted", timestamp: nowIso() },
+        status: { state: "submitted", timestamp: createdAt },
         metadata: input.metadata ?? {},
       },
       metadata: input.metadata,
       origin_node: input.originNode ?? "unknown",
-      since: nowIso(),
+      created_at: createdAt,
+      since: createdAt,
       abort: new AbortController(),
       iterator: null,
       ttl: null,
     };
     activeTaskId = id;
     tasks.set(id, rec);
+    persist(rec);
     const ttlS = Number(input.metadata?.["pod"] && (input.metadata["pod"] as { task_ttl_s?: number }).task_ttl_s) || defaultTtlS;
     rec.ttl = setTimeout(() => {
       if (!isTerminal(rec.view.status.state)) {
@@ -168,12 +198,17 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
 
   function get(taskId: string): TaskView | null {
     const rec = tasks.get(taskId);
-    return rec ? cloneView(rec.view) : null;
+    if (rec) return cloneView(rec.view);
+    const stored = store.load(taskId);
+    return stored ? cloneView(stored.view) : null;
   }
 
   function resume(taskId: string, message: A2AMessage): TaskView {
     const rec = tasks.get(taskId);
-    if (!rec) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+    if (!rec) {
+      if (!store.load(taskId)) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+      throw new TaskError("bad_request", "task is not input-required");
+    }
     if (rec.view.status.state !== "input-required") {
       throw new TaskError("bad_request", "task is not input-required");
     }
@@ -187,7 +222,11 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
 
   function cancel(taskId: string): TaskView {
     const rec = tasks.get(taskId);
-    if (!rec) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+    if (!rec) {
+      const stored = store.load(taskId);
+      if (!stored) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+      return cloneView(stored.view);
+    }
     if (isTerminal(rec.view.status.state)) return cloneView(rec.view);
     rec.abort.abort();
     finish(rec, "canceled", undefined, "canceled");
@@ -201,5 +240,25 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return { task_id: rec.view.id, origin_node: rec.origin_node, since: rec.since };
   }
 
-  return { submit, get, resume, cancel, busy };
+  /** §8.3: a restart never silently resumes work; every unfinished task fails. */
+  function recover(): number {
+    let count = 0;
+    for (const stored of store.list()) {
+      if (isTerminal(stored.view.status.state)) continue;
+      const message = textMessage("task was interrupted by a node restart");
+      store.save({
+        view: {
+          ...stored.view,
+          status: { state: "failed", timestamp: nowIso(), message, reason: "node_restart" },
+        },
+        origin_node: stored.origin_node,
+        created_at: stored.created_at,
+        updated_at: nowIso(),
+      });
+      count += 1;
+    }
+    return count;
+  }
+
+  return { submit, get, resume, cancel, busy, recover };
 }

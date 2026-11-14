@@ -16,8 +16,10 @@ orca-pod/（仓库根目录）
     protocol.ts       类型、错误码、node_id、成员 digest、签名规范化（零依赖）
     crypto.ts         HKDF、请求签名、nonce cache
     config.ts         配置校验、默认值、密钥派生、JSON 读写
-    storage.ts        PeerStore（+ 重导出 blobs）
-    blobs.ts          内容寻址 blob store
+    storage.ts        PeerStore / TaskStore 接口 + 内存实现（+ 重导出 blobs）
+    blobs.ts          内容寻址 blob store（内存 + fs，含 TTL GC）
+    sqlite.ts         TaskStore 的 node:sqlite 实现（WAL，单进程写）
+    workspace.ts      group 工作区目录：work/notes/inputs/.pod
     membership.ts     成员记录、心跳看门狗、墓碑与修剪
     gateway.ts        HTTP：/health、Agent Card、/cluster/*、/a2a、/blobs
     executor.ts       LocalExecutor 接口 + EchoExecutor（ACP 后续）
@@ -29,18 +31,20 @@ orca-pod/（仓库根目录）
   test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/watchdog）
 ```
 
-当前代码状态（Phase 0）：
+当前代码状态：
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
 | `protocol.ts` | 已实现 | 类型、错误码、任务视图、node_id、digest、签名规范化 |
 | `crypto.ts` | 已实现 | HKDF、请求签名、nonce cache |
 | `config.ts` | 已实现 | 配置校验、密钥派生、JSON 读写 |
-| `storage.ts` / `blobs.ts` | 部分实现 | 内存 PeerStore / BlobStore；fs、SQLite、GC 未实现 |
+| `storage.ts` / `blobs.ts` | 已实现 | PeerStore/TaskStore 接口 + 内存实现；blob 另有 fs 实现（内容寻址、临时文件+rename、TTL GC） |
+| `sqlite.ts` | 已实现 | `node:sqlite` TaskStore：`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、整条记录 JSON 存储 |
+| `workspace.ts` | 已实现 | `<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，节点启动时创建一次 |
 | `membership.ts` | 已实现 | 双向看门狗、单调时钟、suspect(unreachable)、墓碑与 record_ttl 修剪 |
 | `gateway.ts` | 已实现 | `/health`、Agent Card、`/a2a`、`/cluster/*`、`/blobs`（上传/下载/直链） |
 | `executor.ts` | 部分实现 | EchoExecutor；ACP、Headless、InProcess 未实现 |
-| `tasks.ts` | 已实现 | 单槽状态机；task store 为进程内内存 |
+| `tasks.ts` | 已实现 | 单槽状态机；TaskStore 可注入（默认内存，CLI/插件用 SQLite），启动时把非终态标 `failed(node_restart)` |
 | `node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）；mesh/A2A/discovery/formation/transport 测试 |
 | `plugin/` | 部分实现 | `apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
@@ -53,7 +57,9 @@ orca-pod/（仓库根目录）
 ```text
 protocol  ← crypto, config, storage, gateway, executor, tasks, node
 crypto    ← config, gateway, node
-storage   ← gateway, node
+storage   ← gateway, node, sqlite, workspace
+sqlite    ← node   （只实现 storage.TaskStore 接口）
+workspace ← node   （只提供路径与 ensure，不 import 网关）
 membership ← node   （gateway 只见 PeerStore 门面）
 gateway   ← node   （gateway 只依赖 protocol + storage 接口，不 import executor/tasks 实现）
 executor  ← tasks
@@ -74,14 +80,16 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `protocol.ts` | 固定 JSON 样本 + 签名向量 | schema 通过/拒绝、MAC 与向量一致 |
 | `crypto.ts` | RFC 5869 向量 + 冻结的 MAC | 换密钥/时间/body 任一字节即变 |
 | `config.ts` | 合法/非法配置样本 | 错误信息指向具体字段 |
-| `storage.ts` / `blobs.ts` | 一套 contract test，跑 fs 与 sqlite | 两实现行为一致 |
+| `storage.ts` / `blobs.ts` | 一套 contract test，跑内存、fs 与 sqlite | 两实现行为一致；过期/GC/去重 |
+| `workspace.ts` | 临时目录 | 目录一次创建、跨调用稳定、`taskDir` 拒绝路径穿越 |
+| `sqlite.ts` | 临时 db 文件 | 关闭重开仍在、意外中断的 task 恢复为 `failed(node_restart)` |
 | `gateway.ts` | 进程内 `fetch`，假 executor、注入时钟 | 路由、401/403/429、签名 |
 | `executor.ts` | echo 脚本样本；假 ACP 子进程 | 状态时序、`input-required`、resume |
 | `tasks.ts` | 假 executor + 注入时钟 | 单槽、TTL、取消 |
 | `harness.ts` | 多节点 mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 92 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 106 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，节点重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
@@ -154,7 +162,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 - TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm（不用 pnpm；单包，`npm install` 在仓库根目录一次装齐）；vitest；`tsc --noEmit` 进 CI。
 - 构建/开发的目标选型是 `tsup` + `tsx` + `biome` + `commander` + `pino`；Phase 0 尚未安装，仓库目前只有 `typescript`、`vitest`、`@types/node`。
 - 不引入框架级 DI 容器：构造函数注入足够，装配只在 `node.ts`。
-- 存储目标：默认 fs（`lowdb` + `steno` 原子写），SQLite 用 `better-sqlite3`（或 `node:sqlite`）作为后续里程碑；Phase 0 只有内存实现（[§5.5](05-tasks.md#55-任务存储)）。
+- 存储：task store 用 `node:sqlite`（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM/`better-sqlite3`）；peer store 仍是内存；blob 用内容寻址的 fs 目录 + TTL GC；工作区目录由 `workspace.ts` 管理。内存实现只给单测与 harness 用（[§5.5](05-tasks.md#55-任务存储)）。
 - 本地命令（当前可用）：
 
   ```bash
@@ -198,10 +206,10 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 
 - Phase 0：单包内 protocol、crypto、config、storage、gateway、executor(echo)、tasks、node、harness、plugin。
 - Phase 1：harness 覆盖成员收敛与故障场景（vitest 用例）。
-- Phase 2：AcpExecutor、ui 基本视图。
+- Phase 2：持久化底座（SQLite task store、fs blob + GC、group 工作区与 cwd 绑定）、HeadlessExecutor。
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 节点压测复用 harness。
 
-**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、ACP 均未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）与真实进程 harness 尚未实现。
+**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；executor 只有 EchoExecutor（Headless/ACP 未开始）；ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；真实执行器与跨进程 harness 未开始。
 
 ---

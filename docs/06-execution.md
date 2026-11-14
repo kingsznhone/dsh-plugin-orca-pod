@@ -66,7 +66,7 @@ Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗
 }
 ```
 
-**Phase 0 实现**：`EchoExecutor` 已按本节实现；它从 `params.metadata.echo` 取脚本，在建立 task 之前校验，执行结果通过 `AsyncGenerator<ExecutorEvent>` 交给 TaskRunner；artifact 写入内存 `BlobStore`（当前无落盘）。
+**Phase 0 实现**：`EchoExecutor` 已按本节实现；它从 `params.metadata.echo` 取脚本，在建立 task 之前校验，执行结果通过 `AsyncGenerator<ExecutorEvent>` 交给 TaskRunner；artifact 写入 `BlobStore`（节点用 fs 实现，单测用内存实现）。
 
 规则（与实现一致）：
 
@@ -132,6 +132,8 @@ Pod gateway (local)
 - **多 origin 共享同一份工作区**：允许，但串行（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)）。A 和 C 的交接靠 `notes/`，而不是互相看不见。
 - origin 不能指定目录、不能传路径（[§6.12](06-execution.md#612-明确不做)）。
 
+**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；节点 `start()` 时 `ensure()` 一次建齐 `work/notes/inputs/.pod/tasks`，任务执行时把 `work/` 作为 `ExecuteInput.workspaceDir` 交给 executor（`pwd` 的落点）。`inputs/`、`.pod/index.json` 的写入流程尚未接（按 [§5.6](05-tasks.md#56-文件交换blob-通道) 由 origin 上传、executor 拉取）。
+
 ### 6.8 目录边界
 
 - `work/` 是唯一写根；`notes/` 可写；`inputs/` 只由回传流程写；`.pod/` 归网关，agent 不可写（sandbox 规则挡）。
@@ -160,7 +162,7 @@ Pod gateway (local)
 - 忙时拒绝发生在**建 task 之前**：不产生 task、不消耗幂等键；模型重试就是一次新的 `message/send`。
 - `busy` 写进 self record（[§2.5](02-model.md#25-节点自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证（Phase 0 未实现，见上）。
 - **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一节点上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
-- 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。进程崩溃或重启后 Phase 0 的进程内 task store 会丢失（[§6.10](06-execution.md#610-session-context-workspace-的绑定)）；SQLite 落地后再按 `task_ttl_s` 过期并对账。
+- 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。节点进程崩溃或重启时，SQLite 里所有非终态 task 在下次启动时标成 `failed(node_restart)`（[§6.10](06-execution.md#610-session-context-workspace-的绑定)、[§8.3](08-reliability.md#83-目标重启)），不自动续跑。
 
 ### 6.10 session / context / workspace 的绑定
 
@@ -172,7 +174,7 @@ session_id → workspace（本节点唯一的那份）
 - 同一个 context 的后续任务复用同一 session（同 cwd、同对话历史）。
 - 不同 context 各自新 session，但**共用同一份工作区**，所以文件上下文不断。
 - 网关重启 / session 丢失：**不猜旧 session**，直接开新 session、cwd 不变；第一条 prompt 里带一句“先读 `notes/STATUS.md`”。会话可丢，工作区不丢。
-- 目标节点重启后：Phase 0 的内存 task store 会连同 task 一起丢失，重启后 `tasks/get` 返回 `task_not_found`；SQLite 落地后 task 状态应保留，`working` 的按 [§8.3](08-reliability.md#83-目标重启) 处理。
+- 目标节点重启后：task 状态保留在 SQLite 里，`tasks/get` 仍可查；`submitted/working/input-required` 一律按 [§8.3](08-reliability.md#83-目标重启) 标 `failed(node_restart)`，`working` 带 `effects_unknown=true`，不尝试 resume。工作区目录不删，cwd 不变。
 
 ### 6.11 任务结果与产物
 

@@ -14,10 +14,10 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 92 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、plugin 12、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 106 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
-- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）；task store 与 blob store 为进程内内存。
-- 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
+- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
+- 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三节点 full mesh 与惰性收敛
 
@@ -43,6 +43,12 @@
 - blob 通道（[§5.6](05-tasks.md#56-文件交换blob-通道)）：上传素材、下载产物、去重、GC；结论文本内联回传。
 - 权限模式继承（先只做 `read-only`/`workspace-write` 两档的映射，escalate 先回固定 deny）。
 - 验收：真实任务完成；跨任务续跑能看到上次的文件与 notes；节点失联 → 12s 内 `failed(node_unreachable)`；取消生效；重启后 `working` 标 `failed(node_restart)`；上传→任务→下载 roundtrip 通过；节点忙时第二个任务返回 429 且 UI 显示持有者。
+
+**Phase 2 进展**
+
+- 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，节点启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；节点/CLI/插件都接持久化存储。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`），全套 106 通过。
+- 未实现：`HeadlessExecutor`/`AcpExecutor`、`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
 
@@ -71,7 +77,7 @@
 - [ ] 错误 workgroup / 错误密码被 401（同一文案，不区分）
 - [x] 正确密码 + 签名可 join、心跳、拉目录
 - [x] 两节点双向心跳；kill 一方 12s 内从在线集消失（测试用缩短间隔的等价看门狗）
-- [ ] 节点重启后 task store 与工作区仍在
+- [x] 节点重启后 task store 与工作区仍在（SQLite 保留 task 记录，重启后 `tasks/get` 可查；非终态标 `failed(node_restart)`；`workgroups/` 目录不删）
 
 #### Echo 脚本（Phase 0/1）
 
@@ -112,7 +118,7 @@
 - [x] `X-Pod-Body-SHA256` 与实际字节不符 → 400 且不落盘
 - [x] 素材上传 → 任务引用 → 产物下载 roundtrip 通过
 - [x] 短期直链过期后不可用；篡改 blob_id/exp 或换 blob 被拒（直链用 `exp+sig`，无状态 HMAC）
-- [ ] 未被任务引用的 blob 在 TTL 后被 GC，下载返回 410（GC 未实现）
+- [x] 未被任务引用的 blob 在 TTL 后被 GC（节点启动时跑 `blobStore.gc()`，默认 7 天；测试用注入 `now` 覆盖）；GC 后下载返回 `404 blob_not_found`。引用延期（被任务引用的 blob 延长到终态后）尚未实现。
 
 #### agent 侧（插件接线）
 

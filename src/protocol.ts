@@ -239,6 +239,8 @@ export interface TaskRunner {
   cancel(taskId: string): TaskView;
   /** Currently running task (single-slot, §6.9); null when idle. */
   busy(): BusyState | null;
+  /** Fail tasks that were interrupted by a restart (§8.3); returns how many. */
+  recover(): number;
 }
 
 /** Task-level failure carrying a stable code for the gateway's HTTP mapping. */

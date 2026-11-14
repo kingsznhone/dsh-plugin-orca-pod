@@ -30,6 +30,8 @@ export type ExecuteInput = {
   taskId: string;
   contextId?: string;
   metadata?: Record<string, unknown>;
+  /** Group workspace `work/` dir; the executor's cwd when present (§6.7). */
+  workspaceDir?: string;
 };
 
 export interface LocalExecutor {

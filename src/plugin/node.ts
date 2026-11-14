@@ -10,7 +10,7 @@
 import { configPath, createNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../config.ts"
 import type { NodeConfig } from "../config.ts"
 import { deriveWorkgroupKey } from "../crypto.ts"
-import { createNode } from "../node.ts"
+import { createNode, createPersistentStorage } from "../node.ts"
 import type { OrcaNode } from "../node.ts"
 
 import type { Config } from "./config.ts"
@@ -129,7 +129,7 @@ export function startPod(config: Config, logger: HostLogger): PodHandle {
   const ready = (async () => {
     try {
       const nodeConfig = await resolveNodeConfig(config, logger)
-      const node = createNode({ config: nodeConfig })
+      const node = createNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig) })
       runtime.node = node
 
       const info = await node.start()
