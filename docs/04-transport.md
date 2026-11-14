@@ -67,7 +67,7 @@
 ```json
 {
   "name": "pod-N7K3QM",
-  "description": "DSH node in workgroup whale-pod",
+  "description": "DSH node in workgroup orca-dev",
   "url": "http://192.168.1.11:11811/a2a",
   "version": "0.1.0",
   "protocolVersion": "0.x",

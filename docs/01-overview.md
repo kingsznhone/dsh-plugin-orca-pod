@@ -60,7 +60,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 
 | 术语 | 含义 |
 |---|---|
-| **workgroup_id** | 集群命名空间 + 凭证作用域，如 `whale-pod`。正则 `[a-z0-9][a-z0-9-]{1,31}`。 |
+| **workgroup_id** | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。 |
 | **node_id** | 6 字符短 id，节点的显示标签；同一 workgroup 内唯一，非安全主体。 |
 | **Peer** | 同一 workgroup 内、本节点已知的另一个节点。 |
 | **SelfRecord** | 节点对自己的描述（endpoint、runtime、工作区用量、忙闲），只能由本人写。 |
@@ -79,7 +79,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 **图里的调用关系：**
 
 ```text
-Workgroup: whale-pod
+Workgroup: orca-dev
 Full mesh (<= 10 nodes), 唯一拓扑
 ```
 

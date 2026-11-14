@@ -8,7 +8,7 @@
 
 ```json
 {
-  "workgroup_id": "whale-pod",
+  "workgroup_id": "orca-dev",
   "origin_node": "N7K3QM",
   "target_node": "P2W8XA",
   "trace_id": "01J...",

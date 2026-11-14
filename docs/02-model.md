@@ -65,7 +65,7 @@ join（一次，凭 workgroup_id + 密码）→ 拿到 target 自述 + 全量目
   "node_id": "N7K3QM",
   "display_name": "书房台式机",
   "endpoint": "http://192.168.1.11:11811",
-  "workgroup_id": "whale-pod",
+  "workgroup_id": "orca-dev",
   "runtime": {
     "os": { "family": "windows", "name": "Windows 11 Pro", "version": "24H2", "build": "26100.2314" },
     "arch": "x86_64",

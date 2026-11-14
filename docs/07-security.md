@@ -13,7 +13,7 @@
 - 密钥派生：
 
 ```text
-k = HKDF-SHA256(ikm = password, salt = "whale-pod", info = workgroup_id, len = 32)
+k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32)
 ```
 
 - 换密码：**改过的节点用新密码重启，重新 join 组成新 group**；没改的节点留在旧 mesh 里，签名对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
@@ -137,7 +137,7 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 ```json
 {
   "grant_id": "g_01JABC",
-  "workgroup_id": "whale-pod",
+  "workgroup_id": "orca-dev",
   "origin_node": "N7K3QM",
   "target_node": "P2W8XA",
   "task_id": "t_01JABD",
