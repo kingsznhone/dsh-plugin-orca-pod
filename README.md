@@ -75,7 +75,7 @@ the config afterwards.
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码 = 重建组（本机 `identity.json` 保留，节点 id 不变）。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
 
-执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者；`headless.permission_mode` 只是任务未带模式时的缺省值（默认 `read-only`）。
+执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者；`headless.permission_mode` 只是任务未带模式时的缺省值（默认 `read-only`）。节点自述的模型目录（`models`/`default_model`）由插件从 DSH Host 的 `llm`/`agentDefaultModel` 服务采集；纯 CLI 节点（`orca-node serve`）可在 `config.json` 手填，任务用 `pod.model` 选择非默认模型，只有 ACP 执行器能落地（[§6.16](docs/06-execution.md#616-按任务选择模型)）。
 
 审批默认无限等待：任务挂起等 origin 的人时，task TTL 会暂停，也不会因为 120 秒没决定就失败；只有配置了 `approval_timeout_s` 才在到点自动拒绝（`failed(permission_timeout)`）。CLI 的 `wait`/`escalate` 的 `--timeout` 同样可省略，省略就一直等到 origin 决策。
 
@@ -91,7 +91,7 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 
 | Tool          | Arguments                | Result                                                         |
 | ------------- | ------------------------ | -------------------------------------------------------------- |
-| `pod_send`    | `peer`, `text`, `echo?`  | `{task_id, state, peer}` immediately after the remote accepts   |
+| `pod_send`    | `peer`, `text`, `echo?`, `model?`, `reasoning_effort?`  | `{task_id, state, peer}` immediately after the remote accepts   |
 | `pod_status`  | `peer`, `task_id`        | Remote `TaskView` plus a `terminal` flag                        |
 | `pod_cancel`  | `peer`, `task_id`        | Task view observed at cancel time plus `terminal`               |
 | `pod_members` | —                        | `{self, members, members_digest}` with id/name/endpoints/state  |
@@ -106,6 +106,9 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 ```bash
 # 派任务，文本从 stdin 读，输出 JSON
 echo "compile and run the tests" | orca-node send --peer 192.168.86.252:11811 --text - --json
+
+# 指定非默认模型（目标必须自述该模型且运行 ACP 执行器；§6.16）
+orca-node send --peer 192.168.86.252:11811 --text "review this diff" --model deepseek/deepseek-flash --reasoning-effort high --json
 
 # 等结果：0 completed / 1 failed|canceled / 2 仍在跑 / 3 需要权限
 # --local-task 让 wait 在子任务要权限时自动 escalate 到本 task 的 origin

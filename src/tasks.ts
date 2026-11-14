@@ -6,7 +6,9 @@ import type { NodeIdentity } from "./identity.ts";
 import { verifyGrant } from "./crypto.ts";
 import { echoScriptFrom, type EchoRelay, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
 import {
+  isModelSelection,
   isTerminal,
+  modelSelectionOf,
   narrowPermissionMode,
   newTaskId,
   permissionModeOf,
@@ -468,6 +470,18 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         : deps.permissionMode === undefined
           ? inheritedMode
           : narrowPermissionMode(deps.permissionMode, inheritedMode);
+    const requestedModel = modelSelectionOf(rec.metadata);
+    if (requestedModel !== undefined && deps.executor.supportsModelSelection !== true) {
+      finish(
+        rec,
+        "failed",
+        textMessage(
+          `this orca node cannot select a model (${requestedModel.provider}/${requestedModel.model}); only the ACP executor supports per-task models`,
+        ),
+        "model_unsupported",
+      );
+      return;
+    }
     const iterator =
       rec.iterator ??
       deps.executor.run(
@@ -480,6 +494,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           ...(workspace ? { workspaceDir: workspace.root, podDir: workspace.state } : {}),
           ...(deps.dataRoot ? { dataRootDir: deps.dataRoot } : {}),
           ...(permissionMode ? { permissionMode } : {}),
+          ...(requestedModel ? { model: requestedModel } : {}),
           metadata: rec.metadata,
         },
         rec.abort.signal,

@@ -16,6 +16,7 @@ import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
 import type { HostContext, HostLogger, StandardSchemaV1 } from "./dsh.ts"
 import { startPod, stopPod } from "./lifecycle.ts"
+import { discoverModelCatalog, type ModelCatalog } from "./models.ts"
 import { installSkill } from "./skill.ts"
 import { createPodTools } from "./tools.ts"
 import { createTracker } from "./tracker.ts"
@@ -70,7 +71,28 @@ function optionalService<T>(ctx: HostContext, name: string): T | undefined {
  */
 export function apply(ctx: HostContext, config: Config): void {
   const logger = ctx.logger ?? consoleLogger
-  const handle = startPod(config, logger)
+
+  // Model catalog (§6.16): the host owns the real catalog, the node only
+  // advertises it. Kept in a mutable holder so a panel reconfigure restarts the
+  // node with the same catalog before the first join.
+  const catalog: ModelCatalog = { models: [], defaultModel: null }
+  const handle = startPod(config, logger, {
+    onNodeStarted: (orcaNode) => orcaNode.setModelCatalog(catalog.models, catalog.defaultModel),
+  })
+  void handle.ready.then(async () => {
+    try {
+      const next = await discoverModelCatalog(ctx, logger)
+      catalog.models = next.models
+      catalog.defaultModel = next.defaultModel
+      const orcaNode = handle.runtime.orcaNode
+      if (orcaNode !== null) orcaNode.setModelCatalog(catalog.models, catalog.defaultModel)
+      if (catalog.models.length > 0) {
+        logger.info(`orca-pod: advertising ${catalog.models.length} models`)
+      }
+    } catch (error) {
+      logger.warn(`orca-pod: could not discover the model catalog: ${errorMessage(error)}`)
+    }
+  })
 
   // Parked `pod_approve` calls: the panel, chat card and popup answer them.
   const prompts = createApprovalPrompts()

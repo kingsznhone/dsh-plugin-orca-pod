@@ -307,6 +307,7 @@ async function startNode(
   config: Config,
   runtime: PodRuntime,
   logger: HostLogger,
+  hooks: StartPodHooks,
 ): Promise<void> {
   const nodeConfig = await resolveOrcaNodeConfig(config, logger)
   const orcaNode = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig) })
@@ -333,6 +334,14 @@ async function startNode(
   logger.info(
     `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
   )
+
+  // Install ambient state before the first join so the joined self record and
+  // every heartbeat carry it from the start.
+  try {
+    hooks.onNodeStarted?.(orcaNode)
+  } catch (error) {
+    logger.warn(`orca-pod: onNodeStarted hook failed: ${errorMessage(error)}`)
+  }
 
   const seen = new Set<string>()
   for (const rawPeer of config.peers) {
@@ -368,7 +377,21 @@ async function stopNode(runtime: PodRuntime, logger: HostLogger): Promise<void> 
  * The returned `ready` promise resolves after startup (success or failure) and
  * never rejects; inspect `runtime.error` for the failure cause.
  */
-export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
+/**
+ * Hooks a host plugin uses to attach ambient state to every orca node start
+ * (initial start, panel reconfigure, reset). The model catalog (§6.16) is the
+ * only user today: it must be installed before the first `join` so the self
+ * record peers receive already advertises it.
+ */
+export interface StartPodHooks {
+  onNodeStarted?: (orcaNode: OrcaNode) => void
+}
+
+export function startPod(
+  baseConfig: Config,
+  logger: HostLogger,
+  hooks: StartPodHooks = {},
+): PodHandle {
   const runtime = createRuntime()
   const dataRoot = baseConfig.data_root ?? defaultDataRoot()
 
@@ -401,7 +424,7 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
           return
         }
         try {
-          await startNode(merged, runtime, logger)
+          await startNode(merged, runtime, logger, hooks)
         } catch (error) {
           logger.error(`orca-pod: reconfigure failed: ${errorMessage(error)}`)
         }
@@ -452,7 +475,7 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
         runtime.error = null
         if (effective.workgroup_id.length === 0) return
         try {
-          await startNode(effective, runtime, logger)
+          await startNode(effective, runtime, logger, hooks)
         } catch (error) {
           logger.error(`orca-pod: restart after reset failed: ${errorMessage(error)}`)
         }
@@ -480,7 +503,7 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
       return
     }
     try {
-      await startNode(effective, runtime, logger)
+      await startNode(effective, runtime, logger, hooks)
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error))
       runtime.error = failure

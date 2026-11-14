@@ -35,6 +35,8 @@ import {
   type GrantMode,
   type HeartbeatResponse,
   type JoinResponse,
+  type ModelOffer,
+  type ModelSelection,
   type PeerView,
   type PodTaskMetadata,
   type RuntimeInfo,
@@ -73,6 +75,8 @@ type GatewayOrcaNodeInfo = {
   max_task_ttl_s?: number;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
   linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
+  /** Live ambient fields owned by the node: model catalog, display name (§6.16). */
+  self?: () => SelfRecord;
 };
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
@@ -164,6 +168,12 @@ export interface OrcaNode {
   self(): SelfRecord;
   members(): PeerView[];
   membersDigest(): string;
+  /**
+   * Advertise the model routes an ACP session can be switched to, plus the
+   * default route (§6.16). Host integrations call this after the DSH model
+   * catalog is available; peers see it on the next roster exchange.
+   */
+  setModelCatalog(models: ModelOffer[], defaultModel: ModelSelection | null): void;
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
   /** Leave the workgroup: tell every known peer, then clear the local roster. */
@@ -324,6 +334,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     endpoints: actualEndpoints,
     max_task_ttl_s: maxTaskTtlS,
     linkChildTask,
+    self: () => self(),
   };
   const app = createGateway({
     orcaNode: gatewayOrcaNode,
@@ -337,6 +348,27 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     fileBlobs,
   });
 
+  let modelCatalog: ModelOffer[] = [...(config.models ?? [])];
+  let defaultModel: ModelSelection | null = config.default_model ?? null;
+
+  /**
+   * Publish the model routes an ACP session can be switched to (§6.16). The
+   * Host computes them from the DSH catalog after the node starts; peers learn
+   * the new list from the next roster exchange.
+   */
+  function setModelCatalog(models: ModelOffer[], nextDefault: ModelSelection | null): void {
+    const seen = new Set<string>();
+    modelCatalog = [];
+    for (const offer of models) {
+      const key = `${offer.provider}/${offer.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      modelCatalog.push(offer);
+    }
+    defaultModel = nextDefault;
+    emitMembersIfChanged();
+  }
+
   function selfPeer(): PeerView {
     return {
       orca_node_id: orcaNodeId,
@@ -349,6 +381,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       busy: tasks.busy(),
       last_recv_at: new Date().toISOString(),
       max_task_ttl_s: maxTaskTtlS,
+      ...(modelCatalog.length > 0 ? { models: modelCatalog } : {}),
+      default_model: defaultModel,
     };
   }
 
@@ -372,7 +406,11 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   let membersSignature = "";
   function membersSignatureOf(peers: PeerView[]): string {
     return peers
-      .map((peer) => `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}`)
+      .map(
+        (peer) =>
+          `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
+          `:${peer.models?.length ?? 0}:${peer.default_model === undefined || peer.default_model === null ? "" : `${peer.default_model.provider}/${peer.default_model.model}`}`,
+      )
       .sort()
       .join("|");
   }
@@ -434,6 +472,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       endpoints: actualEndpoints,
       runtime,
       max_task_ttl_s: maxTaskTtlS,
+      ...(modelCatalog.length > 0 ? { models: modelCatalog } : {}),
+      default_model: defaultModel,
       ts,
       nonce,
       proof,
@@ -951,6 +991,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     self,
     members,
     membersDigest: currentDigest,
+    setModelCatalog,
     join,
     heartbeat,
     leave,

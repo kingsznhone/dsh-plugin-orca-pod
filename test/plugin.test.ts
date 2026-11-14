@@ -121,6 +121,12 @@ describe("pod tools", () => {
     )
   })
 
+  it("rejects a malformed model selector before touching the orca node", async () => {
+    await expect(
+      tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1", text: "hi", model: "nope" }),
+    ).rejects.toThrow(/provider\/model/)
+  })
+
   it("fails clearly when the orca node is not running", async () => {
     await expect(tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
       /orca node is not running/,

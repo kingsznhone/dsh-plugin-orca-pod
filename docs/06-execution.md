@@ -360,6 +360,19 @@ DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
 
 本机实测（2026-11-14，Windows）：`Reply with exactly the word pong` → `completed`、结论文本 `pong`、约 2.6s；`state/<workgroup_id>/sessions.json` 写入 `acp|<origin_orca_node>|ctx-e2e-acp` 的绑定。
 
-**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`。
+**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail | model-reject`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`，以及按任务选模型（`session/set_config_option` 先于 `session/prompt`；目标拒绝时 `failed(model_unavailable)`）。
+
+### 6.16 按任务选择模型
+
+orca node 的默认模型由本机 profile 决定（`agent-default-model` 插件），但同一 mesh 里的机器可能装着不同 provider/模型。协议为此只加两样东西：**节点自述目录**与**任务里的可选选择**，不发明跨节点配置通道。
+
+**自述**：`PeerView`（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）带 `models`（`[{provider, model, name?, description?}]`，上限 128 条，去重）与 `default_model`（`{provider, model, reasoning_effort?}` 或 `null`）。它们随 join 请求、self record、心跳目录与 `/cluster/members` 传播，也参与 `members_digest`（目录变化会让对端重新拉一次成员表）；**不进**公开的 Agent Card，模型清单只对同组成员可见。插件启动后通过 DSH Host 的 `llm` 服务枚举 `${provider}×listModels`（单 provider 失败只记日志），默认模型取 `agentDefaultModel.currentSelection()`；纯 CLI 节点没有 Host 服务，可在 `config.json` 手填 `models`/`default_model`，不填就是空目录。
+
+**选择**：任务书 `metadata.pod.model` 可选 `{provider, model, reasoning_effort?}`，与 `pod.permission_mode` 同级校验（`validatePodMetadata`，非法直接 `bad_request`）；CLI `orca-node send --model <provider/model> [--reasoning-effort <effort>]` 与工具 `pod_send` 的 `model`/`reasoning_effort` 参数都落到同一字段。
+
+**目标侧执行**：只有 ACP 执行器支持按任务选模型。它在 `session/new`/`session/resume` 拿到 `sessionId` 后、发 `session/prompt` 之前，按 ACP 的 `session/set_config_option` 选择 `configId="model"`、`value=JSON.stringify([provider, model])`；带 reasoning effort 时再选一次 `configId="reasoning_effort"`。选择失败（模型不在该会话的 configuration options 里、或 ACP 拒绝）→ 任务直接 `failed(model_unavailable)`，不会用默认模型偷偷跑。其他执行器（Echo/headless）收到 `pod.model` 时不猜测，直接 `failed(model_unsupported)`：headless 子进程的模型属于 profile/launcher 层，需要按子进程 `--patch` 覆盖默认模型插件才能换（当前未实现）。选择是**提示、不是授权**：目标机仍按本机 `permission_mode`、审批与工作区规则执行；模型目录也不泄露凭据或 provider 配置。
+
+**测试**：`test/model-selection.test.ts` 覆盖配置校验边界、join 目录双向可见、非 ACP 执行器 `model_unsupported`、Host 服务目录采集（坏 provider 跳过）；ACP 选模顺序与拒绝路径在 `test/acp.test.ts`，工具参数校验在 `test/plugin.test.ts`。
 
 ---
+

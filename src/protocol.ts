@@ -46,6 +46,22 @@ export type BusyState = {
   since: string;
 };
 
+/** One model route an orca node advertises for tasks (§6.16). */
+export type ModelOffer = {
+  provider: string;
+  model: string;
+  /** Human-readable model name, when the provider catalog publishes one. */
+  name?: string;
+  description?: string;
+};
+
+/** A provider/model route, optionally pinned to one reasoning effort. */
+export type ModelSelection = {
+  provider: string;
+  model: string;
+  reasoning_effort?: string;
+};
+
 export type PeerView = {
   orca_node_id: OrcaNodeId;
   display_name: string;
@@ -58,6 +74,10 @@ export type PeerView = {
   last_recv_at: string | null;
   /** Per-task time budget this orca node enforces; origins size tasks to it (§6.9). */
   max_task_ttl_s?: number;
+  /** Model routes this orca node can switch an ACP session to (§6.16). */
+  models?: ModelOffer[];
+  /** The model an ACP session uses when a task does not name one (§6.16). */
+  default_model?: ModelSelection | null;
 };
 
 export type SelfRecord = PeerView & {
@@ -71,6 +91,9 @@ export type JoinRequest = {
   display_name: string;
   endpoints: string[];
   runtime: RuntimeInfo | null;
+  max_task_ttl_s?: number;
+  models?: ModelOffer[];
+  default_model?: ModelSelection | null;
 };
 
 export type JoinResponse = {
@@ -263,12 +286,47 @@ export function permissionModeOf(metadata: Record<string, unknown> | undefined):
   return isPermissionMode(mode) ? mode : undefined;
 }
 
+/** True when `value` names a provider/model route with optional reasoning effort. */
+export function isModelSelection(value: unknown): value is ModelSelection {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record["provider"] !== "string" || record["provider"].length === 0) return false;
+  if (typeof record["model"] !== "string" || record["model"].length === 0) return false;
+  const effort = record["reasoning_effort"];
+  return effort === undefined || (typeof effort === "string" && effort.length > 0);
+}
+
+/** Parse a `provider/model` spec, optionally with a reasoning effort (§6.16). */
+export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSelection | null {
+  const slash = spec.indexOf("/");
+  if (slash <= 0 || slash === spec.length - 1) return null;
+  const provider = spec.slice(0, slash).trim();
+  const model = spec.slice(slash + 1).trim();
+  if (provider.length === 0 || model.length === 0) return null;
+  const reasoning = reasoningEffort?.trim();
+  return {
+    provider,
+    model,
+    ...(reasoning !== undefined && reasoning.length > 0 ? { reasoning_effort: reasoning } : {}),
+  };
+}
+
+/** Read `metadata.pod.model` out of a task submission, if valid (§6.16). */
+export function modelSelectionOf(metadata: Record<string, unknown> | undefined): ModelSelection | undefined {
+  const pod = metadata?.["pod"];
+  if (typeof pod !== "object" || pod === null) return undefined;
+  const selection = (pod as Record<string, unknown>)["model"];
+  return isModelSelection(selection) ? selection : undefined;
+}
+
 export type PodTaskMetadata = {
   hop?: number;
   chain?: string[];
   root?: string;
   /** Origin session mode; the target never runs above it (§7.10). */
   permission_mode?: PermissionMode;
+  /** Model route the target's ACP executor should select for this task (§6.16). */
+  model?: ModelSelection;
   idempotency_key?: string;
   task_ttl_s?: number;
   grant_id?: string;

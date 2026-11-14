@@ -170,6 +170,36 @@ describe("AcpExecutor", () => {
     expect(entries.some((entry) => entry.method === "session/resume")).toBe(true);
   }, 20_000);
 
+  it("selects the requested model on the ACP session before prompting", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok"));
+    const submitted = await node.sendTask(node.endpoints[0]!, {
+      message: { role: "user", parts: [{ kind: "text", text: "use the requested model" }], contextId: "ctx-model" },
+      metadata: { pod: { model: { provider: "deepseek", model: "deepseek-v4-pro" } } },
+    });
+    await waitForState(node, submitted.id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    const selected = entries.findIndex((entry) => entry.method === "session/set_config_option");
+    const prompted = entries.findIndex((entry) => entry.method === "session/prompt");
+    expect(selected).toBeGreaterThanOrEqual(0);
+    expect(prompted).toBeGreaterThan(selected);
+    const entry = entries[selected] as { configId?: string; value?: string };
+    expect(entry.configId).toBe("model");
+    expect(entry.value).toBe(JSON.stringify(["deepseek", "deepseek-v4-pro"]));
+  }, 15_000);
+
+  it("fails the task when the target rejects the requested model", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "model-reject"));
+    const submitted = await node.sendTask(node.endpoints[0]!, {
+      message: { role: "user", parts: [{ kind: "text", text: "unknown model" }], contextId: "ctx-model-fail" },
+      metadata: { pod: { model: { provider: "deepseek", model: "nope" } } },
+    });
+    const view = await waitForState(node, submitted.id, ["failed"]);
+    expect(view.status.reason).toBe("model_unavailable");
+    expect(taskText(view)).toContain("cannot select model");
+  }, 15_000);
+
   it("reports a spawn failure instead of hanging", async () => {
     const pod = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const executor = createAcpExecutor({ command: join(pod, "missing-acp"), profile: "acp" });

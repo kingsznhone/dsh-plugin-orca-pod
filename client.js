@@ -101,6 +101,7 @@ window.__ModuleLoader__.load({
         colNode: "node",
         colState: "state",
         colBusy: "busy",
+        colModel: "model",
         colEndpoints: "endpoints",
         colOs: "os",
         colTask: "task",
@@ -124,6 +125,7 @@ window.__ModuleLoader__.load({
         dtMessage: "message",
         dtTimeline: "timeline",
         dtCreated: "created",
+        dtModel: "model",
         stateOnline: "online",
         stateSuspect: "suspect",
         stateUnreachable: "unreachable",
@@ -221,6 +223,7 @@ window.__ModuleLoader__.load({
         colNode: "节点",
         colState: "状态",
         colBusy: "忙碌",
+        colModel: "模型",
         colEndpoints: "地址",
         colOs: "系统",
         colTask: "任务",
@@ -244,6 +247,7 @@ window.__ModuleLoader__.load({
         dtMessage: "消息",
         dtTimeline: "时间线",
         dtCreated: "创建",
+        dtModel: "模型",
         stateOnline: "在线",
         stateSuspect: "可疑",
         stateUnreachable: "不可达",
@@ -702,7 +706,7 @@ window.__ModuleLoader__.load({
       if (members.length === 0) return h("div", { style: MUTED }, t("noPeers"));
       return h(
         Table,
-        { columns: [t("colNode"), t("colState"), t("colBusy"), t("colEndpoints"), t("colOs")] },
+        { columns: [t("colNode"), t("colState"), t("colBusy"), t("colModel"), t("colEndpoints"), t("colOs")] },
         members.map((member) =>
           h(
             Row,
@@ -716,6 +720,19 @@ window.__ModuleLoader__.load({
                 title: member.busy ? member.busy.task_id + " · " + (member.busy.origin_orca_node || "") : undefined,
               },
               member.busy ? short(member.busy.task_id) : "-",
+            ),
+            h(
+              "td",
+              {
+                style: MUTED,
+                title:
+                  (member.models || []).length > 0
+                    ? String((member.models || []).length) + " available"
+                    : undefined,
+              },
+              member.default_model
+                ? member.default_model.provider + "/" + member.default_model.model
+                : "-",
             ),
             h("td", { style: MUTED }, (member.endpoints || []).join(", ") || "-"),
             h("td", { style: MUTED }, member.runtime && member.runtime.os ? member.runtime.os.name + " " + (member.runtime.os.version || "") : "-"),
@@ -907,6 +924,16 @@ window.__ModuleLoader__.load({
           field(t("dtContext"), task.contextId || "-"),
           field(t("dtUpdated"), status.timestamp ? status.timestamp : "-"),
           status.reason ? field(t("dtReason"), String(status.reason)) : null,
+          pod.model
+            ? field(
+                t("dtModel"),
+                pod.model.provider +
+                  "/" +
+                  pod.model.model +
+                  (pod.model.reasoning_effort ? " · " + pod.model.reasoning_effort : ""),
+                "dt-model",
+              )
+            : null,
           pod.hop !== undefined
             ? field(t("dtTimeline"), "hop " + String(pod.hop) + (pod.root ? " · root " + short(pod.root) : ""), "dt-hop")
             : null,

@@ -4,7 +4,7 @@
  * state machine, approval loop, and blob path can be exercised without an agent.
  */
 
-import type { PermissionMode, TaskRelay, TaskUsage } from "./protocol.ts";
+import type { ModelSelection, PermissionMode, TaskRelay, TaskUsage } from "./protocol.ts";
 
 /**
  * A child task one hop down is waiting for permission. The echo script carries
@@ -52,11 +52,15 @@ export type ExecuteInput = {
   dataRootDir?: string;
   /** Effective permission mode after origin inheritance and local ceiling (§7.10). */
   permissionMode?: PermissionMode;
+  /** Model route this task asks the executor to use; only ACP applies it (§6.16). */
+  model?: ModelSelection;
   metadata?: Record<string, unknown>;
 };
 
 export interface LocalExecutor {
   run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, unknown>;
+  /** True when `run` can apply `ExecuteInput.model` to its session (§6.16). */
+  readonly supportsModelSelection?: boolean;
   /** Optional teardown for executors that keep a long-lived child process. */
   close?(): void;
 }

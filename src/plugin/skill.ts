@@ -66,6 +66,7 @@ Use it whenever a task has to leave this machine.
 \`\`\`bash
 ${cli} members --json                     # known peers: id, endpoints, state
 ${cli} send --peer <host:port> --text -   # dispatch a task; text from stdin
+#   add --model <provider/model> to pick a model the target advertises (§6.16)
 ${cli} wait --peer <host:port> --task <id> --local-task <this task> --timeout 120 --json
 ${cli} status --peer <host:port> --task <id> --json
 ${cli} escalate --peer <child:port> --task <child task> --local-task <this task> --json

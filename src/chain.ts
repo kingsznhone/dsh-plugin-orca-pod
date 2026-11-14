@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { verifyGrant } from "./crypto.ts";
 import {
   TaskError,
+  isModelSelection,
   isPermissionMode,
   type Grant,
   type PermissionRequest,
@@ -62,6 +63,13 @@ export function validatePodMetadata(
       "pod.permission_mode must be one of read-only, workspace-write, danger-full-access",
     );
   }
+  const model = pod["model"];
+  if (model !== undefined && !isModelSelection(model)) {
+    throw new TaskError(
+      "bad_request",
+      "pod.model must name a provider, model and optional reasoning_effort",
+    );
+  }
   const path = (chain as string[] | undefined) ?? [];
   if (path.includes(selfOrcaNodeId)) {
     throw new TaskError(
@@ -72,6 +80,7 @@ export function validatePodMetadata(
   const normalized: PodTaskMetadata = { hop: typeof hop === "number" ? hop : 0, chain: path };
   if (typeof root === "string") normalized.root = root;
   if (isPermissionMode(permissionMode)) normalized.permission_mode = permissionMode;
+  if (isModelSelection(model)) normalized.model = model;
   return normalized;
 }
 

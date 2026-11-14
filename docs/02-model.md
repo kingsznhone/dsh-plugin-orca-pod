@@ -82,6 +82,10 @@ join（一次，凭 workgroup_id + 密码）→ 拿到 target 自述 + 全量目
   "workspace": { "used_bytes": 12345678, "quota_bytes": 5368709120 },
   "busy": null,
   "max_task_ttl_s": 3600,
+  "models": [
+    { "provider": "deepseek", "model": "deepseek-flash", "name": "DeepSeek Flash" }
+  ],
+  "default_model": { "provider": "deepseek", "model": "deepseek-flash" },
   "joined_at": "2026-11-14T04:01:02Z",
   "server_version": "0.1.0"
 }
@@ -99,6 +103,7 @@ Linux orca node 的 `os` 形如：
 - `available_bytes` 是采集瞬间值，会变；它不进 `runtime_digest`（否则心跳每次都要拉全量）。`digest` 只覆盖稳定字段：os/cpu/memory.total/gpus/dsh/plugin/caps。
 - `workspace` 只报**用量与配额**，不含路径；真实目录由目标 orca node 自己解析。忙闲是动态字段：`busy` 为 `null` 或 `{ "task_id", "origin_orca_node", "since" }`，由本人写、心跳刷新；origin 的 UI 据此显示“B 正在跑 X”。
 - `max_task_ttl_s` 是本机单任务硬预算（`task_timeout_s`，默认 3600），随 self record、心跳成员记录与 Agent Card 公布；origin 派任务时据此拆解，超时的任务会被目标机直接杀掉（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
+- `models` 与 `default_model` 是本机可执行模型的目录与默认选择：`models` 是 `[{provider, model, name?, description?}]`（去重、上限 128），`default_model` 是 `{provider, model, reasoning_effort?}` 或 `null`。它们只出现在同组成员可见的记录里（**不进公开 Agent Card**），随 join/心跳目录传播；调用方用 `metadata.pod.model` 选择非默认模型（[§6.16](06-execution.md#616-按任务选择模型)），目标侧只会用 ACP 会话的 configuration options 落地，选不到就明确失败。
 - `endpoints` 是有序列表（1–8 个），第一个是 primary：Agent Card 的 `url`、blob 直链、CLI 展示都用它。顺序即拨号优先级，覆盖 IPv6/IPv4 双栈与“局域网直连 + 公网反代”矩阵；对端逐地址尝试，一个地址不可达不等于 orca node 离线，上次成功的地址会排到最前重试（[§4.3](04-transport.md#43-反向代理注意事项)）。列表只影响“别人怎么拨我”，监听地址仍由 `bind` 决定。
 - 采集失败不阻塞启动：缺字段就省略，并在 `runtime.error` 里写原因。
 

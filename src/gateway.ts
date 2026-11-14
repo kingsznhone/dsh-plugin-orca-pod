@@ -19,6 +19,7 @@ import {
   type VerifiedAuth,
 } from "./crypto.ts";
 import {
+  isModelSelection,
   PROTOCOL_VERSION,
   membersDigest,
   normalizeEndpoints,
@@ -29,6 +30,8 @@ import {
   type HeartbeatResponse,
   type JoinResponse,
   type MembersResponse,
+  type ModelOffer,
+  type ModelSelection,
   type PeerView,
   type RuntimeInfo,
   type SelfRecord,
@@ -38,6 +41,7 @@ import {
   type A2AMessage,
   type SubmitTaskInput,
 } from "./protocol.ts";
+import { validateModelOffers } from "./config.ts";
 import { DEFAULT_BLOB_TTL_S } from "./blobs.ts";
 import { BlobTooLargeError, type BlobStore, type PeerStore } from "./storage.ts";
 import { createFileBlobRegistry, type FileBlobRegistry } from "./blob-files.ts";
@@ -53,6 +57,8 @@ export type GatewayOrcaNode = {
   max_task_ttl_s?: number;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
   linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
+  /** Live ambient fields owned by the node: model catalog, display name (§6.16). */
+  self?: () => SelfRecord;
 };
 
 export type GatewayDeps = {
@@ -176,10 +182,23 @@ function membership(deps: GatewayDeps): {
   roster: PeerView[];
   digest: string;
 } {
-  const self: SelfRecord = {
+  // The orca node owns the ambient self record (model catalog, display name);
+  // the gateway only refreshes the fields that change per request.
+  const base: SelfRecord = deps.orcaNode.self?.() ?? {
     orca_node_id: deps.orcaNode.orca_node_id,
     display_name: deps.orcaNode.display_name,
     endpoints: deps.orcaNode.endpoints,
+    workgroup_id: deps.orcaNode.workgroup_id,
+    protocol_version: PROTOCOL_VERSION,
+    runtime: deps.runtime,
+    runtime_digest: runtimeDigest(deps.runtime),
+    state: "online",
+    busy: deps.tasks.busy(),
+    last_recv_at: nowIso(),
+    ...(deps.orcaNode.max_task_ttl_s === undefined ? {} : { max_task_ttl_s: deps.orcaNode.max_task_ttl_s }),
+  };
+  const self: SelfRecord = {
+    ...base,
     workgroup_id: deps.orcaNode.workgroup_id,
     protocol_version: PROTOCOL_VERSION,
     runtime: deps.runtime,
@@ -472,6 +491,20 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     }
     const runtime = runtimeValue as RuntimeInfo | null;
     const peerTtl = body["max_task_ttl_s"];
+    let modelOffers: ModelOffer[] | undefined;
+    let defaultModel: ModelSelection | null | undefined;
+    try {
+      const rawModels = body["models"];
+      if (rawModels !== undefined) modelOffers = validateModelOffers(rawModels);
+      const rawDefault = body["default_model"];
+      if (rawDefault === null) defaultModel = null;
+      else if (rawDefault !== undefined) {
+        if (!isModelSelection(rawDefault)) throw new Error("default_model must name a provider and model");
+        defaultModel = rawDefault;
+      }
+    } catch (error) {
+      return badRequest(reply, error instanceof Error ? error.message : String(error));
+    }
 
     deps.peers.upsert({
       orca_node_id: orcaNodeId,
@@ -485,6 +518,8 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       ...(typeof peerTtl === "number" && Number.isFinite(peerTtl) && peerTtl > 0
         ? { max_task_ttl_s: peerTtl }
         : {}),
+      ...(modelOffers !== undefined ? { models: modelOffers } : {}),
+      ...(defaultModel !== undefined ? { default_model: defaultModel } : {}),
     });
 
         const { self, digest } = membership(deps);

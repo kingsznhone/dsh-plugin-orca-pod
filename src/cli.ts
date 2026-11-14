@@ -11,14 +11,14 @@ import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
 import { loadIdentity, type NodeIdentity } from "./identity.ts";
 import { createOrcaNode, createPersistentStorage, joinRoster } from "./index.ts";
 import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
-import { permissionRequestOf } from "./protocol.ts";
+import { parseModelSpec, permissionRequestOf } from "./protocol.ts";
 import { createSqliteDispatchStore, createSqliteFileBlobStore } from "./sqlite.ts";
 
 const USAGE = `orca-node
 
 Usage:
   orca-node serve   --config <path> [--peer <url>]        start an orca node from a config file
-  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--json]
+  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
@@ -292,6 +292,15 @@ async function send(args: string[]): Promise<number> {
   let metadata = metadataRaw === undefined ? undefined : (JSON.parse(metadataRaw) as Record<string, unknown>);
   const pod = (metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
   if (permissionModeFlag !== undefined) pod["permission_mode"] = permissionModeFlag;
+  const modelFlag = flag(flags, "model");
+  const reasoningFlag = flag(flags, "reasoning-effort");
+  if (modelFlag !== undefined) {
+    const selection = parseModelSpec(modelFlag, reasoningFlag);
+    if (selection === null) throw new Error("--model must be a provider/model pair, e.g. deepseek/deepseek-flash");
+    pod["model"] = selection;
+  } else if (reasoningFlag !== undefined) {
+    throw new Error("--reasoning-effort requires --model");
+  }
   const uploads: Array<{ blob_id: string; size: number; name: string }> = [];
   const seen = new Set<string>();
   for (const file of flagValues(args, "file")) {

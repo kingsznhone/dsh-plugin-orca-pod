@@ -6,7 +6,7 @@
  * and callers poll `pod_status` for the result.
  */
 
-import { isHttpEndpoint, isTerminal, permissionRequestOf } from "../protocol.ts"
+import { isHttpEndpoint, isTerminal, parseModelSpec, permissionRequestOf } from "../protocol.ts"
 import type { PermissionRequest } from "../protocol.ts"
 import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
@@ -143,6 +143,15 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
           description:
             "Origin session permission mode; the target caps it by its own policy and never runs above it (§7.10).",
         },
+        model: {
+          type: "string",
+          description:
+            "Optional model for the target task as provider/model (§6.16). The target must advertise it and run the ACP executor.",
+        },
+        reasoning_effort: {
+          type: "string",
+          description: "Optional reasoning effort for the selected model; only meaningful together with model.",
+        },
       },
       required: ["peer", "text"],
       additionalProperties: false,
@@ -154,11 +163,25 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
       const text = requiredString(record, "text")
       const echo = optionalEchoScript(record)
       const permissionMode = typeof record["permission_mode"] === "string" ? record["permission_mode"] : undefined
+      const rawModel = record["model"]
+      if (rawModel !== undefined && typeof rawModel !== "string") {
+        throw describeError("pod_send", new Error("model must be a provider/model string"))
+      }
+      const reasoningEffort =
+        typeof record["reasoning_effort"] === "string" ? record["reasoning_effort"] : undefined
+      const model = rawModel === undefined ? null : parseModelSpec(rawModel, reasoningEffort)
+      if (rawModel !== undefined && model === null) {
+        throw describeError("pod_send", new Error("model must be a provider/model string"))
+      }
       const orcaNode = await requireNode(handle)
       const message: A2AMessage = { role: "user", parts: [{ kind: "text", text }] }
+      const pod: Record<string, unknown> = {
+        ...(permissionMode === undefined ? {} : { permission_mode: permissionMode }),
+        ...(model === null ? {} : { model }),
+      }
       const metadata: Record<string, unknown> = {
         ...(echo === undefined ? {} : { echo }),
-        ...(permissionMode === undefined ? {} : { pod: { permission_mode: permissionMode } }),
+        ...(Object.keys(pod).length === 0 ? {} : { pod }),
       }
       const input: SubmitTaskInput =
         Object.keys(metadata).length === 0 ? { message } : { message, metadata }

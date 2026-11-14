@@ -5,9 +5,12 @@ import { deriveWorkgroupKey } from "./crypto.ts";
 import { isNodeId, loadOrCreateIdentity, shortenNodeId, type NodeIdentity } from "./identity.ts";
 import {
   DEFAULT_PORT,
+  isModelSelection,
   isPermissionMode,
   isWorkgroupId,
   normalizeEndpoints,
+  type ModelOffer,
+  type ModelSelection,
   type OrcaNodeId,
   type PermissionMode,
   type WorkgroupId,
@@ -75,6 +78,10 @@ export type OrcaNodeConfig = {
   allow_public_peers?: boolean;
   /** Reject loopback candidate endpoints; defaults to allowing them for same-host meshes (§7.7). */
   allow_loopback_peers?: boolean;
+  /** Model routes an ACP executor may switch to; origins pick one per task (§6.16). */
+  models?: ModelOffer[];
+  /** Default ACP session model when a task names none; usually the DSH default (§6.16). */
+  default_model?: ModelSelection;
 };
 
 export type CreateOrcaNodeConfigOptions = {
@@ -99,7 +106,55 @@ export type CreateOrcaNodeConfigOptions = {
   maxInputBytes?: number;
   allowPublicPeers?: boolean;
   allowLoopbackPeers?: boolean;
+  /** Model routes the ACP executor advertises; each entry needs provider and model (§6.16). */
+  models?: ModelOffer[];
+  /** Default ACP session model advertised to peers (§6.16). */
+  defaultModel?: ModelSelection;
 };
+
+const MAX_MODEL_OFFERS = 128;
+
+/** Validate the advertised model catalog (§6.16); throws with the offending field. */
+export function validateModelOffers(value: unknown): ModelOffer[] {
+  if (!Array.isArray(value)) throw new Error("models must be an array");
+  if (value.length > MAX_MODEL_OFFERS) throw new Error(`models must have at most ${MAX_MODEL_OFFERS} entries`);
+  return value.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error(`models[${index}] must be an object`);
+    }
+    const record = entry as Record<string, unknown>;
+    const provider = record["provider"];
+    const model = record["model"];
+    const name = record["name"];
+    const description = record["description"];
+    if (typeof provider !== "string" || provider.length === 0) {
+      throw new Error(`models[${index}].provider must be a non-empty string`);
+    }
+    if (typeof model !== "string" || model.length === 0) {
+      throw new Error(`models[${index}].model must be a non-empty string`);
+    }
+    if (name !== undefined && typeof name !== "string") {
+      throw new Error(`models[${index}].name must be a string`);
+    }
+    if (description !== undefined && typeof description !== "string") {
+      throw new Error(`models[${index}].description must be a string`);
+    }
+    return {
+      provider,
+      model,
+      ...(name === undefined ? {} : { name }),
+      ...(description === undefined ? {} : { description }),
+    };
+  });
+}
+
+/** Validate one provider/model route, optionally pinned to a reasoning effort. */
+export function validateModelSelection(value: unknown): ModelSelection {
+  if (!isModelSelection(value)) {
+    throw new Error("model must name a provider, model and optional reasoning_effort");
+  }
+  return value;
+}
 
 export function defaultDataRoot(): string {
   return process.env.ORCA_POD_HOME ?? join(homedir(), ".orca-pod");
@@ -153,6 +208,10 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
       throw new Error(`${name} must be a positive number`);
     }
   }
+  const models =
+    options.models === undefined ? undefined : validateModelOffers(options.models);
+  const defaultModel =
+    options.defaultModel === undefined ? undefined : validateModelSelection(options.defaultModel);
   const key = deriveWorkgroupKey(options.workgroupId, options.password);
   const requestedEndpoints = options.endpoints ?? [];
   const normalized = normalizeEndpoints(requestedEndpoints);
@@ -185,6 +244,8 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
   ...(options.maxInputBytes !== undefined ? { max_input_bytes: options.maxInputBytes } : {}),
   ...(options.allowPublicPeers !== undefined ? { allow_public_peers: options.allowPublicPeers } : {}),
   ...(options.allowLoopbackPeers !== undefined ? { allow_loopback_peers: options.allowLoopbackPeers } : {}),
+  ...(models !== undefined ? { models } : {}),
+  ...(defaultModel !== undefined ? { default_model: defaultModel } : {}),
   };
 }
 
@@ -355,6 +416,10 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
       config[key] = value;
     }
   }
+  const models = record["models"];
+  if (models !== undefined) config.models = validateModelOffers(models);
+  const defaultModel = record["default_model"];
+  if (defaultModel !== undefined) config.default_model = validateModelSelection(defaultModel);
   return config;
 }
 

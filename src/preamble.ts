@@ -26,6 +26,7 @@ export function orchestrationPreamble(options: PreambleOptions): string | null {
     `Read notes/STATUS.md first if it exists, and keep your notes current before you finish.`,
     `To delegate to another orca node, use the CLI instead of raw HTTP:`,
     `  ${cli} send${rootFlag} --peer <host:port> --text - --local-task ${options.taskId} --json`,
+    `  add --model <provider/model> [--reasoning-effort <effort>] only when the target advertises it.`,
     `With --local-task, this node watches the child and parks this task when the child asks`,
     `for a permission; the origin decides once and the grant flows back. You do not need to escalate yourself.`,
     `Check a child with: ${cli} wait${rootFlag} --peer <host:port> --task <id> --local-task ${options.taskId} --json`,

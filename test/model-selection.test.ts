@@ -1,0 +1,126 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  createOrcaNodeConfig,
+  validateModelOffers,
+  validateModelSelection,
+  type CreateOrcaNodeConfigOptions,
+} from "../src/config.ts";
+import { discoverModelCatalog } from "../src/plugin/models.ts";
+import type { HostContext } from "../src/plugin/dsh.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
+
+const LIVE: OrcaNode[] = [];
+const ROOTS: string[] = [];
+
+afterEach(async () => {
+  for (const node of LIVE.splice(0)) await node.stop();
+  for (const root of ROOTS.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+async function startNode(
+  options: Omit<CreateOrcaNodeConfigOptions, "workgroupId" | "password">,
+): Promise<OrcaNode> {
+  const root = await mkdtemp(join(tmpdir(), "orca-model-"));
+  ROOTS.push(root);
+  const config = createOrcaNodeConfig({ workgroupId: "model-test", password: "correct horse", dataRoot: root, port: 0, ...options });
+  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+  await node.start();
+  LIVE.push(node);
+  return node;
+}
+
+async function until<T>(check: () => T | null, timeoutMs = 5_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = check();
+    if (value !== null) return value;
+    if (Date.now() > deadline) throw new Error("condition did not become true in time");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+describe("model catalog", () => {
+  it("validates offers and selections", () => {
+    expect(validateModelOffers([{ provider: "deepseek", model: "deepseek-flash" }])).toHaveLength(1);
+    expect(() => validateModelOffers([{ provider: "", model: "x" }])).toThrow();
+    expect(() => validateModelOffers([{ provider: "p" }])).toThrow();
+    expect(() => validateModelOffers(Array.from({ length: 129 }, () => ({ provider: "p", model: "m" })))).toThrow();
+    expect(validateModelSelection({ provider: "p", model: "m", reasoning_effort: "high" })).toEqual({
+      provider: "p",
+      model: "m",
+      reasoning_effort: "high",
+    });
+    expect(() => validateModelSelection({ provider: "p" })).toThrow();
+    expect(() => validateModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toThrow();
+  });
+
+  it("advertises the catalog on join and in the peer directory", async () => {
+    const models = [
+      { provider: "deepseek", model: "deepseek-flash", name: "Flash" },
+      { provider: "deepseek", model: "deepseek-v4-pro", name: "Pro" },
+    ];
+    const a = await startNode({ models });
+    const b = await startNode({
+      models: [{ provider: "deepseek", model: "deepseek-flash" }],
+      defaultModel: { provider: "deepseek", model: "deepseek-flash" },
+    });
+    await b.join(a.endpoints[0]!);
+    const peer = await until(() => a.members().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
+    expect(peer.models).toHaveLength(1);
+    expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
+    expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash" });
+    // The join response carries the directory, so b sees a's catalog too.
+    const seenByB = await until(() => b.members().find((member) => member.orca_node_id === a.orcaNodeId) ?? null);
+    expect(seenByB.models).toHaveLength(2);
+  });
+
+  it("fails a task that asks for a model when the executor cannot select one", async () => {
+    const node = await startNode({});
+    const submitted = await node.sendTask(node.endpoints[0]!, {
+      message: { role: "user", parts: [{ kind: "text", text: "select a model" }] },
+      metadata: { pod: { model: { provider: "deepseek", model: "deepseek-flash" } } },
+    });
+    const deadline = Date.now() + 5_000;
+    let task = await node.getTask(node.endpoints[0]!, submitted.id);
+    while (task.status.state !== "failed" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      task = await node.getTask(node.endpoints[0]!, submitted.id);
+    }
+    expect(task.status.state).toBe("failed");
+    expect(task.status.reason).toBe("model_unsupported");
+  });
+
+  it("discovers the catalog from the DSH host services", async () => {
+    const ctx = {
+      get(name: string): unknown {
+        if (name === "llm") {
+          return {
+            listProviders: () => [
+              { id: "deepseek", name: "DeepSeek" },
+              { id: "broken", name: "Broken" },
+            ],
+            listModels: async (provider: string) => {
+              if (provider === "broken") throw new Error("no adapter");
+              return [
+                { id: "deepseek-flash", name: "Flash", description: "fast" },
+                { id: "deepseek-v4-pro", name: "Pro" },
+              ];
+            },
+          };
+        }
+        if (name === "agentDefaultModel") {
+          return { currentSelection: () => ({ provider: "deepseek", model: "deepseek-flash" }) };
+        }
+        return undefined;
+      },
+    } as unknown as HostContext;
+    const catalog = await discoverModelCatalog(ctx);
+    expect(catalog.models.map((model) => model.model)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(catalog.models[0]?.description).toBe("fast");
+    expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });
+  });
+});

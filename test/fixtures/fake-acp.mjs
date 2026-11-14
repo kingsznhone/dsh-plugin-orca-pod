@@ -114,6 +114,20 @@ function onRequest(message) {
     respond(id, { sessionId: params?.sessionId });
     return;
   }
+  if (method === "session/set_config_option") {
+    log({
+      method: "session/set_config_option",
+      sessionId: params?.sessionId,
+      configId: params?.configId,
+      value: params?.value,
+    });
+    if (mode === "model-reject") {
+      fail(id, `unknown model option: ${String(params?.value)}`);
+      return;
+    }
+    respond(id, { configOptions: [] });
+    return;
+  }
   if (method === "session/prompt") {
     promptTurn(id, params ?? {});
     return;
