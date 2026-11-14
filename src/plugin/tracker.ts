@@ -40,6 +40,12 @@ export interface TrackerOptions {
   coalesceMs?: number
   /** Consecutive wake-ups allowed without the agent running in between. */
   maxConsecutiveWakes?: number
+  /**
+   * Returns true when a `pod_approve` call is already parked on this task, so the
+   * UI card (not a chat notice) is the approval surface. The request is still
+   * recorded, the notice is just not injected (§7.12: one decision channel).
+   */
+  isPromptParked?: (peer: string, taskId: string) => boolean
   logger?: HostLogger
 }
 
@@ -180,8 +186,11 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
           // tracked until it finishes or the request changes.
           if (request.request_id !== entry.seenRequest) {
             entry.seenRequest = request.request_id
-            finished.push({ ...entry, kind: "permission", view, request })
-            scheduleFlush()
+            const parked = options.isPromptParked?.(entry.peer, entry.taskId) === true
+            if (!parked) {
+              finished.push({ ...entry, kind: "permission", view, request })
+              scheduleFlush()
+            }
           }
           continue
         }

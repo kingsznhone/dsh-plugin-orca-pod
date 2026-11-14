@@ -399,7 +399,12 @@ window.__ModuleLoader__.load({
       color: "var(--dsw-alias-label-primary)",
     };
     const APPROVAL_ROW = { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" };
-    const DOCK_WRAP = { display: "flex", flexDirection: "column", gap: 8, padding: "8px 0" };
+    // The dock card sits inline above the composer, so it spans the column and
+    // drops the floating shadow; the popup keeps the floating treatment for
+    // sessions that are not on screen.
+    const APPROVAL_DOCK_CARD = { ...APPROVAL_CARD, width: "100%", padding: "12px 14px", boxShadow: "none" };
+    const APPROVAL_POPUP_CARD = { ...APPROVAL_CARD, width: "min(380px, calc(100vw - 32px))" };
+    const DOCK_WRAP = { display: "flex", flexDirection: "column", gap: 8, padding: "6px 0 10px" };
     const POPUP_WRAP = {
       position: "fixed",
       right: 16,
@@ -1010,7 +1015,7 @@ window.__ModuleLoader__.load({
       const meta = prompt.peer + " · " + t("apTask") + " " + prompt.task_id;
       return h(
         "div",
-        { style: APPROVAL_CARD },
+        { style: props.background ? APPROVAL_POPUP_CARD : APPROVAL_DOCK_CARD },
         h(
           "div",
           { style: { fontFamily: FONT_FAMILY, fontSize: 14, fontWeight: 600, lineHeight: "22px" } },

@@ -235,7 +235,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 **实现状态（Phase 3 第五版，默认无限等待）**：审批不再默认 120 秒过期。`permission_request.expires_at` 变成可选字段，只有配置了 `approval_timeout_s` 的 orca node 才会填；没配就是无限等待——人可能正在吃饭，任务不该因此失败。对应地，`input-required` 期间 task TTL（`task_ttl_s`）暂停，`resume` 后才重新计时，否则“等人”会被 TTL 当成“超时”。配置 `approval_timeout_s` 后，到点自动拒绝对应的挂起请求：先向下游（`pending_escalation`/`relay`）发 `permission_denied`，再让本 task `failed(permission_timeout)`。CLI 的 `wait`/`escalate` 的 `--timeout` 也变成可选：不给就一直等到 origin 决策。grant 范围内按工具/路径自动放行（预授权的自动化）仍未实现。
 
-**实现状态（Phase 3 第七版，会话内审批呈现）**：`pod_approve` 不再直接弹 DSH 原生卡，而是把请求 park 在插件的 `prompts` 注册表里（`src/plugin/prompts.ts`），**不设超时**——desktop 主控会话一直阻塞到人出现；headless/CLI/ACP 永远有上游，由上游的 origin 决定，所以不需要“无 UI 兜底”。目标节点收到权限请求即挂起 task，上游批准后 grant 下发、任务继续。client 侧三个落点共用同一决议通道：会话正在看时在 `conversation.input.dock` 贴聊天卡（按 `prompt.agent_id === sessionId` 过滤）；后台会话的请求由 `shell.overlay` 弹窗展示；面板 Pending approvals 列表照旧、点允许/拒绝即 `prompts.resolve` 唤醒被 park 的工具调用（`admin.approve/deny` 先 resolve prompt，再轮询到任务离开 `input-required`）。
+**实现状态（Phase 3 第七版，会话内审批呈现）**：`pod_approve` 不再直接弹 DSH 原生卡，而是把请求 park 在插件的 `prompts` 注册表里（`src/plugin/prompts.ts`），**不设超时**——desktop 主控会话一直阻塞到人出现；headless/CLI/ACP 永远有上游，由上游的 origin 决定，所以不需要“无 UI 兜底”。目标节点收到权限请求即挂起 task，上游批准后 grant 下发、任务继续。client 侧三个落点共用同一决议通道：会话正在看时在 `conversation.input.dock` 贴聊天卡（按 `prompt.agent_id === sessionId` 过滤）；后台会话的请求由 `shell.overlay` 弹窗展示；面板 Pending approvals 列表照旧、点允许/拒绝即 `prompts.resolve` 唤醒被 park 的工具调用（`admin.approve/deny` 先 resolve prompt，再轮询到任务离开 `input-required`）。当 `pod_approve` 已经 park 时，tracker 只记录该请求、不再注入“needs permission”聊天通知（`TrackerOptions.isPromptParked`），避免同一个人被卡片和通知问两遍、或通知排在忙碌 turn 后面变成噪音。
 
 #### 链式调用：授权向下收窄，升级向上回传
 

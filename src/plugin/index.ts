@@ -72,12 +72,18 @@ export function apply(ctx: HostContext, config: Config): void {
   const logger = ctx.logger ?? consoleLogger
   const handle = startPod(config, logger)
 
-  // Background task tracker: polls tasks dispatched by this session and returns
-  // their terminal state to the dispatching agent.
-  const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
-
   // Parked `pod_approve` calls: the panel, chat card and popup answer them.
   const prompts = createApprovalPrompts()
+
+  // Background task tracker: polls tasks dispatched by this session and returns
+  // their terminal state to the dispatching agent. A permission request that is
+  // already parked in the prompt registry is answered by the UI card, so the
+  // tracker records it without injecting a redundant chat notice.
+  const tracker = createTracker(() => handle.runtime.orcaNode, {
+    logger,
+    isPromptParked: (peer, taskId) =>
+      prompts.list().some((prompt) => prompt.peer === peer && prompt.task_id === taskId),
+  })
 
   // Headless and ACP executors run in their own `dsh` subprocesses and cannot
   // see this host's tools, so the CLI is handed to them as a user skill.

@@ -198,6 +198,21 @@ describe("createTracker", () => {
     tracker.stop()
   })
 
+  it("leaves a parked permission request to the UI card", async () => {
+    const agent = new FakeAgent()
+    agent.status = "running"
+    const views = new Map([["01TASK", permissionView("01TASK", "req-1")]])
+    const tracker = createTracker(() => fakeNode(views), { ...fast, isPromptParked: () => true })
+    tracker.track(agent, "http://peer:11811", "01TASK")
+
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // The pod_approve call is already parked, so the promise waits on the UI
+    // card; injecting a chat notice would only queue a redundant message.
+    expect(agent.followed).toHaveLength(0)
+    expect(tracker.size()).toBe(1)
+    tracker.stop()
+  })
+
   it("names the orca nodes a permission request travelled through", () => {
     const request = permissionRequestOf(permissionView("01TASK", "req-1"))
     if (request === null) throw new Error("permission request missing")
