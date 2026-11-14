@@ -140,7 +140,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | Slot | id | 作用 |
 |---|---|---|
 | `settings.section` | `orca-pod` | 一页设置面板（order 60，排在 Plugins 之后） |
-| `sidebar.footer.action` | `orca-pod` | 侧边栏底部 Settings 旁的动作按钮（面板收起时只显示 `◈` 图标，`wide` 时带文字） |
+| `sidebar.footer.action` | `orca-pod` | 侧边栏底部 Settings 旁的动作按钮（面板收起时只显示 `◈` 图标，`wide` 时带文字）；按钮同时是状态灯：有挂起审批为橙黄、有在线成员为绿、未连接为灰，悬停提示待审批数量 |
 | `shell.overlay` | `orca-pod.panel` | 居中模态浮层（`padding:24`、半透明遮罩）；点侧边栏按钮打开，按 Esc、点遮罩或 `×` 关闭 |
 | `conversation.input.dock` | `orca-pod.approval-dock` | **当前会话**里被 park 的审批请求：聊天卡（按 `prompt.agent_id` 匹配本会话；卡片宽度铺满输入列、无浮层阴影，紧贴 composer 上方），卡上允许/拒绝/在面板中处理 |
 | `shell.overlay` | `orca-pod.approval-popup` | **后台会话**的审批请求：框内右下弹窗（不受当前会话过滤），同样允许/拒绝/在面板中处理 |

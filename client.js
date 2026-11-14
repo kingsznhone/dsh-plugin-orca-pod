@@ -1511,13 +1511,28 @@ window.__ModuleLoader__.load({
 
     /** Sidebar-foot button: opens the floating Orca Pod panel. */
     function SidebarAction(props) {
+      useLocaleTick();
       const wide = !props || props.wide !== false;
+      // The footer item is the always-visible status light (§9.2): green while
+      // the mesh has peers, amber while a human decision is waiting, grey otherwise.
+      const { state } = usePodState();
+      const members = state && Array.isArray(state.members) ? state.members : [];
+      const approvals = state && Array.isArray(state.approvals) ? state.approvals : [];
+      const prompts = state && Array.isArray(state.prompts) ? state.prompts : [];
+      const pending = approvals.length + prompts.length;
+      const color =
+        pending > 0
+          ? "var(--dsw-alias-state-warn-primary)"
+          : members.length > 0
+            ? "var(--dsw-alias-state-success-primary)"
+            : "var(--dsw-alias-label-secondary)";
+      const title = pending > 0 ? t("nav") + " · " + pending + " " + t("pendingApprovals") : t("nav");
       return h(
         "button",
         {
           type: "button",
-          style: FOOTER_ACTION,
-          title: t("nav"),
+          style: { ...FOOTER_ACTION, color },
+          title,
           onClick: () => setPanelOpen(!panelOpen),
         },
         h("span", { style: { fontSize: 16, lineHeight: 1 } }, "◈"),
