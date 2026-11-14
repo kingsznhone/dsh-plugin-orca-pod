@@ -67,6 +67,8 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 
 执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless"`，`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`。详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)。
 
+多跳委派也在本机 `config.json` 里：`"delegation": { "max_hop": 1 }`（0–3，默认 0，即拒绝 `hop > 0` 的子任务；`max_fanout` 预留）。超过上限返回 `400 hop_limit`，祖先回环返回 `403 ancestor_call_forbidden`。
+
 ### 安全注意（原型）
 
 `workgroup_password` 目前直接写在 `cordis.patch.yml` 里，该文件是明文、可能被分享或记进日志。正式版本应从 DSH credentials 服务读取，patch/config 里不出现密钥。

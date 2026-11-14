@@ -200,7 +200,9 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 - 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用 orca node 反复索权。
 - origin 侧支持**预授权**（避免每次都弹）：按 `(workgroup, target, tool)` 记一条本地策略，如“允许 N7K3QM 在 P2W8XA 上跑 shell，单次 ≤15 分钟”。预授权记录进审计。
 
-**实现状态（Phase 3 第一版）**：target 在挂起时生成 `permission_request`（`request_id`、`task_id`、`tool`、`requested`、`requested_by`、`via`、`expires_at`）写进 `status.message`；只有任务 origin 能 `message/send` resume（其他成员 `403 not_task_origin`，但读取不受限）。插件侧由 tracker 看到该请求即强制 `followup` 唤醒派发它的 agent（不受连续唤醒预算限制），模型调用 `pod_approve(peer, task_id, decision, reason?)`；工具在 open turn 内调 DSH `approval.request` 弹卡，只有 `allowed-once` 才签 grant，其余 outcome 与显式 `deny` 都发 `permission_denied`。逐跳上升/收窄（链式）尚未实现，规则见下节。
+**实现状态（Phase 3 第一版）**：target 在挂起时生成 `permission_request`（`request_id`、`task_id`、`tool`、`requested`、`requested_by`、`via`、`expires_at`）写进 `status.message`；只有任务 origin 能 `message/send` resume（其他成员 `403 not_task_origin`，但读取不受限）。插件侧由 tracker 看到该请求即强制 `followup` 唤醒派发它的 agent（不受连续唤醒预算限制），模型调用 `pod_approve(peer, task_id, decision, reason?)`；工具在 open turn 内调 DSH `approval.request` 弹卡，只有 `allowed-once` 才签 grant，其余 outcome 与显式 `deny` 都发 `permission_denied`。
+
+**实现状态（Phase 3 第二版）**：链式第一版已实现——`chain.ts` 提供 `childPodMetadata`、`validatePodMetadata`、`grantCovers`、`deriveChildGrant`；`approveTask(..., { parentGrant })` 先校验父 grant 签名与覆盖范围（同 tool、未过期），再派生 child grant（`chain` 追加当前 orca node、`target_orca_node` 指向请求者、`expires_at` 不晚于父），派生失败抛 `escalation_required` 或 `grant_expired`，不发请求。hop 与祖先链校验见 [§5.1](05-tasks.md#51-任务标识与元数据)。**未实现**：B 把 `permission_request` 自动逐跳上升的 relay（当前仍需 agent/宿主把问题与父 grant 送进 `approveTask`，没有独立的 relay API）；`permission_mode`/`limits` 的收窄（签名结构只有 `mode`）；中间节点按本地策略自动放行。
 
 #### 链式调用：授权向下收窄，升级向上回传
 

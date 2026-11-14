@@ -6,6 +6,7 @@
 
 export * from "./protocol.ts";
 export * from "./crypto.ts";
+export * from "./chain.ts";
 export * from "./config.ts";
 export * from "./storage.ts";
 export * from "./sqlite.ts";

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { validatePodMetadata } from "./chain.ts";
 import { verifyGrant } from "./crypto.ts";
 import { echoScriptFrom, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
 import {
@@ -64,6 +65,8 @@ export type TaskRunnerDeps = {
   key?: Buffer;
   /** How long a suspended permission request stays valid, default 120s. */
   permissionTtlS?: number;
+  /** Largest `pod.hop` this orca node accepts; default 0 (single hop only, §5.1). */
+  maxHop?: number;
 };
 
 /**
@@ -226,6 +229,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
 
   function submit(input: SubmitTaskInput): TaskView {
     if (activeTaskId !== null) throw new TaskError("orca_node_busy", "orca node is busy with another task");
+    validatePodMetadata(input.metadata, selfOrcaNodeId, deps.maxHop ?? 0);
     try {
       echoScriptFrom(input.metadata); // validate before a task exists (§6.3)
     } catch (error) {

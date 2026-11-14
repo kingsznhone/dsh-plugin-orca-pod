@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveWorkgroupKey } from "./crypto.ts";
+import type { DelegationConfig } from "./chain.ts";
 import {
   DEFAULT_PORT,
   generateOrcaNodeId,
@@ -37,6 +38,8 @@ export type OrcaNodeConfig = {
   created_at: string;
   executor?: ExecutorKind;
   headless?: HeadlessExecutorConfig;
+  /** Multi-hop limits this orca node enforces on incoming tasks (§5.1). */
+  delegation?: DelegationConfig;
 };
 
 export type CreateOrcaNodeConfigOptions = {
@@ -50,6 +53,7 @@ export type CreateOrcaNodeConfigOptions = {
   endpoint?: string | null;
   executor?: ExecutorKind;
   headless?: HeadlessExecutorConfig;
+  delegation?: DelegationConfig;
 };
 
 export function defaultDataRoot(): string {
@@ -79,6 +83,7 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     created_at: new Date().toISOString(),
     ...(options.executor ? { executor: options.executor } : {}),
     ...(options.headless ? { headless: options.headless } : {}),
+    ...(options.delegation ? { delegation: options.delegation } : {}),
   };
 }
 
@@ -117,6 +122,30 @@ function parseHeadlessConfig(value: unknown): HeadlessExecutorConfig | undefined
   return config;
 }
 
+function parseDelegationConfig(value: unknown): DelegationConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("config.delegation must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const delegation: DelegationConfig = {};
+  const maxHop = record["max_hop"];
+  if (maxHop !== undefined) {
+    if (typeof maxHop !== "number" || !Number.isInteger(maxHop) || maxHop < 0 || maxHop > 3) {
+      throw new Error("config.delegation.max_hop must be an integer between 0 and 3");
+    }
+    delegation.max_hop = maxHop;
+  }
+  const maxFanout = record["max_fanout"];
+  if (maxFanout !== undefined) {
+    if (typeof maxFanout !== "number" || !Number.isInteger(maxFanout) || maxFanout < 0) {
+      throw new Error("config.delegation.max_fanout must be a non-negative integer");
+    }
+    delegation.max_fanout = maxFanout;
+  }
+  return delegation;
+}
+
 export function validateConfig(value: unknown): OrcaNodeConfig {
   if (typeof value !== "object" || value === null) throw new Error("config must be an object");
   const record = value as Record<string, unknown>;
@@ -147,6 +176,8 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   }
   const headless = parseHeadlessConfig(record["headless"]);
   if (headless) config.headless = headless;
+  const delegation = parseDelegationConfig(record["delegation"]);
+  if (delegation) config.delegation = delegation;
   return config;
 }
 

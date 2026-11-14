@@ -1,0 +1,318 @@
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  childPodMetadata,
+  deriveChildGrant,
+  grantCovers,
+  validatePodMetadata,
+  type DelegationConfig,
+} from "../src/chain.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
+import { deriveWorkgroupKey, signGrant } from "../src/crypto.ts";
+import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
+import {
+  permissionRequestOf,
+  type PodTaskMetadata,
+  type SignedGrant,
+  type TaskState,
+  type TaskView,
+} from "../src/protocol.ts";
+
+const WORKGROUP = "orca-chain";
+const PASSWORD = "chain-secret";
+
+let nodes: OrcaNode[] = [];
+let dataRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(nodes.map((node) => node.stop().catch(() => undefined)));
+  nodes = [];
+  for (const root of dataRoots) rmSync(root, { recursive: true, force: true });
+  dataRoots = [];
+});
+
+async function makeNode(options: { delegation?: DelegationConfig } = {}): Promise<OrcaNode> {
+  const dataRoot = mkdtempSync(join(tmpdir(), "orca-chain-"));
+  dataRoots.push(dataRoot);
+  const config = createOrcaNodeConfig({
+    workgroupId: WORKGROUP,
+    password: PASSWORD,
+    dataRoot,
+    host: "127.0.0.1",
+    port: 0,
+    ...(options.delegation ? { delegation: options.delegation } : {}),
+  });
+  const node = createOrcaNode({ config });
+  await node.start();
+  nodes.push(node);
+  return node;
+}
+
+const permissionEcho = {
+  steps: [
+    {
+      at_ms: 10,
+      suspend: { kind: "permission", tool: "write_file", requested: { path: "note.txt", bytes: 12 } },
+    },
+  ],
+  final: { state: "completed", text: "written" },
+};
+
+async function waitForState(
+  reader: OrcaNode,
+  peerUrl: string,
+  taskId: string,
+  state: TaskState,
+  timeoutMs = 5000,
+): Promise<TaskView> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const view = await reader.getTask(peerUrl, taskId);
+    if (view.status.state === state) return view;
+    if (Date.now() > deadline) throw new Error(`task ${taskId} did not reach ${state}; last ${view.status.state}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function expectCode(run: () => Promise<unknown>, code: string): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    expect((error as { code?: string }).code).toBe(code);
+    return;
+  }
+  throw new Error(`expected ${code}, but the call succeeded`);
+}
+
+function podMetadata(hop: number, chain: string[], root = "t_root"): Record<string, unknown> {
+  return { pod: { hop, chain, root } satisfies PodTaskMetadata };
+}
+
+describe("chain metadata", () => {
+  it("child metadata increments the hop and appends this orca node", () => {
+    expect(
+      childPodMetadata({ hop: 0, chain: ["A"], root: "t_root", notify: "wake" }, "t_parent", "B"),
+    ).toEqual({ hop: 1, chain: ["A", "B"], root: "t_root", notify: "wake" });
+    expect(childPodMetadata(undefined, "t_parent", "B")).toEqual({
+      hop: 1,
+      chain: ["B"],
+      root: "t_parent",
+      notify: "auto",
+    });
+  });
+
+  it("rejects hops above max_hop and callbacks to an ancestor", () => {
+    expect(() => validatePodMetadata(podMetadata(1, ["A"]), "B", 0)).toThrowError(/max_hop/);
+    expect(() => validatePodMetadata(podMetadata(1, ["A", "B"]), "B", 2)).toThrowError(/ancestors/);
+    expect(validatePodMetadata(podMetadata(2, ["A", "B"]), "C", 3)).toMatchObject({ hop: 2, chain: ["A", "B"] });
+    expect(validatePodMetadata(undefined, "C")).toEqual({});
+  });
+
+  it("rejects malformed hop and chain values", () => {
+    expect(() => validatePodMetadata({ pod: { hop: -1 } }, "B", 2)).toThrowError(/non-negative integer/);
+    expect(() => validatePodMetadata({ pod: { hop: 0.5 } }, "B", 2)).toThrowError(/non-negative integer/);
+    expect(() => validatePodMetadata({ pod: { chain: "A" } }, "B", 2)).toThrowError(/array/);
+  });
+});
+
+describe("child grants", () => {
+  const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
+
+  function parentGrant(overrides: Partial<SignedGrant> = {}): SignedGrant {
+    const now = Date.now();
+    return signGrant(key, {
+      grant_id: randomUUID(),
+      workgroup_id: WORKGROUP,
+      task_id: "t_parent",
+      target_orca_node: "B",
+      tool: "write_file",
+      mode: "allow_once",
+      chain: [],
+      issued_at: new Date(now).toISOString(),
+      expires_at: new Date(now + 60_000).toISOString(),
+      ...overrides,
+    });
+  }
+
+  it("derives a narrower child grant: same tool, chain plus this node, earlier expiry", () => {
+    const parent = parentGrant();
+    const child = deriveChildGrant({
+      key,
+      parent,
+      request: {
+        request_id: randomUUID(),
+        task_id: "t_child",
+        tool: "write_file",
+        requested: { path: "note.txt" },
+        requested_by: "C",
+        via: ["A", "B"],
+        expires_at: new Date(Date.now() + 30_000).toISOString(),
+      },
+      selfOrcaNodeId: "B",
+      ttlS: 600,
+    });
+    expect(child.task_id).toBe("t_child");
+    expect(child.target_orca_node).toBe("C");
+    expect(child.tool).toBe("write_file");
+    expect(child.chain).toEqual(["B"]);
+    expect(Date.parse(child.expires_at)).toBeLessThanOrEqual(Date.parse(parent.expires_at));
+  });
+
+  it("requires escalation when the parent grant covers a different tool", () => {
+    expect(grantCovers(parentGrant(), { tool: "write_file" })).toBeNull();
+    expect(grantCovers(parentGrant(), { tool: "run_command" })).toBe("escalation_required");
+    expect(() =>
+      deriveChildGrant({
+        key,
+        parent: parentGrant(),
+        request: {
+          request_id: randomUUID(),
+          task_id: "t_child",
+          tool: "run_command",
+          requested: {},
+          requested_by: "C",
+          via: ["A", "B"],
+          expires_at: new Date(Date.now() + 30_000).toISOString(),
+        },
+        selfOrcaNodeId: "B",
+      }),
+    ).toThrowError(/escalation_required|not "run_command"/);
+  });
+
+  it("refuses an expired or tampered parent grant", () => {
+    const expired = parentGrant({ expires_at: new Date(Date.now() - 1000).toISOString() });
+    expect(grantCovers(expired, { tool: "write_file" })).toBe("grant_expired");
+    const tampered = { ...parentGrant(), tool: "run_command" };
+    expect(() =>
+      deriveChildGrant({
+        key,
+        parent: tampered,
+        request: {
+          request_id: randomUUID(),
+          task_id: "t_child",
+          tool: "run_command",
+          requested: {},
+          requested_by: "C",
+          via: ["A", "B"],
+          expires_at: new Date(Date.now() + 30_000).toISOString(),
+        },
+        selfOrcaNodeId: "B",
+      }),
+    ).toThrowError(/signature/);
+  });
+});
+
+describe("multi-hop enforcement", () => {
+  it("rejects hop > 0 when max_hop is 0 (default)", async () => {
+    const sender = await makeNode();
+    const target = await makeNode();
+    await expectCode(
+      () =>
+        sender.sendTask(target.endpoint, {
+        message: { role: "user", parts: [{ kind: "text", text: "two hops" }] },
+        metadata: podMetadata(1, [sender.orcaNodeId]),
+        }),
+      "hop_limit",
+    );
+  });
+
+  it("accepts hop > 0 when max_hop allows it", async () => {
+    const sender = await makeNode();
+    const target = await makeNode({ delegation: { max_hop: 2 } });
+    const view = await sender.sendTask(target.endpoint, {
+      message: { role: "user", parts: [{ kind: "text", text: "two hops" }] },
+      metadata: { ...podMetadata(1, [sender.orcaNodeId]), echo: { final: { state: "completed", text: "hop ok" } } },
+    });
+    const done = await waitForState(sender, target.endpoint, view.id, "completed");
+    expect(done.status.message?.parts).toContainEqual({ kind: "text", text: "hop ok" });
+  });
+
+  it("rejects a callback into an ancestor chain", async () => {
+    const sender = await makeNode();
+    const target = await makeNode({ delegation: { max_hop: 2 } });
+    await expectCode(
+      () =>
+        sender.sendTask(target.endpoint, {
+        message: { role: "user", parts: [{ kind: "text", text: "callback" }] },
+        metadata: podMetadata(1, ["A", target.orcaNodeId]),
+        }),
+      "ancestor_call_forbidden",
+    );
+  });
+});
+
+describe("chained approval", () => {
+  it("derives a child grant from the parent grant and resumes the downstream task", async () => {
+    const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
+    const delegator = await makeNode({ delegation: { max_hop: 1 } });
+    const worker = await makeNode({ delegation: { max_hop: 1 } });
+
+    const view = await delegator.sendTask(worker.endpoint, {
+      message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
+      metadata: {
+        ...podMetadata(1, ["A", delegator.orcaNodeId]),
+        echo: permissionEcho,
+      },
+    });
+    const suspended = await waitForState(delegator, worker.endpoint, view.id, "input-required");
+    const request = permissionRequestOf(suspended);
+    expect(request?.tool).toBe("write_file");
+    expect(request?.requested_by).toBe(worker.orcaNodeId);
+    expect(request?.via).toEqual(["A", delegator.orcaNodeId]);
+
+    const now = Date.now();
+    const parent: SignedGrant = signGrant(key, {
+      grant_id: randomUUID(),
+      workgroup_id: WORKGROUP,
+      task_id: "t_parent",
+      target_orca_node: delegator.orcaNodeId,
+      tool: "write_file",
+      mode: "allow_once",
+      chain: [],
+      issued_at: new Date(now).toISOString(),
+      expires_at: new Date(now + 60_000).toISOString(),
+    });
+
+    await delegator.approveTask(worker.endpoint, suspended, { parentGrant: parent });
+    const done = await waitForState(delegator, worker.endpoint, view.id, "completed");
+    expect(done.status.message?.parts).toContainEqual({ kind: "text", text: "written" });
+  });
+
+  it("refuses to derive when the parent grant does not cover the request", async () => {
+    const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
+    const delegator = await makeNode({ delegation: { max_hop: 1 } });
+    const worker = await makeNode({ delegation: { max_hop: 1 } });
+
+    const view = await delegator.sendTask(worker.endpoint, {
+      message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
+      metadata: {
+        ...podMetadata(1, ["A", delegator.orcaNodeId]),
+        echo: permissionEcho,
+      },
+    });
+    const suspended = await waitForState(delegator, worker.endpoint, view.id, "input-required");
+    const now = Date.now();
+    const parent: SignedGrant = signGrant(key, {
+      grant_id: randomUUID(),
+      workgroup_id: WORKGROUP,
+      task_id: "t_parent",
+      target_orca_node: delegator.orcaNodeId,
+      tool: "run_command",
+      mode: "allow_once",
+      chain: [],
+      issued_at: new Date(now).toISOString(),
+      expires_at: new Date(now + 60_000).toISOString(),
+    });
+
+    await expectCode(
+      async () => delegator.approveTask(worker.endpoint, suspended, { parentGrant: parent }),
+      "escalation_required",
+    );
+    expect((await delegator.getTask(worker.endpoint, view.id)).status.state).toBe("input-required");
+  });
+});

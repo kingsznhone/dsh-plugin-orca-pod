@@ -3,6 +3,7 @@ import { cpus, platform as osPlatform, release as osRelease, totalmem } from "no
 import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
+import { deriveChildGrant } from "./chain.ts";
 import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
@@ -21,6 +22,7 @@ import {
   type PeerView,
   type RuntimeInfo,
   type SelfRecord,
+  type SignedGrant,
   type SubmitTaskInput,
   type TaskView,
 } from "./protocol.ts";
@@ -110,6 +112,12 @@ export interface ApprovalOptions {
   /** How long the signed grant stays valid, default 300s. */
   ttlS?: number;
   reason?: string;
+  /**
+   * Grant this orca node holds for the task currently asking to delegate.
+   * When set, approveTask derives a child grant from it instead of signing a
+   * fresh top-level grant (§7.12).
+   */
+  parentGrant?: SignedGrant;
 }
 
 export interface OrcaNode {
@@ -187,6 +195,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     selfOrcaNodeId: orcaNodeId,
     workgroupId: config.workgroup_id,
     key,
+    maxHop: config.delegation?.max_hop ?? 0,
   });
 
   let boundPort = config.bind.port;
@@ -358,20 +367,34 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   function approveTask(peerUrl: string, view: TaskView, options: ApprovalOptions = {}): Promise<TaskView> {
     const request = permissionRequestOf(view);
     if (request === null) throw new Error("task is not waiting for a permission decision");
-    const issuedAt = new Date();
-    const expiresAt = new Date(issuedAt.getTime() + (options.ttlS ?? GRANT_TTL_S) * 1000);
-    const grant: Grant = {
-      grant_id: randomUUID(),
-      workgroup_id: config.workgroup_id,
-      task_id: view.id,
-      target_orca_node: request.requested_by,
-      tool: request.tool,
-      mode: options.mode ?? "allow_once",
-      chain: request.via,
-      issued_at: issuedAt.toISOString(),
-      expires_at: expiresAt.toISOString(),
-    };
-    const message = resumeMessage(view, { grant: signGrant(key, grant) });
+    let signed;
+    if (options.parentGrant !== undefined) {
+      // Chained approval: derive a child grant from the grant this orca node
+      // holds for the task that is delegating (§7.12).
+      signed = deriveChildGrant({
+        key,
+        parent: options.parentGrant,
+        request,
+        selfOrcaNodeId: orcaNodeId,
+        ...(options.ttlS !== undefined ? { ttlS: options.ttlS } : {}),
+      });
+    } else {
+      const issuedAt = new Date();
+      const expiresAt = new Date(issuedAt.getTime() + (options.ttlS ?? GRANT_TTL_S) * 1000);
+      const grant: Grant = {
+        grant_id: randomUUID(),
+        workgroup_id: config.workgroup_id,
+        task_id: view.id,
+        target_orca_node: request.requested_by,
+        tool: request.tool,
+        mode: options.mode ?? "allow_once",
+        chain: request.via,
+        issued_at: issuedAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+      };
+      signed = signGrant(key, grant);
+    }
+    const message = resumeMessage(view, { grant: signed });
     return postA2a<TaskView>(peerUrl, "message/send", { message });
   }
 

@@ -39,6 +39,8 @@
 - `continuation_of`：接续的来源 task id。非空时表示“这是 C 接着 A 的活”，target 校验来源 task 已终态且同 workgroup（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。旧 task 本身不改。
 - `pod.notify`：`"auto" | "inbox" | "wake"`，默认 `"auto"`。决定任务终态时怎么回 origin 的会话；`auto` 的判定规则见 [§5.2](05-tasks.md#52-任务回报)「完成唤醒」。它只是 origin 本地的投递策略，target 不关心，也不进 target 的授权判断。
 
+**实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数，超过本 orca node 的 `delegation.max_hop`（`config.json` 的可选项，0–3，默认 0）→ `400 hop_limit`；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task），插件侧的多跳派发尚未接线——目前只有测试与直接调用 API 能构造 `pod` 元数据；`max_fanout` 未实现。
+
 ### 5.2 任务回报
 
 ```text
