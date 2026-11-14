@@ -636,7 +636,9 @@ window.__ModuleLoader__.load({
       const suggested = usable.length > 0 ? usable.slice() : detected.length > 0 ? detected.slice() : [""];
       const [workgroupId, setWorkgroupId] = React.useState(config.workgroup_id || DEFAULT_WORKGROUP);
       const [password, setPassword] = React.useState("");
-      const [displayName, setDisplayName] = React.useState(config.display_name || "");
+      /* First-run wizard starts from this node's own id; a configured install
+       * keeps whatever display name was saved (both default to the node id). */
+      const [displayName, setDisplayName] = React.useState(wizard ? config.node_id || "" : config.display_name || "");
       const [port, setPort] = React.useState(String(config.port === undefined ? 11811 : config.port));
       const [endpoints, setEndpoints] = React.useState(suggested.length > 0 ? suggested : [""]);
       const [error, setError] = React.useState(null);

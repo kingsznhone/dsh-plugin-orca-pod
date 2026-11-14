@@ -43,6 +43,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
     config: () => ({
       configured: true,
       workgroup_id: "wg",
+      node_id: "NODE01",
       display_name: "node one",
       port: 11811,
       endpoints: ["http://127.0.0.1:11811"],

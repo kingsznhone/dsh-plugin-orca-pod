@@ -45,6 +45,8 @@ export interface PodConfigView {
   /** True once the panel finished setup (an override file exists). */
   configured: boolean
   workgroup_id: string
+  /** This node's orca node id (also the default display name), null before first start. */
+  node_id: string | null
   display_name: string | null
   port: number
   /** Currently advertised dial URLs (the node's own list when it is running). */
@@ -119,6 +121,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
     return {
       configured: handle.uiConfigured,
       workgroup_id: config.workgroup_id,
+      node_id: self?.orca_node_id ?? null,
       display_name: self?.display_name ?? config.display_name ?? null,
       port,
       endpoints: current?.endpoints ?? [...(config.endpoints ?? [])],

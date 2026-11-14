@@ -18,6 +18,5 @@
       config:
         workgroup_id: orca-demo
         workgroup_password: change-me
-        display_name: dsh-orca
         port: 11811
         peers: []
