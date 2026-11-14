@@ -44,7 +44,6 @@ function sessionKey(input: ExecuteInput): string | null {
 export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): LocalExecutor {
   const command = options.command ?? "dsh";
   const profile = options.profile ?? "headless";
-  const permissionMode = options.permission_mode ?? "read-only";
   const approvalPolicy = options.approval_policy ?? "never";
   const extraArgs = options.extra_args ?? [];
 
@@ -58,6 +57,7 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
       const key = sessionKey(input);
       const sessions = key && input.podDir ? await readSessions(input.podDir) : {};
       const sessionId = key ? sessions[key] : undefined;
+      const permissionMode = input.permissionMode ?? options.permission_mode ?? "read-only";
 
       const resolved = resolveCommand(command);
       // .cmd/.bat shims only run through cmd.exe; hand the prompt over stdin

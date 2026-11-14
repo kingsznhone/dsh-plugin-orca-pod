@@ -213,11 +213,43 @@ export type TaskView = {
   metadata?: Record<string, unknown>;
 };
 
+/** How much an agent may do on the orca node running its task (§7.10). */
+export type PermissionMode = "read-only" | "workspace-write" | "danger-full-access";
+
+export const PERMISSION_MODES: readonly PermissionMode[] = [
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+];
+
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === "read-only" || value === "workspace-write" || value === "danger-full-access";
+}
+
+/** Rank of a mode; a higher rank lets the agent do more. */
+export function permissionModeRank(mode: PermissionMode): number {
+  return PERMISSION_MODES.indexOf(mode);
+}
+
+/** The narrower of two modes: an inherited mode can only lower the local ceiling. */
+export function narrowPermissionMode(local: PermissionMode, inherited: PermissionMode): PermissionMode {
+  return permissionModeRank(inherited) < permissionModeRank(local) ? inherited : local;
+}
+
+/** Read `permission_mode` out of a task's `metadata.pod` block, if valid. */
+export function permissionModeOf(metadata: Record<string, unknown> | undefined): PermissionMode | undefined {
+  const pod = metadata?.["pod"];
+  if (typeof pod !== "object" || pod === null) return undefined;
+  const mode = (pod as Record<string, unknown>)["permission_mode"];
+  return isPermissionMode(mode) ? mode : undefined;
+}
+
 export type PodTaskMetadata = {
   hop?: number;
   chain?: string[];
   root?: string;
-  notify?: "auto" | "inbox" | "wake";
+  /** Origin session mode; the target never runs above it (§7.10). */
+  permission_mode?: PermissionMode;
   continuation_of?: string | null;
   idempotency_key?: string;
   task_ttl_s?: number;

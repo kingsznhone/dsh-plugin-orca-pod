@@ -47,7 +47,7 @@ export function apply(ctx: HostContext, config: Config): void {
   const handle = startPod(config, logger)
 
   // Background task tracker: polls tasks dispatched by this session and returns
-  // their terminal state to the dispatching agent (notify: auto).
+  // their terminal state to the dispatching agent.
   const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
 
   // Headless and ACP executors run in their own `dsh` subprocesses and cannot

@@ -96,13 +96,16 @@ function podMetadata(hop: number, chain: string[], root = "t_root"): Record<stri
 describe("chain metadata", () => {
   it("child metadata increments the hop and appends this orca node", () => {
     expect(
-      childPodMetadata({ hop: 0, chain: ["A"], root: "t_root", notify: "wake" }, "t_parent", "B"),
-    ).toEqual({ hop: 1, chain: ["A", "B"], root: "t_root", notify: "wake" });
+      childPodMetadata(
+        { hop: 0, chain: ["A"], root: "t_root", permission_mode: "workspace-write" },
+        "t_parent",
+        "B",
+      ),
+    ).toEqual({ hop: 1, chain: ["A", "B"], root: "t_root", permission_mode: "workspace-write" });
     expect(childPodMetadata(undefined, "t_parent", "B")).toEqual({
       hop: 1,
       chain: ["B"],
       root: "t_parent",
-      notify: "auto",
     });
   });
 

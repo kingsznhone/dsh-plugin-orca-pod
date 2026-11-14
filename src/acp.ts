@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { AcpExecutorConfig } from "./config.ts";
+import type { PermissionMode } from "./protocol.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import { KILL_GRACE_MS, abortError, isCmdShim, killTree, quoteForCmd, resolveCommand } from "./process.ts";
 import { readSessions, writeSessions } from "./session-store.ts";
@@ -60,6 +61,29 @@ type Pending = {
 };
 
 type PermissionOption = { optionId?: unknown; name?: unknown; kind?: unknown };
+
+function optionId(options: PermissionOption[], prefix: "allow" | "reject"): string | undefined {
+  const match =
+    options.find((option) => option.kind === `${prefix}_once`) ??
+    options.find((option) => typeof option.kind === "string" && option.kind.startsWith(prefix));
+  return typeof match?.optionId === "string" ? match.optionId : undefined;
+}
+
+/**
+ * Auto-answer a permission request the inherited mode already covers (§7.10).
+ * `null` means the request is outside the mode and must go to the origin.
+ */
+function autoPermissionOutcome(
+  mode: PermissionMode | undefined,
+  kind: string | undefined,
+): "allow" | "deny" | null {
+  if (mode === undefined) return null;
+  if (mode === "danger-full-access") return "allow";
+  const readable = kind === "read" || kind === "search" || kind === "think";
+  if (mode === "read-only") return readable ? "allow" : "deny";
+  const writable = kind === "edit" || kind === "delete" || kind === "move" || kind === "execute";
+  return readable || writable ? "allow" : null;
+}
 
 type PermissionParams = {
   sessionId?: unknown;
@@ -353,6 +377,18 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
             return Promise.reject(new Error(`unsupported client method ${method}`));
           }
           const permission = params as PermissionParams;
+          const toolKind =
+            typeof permission.toolCall?.kind === "string" ? permission.toolCall.kind : undefined;
+          const autoOutcome = autoPermissionOutcome(input.permissionMode, toolKind);
+          if (autoOutcome !== null) {
+            const options = Array.isArray(permission.options) ? (permission.options as PermissionOption[]) : [];
+            const chosen = optionId(options, autoOutcome === "allow" ? "allow" : "reject");
+            return Promise.resolve(
+              chosen === undefined
+                ? { outcome: { outcome: "cancelled" } }
+                : { outcome: { outcome: "selected", optionId: chosen } },
+            );
+          }
           events.push({ kind: "permission", params: permission });
           return new Promise((resolve) => permissionResolvers.push(resolve));
         },

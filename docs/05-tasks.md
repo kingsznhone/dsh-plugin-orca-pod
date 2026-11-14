@@ -17,7 +17,7 @@
   "grant_id": "g_01JABC",
   "workspace": { "kind": "group" },
   "continuation_of": null,
-  "pod": { "hop": 0, "chain": ["N7K3QM"], "root": "t_01JABD", "notify": "auto" }
+  "pod": { "hop": 0, "chain": ["N7K3QM"], "root": "t_01JABD", "permission_mode": "workspace-write" }
 }
 ```
 
@@ -29,17 +29,17 @@
 - `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 - `pod.hop`：任务已经跨了几跳。origin 建 task 时为 0。target 是否接受 `hop > 0` 由 `delegation.max_hop` 决定（默认 **0** → `400 hop_limit`；可配 1–3）。target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
 - `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
-- `pod.root`：这条调用树的根 task id，扇出预算按它计（`max_fanout`）。origin 建 task 时等于自己的 task id。
+- `pod.root`：这条调用树的根 task id。origin 建 task 时等于自己的 task id。
+- `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`），target 不能放大；本机 `config.permission_mode` 是本地上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。
 - 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
 - **祖先禁调（硬限制）**：子任务的目标集合必须排除 `pod.chain` 里的所有 orca node 和自身。尝试调用 → `403 ancestor_call_forbidden`。这条不受 `max_hop` 影响，开了多跳也一样——A→B→A 在第一次就被拒绝，而不是等到第 N 跳才断。
 - 被祖先禁调挡住时，正确动作是把问题写进 `input-required` + `blocked`（[§4.8](04-transport.md#48-任务状态机)），让 A 看到后决定下一步；不是换条路再调回去。
-- 这两个字段都进签名；target 只读不写。
+- 这些字段都进签名；target 只读不写。
 - `grant_id` 指向 origin 签发的 grant；目标 orca node 校验其绑定关系（[§7.11](07-security.md#711-grant)）。
 - `workspace.kind` 当前只有 `"group"` 一个合法值，显式声明“在本 orca node 工作区执行”；没有发布式目录（[§6.12](06-execution.md#612-明确不做)）。
 - `continuation_of`：接续的来源 task id。非空时表示“这是 C 接着 A 的活”，target 校验来源 task 已终态且同 workgroup（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。旧 task 本身不改。
-- `pod.notify`：`"auto" | "inbox" | "wake"`，默认 `"auto"`。决定任务终态时怎么回 origin 的会话；`auto` 的判定规则见 [§5.2](05-tasks.md#52-任务回报)「完成唤醒」。它只是 origin 本地的投递策略，target 不关心，也不进 target 的授权判断。
 
-**实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数，超过本 orca node 的 `delegation.max_hop`（`config.json` 的可选项，0–3，默认 0）→ `400 hop_limit`；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task），插件侧的多跳派发尚未接线——目前只有测试与直接调用 API 能构造 `pod` 元数据；`max_fanout` 未实现。
+**实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数，超过本 orca node 的 `delegation.max_hop`（`config.json` 的可选项，0–3，默认 0）→ `400 hop_limit`；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；`pod.permission_mode` 必须是合法权限模式（非法 → `400 bad_request`），且本机 `config.permission_mode` 作为上限与继承值取窄；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task、继承 `permission_mode`），插件侧的多跳派发尚未接线——目前只有测试与直接调用 API 能构造 `pod` 元数据。
 
 ### 5.2 任务回报
 
@@ -70,7 +70,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 **Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`pod_send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。`pod_wait` 明确不做；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
 
-派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
+派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会由 tracker 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
 
 **为什么不让模型用 bash 长轮询**：`sleep 2 && pod_status` 每跑一次就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消、能挂 SSE，也知道任务该等多久。
 
@@ -78,41 +78,32 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 | 事件 | 手段 | 效果 |
 |---|---|---|
-| 任务完成 / 失败（普通） | `notify: auto` 下由 tracker 投递：running → `agent.inject()`；idle → `agent.followup()` | 2s 窗口内多个终态合并成一条 notice；`inject` 落 `agent/inbox/spliced` 等下一步，`followup` 叫醒新一轮 |
+| 任务完成 / 失败（普通） | 由 tracker 投递：running → `agent.inject()`；idle → `agent.followup()` | 2s 窗口内多个终态合并成一条 notice；`inject` 落 `agent/inbox/spliced` 等下一步，`followup` 叫醒新一轮 |
 | `input-required` 的 `permission_request`、祖先禁调的 `blocked`、需要人立刻决定 | `agent.followup()` | 唤醒 agent 开新一轮，走审批卡片/回报流程（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
 | 任何时刻用户主动问 | `pod_status` | 从任务存储/缓存读，与会话历史无关 |
 
-普通完成是否唤醒由 `pod.notify` 决定（默认 `auto`，见下）；只有 `input-required` 里的 `permission_request`、祖先禁调的 `blocked` 这类“必须现在处理”的事件无条件走 `followup()`。唤醒是有代价的（新一轮模型调用、可能打断用户），所以 `auto` 用预算和 idle 判定兜住。
+普通完成由 tracker 投递：同一轮还没结束时 `inject()`（不打断），idle 时 `followup()`（开新一轮）；`input-required` 里的 `permission_request`、祖先禁调的 `blocked` 这类“必须现在处理”的事件无条件走 `followup()`。唤醒是有代价的（新一轮模型调用、可能打断用户），所以用预算和 idle 判定兜住。
 
 `followup()` 的语义与边界：
 
 - 它只对**仍然活着**的 session 有效：DSH 进程里还有这个 `Agent` 实例，插件才有对象可唤醒。会话已关闭/归档时没有对象，任务结果留在任务存储里，等会话下次恢复时再由 `inject()` 进入上下文——不存在“插件把 DSH 会话从磁盘拉起来”。
 - 被唤醒的 turn 不是用户消息：上下文从注入的 notice 开始，UI 里表现为同一会话里新的一轮 assistant 回复，不会伪造一个 user 气泡。
 - 它继承该 session 的审批策略：唤醒后若需要权限，仍然弹 DSH 卡片；用户不在电脑前就会超时。
-- 因此“完成即唤醒”按任务声明：`pod.notify` 为 `auto`（默认）、`inbox` 或 `wake`；想做“用户离开时提醒”，也可以由客户端插件做徽标/桌面通知，而不是让模型空转一轮。
+- 因此“完成即唤醒”是默认行为：同一轮内完成只 `inject()`，轮次结束后才完成则 `followup()` 唤醒；想做“用户离开时提醒”，也可以由客户端插件做徽标/桌面通知，而不是让模型空转一轮。
 
 会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`pod_status` 随时可重放，插件内存只是缓存。
 
 CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包) 里 harness 入口的一部分。
 
-#### 完成唤醒（notify: auto）
+#### 完成唤醒
 
-典型场景：A 把“编译验证”派给 B，A 结束这一轮；十几分钟后 B 完成，A 需要被叫醒、看结果、继续修。默认的 `inbox` 做不到这件事——用户不回来就没人看。所以默认是 `auto`：
+典型场景：A 把“编译验证”派给 B，A 结束这一轮；十几分钟后 B 完成，A 需要被叫醒、看结果、继续修。所以默认行为就是“完成即找机会回到会话”——不需要声明、也没有 `notify` 字段：
 
-`auto` 的判定只在 origin 侧：
+- 终态到达时 session 仍活着、且当前 `running`（同一轮还没结束）→ `inject()`，不打断这一轮；
+- session 活着且 idle → `followup()` 唤醒新一轮；
+- session 已归档（没有 Agent 实例）→ 结果留在任务存储，等会话恢复后由 `pod_status` 重读。
 
-- 任务是在**哪一轮**派发的，插件记着；
-- 那一轮结束时（`turn/end`）任务仍未终态 → 这个 task 标记 `wake_pending`；
-- 若同一轮内就拿到终态（agent 还在、`pod_status` 已经能读到），只 `inject()`，不唤醒。
-
-真正 `followup()` 需要同时满足：
-
-| 条件 | 不满足时 |
-|---|---|
-| `wake_pending` 为真 | 按 `inbox` 处理 |
-| session 仍活着（有 Agent 实例） | 结果留在任务存储，会话恢复时 `inject()` |
-| 当前 idle（没有 turn 在跑） | 等这一轮结束后再判断，不打断 |
-| 派发后用户没有发过新消息 | 用户在场，结果进 inbox 等下一轮 |
+`inject()` 落 `agent/inbox/spliced`，`agent.status` 只用来区分“同一轮内”与“轮次之间”，不做 `turn/end` 记账。
 
 其余细节：
 
@@ -121,9 +112,9 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 - **预算**：连续后台唤醒轮次 ≤3（中间没有用户输入）；超了就不再唤醒，结果标未读并留在 inbox。用户下一次说话重置。这是防 A→B→A 自动循环烧 token 的闸，不是防正常续跑。
 - **不反向**：唤醒是 origin 自己对自己做的，不涉及任何 target→origin 的连接；B 那边只是任务变终态。
 
-例子：A 的 `pod_send` 带 `notify: "auto"`，随后 `turn/end`；B 在 12 分钟后 `completed`；插件看到 `wake_pending` + idle + 用户没回来 → `inject()` notice + `followup()`；A 开新一轮，读到 `status.message`，发现编译报错，继续改代码。若编译通过，A 一句话总结并停。
+例子：A 用 `pod_send` 派给 B，随后结束这一轮；B 在 12 分钟后 `completed`；插件看到 session 活着且 idle → `inject()` notice + `followup()`；A 开新一轮，读到 `status.message`，发现编译报错，继续改代码。若编译通过，A 一句话总结并停。
 
-**Phase 0 实现边界**：tracker 只看 `agent.status`（running → `inject`，idle → `followup`），不判定 `wake_pending`、不监听用户新消息重置预算、也不区分 `notify: inbox | wake` 的不同投递方式；会话已归档时 notice 丢弃（任务仍在存储里，可 `pod_status` 重读）。
+**Phase 0 实现边界**：tracker 只看 `agent.status`（running → `inject`，idle → `followup`），不监听用户新消息重置预算；会话已归档时 notice 丢弃（任务仍在存储里，可 `pod_status` 重读）。
 
 ### 5.3 取消
 

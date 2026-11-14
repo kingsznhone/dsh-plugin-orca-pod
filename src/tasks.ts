@@ -4,10 +4,13 @@ import { verifyGrant } from "./crypto.ts";
 import { echoScriptFrom, type EchoRelay, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
 import {
   isTerminal,
+  narrowPermissionMode,
   newTaskId,
+  permissionModeOf,
   TaskError,
   type A2AMessage,
   type BusyState,
+  type PermissionMode,
   type PermissionRequest,
   type SignedGrant,
   type SubmitTaskInput,
@@ -73,6 +76,8 @@ export type TaskRunnerDeps = {
   key?: Buffer;
   /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
   permissionTtlS?: number;
+  /** Local ceiling for inherited origin modes; undefined means no local cap (§7.10). */
+  permissionMode?: PermissionMode;
   /** Largest `pod.hop` this orca node accepts; default 0 (single hop only, §5.1). */
   maxHop?: number;
   /** Sends a control message to a child task (grant/denial downward, §7.12). */
@@ -302,6 +307,13 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   }
 
   async function pump(rec: Running, resume?: A2AMessage): Promise<void> {
+    const inheritedMode = permissionModeOf(rec.metadata);
+    const permissionMode =
+      inheritedMode === undefined
+        ? deps.permissionMode
+        : deps.permissionMode === undefined
+          ? inheritedMode
+          : narrowPermissionMode(deps.permissionMode, inheritedMode);
     const iterator =
       rec.iterator ??
       deps.executor.run(
@@ -312,6 +324,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           originOrcaNode: rec.origin_orca_node,
           ...(deps.selfOrcaNodeId ? { selfOrcaNodeId: deps.selfOrcaNodeId } : {}),
           ...(deps.workspace ? { workspaceDir: deps.workspace.work, podDir: deps.workspace.pod } : {}),
+          ...(permissionMode ? { permissionMode } : {}),
           metadata: rec.metadata,
         },
         rec.abort.signal,

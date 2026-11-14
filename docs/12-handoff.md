@@ -43,7 +43,7 @@ Hard constraints that must not be undone:
   One endpoint per orca node. Absolute paths from origin are rejected.
 - Tasks are single-hop by default: no forwarding, no callbacks. The gateway, not
   the agent, decides hop/chain/root. Multi-hop and fan-out exist as opt-in
-  capabilities (max_hop/max_fanout default 0); when enabled, the gateway injects
+  capabilities (max_hop default 0); when enabled, the gateway injects
   hop+1, appends the orca node to chain, keeps root stable, and rejects over-budget
   children. Nodes never wake each other except by an origin-issued request.
 - A child task may never target an orca node already in its chain: the gateway returns
@@ -53,10 +53,10 @@ Hard constraints that must not be undone:
 - Polling lives in the Host plugin, not in the agent's shell: pod_send returns a
   task_id immediately; a background tracker polls tasks/get (or holds an SSE
   stream), and completion reaches the session through agent.inject() as a compact
-  inbox notice that does not wake the agent. Default notify is "auto": if the
-  dispatching turn ended before the task reached a terminal state, a completion
-  wakes the agent once (batch completions within 2s, cap 3 consecutive background
-  turns, drop to inbox beyond that). Only must-act-now events (a permission_request,
+  inbox notice that does not wake the agent. There is no notify flag: if the
+  session is still running that turn, inject(); if it is idle, followup() wakes it
+  once (batch completions within 2s, cap 3 consecutive background turns, drop to
+  inbox beyond that). Only must-act-now events (a permission_request,
   a blocked sub-agent, a hard failure) also use followup(). Never implement waiting
   with bash sleep loops, and provide no blocking wait tool at all: dispatch returns
   immediately, completion arrives by inject/wake, and a busy target answers 429

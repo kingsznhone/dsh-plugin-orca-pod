@@ -126,6 +126,12 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
             "{steps:[{at_ms,suspend:{kind,reason|tool,...}}],final:{state,text},artifacts:[{name,content}]}.",
           additionalProperties: true,
         },
+        permission_mode: {
+          type: "string",
+          enum: ["read-only", "workspace-write", "danger-full-access"],
+          description:
+            "Origin session permission mode; the target caps it by its own policy and never runs above it (§7.10).",
+        },
       },
       required: ["peer", "text"],
       additionalProperties: false,
@@ -136,13 +142,19 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
       const peer = normalizePeer(record["peer"])
       const text = requiredString(record, "text")
       const echo = optionalEchoScript(record)
+      const permissionMode = typeof record["permission_mode"] === "string" ? record["permission_mode"] : undefined
       const orcaNode = await requireNode(handle)
       const message: A2AMessage = { role: "user", parts: [{ kind: "text", text }] }
-      const input: SubmitTaskInput = echo === undefined ? { message } : { message, metadata: { echo } }
+      const metadata: Record<string, unknown> = {
+        ...(echo === undefined ? {} : { echo }),
+        ...(permissionMode === undefined ? {} : { pod: { permission_mode: permissionMode } }),
+      }
+      const input: SubmitTaskInput =
+        Object.keys(metadata).length === 0 ? { message } : { message, metadata }
       try {
         const view = await orcaNode.sendTask(peer, input)
         // Track the task so the dispatching agent is told when it finishes, even
-        // after its turn ends (notify: auto).
+        // after its turn ends.
         if (exec?.agent !== undefined) tracker.track(exec.agent, peer, view.id)
         return { task_id: view.id, state: view.status.state, peer }
       } catch (error) {

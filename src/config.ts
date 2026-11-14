@@ -6,8 +6,10 @@ import type { DelegationConfig } from "./chain.ts";
 import {
   DEFAULT_PORT,
   generateOrcaNodeId,
+  isPermissionMode,
   isWorkgroupId,
   type OrcaNodeId,
+  type PermissionMode,
   type WorkgroupId,
 } from "./protocol.ts";
 
@@ -56,6 +58,8 @@ export type OrcaNodeConfig = {
   executor?: ExecutorKind;
   headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
+  /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
+  permission_mode?: PermissionMode;
   /** Multi-hop limits this orca node enforces on incoming tasks (§5.1). */
   delegation?: DelegationConfig;
   /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
@@ -74,6 +78,7 @@ export type CreateOrcaNodeConfigOptions = {
   executor?: ExecutorKind;
   headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
+  permissionMode?: PermissionMode;
   delegation?: DelegationConfig;
   approvalTimeoutS?: number;
 };
@@ -99,6 +104,9 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
   ) {
     throw new Error("approvalTimeoutS must be a positive number of seconds");
   }
+  if (options.permissionMode !== undefined && !isPermissionMode(options.permissionMode)) {
+    throw new Error('permissionMode must be "read-only", "workspace-write", or "danger-full-access"');
+  }
   const key = deriveWorkgroupKey(options.workgroupId, options.password);
   return {
     orca_node_id: options.orcaNodeId ?? generateOrcaNodeId(),
@@ -112,6 +120,7 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     ...(options.executor ? { executor: options.executor } : {}),
     ...(options.headless ? { headless: options.headless } : {}),
     ...(options.acp ? { acp: options.acp } : {}),
+    ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
     ...(options.delegation ? { delegation: options.delegation } : {}),
     ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
   };
@@ -226,13 +235,6 @@ function parseDelegationConfig(value: unknown): DelegationConfig | undefined {
     }
     delegation.max_hop = maxHop;
   }
-  const maxFanout = record["max_fanout"];
-  if (maxFanout !== undefined) {
-    if (typeof maxFanout !== "number" || !Number.isInteger(maxFanout) || maxFanout < 0) {
-      throw new Error("config.delegation.max_fanout must be a non-negative integer");
-    }
-    delegation.max_fanout = maxFanout;
-  }
   return delegation;
 }
 
@@ -268,6 +270,13 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   if (headless) config.headless = headless;
   const acp = parseAcpConfig(record["acp"]);
   if (acp) config.acp = acp;
+  const permissionMode = record["permission_mode"];
+  if (permissionMode !== undefined) {
+    if (!isPermissionMode(permissionMode)) {
+      throw new Error('config.permission_mode must be "read-only", "workspace-write", or "danger-full-access"');
+    }
+    config.permission_mode = permissionMode;
+  }
   const delegation = parseDelegationConfig(record["delegation"]);
   if (delegation) config.delegation = delegation;
   const approvalTimeout = record["approval_timeout_s"];

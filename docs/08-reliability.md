@@ -63,7 +63,7 @@ origin 轮询 tasks/get
 打开 `delegation` 之后（多跳/扇出），约束换成：
 
 - **注入而非自填**：网关把 `hop+1`、`chain+[self]`、`root` 写进子任务；agent 改不了。目标 orca node 已在 `chain` 中 → `403 ancestor_call_forbidden`。
-- **预算**：`max_hop` 默认 0、可配 1–3；`max_fanout` 默认 0、可配（按 `root` 计）。超限直接拒，不排队。
+- **预算**：`max_hop` 默认 0、可配 1–3。超限直接拒，不排队。
 - **单槽仍在**：每个 target 同一时间只跑 1 个任务；多余的请求在**建 task 之前**就 429，不创建进程——唤醒成本 = 一个 429 响应。
 - **祖先禁调（硬限制）**：子任务不能指向 `chain` 里的任何 orca node 或自身；网关直接 `403 ancestor_call_forbidden`。A→B→A 在第一跳就断，不依赖 `max_hop` 的深度。
 - **兄弟互调不会僵死**：单槽下先占槽的一方还在跑自己的任务，另一方调它时直接 `429 orca_node_busy`——不会出现“两边都等着对方把活干完”。拿到 429 的一方把这个事实写进 `blocked` 回报 A，由 A 协调（换顺序、拆任务，或回报用户）。TTL 只兜底极端情况（两边恰好都在 `input-required` 被同时唤醒），到期 `failed(timeout)`。
@@ -78,8 +78,7 @@ origin 轮询 tasks/get
 | 空闲 | 心跳 45 req/s，~200 B/req ≈ 9 KB/s，与任务数无关 |
 | 全部在跑 | 最多 10 个 agent 进程（每 orca node 1 个槽），不是 10² |
 | 被打爆 | 每个 target 1 个任务 + 其余 429；429 < 1 KB 且不创建进程 |
-| 链式（默认关） | `max_hop=3`，每跳最多 `max_fanout` 个子任务，超预算即拒 |
-| 扇出（默认关） | 一个 root task 最多 `max_fanout` 个活跃子任务 |
+| 链式（默认关） | `max_hop=3`，超过即拒，不排队 |
 
 真正会失控的只有一种情况：**允许 target 上的 agent 再调其他 orca node**。那是指数扇出的来源，所以默认关闭；要开就必须同时接受 hop/chain/fanout 三重限制。这是刻意的保守选择：宁可少一种编排能力，也不要一个会自己跑起来的集群——但能力本身保留，需要时显式打开。
 

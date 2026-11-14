@@ -145,6 +145,8 @@ origin 发起任务时携带会话的 permission mode，target 原样执行：
 - mode 随任务签名一起传，target 校验签名后再执行，防止中间人改宽；
 - mode 不写进 grant 之外的任何持久状态；任务结束即失效。
 
+**实现状态（Phase 3）**：`pod.permission_mode` 进任务元数据并随签名传递，`chain.ts` 校验合法性、子任务由 `childPodMetadata` 继承；本机 `config.json` 的 `permission_mode` 是上限，`src/tasks.ts` 取「上限 vs 继承值」较窄者后交给执行器。`HeadlessExecutor` 传 `--permission-mode`；`AcpExecutor` 在 `session/request_permission` 处按模式自动回答（`read-only` 拒绝写类工具、`workspace-write` 放行工作区内编辑/执行、`danger-full-access` 全放行），没有继承模式时仍挂起、回到 origin 的审批卡片。`pod_send` 与 `orca-node send --permission-mode` 都能显式指定；测试见 `test/permission-mode.test.ts`（8 条）。
+
 ### 7.11 Grant
 
 grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发：

@@ -67,14 +67,15 @@ the config afterwards.
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
 | `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (headless/ACP profiles) find the CLI; set `false` to opt out |
 | `approval_timeout_s` | no       | unset (wait forever)            | Auto-reject a parked permission request after this many seconds (`failed(permission_timeout)`); the task TTL is paused while parked |
+| `permission_mode`    | no       | unset (no local ceiling)        | Ceiling for inherited task modes: effective mode = narrower of this and `pod.permission_mode` |
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
 
-执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。
+执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者；`headless.permission_mode` 只是任务未带模式时的缺省值（默认 `read-only`）。
 
 审批默认无限等待：任务挂起等 origin 的人时，task TTL 会暂停，也不会因为 120 秒没决定就失败；只有配置了 `approval_timeout_s` 才在到点自动拒绝（`failed(permission_timeout)`）。CLI 的 `wait`/`escalate` 的 `--timeout` 同样可省略，省略就一直等到 origin 决策。
 
-多跳委派也在本机 `config.json` 里：`"delegation": { "max_hop": 1 }`（0–3，默认 0，即拒绝 `hop > 0` 的子任务；`max_fanout` 预留）。超过上限返回 `400 hop_limit`，祖先回环返回 `403 ancestor_call_forbidden`。
+多跳委派也在本机 `config.json` 里：`"delegation": { "max_hop": 1 }`（0–3，默认 0，即拒绝 `hop > 0` 的子任务）。超过上限返回 `400 hop_limit`，祖先回环返回 `403 ancestor_call_forbidden`。
 
 ### 安全注意（原型）
 

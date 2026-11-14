@@ -4,7 +4,7 @@
  * state machine, approval loop, and blob path can be exercised without an agent.
  */
 
-import type { TaskRelay } from "./protocol.ts";
+import type { PermissionMode, TaskRelay } from "./protocol.ts";
 
 /**
  * A child task one hop down is waiting for permission. The echo script carries
@@ -48,6 +48,8 @@ export type ExecuteInput = {
   workspaceDir?: string;
   /** Group workspace `.pod/` dir; executors keep their own state here. */
   podDir?: string;
+  /** Effective permission mode after origin inheritance and local ceiling (§7.10). */
+  permissionMode?: PermissionMode;
   metadata?: Record<string, unknown>;
 };
 

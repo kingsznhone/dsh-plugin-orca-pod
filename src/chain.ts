@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { signGrant, verifyGrant } from "./crypto.ts";
 import {
   TaskError,
+  isPermissionMode,
   type Grant,
   type PermissionRequest,
   type PodTaskMetadata,
@@ -13,8 +14,6 @@ import {
 export type DelegationConfig = {
   /** Accept `pod.hop > 0` up to this many hops; default 0 (single hop only). */
   max_hop?: number;
-  /** Reserved for fan-out budgets (§8.6); not enforced yet. */
-  max_fanout?: number;
 };
 
 /**
@@ -31,7 +30,7 @@ export function childPodMetadata(
     hop: (parent?.hop ?? 0) + 1,
     chain: [...(parent?.chain ?? []), selfOrcaNodeId],
     root: parent?.root ?? parentTaskId,
-    notify: parent?.notify ?? "auto",
+    ...(parent?.permission_mode !== undefined ? { permission_mode: parent.permission_mode } : {}),
   };
 }
 
@@ -63,6 +62,13 @@ export function validatePodMetadata(
   if (root !== undefined && typeof root !== "string") {
     throw new TaskError("bad_request", "pod.root must be a task id");
   }
+  const permissionMode = pod["permission_mode"];
+  if (permissionMode !== undefined && !isPermissionMode(permissionMode)) {
+    throw new TaskError(
+      "bad_request",
+      "pod.permission_mode must be one of read-only, workspace-write, danger-full-access",
+    );
+  }
   const path = (chain as string[] | undefined) ?? [];
   if (typeof hop === "number" && hop > maxHop) {
     throw new TaskError("hop_limit", `task hop ${hop} exceeds this orca node's max_hop ${maxHop}`);
@@ -75,6 +81,7 @@ export function validatePodMetadata(
   }
   const normalized: PodTaskMetadata = { hop: typeof hop === "number" ? hop : 0, chain: path };
   if (typeof root === "string") normalized.root = root;
+  if (isPermissionMode(permissionMode)) normalized.permission_mode = permissionMode;
   return normalized;
 }
 

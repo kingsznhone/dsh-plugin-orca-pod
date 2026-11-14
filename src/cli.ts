@@ -12,7 +12,7 @@ const USAGE = `orca-node
 
 Usage:
   orca-node serve   --config <path>                     start an orca node from a config file
-  orca-node send    --peer <url> --text <text|-> [--context <id>] [--json]
+  orca-node send    --peer <url> --text <text|-> [--context <id>] [--permission-mode <mode>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
@@ -191,7 +191,12 @@ async function send(args: string[]): Promise<number> {
   if (text.length === 0) throw new Error("--text must not be empty (pipe text with --text -)");
   const context = flag(flags, "context");
   const metadataRaw = flag(flags, "metadata");
-  const metadata = metadataRaw === undefined ? undefined : (JSON.parse(metadataRaw) as Record<string, unknown>);
+  const permissionModeFlag = flag(flags, "permission-mode");
+  let metadata = metadataRaw === undefined ? undefined : (JSON.parse(metadataRaw) as Record<string, unknown>);
+  if (permissionModeFlag !== undefined) {
+    const pod = (metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
+    metadata = { ...(metadata ?? {}), pod: { ...pod, permission_mode: permissionModeFlag } };
+  }
   const message: A2AMessage = {
     role: "user",
     parts: [{ kind: "text", text }],

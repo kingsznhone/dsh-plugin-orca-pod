@@ -34,6 +34,8 @@ interface LocalExecutor {
 
 `permissionMode` 必须来自 origin 会话，由 A2A 请求携带并签名；target 不得上调它，只能按它执行或在越界时 escalate。
 
+**Phase 3 实现**：origin 把会话模式写进 `metadata.pod.permission_mode`；target 的 `tasks.ts` 计算生效模式 = 较窄者（本机 `config.permission_mode` 上限 vs 继承值），再传给执行器。`HeadlessExecutor` 把它作 `--permission-mode`；`AcpExecutor` 按模式自动回答 `session/request_permission`（`read-only` 拒绝写类工具、`workspace-write` 允许工作区内编辑/执行、`danger-full-access` 全允许），没有继承模式时仍挂起走 origin 审批（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+
 **Phase 0 实现**：`src/executor.ts` 当前的 `LocalExecutor` 是事件流接口——`run(input: { taskId, contextId?, metadata? }, signal: AbortSignal): AsyncGenerator<ExecutorEvent>`，事件为 `suspend | artifact | completed | failed`；上面的 `submit/get/cancel/subscribe/onPermissionRequest` 是目标接口，尚未实现。
 
 ### 6.2 实现
@@ -93,7 +95,7 @@ Pod gateway (local)
 
 建议为集群任务使用**专属 profile**（如 `orca`），与用户日常 GUI profile 隔离；ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
 
-**默认不启用 pod 远程工具**；多跳与扇出是可选能力，配置 `delegation` 打开后才生效。理由不是“安全”，而是“一个会自己跑起来的集群很难调试”：默认行为应当是可预测的单跳。打开后网关会强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），并按 `max_hop` / `max_fanout` 拒绝超限；agent 不能自己填这些字段。
+**默认不启用 pod 远程工具**；多跳与扇出是可选能力，配置 `delegation` 打开后才生效。理由不是“安全”，而是“一个会自己跑起来的集群很难调试”：默认行为应当是可预测的单跳。打开后网关会强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），并按 `max_hop` 拒绝超限；agent 不能自己填这些字段。
 
 ### 6.5 ACP 映射
 

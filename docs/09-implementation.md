@@ -105,7 +105,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 13 个、headless 7 个、acp 7 个、cli 8 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 170 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 13 个、headless 7 个、acp 7 个、cli 8 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 8 个，共 178 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 
@@ -173,7 +173,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createOrcaNode()`。**
 
-**Phase 0 现状**：库根 `createOrcaNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动 orca node、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_approve`/`pod_members` 五个不阻塞工具。`pod_send` 成功后在插件侧登记任务，`createTracker` 每 1s 拉一次 `tasks/get`，终态在 2s 窗口合并成一条 notice；`agent.status === "running"` 时 `inject()`，idle 时 `followup()` 唤醒，连续唤醒预算 3；`permission_request` 不受预算限制强制 `followup`，`pod_approve` 在 open turn 内弹 DSH approval 卡片并回 grant/deny（[§5.2](05-tasks.md#52-任务回报)、[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。已用 DSH 自带 Node 运行时做过两个 orca node smoke（join、send、status、cancel、重启后 orca_node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、`ctx.credentials` 读取（原型阶段密码暂放配置）、按 `turn/end` 判定 `wake_pending` 与“用户发过新消息就重置预算”（当前只看 agent 当前状态）、链式逐跳升级与收窄。
+**Phase 0 现状**：库根 `createOrcaNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动 orca node、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_approve`/`pod_members` 五个不阻塞工具。`pod_send` 成功后在插件侧登记任务，`createTracker` 每 1s 拉一次 `tasks/get`，终态在 2s 窗口合并成一条 notice；`agent.status === "running"` 时 `inject()`，idle 时 `followup()` 唤醒，连续唤醒预算 3；`permission_request` 不受预算限制强制 `followup`，`pod_approve` 在 open turn 内弹 DSH approval 卡片并回 grant/deny（[§5.2](05-tasks.md#52-任务回报)、[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。已用 DSH 自带 Node 运行时做过两个 orca node smoke（join、send、status、cancel、重启后 orca_node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、`ctx.credentials` 读取（原型阶段密码暂放配置）、“用户发过新消息就重置唤醒预算”（当前只看 agent 当前状态）。
 
 ### 9.5 工程约定
 
