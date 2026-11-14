@@ -70,7 +70,7 @@
 ```json
 {
   "name": "pod-N7K3QM",
-  "description": "DSH node in workgroup orca-dev",
+  "description": "DSH orca node in workgroup orca-dev",
   "url": "http://192.168.1.11:11811/a2a",
   "version": "0.1.0",
   "protocolVersion": "0.x",
@@ -78,8 +78,8 @@
   "defaultInputModes": ["text/plain", "application/json"],
   "defaultOutputModes": ["text/plain", "application/json"],
   "skills": [
-    { "id": "ping", "name": "ping", "description": "Return node identity and health" },
-    { "id": "run", "name": "run", "description": "Execute a task on this node" }
+    { "id": "ping", "name": "ping", "description": "Return orca node identity and health" },
+    { "id": "run", "name": "run", "description": "Execute a task on this orca node" }
   ],
   "securitySchemes": { "pod": { "type": "http", "scheme": "pod" } }
 }
@@ -108,7 +108,7 @@
 - `tasks/resubscribe`：断线后重连到已有流（可选，**未实现**）。
 - push notification：后置，需要 webhook 鉴权、重试、SSRF 防护（**未实现**）。
 
-**Phase 0 错误形态**：gateway 统一用 JSON-RPC error `code: -32000`，`message` 为业务错误码（`node_busy`、`bad_echo_script`、`task_not_found`、`bad_request`、`unsupported`），HTTP 状态码依次为 429/400/404/400/400；尚未使用 A2A 规范里的细分错误码。
+**Phase 0 错误形态**：gateway 统一用 JSON-RPC error `code: -32000`，`message` 为业务错误码（`orca_node_busy`、`bad_echo_script`、`task_not_found`、`bad_request`、`unsupported`），HTTP 状态码依次为 429/400/404/400/400；尚未使用 A2A 规范里的细分错误码。
 
 用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。
 
@@ -133,7 +133,7 @@ submitted ──► working ──► input-required ──► working
 - `submitted`：已接收，未开始。
 - `working`：LocalExecutor 正在执行。
 - `input-required`：需要发起 orca node 补输入或**补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷在 task 的 `status.message` 里，不依赖推送。载荷有两种：`permission_request`（补授权）和 `blocked`（要决策：`{reason, question, options?}`）。
-- `input-required` **不占用执行槽**：网关把槽释放；A 的后续 message 到达时重新竞争槽位，不预留、不排队。槽被别人占了就回 `429 node_busy`，由 A 决定重试还是放弃。
+- `input-required` **不占用执行槽**：网关把槽释放；A 的后续 message 到达时重新竞争槽位，不预留、不排队。槽被别人占了就回 `429 orca_node_busy`，由 A 决定重试还是放弃。
 - 恢复执行时优先 `session/resume(context_id)` 续上原 session；session 已随进程退出而丢失时新开一个，并在 task 上记 `resume=degraded`（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。
 - 远程 agent 卡住时**不允许反向调用**祖先 orca node（[§5.1](05-tasks.md#51-任务标识与元数据)），只能把问题写进 `blocked` 并结束本轮；这既是防环，也是“异步任务”的正确表达。
 - `completed` / `failed` / `canceled`：终态。

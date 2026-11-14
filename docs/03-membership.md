@@ -23,7 +23,7 @@
 **首次启用（插件安装）**
 
 ```text
-1. 生成 node_id（[§2.4](02-model.md#24-orca-node-短-id)），写配置
+1. 生成 orca_node_id（[§2.4](02-model.md#24-orca-node-短-id)），写配置
 2. 采集 runtime，生成 runtime_digest
 3. 起监听（默认 127.0.0.1:11811）
 4. 若配置里已有 workgroup_id + 密码：向目录内每个已知端点后台发第一拍心跳
@@ -35,12 +35,12 @@
 ```text
 D（新）                                            A（已在 mesh）
   POST http://A:11811/cluster/join
-  { workgroup_id, node_id, display_name, endpoint,
+  { workgroup_id, orca_node_id, display_name, endpoint,
     self, nonce, ts, proof }
                                               ├ 校验 workgroup_id
                                               ├ 校验 proof（§7.2）
                                               ├ 校验 ts 窗口 / nonce 未用过
-                                              ├ 校验 node_id 冲突
+                                              ├ 校验 orca_node_id 冲突
                                               └ 记录 D（只记 D 的自述）
   200 { self: A, members: [...], members_digest, server_version }
 
@@ -55,7 +55,7 @@ D（新）                                            A（已在 mesh）
 - **第一拍心跳就是“我在这里”的声明**：带完整 self（≤ 2 KB），对方收到后验签、登记、回拍；**登记即纳入对方的发送列表**（心跳是对称的，不存在只收不发）。后续心跳只带 digest，不再带 self。
 - **方向恒为单向出站**：新 orca node 主动连已知 orca node；旧 orca node 不需要能反向连新 orca node（NAT 场景只在 D 能出站时成立）。
 - **不广播**：没有 announce 消息、没有 gossip。D 自己去找目录里的每个人，这本身就把“我在”传播出去了。
-- **幂等**：同一 `node_id` 重复 join / 重复心跳，端点相同即成功，不重复写表。
+- **幂等**：同一 `orca_node_id` 重复 join / 重复心跳，端点相同即成功，不重复写表。
 - **自动接受**：workgroup 密码正确即接受。想被通知可开 `notify_only`（只发本地通知，不阻塞）。默认自动接受 + 审计。
 - **拒绝**：`401` 用统一文案（不区分“workgroup 不对”和“密码不对”）；`429` 限流；`409` 只给 id 冲突（需要人改名，必须可诊断）。
 
@@ -81,7 +81,7 @@ POST /cluster/heartbeat
 
 200 { "from": "N7K3QM", "busy": null,
       "members_digest": "sha256:...",
-      "members": [{ "node_id": "Z3M4AQ", "endpoint": "http://192.168.1.13:11811" }] }  // 仅摘要不一致时
+      "members": [{ "orca_node_id": "Z3M4AQ", "endpoint": "http://192.168.1.13:11811" }] }  // 仅摘要不一致时
 ```
 
 - 摘要不一致 → 对端顺势回一次目录（≤32 条）。接收方按 [§3.5](03-membership.md#35-候选端点与墓碑) 处理：只进候选，不声明在线。
@@ -131,7 +131,7 @@ t0+2s   三向心跳稳定；D 出现在所有人的 online 集
 
 - 已有 N 个 orca node 时，新 orca node 的开销 = 1 次 join + N-1 次心跳，全部并发。
 - 目录是旧的（漏了 E）：心跳摘要不一致 → 对端回目录 → 本 orca node 把 E 当候选并探测。最多 2 个心跳周期。
-- 候选端点探测失败按 `recover_probe`（15s → 30s）退避；对端回 404 `unknown_node` 时重新 join 一次。
+- 候选端点探测失败按 `recover_probe`（15s → 30s）退避；对端回 404 `unknown_orca_node` 时重新 join 一次。
 
 ### 3.5 候选端点与墓碑
 
@@ -157,9 +157,9 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 
 具体规则：
 
-1. **候选**：未知 `node_id` + endpoint 进表，`state=unknown`；探测循环对它拨一次（join），失败按 `recover_probe` 退避，成功则等对方回心跳自然转 online。
+1. **候选**：未知 `orca_node_id` + endpoint 进表，`state=unknown`；探测循环对它拨一次（join），失败按 `recover_probe` 退避，成功则等对方回心跳自然转 online。
 2. **已知但 offline**：不复活，只按退避探测。
-3. **404 `unknown_node`**：说明对端已经把我修剪掉；我重新 join 对端（join 会带回它的目录），再补一拍心跳。
+3. **404 `unknown_orca_node`**：说明对端已经把我修剪掉；我重新 join 对端（join 会带回它的目录），再补一拍心跳。
 4. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。
 5. **探测即扩散**：每次探测成功都是一次 join，对端会回目录，所以知识沿 join 边继续扩散，不需要额外的 gossip 协议。
 6. **上限**：心跳目录每次最多 32 条；同一候选失败按 15s→30s 退避。
@@ -167,7 +167,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 > 回答“能不能用 `offline_after` 阻止别人的缓存进入我的表”：不要。`offline_after` 是**在线阈值**，不是**入表过滤器**。该做的是：目录只进候选 + 只有本人能复活 + 404 触发重 join。
 ### 3.6 目录合并与墓碑
 
-- 合并原则：**按 `node_id` 去重，字段以本人记录为准**；本地只保留 `last_recv_at`/`last_ok_at`/`state`/`fails`。
+- 合并原则：**按 `orca_node_id` 去重，字段以本人记录为准**；本地只保留 `last_recv_at`/`last_ok_at`/`state`/`fails`。
 - 冲突（同 id 不同端点）：以最近一次成功心跳的端点为当前端点，旧端点直接丢弃（真要换 IP，join 一次即可）。
 - 删除：只删本地记录，不通知别人；别人会在 `record_ttl` 后自己修剪。
 - **踢人（安全语义）**：没有共识，所以“移除 orca node”不是可广播的操作。真正把它踢出去只能**换密码**：换完所有旧签名立即失效，其余 orca node 用新密码重新加入。UI 必须这么写，别让用户以为点一下 forget 就安全了。
@@ -183,7 +183,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 
 ### 3.8 id 变更、冲突、离开
 
-- 改 `node_id`：等同 leave + rejoin；旧记录靠 `record_ttl` 自然消失。
+- 改 `orca_node_id`：等同 leave + rejoin；旧记录靠 `record_ttl` 自然消失。
 - 冲突：后到者 `409`；允许同一 orca node 换端点（同 id 同端点幂等）。
 - `POST /cluster/leave`：本地不再响应心跳、删除对方记录（best-effort）；**不是安全操作**，对方仍可凭密码重新加入。
 

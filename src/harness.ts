@@ -2,24 +2,24 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createNodeConfig } from "./config.ts";
+import { createOrcaNodeConfig } from "./config.ts";
 import type { MembershipTimings } from "./membership.ts";
 import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "./orca_node.ts";
 
 export type MeshOptions = {
-  nodes?: number;
+  orcaNodes?: number;
   workgroupId?: string;
   password?: string;
   basePort?: number;
   displayNamePrefix?: string;
   dataRoot?: string;
   timings?: Partial<MembershipTimings>;
-  /** Per-node outbound HTTP override, used to simulate jitter and partitions. */
+  /** Per-orca-node outbound HTTP override, used to simulate jitter and partitions. */
   fetch?: (index: number) => FetchLike | undefined;
 };
 
 export type Mesh = {
-  nodes: OrcaNode[];
+  orcaNodes: OrcaNode[];
   urls: string[];
   stop(): Promise<void>;
 };
@@ -27,53 +27,53 @@ export type Mesh = {
 const DEFAULT_NODES = 3;
 const DEFAULT_WORKGROUP_ID = "orca-dev";
 
-/** Boot `nodes` in-process Orca nodes and converge them on the first node. */
+/** Boot `orcaNodes` in-process orca nodes and converge them on the first orcaNode. */
 export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
-  const count = options.nodes ?? DEFAULT_NODES;
+  const count = options.orcaNodes ?? DEFAULT_NODES;
   const workgroupId = options.workgroupId ?? DEFAULT_WORKGROUP_ID;
   const password = options.password ?? randomBytes(8).toString("hex");
   const dataRoot = options.dataRoot ?? join(tmpdir(), `orca-pod-mesh-${randomBytes(8).toString("hex")}`);
-  const nodes: OrcaNode[] = [];
+  const orcaNodes: OrcaNode[] = [];
   const urls: string[] = [];
 
   try {
     for (let index = 0; index < count; index += 1) {
-      const config = createNodeConfig({
+      const config = createOrcaNodeConfig({
         workgroupId,
         password,
-        dataRoot: join(dataRoot, `node-${index}`),
+        dataRoot: join(dataRoot, `orca-node-${index}`),
         port: options.basePort ? options.basePort + index : 0,
-        displayName: `${options.displayNamePrefix ?? "node"}-${index}`,
+        displayName: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
       });
-      nodes.push(createOrcaNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
+      orcaNodes.push(createOrcaNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
     }
 
-    for (const node of nodes) {
-      const { url } = await node.start();
+    for (const orcaNode of orcaNodes) {
+      const { url } = await orcaNode.start();
       urls.push(url);
     }
 
     const bootstrapUrl = urls[0];
-    if (!bootstrapUrl) throw new Error("createMesh needs at least one node");
+    if (!bootstrapUrl) throw new Error("createMesh needs at least one orca node");
 
-    for (const node of nodes.slice(1)) {
-      const response = await node.join(bootstrapUrl);
-      await joinRoster(node, response.members);
+    for (const orcaNode of orcaNodes.slice(1)) {
+      const response = await orcaNode.join(bootstrapUrl);
+      await joinRoster(orcaNode, response.members);
     }
 
-    for (const node of nodes) {
-      await node.heartbeat(bootstrapUrl);
+    for (const orcaNode of orcaNodes) {
+      await orcaNode.heartbeat(bootstrapUrl);
     }
 
     return {
-      nodes,
+      orcaNodes,
       urls,
       async stop(): Promise<void> {
-        await Promise.all(nodes.map((node) => node.stop()));
+        await Promise.all(orcaNodes.map((orcaNode) => orcaNode.stop()));
       },
     };
   } catch (error) {
-    await Promise.all(nodes.map((node) => node.stop()));
+    await Promise.all(orcaNodes.map((orcaNode) => orcaNode.stop()));
     throw error;
   }
 }

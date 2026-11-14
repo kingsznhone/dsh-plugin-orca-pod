@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { createMesh, createOrcaNode, createNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
+import { createMesh, createOrcaNode, createOrcaNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
 import type { MembershipTimings } from "../src/membership.ts";
 import type { TaskView } from "../src/protocol.ts";
 
@@ -56,7 +56,7 @@ function makeNode(
   password: string,
   options: { timings?: Partial<MembershipTimings>; fetch?: FetchLike; display_name?: string } = {},
 ): OrcaNode {
-  const config = createNodeConfig({
+  const config = createOrcaNodeConfig({
     workgroupId,
     password,
     displayName: options.display_name,
@@ -94,7 +94,7 @@ function sleep(ms: number): Promise<void> {
 describe("transport jitter during formation", () => {
   it("converges while every request carries 0.3–2.5 heartbeat intervals of latency", async () => {
     const mesh = await createMesh({
-      nodes: 3,
+      orcaNodes: 3,
       workgroupId: newWorkgroupId(),
       password: "jitter",
       timings: JITTER,
@@ -102,9 +102,9 @@ describe("transport jitter during formation", () => {
     });
 
     try {
-      await waitFor(() => mesh.nodes.every((node) => node.members().length === 2));
-      await waitFor(() => mesh.nodes.every((node) => node.members().every((peer) => peer.state === "online")));
-      expect(new Set(mesh.nodes.map((node) => node.membersDigest())).size).toBe(1);
+      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 2));
+      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().every((peer) => peer.state === "online")));
+      expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest())).size).toBe(1);
     } finally {
       await mesh.stop();
     }
@@ -113,7 +113,7 @@ describe("transport jitter during formation", () => {
   it("recovers after a 30-heartbeat burst of packet loss", async () => {
     const states: Jitter[] = [];
     const mesh = await createMesh({
-      nodes: 3,
+      orcaNodes: 3,
       workgroupId: newWorkgroupId(),
       password: "jitter",
       timings: JITTER,
@@ -125,7 +125,7 @@ describe("transport jitter during formation", () => {
     });
 
     try {
-      await waitFor(() => mesh.nodes.every((node) => node.members().length === 2));
+      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 2));
 
       // 45% 丢包、持续 3s = 30 个心跳间隔：期间状态可能反复 suspect/online。
       for (const state of states) state.dropRate = 0.45;
@@ -133,11 +133,11 @@ describe("transport jitter during formation", () => {
 
       for (const state of states) state.dropRate = 0;
       await waitFor(() =>
-        mesh.nodes.every(
-          (node) => node.members().length === 2 && node.members().every((peer) => peer.state === "online"),
+        mesh.orcaNodes.every(
+          (orcaNode) => orcaNode.members().length === 2 && orcaNode.members().every((peer) => peer.state === "online"),
         ),
       );
-      expect(new Set(mesh.nodes.map((node) => node.membersDigest())).size).toBe(1);
+      expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest())).size).toBe(1);
     } finally {
       await mesh.stop();
     }
@@ -162,20 +162,20 @@ describe("transport jitter during formation", () => {
       const aUrl = (await a.start()).url;
       const bUrl = (await b.start()).url;
       const cUrl = (await c.start()).url;
-      if (!aUrl || !bUrl || !cUrl) throw new Error("nodes did not start");
+      if (!aUrl || !bUrl || !cUrl) throw new Error("orca nodes did not start");
       aHost = new URL(aUrl).host;
 
       await b.join(aUrl);
       await c.join(aUrl);
       await c.join(bUrl);
-      await waitFor(() => [a, b, c].every((node) => node.members().length === 2));
+      await waitFor(() => [a, b, c].every((orcaNode) => orcaNode.members().length === 2));
 
       // c → a 单向断，持续 1.5s = 15 个心跳间隔。在线判定是“最近有没有收到它”：
       // a 的心跳仍能到 c，所以 c 不应该把 a 判死，也不应该报 peer_not_online。
       blocked = true;
       await sleep(1500);
-      expect(c.members().some((peer) => peer.node_id === a.nodeId && peer.state === "online")).toBe(true);
-      expect(a.members().some((peer) => peer.node_id === c.nodeId && peer.state === "online")).toBe(true);
+      expect(c.members().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online")).toBe(true);
+      expect(a.members().some((peer) => peer.orca_node_id === c.orcaNodeId && peer.state === "online")).toBe(true);
 
       let error: unknown;
       try {
@@ -209,12 +209,12 @@ describe("transport jitter during formation", () => {
     try {
       const aUrl = (await a.start()).url;
       const bUrl = (await b.start()).url;
-      if (!aUrl || !bUrl) throw new Error("nodes did not start");
+      if (!aUrl || !bUrl) throw new Error("orca nodes did not start");
       await b.join(aUrl);
       await waitFor(
         () =>
-          a.members().some((peer) => peer.node_id === b.nodeId && peer.state === "online") &&
-          b.members().some((peer) => peer.node_id === a.nodeId && peer.state === "online"),
+          a.members().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
+          b.members().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
       );
 
       // 500ms 全断 = 5 个心跳间隔：超过 suspect 阈值（3 个间隔），但不到 offline（6 个间隔）。
@@ -226,8 +226,8 @@ describe("transport jitter during formation", () => {
       blocked = false;
       await waitFor(
         () =>
-          a.members().some((peer) => peer.node_id === b.nodeId && peer.state === "online") &&
-          b.members().some((peer) => peer.node_id === a.nodeId && peer.state === "online"),
+          a.members().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
+          b.members().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
       );
       expect(a.members()).toHaveLength(1);
       expect(a.membersDigest()).toBe(b.membersDigest());

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createNodeConfig } from "../src/config.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 
 const TIMINGS = {
@@ -13,11 +13,11 @@ const TIMINGS = {
   tombstoneMs: 1_000,
 };
 
-const nodes: OrcaNode[] = [];
+const orcaNodes: OrcaNode[] = [];
 
 function make(displayName: string): OrcaNode {
-  const node = createOrcaNode({
-    config: createNodeConfig({
+  const orcaNode = createOrcaNode({
+    config: createOrcaNodeConfig({
       workgroupId: "orca-dev",
       password: "secret",
       displayName,
@@ -26,8 +26,8 @@ function make(displayName: string): OrcaNode {
     }),
     timings: TIMINGS,
   });
-  nodes.push(node);
-  return node;
+  orcaNodes.push(orcaNode);
+  return orcaNode;
 }
 
 async function waitFor(check: () => boolean, timeoutMs = 3_000): Promise<void> {
@@ -39,7 +39,7 @@ async function waitFor(check: () => boolean, timeoutMs = 3_000): Promise<void> {
 }
 
 afterEach(async () => {
-  await Promise.all(nodes.splice(0).map((node) => node.stop().catch(() => undefined)));
+  await Promise.all(orcaNodes.splice(0).map((orcaNode) => orcaNode.stop().catch(() => undefined)));
 });
 
 describe("lazy discovery", () => {
@@ -55,18 +55,18 @@ describe("lazy discovery", () => {
     await c.join(a.endpoint);
 
     // join 的目录里已经有 B，但 B 还不认识 C
-    expect(c.members().some((member) => member.node_id === b.nodeId)).toBe(true);
-    expect(b.members().some((member) => member.node_id === c.nodeId)).toBe(false);
+    expect(c.members().some((member) => member.orca_node_id === b.orcaNodeId)).toBe(true);
+    expect(b.members().some((member) => member.orca_node_id === c.orcaNodeId)).toBe(false);
 
     // C 心跳 B 撞 404 → 自动重新 join B；拿到目录后 B 也认识 C
     await waitFor(
       () =>
-        [a, b, c].every((node) => node.members().length === 2) &&
+        [a, b, c].every((orcaNode) => orcaNode.members().length === 2) &&
         c.members().every((member) => member.state === "online"),
     );
 
-    for (const node of [a, b, c]) {
-      expect(node.members()).toHaveLength(2);
+    for (const orcaNode of [a, b, c]) {
+      expect(orcaNode.members()).toHaveLength(2);
     }
   });
 
@@ -88,12 +88,12 @@ describe("lazy discovery", () => {
     // 心跳里只带摘要；摘要不一致时对端回目录，orca node 据此补齐候选并建立心跳边
     await waitFor(() =>
       [a, b, c, d].every(
-        (node) => node.members().length === 3 && node.members().every((member) => member.state === "online"),
+        (orcaNode) => orcaNode.members().length === 3 && orcaNode.members().every((member) => member.state === "online"),
       ),
     );
 
-    for (const node of [a, b, c, d]) {
-      expect(node.members()).toHaveLength(3);
+    for (const orcaNode of [a, b, c, d]) {
+      expect(orcaNode.members()).toHaveLength(3);
     }
   });
 });

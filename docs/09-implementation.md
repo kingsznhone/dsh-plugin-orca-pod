@@ -13,7 +13,7 @@ orca-pod/（仓库根目录）
   package.json        唯一依赖 fastify；dsh.bundle.patch -> cordis.patch.yml
   cordis.patch.yml    DSH 行：id orca-pod、name 'orca-pod'
   src/
-    protocol.ts       类型、错误码、node_id、成员 digest、签名规范化（零依赖）
+    protocol.ts       类型、错误码、orca_node_id、成员 digest、签名规范化（零依赖）
     crypto.ts         HKDF、请求签名、nonce cache
     config.ts         配置校验、默认值、密钥派生、JSON 读写
     storage.ts        PeerStore / TaskStore 接口 + 内存实现（+ 重导出 blobs）
@@ -35,7 +35,7 @@ orca-pod/（仓库根目录）
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| `protocol.ts` | 已实现 | 类型、错误码、任务视图、node_id、digest、签名规范化 |
+| `protocol.ts` | 已实现 | 类型、错误码、任务视图、orca_node_id、digest、签名规范化 |
 | `crypto.ts` | 已实现 | HKDF、请求签名、nonce cache |
 | `config.ts` | 已实现 | 配置校验、密钥派生、JSON 读写 |
 | `storage.ts` / `blobs.ts` | 已实现 | PeerStore/TaskStore 接口 + 内存实现；blob 另有 fs 实现（内容寻址、临时文件+rename、TTL GC） |
@@ -55,16 +55,16 @@ orca-pod/（仓库根目录）
 模块依赖方向单向，禁止反向（靠 review 与 import 检查，不靠包边界）：
 
 ```text
-protocol  ← crypto, config, storage, gateway, executor, tasks, node
-crypto    ← config, gateway, node
-storage   ← gateway, node, sqlite, workspace
-sqlite    ← node   （只实现 storage.TaskStore 接口）
-workspace ← node   （只提供路径与 ensure，不 import 网关）
-membership ← node   （gateway 只见 PeerStore 门面）
-gateway   ← node   （gateway 只依赖 protocol + storage 接口，不 import executor/tasks 实现）
+protocol  ← crypto, config, storage, gateway, executor, tasks, orca_node
+crypto    ← config, gateway, orca_node
+storage   ← gateway, orca_node, sqlite, workspace
+sqlite    ← orca_node   （只实现 storage.TaskStore 接口）
+workspace ← orca_node   （只提供路径与 ensure，不 import 网关）
+membership ← orca_node   （gateway 只见 PeerStore 门面）
+gateway   ← orca_node   （gateway 只依赖 protocol + storage 接口，不 import executor/tasks 实现）
 executor  ← tasks
-tasks     ← node
-node      ← harness, plugin
+tasks     ← orca_node
+orca_node ← harness, plugin
 ```
 
 `gateway` 通过构造参数拿到 `TaskRunner` 接口实例，而不是 import executor 或具体实现——这是“gateway 能单独测”的前提。
@@ -99,11 +99,11 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 - harness 目前有 `createMesh({ nodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, fetch })`，返回 `{ nodes, urls, stop() }`。它启动 orca node 后让每个 orca node join 第一个 orca node、用 `joinRoster` 按返回目录 best-effort 补 join，再对 bootstrap 发一轮心跳。
 - 已支持：可注入时钟（`createOrcaNode({ clock })`）、可注入 transport（`createOrcaNode({ fetch })`，模拟丢包、延迟、单向阻断）、orca node 启停（`start()` / `stop()`）、进程内 mesh、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。抖动场景的窗口按心跳间隔的倍数给（延迟 0.3–2.5 个间隔、丢包 30 个间隔、单向阻断 15 个间隔、全断 5 个间隔），不按绝对毫秒。
 - 未支持：跨进程 harness；`waitFor` 仍是各测试文件内的本地 helper。
-- 场景用 vitest 的普通 async 函数写：`await waitFor(() => ...)`、`node.stop()`、`sendTask` 组合，不引入第二套场景描述语言。
+- 场景用 vitest 的普通 async 函数写：`await waitFor(() => ...)`、`orcaNode.stop()`、`sendTask` 组合，不引入第二套场景描述语言。
 
 ```ts
-const mesh = await createMesh({ nodes: 3, password: "test" });
-const [origin] = mesh.nodes;
+const mesh = await createMesh({ orcaNodes: 3, password: "test" });
+const [origin] = mesh.orcaNodes;
 const targetUrl = mesh.urls[1];
 const task = await origin.sendTask(targetUrl, {
   message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
@@ -139,7 +139,7 @@ orca-pod/（仓库根目录）
 ```ts
 export function apply(ctx, config) {
   const handle = startPod(config, ctx.logger)          // 非阻塞启动，失败只记日志/状态
-  ctx.effect(() => async () => stopPod(handle, ctx.logger), "orca-pod.node")
+  ctx.effect(() => async () => stopPod(handle, ctx.logger), "orca-pod.orca-node")
   for (const tool of createPodTools(handle)) ctx.tools.register(tool)
   // 密码：原型阶段从 patch config 读；生产应改为 ctx.credentials.readRecord('orca-pod')
 }
@@ -155,7 +155,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createOrcaNode()`。**
 
-**Phase 0 现状**：库根 `createOrcaNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动 orca node、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两个 orca node smoke（join、send、status、cancel、重启后 node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
+**Phase 0 现状**：库根 `createOrcaNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动 orca node、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两个 orca node smoke（join、send、status、cancel、重启后 orca_node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
 
 ### 9.5 工程约定
 
@@ -187,7 +187,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 | 小 JSON 状态 | `lowdb` + `steno` | 原子写、无数据库；存成员缓存、配置、GC 标记 |
 | 任务存储 | `better-sqlite3` | 同步 API、稳定；替代方案 `node:sqlite` |
 | 文件原子写 | `write-file-atomic` | blob 落盘与 manifest；避免手写 rename+fsync |
-| id 生成 | `ulid` | `task_id` 单调可排序；`node_id` 仍需自写（6 字符 Crockford） |
+| id 生成 | `ulid` | `task_id` 单调可排序；`orca_node_id` 仍需自写（6 字符 Crockford） |
 | HTTP 客户端 | 内置 `fetch`（undici） | 不引 axios；测试用 `undici` MockAgent 或 `msw` |
 | 重试/退避 | `p-retry` | 只在客户端（模型/UI）用；服务端仍然不自动重试 |
 | 假时钟 | `@sinonjs/fake-timers` | 心跳阈值与 `at_ms` 的单测；配合注入的 `Clock` 接口 |
@@ -204,12 +204,12 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 
 ### 9.7 与路线图的对应
 
-- Phase 0：单包内 protocol、crypto、config、storage、gateway、executor(echo)、tasks、node、harness、plugin。
+- Phase 0：单包内 protocol、crypto、config、storage、gateway、executor(echo)、tasks、orca_node、harness、plugin。
 - Phase 1：harness 覆盖成员收敛与故障场景（vitest 用例）。
 - Phase 2：持久化底座（SQLite task store、fs blob + GC、group 工作区与 cwd 绑定）、HeadlessExecutor。
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 个 orca node 压测复用 harness。
 
-**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；executor 只有 EchoExecutor（Headless/ACP 未开始）；ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；真实执行器与跨进程 harness 未开始。
+**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin 已实现；executor 只有 EchoExecutor（Headless/ACP 未开始）；ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；真实执行器与跨进程 harness 未开始。
 
 ---

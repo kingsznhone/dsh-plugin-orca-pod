@@ -77,7 +77,7 @@ Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗
 - `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB（按 UTF-8 字节），**原样返回**，不做模板替换，便于逐字节断言。
 - `final.text` 缺省为空串；`echo` 缺省（或 `null`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
 - `artifacts` ≤ 4 个、每个 `content` ≤ 4 KiB（UTF-8）；`name` 必须是非空纯文件名（不得含 `/`、`\`），只作提示。executor 真的写 blob 存储，返回的 `artifactId` = `sha256(content)` 的 hex（即 `blob_id`）；当前 `media_type` 固定为 `text/plain`。**artifact 事件先于终态事件产出**，因此 `completed`/`failed`/`hang` 都可能带 artifact。
-- 非法脚本（未知字段、`at_ms` 不递增/越界、`suspend` 类型或必填字段错误、`final.state` 非法、`text`/`content` 超限、artifact 超过 4 个、文件名含路径分隔符）在**建 task 之前**返回 `400 bad_echo_script`，不会执行到一半才炸；orca node 忙时先回 `429 node_busy`，脚本校验在忙检查之后、建 task 之前。
+- 非法脚本（未知字段、`at_ms` 不递增/越界、`suspend` 类型或必填字段错误、`final.state` 非法、`text`/`content` 超限、artifact 超过 4 个、文件名含路径分隔符）在**建 task 之前**返回 `400 bad_echo_script`，不会执行到一半才炸；orca node 忙时先回 `429 orca_node_busy`，脚本校验在忙检查之后、建 task 之前。
 - 真 executor 收到 `echo` 字段直接忽略（当前尚无真 executor），避免脚本泄漏到生产路径。
 
 ### 6.4 ACP 的位置
@@ -145,8 +145,8 @@ Pod gateway (local)
 
 ### 6.9 单槽执行：一个 orca node 同一时间只做一件事
 
-- 网关维护一个槽位：`busy = null | { task_id, origin_node, since }`。
-- 槽位被占时，新的 `message/send` 直接回 `429 node_busy`，**不排队、服务端不自动重试**。
+- 网关维护一个槽位：`busy = null | { task_id, origin_orca_node, since }`。
+- 槽位被占时，新的 `message/send` 直接回 `429 orca_node_busy`，**不排队、服务端不自动重试**。
 - **决策交给调用方的模型**，网关只报事实：
   1. 重试一次（响应会带 `retry_after_s`，读类任务通常够用）；
   2. 换另一个能跑这个任务的 orca node；
@@ -154,12 +154,12 @@ Pod gateway (local)
 
 ```json
 // 429 的 error.data（Phase 0 已实现，另带 HTTP 头 Retry-After: 30）
-{ "code": "node_busy",
+{ "code": "orca_node_busy",
   "retry_after_s": 30,
-  "holder": { "task_id": "t_01JABD", "origin_node": "N7K3QM", "since": "2026-11-14T05:10:00Z" } }
+  "holder": { "task_id": "t_01JABD", "origin_orca_node": "N7K3QM", "since": "2026-11-14T05:10:00Z" } }
 ```
 
-**Phase 0 实现**：忙时返回 HTTP 429 + `Retry-After: 30`，JSON-RPC `error.code=-32000`、`error.message="node_busy"`，`error.data={code:"node_busy",retry_after_s:30,holder:{...}}`。`busy` 状态由 TaskRunner 内部维护；self record 与心跳里的 `busy` 仍固定为 `null`，UI 暂时看不到持有者（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
+**Phase 0 实现**：忙时返回 HTTP 429 + `Retry-After: 30`，JSON-RPC `error.code=-32000`、`error.message="orca_node_busy"`，`error.data={code:"orca_node_busy",retry_after_s:30,holder:{...}}`。`busy` 状态由 TaskRunner 内部维护；self record 与心跳里的 `busy` 仍固定为 `null`，UI 暂时看不到持有者（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
 
 - 忙时拒绝发生在**建 task 之前**：不产生 task、不消耗幂等键；模型重试就是一次新的 `message/send`。
 - `busy` 写进 self record（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证（Phase 0 未实现，见上）。
@@ -169,7 +169,7 @@ Pod gateway (local)
 ### 6.10 session / context / workspace 的绑定
 
 ```text
-(workgroup_id, origin_node, context_id) → session_id
+(workgroup_id, origin_orca_node, context_id) → session_id
 session_id → workspace（本 orca node 唯一的那份）
 ```
 

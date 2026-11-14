@@ -13,9 +13,9 @@ afterEach(async () => {
 });
 
 async function twoNodes(): Promise<{ origin: OrcaNode; target: OrcaNode; targetUrl: string }> {
-  mesh = await createMesh({ nodes: 2 });
-  const [origin, target] = mesh.nodes;
-  if (!origin || !target) throw new Error("mesh did not create two nodes");
+  mesh = await createMesh({ orcaNodes: 2 });
+  const [origin, target] = mesh.orcaNodes;
+  if (!origin || !target) throw new Error("mesh did not create two orca nodes");
   return { origin, target, targetUrl: target.endpoint };
 }
 
@@ -113,7 +113,7 @@ describe("A2A task surface", () => {
     ).rejects.toMatchObject({ code: "bad_echo_script", status: 400 });
   });
 
-  it("returns node_busy when a task is already running", async () => {
+  it("returns orca_node_busy when a task is already running", async () => {
     const { origin, targetUrl } = await twoNodes();
     const running = await origin.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
@@ -126,7 +126,7 @@ describe("A2A task surface", () => {
         message: { role: "user", parts: [{ kind: "text", text: "second" }] },
         metadata: { echo: { final: { state: "completed", text: "nope" } } },
       }),
-    ).rejects.toMatchObject({ code: "node_busy", status: 429 });
+    ).rejects.toMatchObject({ code: "orca_node_busy", status: 429 });
 
     await origin.cancelTask(targetUrl, running.id);
   });

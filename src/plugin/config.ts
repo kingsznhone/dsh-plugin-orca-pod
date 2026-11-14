@@ -22,17 +22,17 @@ export const DEFAULT_POD_PORT = DEFAULT_PORT
 
 /** Validated configuration accepted by the ORCA pod bundle. */
 export interface Config {
-  /** Workgroup the node joins; required. */
+  /** Workgroup the orca node joins; required. */
   workgroup_id: string
   /** Workgroup password used to derive the shared key; required (prototype). */
   workgroup_password: string
-  /** Human-readable node name; defaults to `orca-<node_id>` when omitted. */
+  /** Human-readable orca node name; defaults to `orca-<orca_node_id>` when omitted. */
   display_name?: string
   /** Local listen port; defaults to 11811 (0 picks a free port). */
   port: number
   /** Public endpoint advertised to peers; defaults to `http://<host>:<port>`. */
   endpoint?: string
-  /** Directory for the persisted node config; defaults to `defaultDataRoot()`. */
+  /** Directory for the persisted orca node config; defaults to `defaultDataRoot()`. */
   data_root?: string
   /** Initial peers to `join` on startup; failures are logged, not fatal. */
   peers: string[]

@@ -10,7 +10,7 @@ export type Workspace = {
   root: string;
   /** Agent cwd and the only write root. */
   work: string;
-  /** Cross-session notes; writable, never leaves this node. */
+  /** Cross-session notes; writable, never leaves this orcaNode. */
   notes: string;
   /** Task inputs pulled from blobs; owned by the gateway. */
   inputs: string;

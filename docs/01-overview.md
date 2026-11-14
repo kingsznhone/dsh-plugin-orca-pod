@@ -60,17 +60,17 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 
 | 术语 | 含义 |
 |---|---|
-| **orca node** | mesh 里的一台机器（一个进程、一个 `node_id`）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/orca_node.ts` 与 `createOrcaNode()`。 |
+| **orca node** | mesh 里的一台机器（一个进程、一个 `orca_node_id`）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/orca_node.ts` 与 `createOrcaNode()`。 |
 | **workgroup_id** | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。 |
-| **node_id** | 6 字符短 id，orca node 的显示标签；同一 workgroup 内唯一，非安全主体。 |
+| **orca_node_id** | 6 字符短 id，orca node 的显示标签；同一 workgroup 内唯一，非安全主体。 |
 | **Peer** | 同一 workgroup 内、本 orca node 已知的另一个 orca node。 |
 | **SelfRecord** | orca node 对自己的描述（endpoint、runtime、工作区用量、忙闲），只能由本人写。 |
 | **members_digest** | 排序后的成员记录摘要，用于“我落后了没有”的比对，不表达在线状态。 |
-| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(node_id, endpoint)`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。 |
+| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(orca_node_id, endpoint)`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。 |
 | **tombstone** | 本地的“别再试它”标记，带过期时间；不传播。 |
 | **workspace** | orca node 上自动分配的持久目录，跨任务、跨 session 保留上下文。 |
 | **group workspace** | 就是上面那个 `workspace`；本文有时强调“单 orca node 一份”时这么叫。 |
-| **session** | DSH / ACP 的会话状态，绑定 `(workgroup_id, origin_node, context_id)`。 |
+| **session** | DSH / ACP 的会话状态，绑定 `(workgroup_id, origin_orca_node, context_id)`。 |
 | **context_id** | A2A 的逻辑会话 id，把多个 task 归到同一串工作里。 |
 | **grant** | origin 签发的单任务授权，绑定 origin/target/task/nonce，随任务结束失效。 |
 
@@ -80,7 +80,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 
 ```text
 Workgroup: orca-dev
-Full mesh (<= 10 nodes), 唯一拓扑
+Full mesh (<= 10 orca nodes), 唯一拓扑
 ```
 
 ### 1.5 参考

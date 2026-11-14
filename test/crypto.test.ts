@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateNodeId } from "../src/protocol.ts";
+import { generateOrcaNodeId } from "../src/protocol.ts";
 import {
   NonceCache,
   PodAuthError,
@@ -55,11 +55,11 @@ describe("deriveWorkgroupKey", () => {
 });
 
 describe("buildAuthHeader + verifyAuth", () => {
-  it("roundtrips with a fresh NonceCache and returns the node id", () => {
+  it("roundtrips with a fresh NonceCache and returns the orca node id", () => {
     const key = freshKey();
-    const nodeId = generateNodeId();
+    const orcaNodeId = generateOrcaNodeId();
     const body = JSON.stringify({ task_id: "t_01JABD", message: "hello" });
-    const header = buildAuthHeader({ key, nodeId, method: METHOD, path: PATH, body });
+    const header = buildAuthHeader({ key, orcaNodeId, method: METHOD, path: PATH, body });
 
     const verified = verifyAuth({
       key,
@@ -70,14 +70,14 @@ describe("buildAuthHeader + verifyAuth", () => {
       nonceCache: new NonceCache(),
     });
 
-    expect(verified.nodeId).toBe(nodeId);
+    expect(verified.orcaNodeId).toBe(orcaNodeId);
   });
 
   it("rejects a tampered body with bad_proof", () => {
     const key = freshKey();
     const header = buildAuthHeader({
       key,
-      nodeId: generateNodeId(),
+      orcaNodeId: generateOrcaNodeId(),
       method: METHOD,
       path: PATH,
       body: "original",
@@ -99,7 +99,7 @@ describe("buildAuthHeader + verifyAuth", () => {
     const key = freshKey();
     const header = buildAuthHeader({
       key,
-      nodeId: generateNodeId(),
+      orcaNodeId: generateOrcaNodeId(),
       method: METHOD,
       path: PATH,
       body: "replay-me",
@@ -117,7 +117,7 @@ describe("buildAuthHeader + verifyAuth", () => {
     const key = freshKey();
     const header = buildAuthHeader({
       key,
-      nodeId: generateNodeId(),
+      orcaNodeId: generateOrcaNodeId(),
       method: METHOD,
       path: PATH,
       ts: Date.now() - 5 * 60_000,
@@ -169,8 +169,8 @@ describe("bodySha256", () => {
 
 describe("parseAuthHeader", () => {
   it("parses a Pod auth header", () => {
-    expect(parseAuthHeader("Pod node_id=ABC123; ts=1; nonce=n1; proof=p1")).toEqual({
-      nodeId: "ABC123",
+    expect(parseAuthHeader("Pod orca_node_id=ABC123; ts=1; nonce=n1; proof=p1")).toEqual({
+      orcaNodeId: "ABC123",
       ts: 1,
       nonce: "n1",
       proof: "p1",

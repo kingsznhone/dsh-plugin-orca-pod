@@ -1,4 +1,4 @@
-import type { NodeId, PeerState, PeerView } from "./protocol.ts";
+import type { OrcaNodeId, PeerState, PeerView } from "./protocol.ts";
 import type { PeerStore } from "./storage.ts";
 
 /**
@@ -10,7 +10,7 @@ import type { PeerStore } from "./storage.ts";
 export type SuspectReason = "quiet" | "unreachable";
 
 export type MembershipTimings = {
-  /** Heartbeat period; each node sends one every interval (+-20% jitter). */
+  /** Heartbeat period; each orca node sends one every interval (+-20% jitter). */
   intervalMs: number;
   /** Consecutive missed heartbeats before a peer becomes suspect. */
   suspectAfterMs: number;
@@ -61,29 +61,29 @@ export type PeerRecord = {
 export type Membership = {
   /** PeerStore facade for the gateway (join / touch / busy update / remove). */
   readonly peers: PeerStore;
-  readonly selfNodeId: NodeId;
+  readonly selfOrcaNodeId: OrcaNodeId;
   readonly timings: MembershipTimings;
-  /** Record an inbound signed message from `nodeId`; returns false when unknown. */
-  observeInbound(nodeId: NodeId): boolean;
-  observeOutboundOk(nodeId: NodeId): void;
-  observeOutboundFail(nodeId: NodeId): void;
+  /** Record an inbound signed message from `orcaNodeId`; returns false when unknown. */
+  observeInbound(orcaNodeId: OrcaNodeId): boolean;
+  observeOutboundOk(orcaNodeId: OrcaNodeId): void;
+  observeOutboundFail(orcaNodeId: OrcaNodeId): void;
   /** Remote lists only add/update records; they never touch online state. */
   mergeRemote(members: readonly PeerView[] | null | undefined): void;
   /** Apply timeout transitions and prune stale records. */
   evaluate(): PeerView[];
-  needsProbe(nodeId: NodeId, nowMs: number): boolean;
+  needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean;
   /** Monotonic clock used by this instance (same source as the watchdog). */
   now(): number;
   list(): PeerView[];
-  get(nodeId: NodeId): PeerView | null;
-  getRecord(nodeId: NodeId): PeerRecord | null;
+  get(orcaNodeId: OrcaNodeId): PeerView | null;
+  getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null;
   findByEndpoint(endpoint: string): PeerView | null;
-  remove(nodeId: NodeId): void;
-  isTombstoned(nodeId: NodeId): boolean;
+  remove(orcaNodeId: OrcaNodeId): void;
+  isTombstoned(orcaNodeId: OrcaNodeId): boolean;
 };
 
 export type CreateMembershipOptions = {
-  selfNodeId: NodeId;
+  selfOrcaNodeId: OrcaNodeId;
   timings?: Partial<MembershipTimings>;
   clock?: MembershipClock;
 };
@@ -101,12 +101,12 @@ function toView(record: PeerRecord): PeerView {
 }
 
 export function createMembership(options: CreateMembershipOptions): Membership {
-  const selfNodeId = options.selfNodeId;
+  const selfOrcaNodeId = options.selfOrcaNodeId;
   const timings = resolveTimings(options.timings);
   const monotonicMs = options.clock?.monotonicMs ?? (() => performance.now());
   const wallIso = options.clock?.wallIso ?? (() => new Date().toISOString());
-  const records = new Map<NodeId, PeerRecord>();
-  const tombstones = new Map<NodeId, number>();
+  const records = new Map<OrcaNodeId, PeerRecord>();
+  const tombstones = new Map<OrcaNodeId, number>();
   const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
 
   function createRecord(view: PeerView, state: PeerState, nowMs: number): PeerRecord {
@@ -131,8 +131,8 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     record.view.busy = view.busy ?? null;
   }
 
-  function getRecord(nodeId: NodeId): PeerRecord | null {
-    return records.get(nodeId) ?? null;
+  function getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null {
+    return records.get(orcaNodeId) ?? null;
   }
 
   function markOnline(record: PeerRecord, nowMs: number): void {
@@ -146,61 +146,61 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     record.offline_since_ms = null;
   }
 
-  function remove(nodeId: NodeId): void {
-    if (!records.delete(nodeId)) return;
-    tombstones.set(nodeId, monotonicMs() + timings.tombstoneMs);
+  function remove(orcaNodeId: OrcaNodeId): void {
+    if (!records.delete(orcaNodeId)) return;
+    tombstones.set(orcaNodeId, monotonicMs() + timings.tombstoneMs);
   }
 
   const peers: PeerStore = {
     upsert(peer: PeerView): void {
-      if (peer.node_id === selfNodeId) return;
-      const existing = records.get(peer.node_id);
+      if (peer.orca_node_id === selfOrcaNodeId) return;
+      const existing = records.get(peer.orca_node_id);
       const nowMs = monotonicMs();
       if (existing) {
         profilePatch(existing, peer);
         return;
       }
-      if (isTombstoned(peer.node_id)) return;
-      records.set(peer.node_id, createRecord(peer, "online", nowMs));
+      if (isTombstoned(peer.orca_node_id)) return;
+      records.set(peer.orca_node_id, createRecord(peer, "online", nowMs));
     },
-    get(nodeId: NodeId): PeerView | undefined {
-      const record = records.get(nodeId);
+    get(orcaNodeId: OrcaNodeId): PeerView | undefined {
+      const record = records.get(orcaNodeId);
       return record ? toView(record) : undefined;
     },
     list(): PeerView[] {
       return [...records.values()]
         .map(toView)
-        .sort((left, right) => left.node_id.localeCompare(right.node_id));
+        .sort((left, right) => left.orca_node_id.localeCompare(right.orca_node_id));
     },
-    remove(nodeId: NodeId): void {
-      remove(nodeId);
+    remove(orcaNodeId: OrcaNodeId): void {
+      remove(orcaNodeId);
     },
-    touch(nodeId: NodeId, _at?: string): boolean {
-      const record = records.get(nodeId);
+    touch(orcaNodeId: OrcaNodeId, _at?: string): boolean {
+      const record = records.get(orcaNodeId);
       if (!record) return false;
       markOnline(record, monotonicMs());
       return true;
     },
   };
 
-  function isTombstoned(nodeId: NodeId): boolean {
-    const until = tombstones.get(nodeId);
+  function isTombstoned(orcaNodeId: OrcaNodeId): boolean {
+    const until = tombstones.get(orcaNodeId);
     if (until === undefined) return false;
     if (monotonicMs() < until) return true;
-    tombstones.delete(nodeId);
+    tombstones.delete(orcaNodeId);
     return false;
   }
 
-  function observeInbound(nodeId: NodeId): boolean {
-    if (nodeId === selfNodeId) return true;
-    const record = records.get(nodeId);
+  function observeInbound(orcaNodeId: OrcaNodeId): boolean {
+    if (orcaNodeId === selfOrcaNodeId) return true;
+    const record = records.get(orcaNodeId);
     if (!record) return false;
     markOnline(record, monotonicMs());
     return true;
   }
 
-  function observeOutboundOk(nodeId: NodeId): void {
-    const record = records.get(nodeId);
+  function observeOutboundOk(orcaNodeId: OrcaNodeId): void {
+    const record = records.get(orcaNodeId);
     if (!record) return;
     record.last_ok_ms = monotonicMs();
     record.last_ok_at = wallIso();
@@ -217,8 +217,8 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     }
   }
 
-  function observeOutboundFail(nodeId: NodeId): void {
-    const record = records.get(nodeId);
+  function observeOutboundFail(orcaNodeId: OrcaNodeId): void {
+    const record = records.get(orcaNodeId);
     if (!record) return;
     record.fails += 1;
     const nowMs = monotonicMs();
@@ -240,20 +240,20 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     if (!members) return;
     const nowMs = monotonicMs();
     for (const member of members) {
-      if (member.node_id === selfNodeId) continue;
-      if (isTombstoned(member.node_id)) continue;
-      const existing = records.get(member.node_id);
+      if (member.orca_node_id === selfOrcaNodeId) continue;
+      if (isTombstoned(member.orca_node_id)) continue;
+      const existing = records.get(member.orca_node_id);
       if (existing) {
         profilePatch(existing, member);
         continue;
       }
-      records.set(member.node_id, createRecord(member, "unknown", nowMs));
+      records.set(member.orca_node_id, createRecord(member, "unknown", nowMs));
     }
   }
 
   function evaluate(): PeerView[] {
     const nowMs = monotonicMs();
-    for (const [nodeId, record] of [...records]) {
+    for (const [orcaNodeId, record] of [...records]) {
       if (record.view.state !== "offline" && record.last_recv_ms !== null) {
         const age = nowMs - record.last_recv_ms;
         if (age >= timings.offlineAfterMs) {
@@ -279,15 +279,15 @@ export function createMembership(options: CreateMembershipOptions): Membership {
         record.offline_since_ms !== null &&
         nowMs - record.offline_since_ms >= timings.recordTtlMs
       ) {
-        records.delete(nodeId);
-        tombstones.set(nodeId, nowMs + timings.tombstoneMs);
+        records.delete(orcaNodeId);
+        tombstones.set(orcaNodeId, nowMs + timings.tombstoneMs);
       }
     }
     return [...records.values()].map(toView);
   }
 
-  function needsProbe(nodeId: NodeId, nowMs: number): boolean {
-    const record = records.get(nodeId);
+  function needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean {
+    const record = records.get(orcaNodeId);
     if (!record) return false;
     if (record.view.state !== "offline") return true;
     return nowMs >= record.next_probe_ms;
@@ -300,14 +300,14 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     return null;
   }
 
-  function get(nodeId: NodeId): PeerView | null {
-    const record = records.get(nodeId);
+  function get(orcaNodeId: OrcaNodeId): PeerView | null {
+    const record = records.get(orcaNodeId);
     return record ? toView(record) : null;
   }
 
   return {
     peers,
-    selfNodeId,
+    selfOrcaNodeId,
     timings,
     observeInbound,
     observeOutboundOk,

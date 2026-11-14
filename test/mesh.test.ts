@@ -3,17 +3,17 @@ import { describe, expect, it } from "vitest";
 import { createMesh } from "../src/index.ts";
 
 describe("createMesh", () => {
-  it("joins three nodes into one converged mesh", async () => {
-    const mesh = await createMesh({ nodes: 3 });
+  it("joins three orca nodes into one converged mesh", async () => {
+    const mesh = await createMesh({ orcaNodes: 3 });
     try {
-      expect(mesh.nodes).toHaveLength(3);
+      expect(mesh.orcaNodes).toHaveLength(3);
       expect(mesh.urls).toHaveLength(3);
 
-      for (const node of mesh.nodes) {
-        expect(node.members()).toHaveLength(2);
+      for (const orcaNode of mesh.orcaNodes) {
+        expect(orcaNode.members()).toHaveLength(2);
       }
 
-      const digests = new Set(mesh.nodes.map((node) => node.membersDigest()));
+      const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest()));
       expect(digests.size).toBe(1);
 
       for (const url of mesh.urls) {

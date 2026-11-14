@@ -31,7 +31,7 @@ function storedTask(state: PersistedTask["view"]["status"]["state"], id = "TASK0
       status: { state, timestamp: at },
       metadata: {},
     },
-    origin_node: "ORIGIN",
+    origin_orca_node: "ORIGIN",
     created_at: at,
     updated_at: at,
   };

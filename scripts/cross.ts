@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { buildAuthHeader, bodySha256 } from "../src/crypto.ts";
-import { createNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "../src/config.ts";
+import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "../src/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 
 type Args = Map<string, string>;
@@ -29,9 +29,9 @@ function required(args: Args, key: string): string {
   return value;
 }
 
-async function withNode(node: OrcaNode, keepAlive: boolean): Promise<void> {
+async function withNode(orcaNode: OrcaNode, keepAlive: boolean): Promise<void> {
   const shutdown = async (): Promise<void> => {
-    await node.stop();
+    await orcaNode.stop();
     process.exit(0);
   };
   process.once("SIGINT", () => void shutdown());
@@ -39,8 +39,8 @@ async function withNode(node: OrcaNode, keepAlive: boolean): Promise<void> {
   if (!keepAlive) return;
   for (;;) {
     await sleep(2000);
-    const members = node.members();
-    console.log(`members=${members.length} digest=${node.membersDigest().slice(0, 12)} peers=${members.map((member) => `${member.node_id}:${member.state}`).join(",")}`);
+    const members = orcaNode.members();
+    console.log(`members=${members.length} digest=${orcaNode.membersDigest().slice(0, 12)} peers=${members.map((member) => `${member.orca_node_id}:${member.state}`).join(",")}`);
   }
 }
 
@@ -49,7 +49,7 @@ async function serve(args: Args): Promise<void> {
   const password = required(args, "password");
   const configFile = args.get("config") ?? `${defaultDataRoot()}/config.json`;
   const exists = await loadConfig(configFile).catch(() => null);
-  const config = exists ?? createNodeConfig({
+  const config = exists ?? createOrcaNodeConfig({
     workgroupId,
     password,
     displayName: args.get("name") ?? `host-${process.pid}`,
@@ -58,17 +58,17 @@ async function serve(args: Args): Promise<void> {
     endpoint: args.get("endpoint") ?? null,
   });
   if (!exists) await saveConfig(configFile, config);
-  const node = createOrcaNode({ config });
-  const { url } = await node.start();
-  console.log(`serving on ${url} node=${node.nodeId} config=${configFile}`);
-  await withNode(node, true);
+  const orcaNode = createOrcaNode({ config });
+  const { url } = await orcaNode.start();
+  console.log(`serving on ${url} node=${orcaNode.orcaNodeId} config=${configFile}`);
+  await withNode(orcaNode, true);
 }
 
 async function join(args: Args): Promise<void> {
   const peer = required(args, "peer");
   const workgroupId = required(args, "workgroup");
   const password = required(args, "password");
-  const config = createNodeConfig({
+  const config = createOrcaNodeConfig({
     workgroupId,
     password,
     displayName: args.get("name") ?? `guest-${process.pid}`,
@@ -76,43 +76,43 @@ async function join(args: Args): Promise<void> {
     port: Number(args.get("port") ?? 0),
     endpoint: args.get("endpoint") ?? null,
   });
-  const node = createOrcaNode({ config });
-  const { url } = await node.start();
-  const response = await node.join(peer);
-  console.log(`joined ${peer} as ${node.nodeId} on ${url}`);
-  console.log(`members=${response.members.map((member) => `${member.node_id}@${member.endpoint}`).join(",")}`);
+  const orcaNode = createOrcaNode({ config });
+  const { url } = await orcaNode.start();
+  const response = await orcaNode.join(peer);
+  console.log(`joined ${peer} as ${orcaNode.orcaNodeId} on ${url}`);
+  console.log(`members=${response.members.map((member) => `${member.orca_node_id}@${member.endpoint}`).join(",")}`);
   console.log(`digest=${response.members_digest}`);
-  for (const member of node.members()) {
-    if (member.endpoint && member.endpoint !== node.endpoint) {
-      await node.heartbeat(member.endpoint).catch((error: unknown) => {
+  for (const member of orcaNode.members()) {
+    if (member.endpoint && member.endpoint !== orcaNode.endpoint) {
+      await orcaNode.heartbeat(member.endpoint).catch((error: unknown) => {
         console.log(`heartbeat ${member.endpoint} failed: ${String(error)}`);
       });
     }
   }
-  await withNode(node, true);
+  await withNode(orcaNode, true);
 }
 
 async function task(args: Args): Promise<void> {
   const configFile = required(args, "config");
   const peer = required(args, "peer");
   const config = await loadConfig(configFile);
-  const node = createOrcaNode({ config });
+  const orcaNode = createOrcaNode({ config });
   const echo = args.get("echo")
     ? (JSON.parse(required(args, "echo")) as Record<string, unknown>)
     : { final: { state: "completed", text: args.get("text") ?? "echo from host" } };
-  const submitted = await node.sendTask(peer, {
+  const submitted = await orcaNode.sendTask(peer, {
     message: { role: "user", parts: [{ kind: "text", text: args.get("text") ?? "run echo" }] },
     metadata: { echo },
   });
   console.log(`submitted task=${submitted.id} state=${submitted.status.state}`);
   let resumed = false;
   for (let attempt = 0; attempt < 300; attempt += 1) {
-    const view = await node.getTask(peer, submitted.id);
+    const view = await orcaNode.getTask(peer, submitted.id);
     if (view.status.state === "input-required") {
       console.log(`input-required: ${JSON.stringify(view.status.message)}`);
       if (args.get("auto-resume") === "true" && !resumed) {
         resumed = true;
-        await node.sendTask(peer, {
+        await orcaNode.sendTask(peer, {
           message: { role: "user", parts: [{ kind: "text", text: "approved" }], taskId: submitted.id },
         });
         console.log("resumed");
@@ -121,13 +121,13 @@ async function task(args: Args): Promise<void> {
     if (view.status.state === "completed" || view.status.state === "failed" || view.status.state === "canceled") {
       console.log(`final=${view.status.state} message=${JSON.stringify(view.status.message)}`);
       console.log(`artifacts=${JSON.stringify(view.artifacts ?? [])}`);
-      await node.stop();
+      await orcaNode.stop();
       return;
     }
     await sleep(100);
   }
   console.log("timed out waiting for terminal state");
-  await node.stop();
+  await orcaNode.stop();
 }
 
 async function blob(args: Args): Promise<void> {
@@ -135,7 +135,7 @@ async function blob(args: Args): Promise<void> {
   const peer = required(args, "peer").replace(/\/$/, "");
   const config = await loadConfig(configFile);
   const key = workgroupKey(config);
-  const nodeId = config.node_id;
+  const orcaNodeId = config.orca_node_id;
   const content = args.get("file")
     ? await readFile(required(args, "file"))
     : Buffer.from(args.get("text") ?? "hello blob\n", "utf8");
@@ -146,7 +146,7 @@ async function blob(args: Args): Promise<void> {
   const upload = await fetch(uploadUrl, {
     method: "POST",
     headers: {
-      authorization: buildAuthHeader({ key, nodeId, method: "POST", path: uploadPath, body: content }),
+      authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: uploadPath, body: content }),
       "content-type": "application/octet-stream",
       "x-pod-body-sha256": bodySha256(content),
     },
@@ -157,7 +157,7 @@ async function blob(args: Args): Promise<void> {
 
   const blobPath = `/blobs/${stored.blob_id}`;
   const download = await fetch(`${peer}${blobPath}`, {
-    headers: { authorization: buildAuthHeader({ key, nodeId, method: "GET", path: blobPath }) },
+    headers: { authorization: buildAuthHeader({ key, orcaNodeId, method: "GET", path: blobPath }) },
   });
   const downloaded = Buffer.from(await download.arrayBuffer());
   console.log(`download status=${download.status} bytes=${downloaded.length} sha_match=${bodySha256(downloaded) === stored.blob_id}`);
@@ -165,7 +165,7 @@ async function blob(args: Args): Promise<void> {
   const linkPath = `/blobs/${stored.blob_id}/link`;
   const linkResponse = await fetch(`${peer}${linkPath}`, {
     method: "POST",
-    headers: { authorization: buildAuthHeader({ key, nodeId, method: "POST", path: linkPath }) },
+    headers: { authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: linkPath }) },
   });
   const link = (await linkResponse.json()) as { url: string; expires_at: number };
   const viaLink = await fetch(link.url);

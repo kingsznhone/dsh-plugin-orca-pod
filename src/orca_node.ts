@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 import { join } from "node:path";
 
-import { workgroupKey, type NodeConfig } from "./config.ts";
+import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { buildAuthHeader, NonceCache } from "./crypto.ts";
 import { EchoExecutor } from "./executor.ts";
 import { createGateway } from "./gateway.ts";
@@ -37,8 +37,8 @@ import { createWorkspaceManager, type Workspace, type WorkspaceManager } from ".
  * `listen()` (the port may be 0) and the bound endpoint is written back once the
  * listener is up, so the gateway reads the current value when it renders self.
  */
-type GatewayNodeInfo = {
-  node_id: string;
+type GatewayOrcaNodeInfo = {
+  orca_node_id: string;
   display_name: string;
   workgroup_id: string;
   endpoint: string | null;
@@ -66,7 +66,7 @@ export function collectRuntime(): RuntimeInfo {
 }
 
 /** Durable stores and the group workspace; absent => in-memory (tests, harness). */
-export type NodeStorage = {
+export type OrcaNodeStorage = {
   taskStore?: TaskStore;
   blobStore?: BlobStore;
   workspace?: WorkspaceManager;
@@ -77,7 +77,7 @@ export type NodeStorage = {
  * `<data_root>` (§5.5, §5.6, §6.7). The CLI and the DSH plugin opt in; tests do
  * not, so they stay isolated and fast.
  */
-export function createPersistentStorage(config: NodeConfig): NodeStorage {
+export function createPersistentStorage(config: OrcaNodeConfig): OrcaNodeStorage {
   return {
     taskStore: createSqliteTaskStore(join(config.data_root, "tasks.db")),
     blobStore: createFsBlobStore(join(config.data_root, "blobs"), { ttlMs: DEFAULT_BLOB_TTL_MS }),
@@ -86,22 +86,22 @@ export function createPersistentStorage(config: NodeConfig): NodeStorage {
 }
 
 export type CreateNodeOptions = {
-  config: NodeConfig;
+  config: OrcaNodeConfig;
   runtime?: RuntimeInfo;
   timings?: Partial<MembershipTimings>;
   clock?: MembershipClock;
   /** Outbound HTTP for peer calls; tests inject packet loss / delay / partitions. */
   fetch?: FetchLike;
-  /** Durable stores; omit for an in-memory node. */
-  storage?: NodeStorage;
+  /** Durable stores; omit for an in-memory orcaNode. */
+  storage?: OrcaNodeStorage;
 };
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
 
 export interface OrcaNode {
-  readonly nodeId: string;
-  readonly config: NodeConfig;
+  readonly orcaNodeId: string;
+  readonly config: OrcaNodeConfig;
   readonly endpoint: string;
   start(): Promise<{ url: string; port: number }>;
   stop(): Promise<void>;
@@ -117,28 +117,28 @@ export interface OrcaNode {
 
 /**
  * Join every peer in a directory response, best-effort: one unreachable peer
- * must not stop a node from joining the rest of the mesh (§3.2).
+ * must not stop an orca node from joining the rest of the mesh (§3.2).
  */
 export async function joinRoster(
-  node: OrcaNode,
+  orcaNode: OrcaNode,
   members: readonly PeerView[],
 ): Promise<{ joined: string[]; failed: string[] }> {
   const joined: string[] = [];
   const failed: string[] = [];
   for (const member of members) {
-    if (member.node_id === node.nodeId || !member.endpoint) continue;
+    if (member.orca_node_id === orcaNode.orcaNodeId || !member.endpoint) continue;
     try {
-      await node.join(member.endpoint);
-      joined.push(member.node_id);
+      await orcaNode.join(member.endpoint);
+      joined.push(member.orca_node_id);
     } catch {
-      failed.push(member.node_id);
+      failed.push(member.orca_node_id);
     }
   }
   return { joined, failed };
 }
 
-/** Address a remote node should dial: wildcard binds are reachable on loopback. */
-function endpointFrom(config: NodeConfig, port: number): string {
+/** Address a remote orca node should dial: wildcard binds are reachable on loopback. */
+function endpointFrom(config: OrcaNodeConfig, port: number): string {
   if (config.endpoint) return config.endpoint;
   const host = config.bind.host === "0.0.0.0" || config.bind.host === "::" ? "127.0.0.1" : config.bind.host;
   return `http://${host}:${port}`;
@@ -146,11 +146,11 @@ function endpointFrom(config: NodeConfig, port: number): string {
 
 export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const { config } = options;
-  const nodeId = config.node_id;
+  const orcaNodeId = config.orca_node_id;
   const key = workgroupKey(config);
   const httpFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, init));
   const membership = createMembership({
-    selfNodeId: nodeId,
+    selfOrcaNodeId: orcaNodeId,
     timings: options.timings,
     clock: options.clock,
   });
@@ -170,17 +170,17 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   let boundPort = config.bind.port;
   let actualEndpoint = endpointFrom(config, boundPort);
 
-  const gatewayNode: GatewayNodeInfo = {
-    node_id: nodeId,
+  const gatewayOrcaNode: GatewayOrcaNodeInfo = {
+    orca_node_id: orcaNodeId,
     display_name: config.display_name,
     workgroup_id: config.workgroup_id,
     endpoint: actualEndpoint,
   };
-  const app = createGateway({ node: gatewayNode, key, peers, nonceCache, runtime, tasks, blobs });
+  const app = createGateway({ orcaNode: gatewayOrcaNode, key, peers, nonceCache, runtime, tasks, blobs });
 
   function selfPeer(): PeerView {
     return {
-      node_id: nodeId,
+      orca_node_id: orcaNodeId,
       display_name: config.display_name,
       endpoint: actualEndpoint,
       runtime,
@@ -219,7 +219,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: buildAuthHeader({ key, nodeId, method: "POST", path: url.pathname, body }),
+        authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: url.pathname, body }),
       },
       body,
       signal,
@@ -240,13 +240,13 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   async function join(peerUrl: string): Promise<JoinResponse> {
     const response = await postSigned<JoinResponse>(peerUrl, "/cluster/join", {
       workgroup_id: config.workgroup_id,
-      node_id: nodeId,
+      orca_node_id: orcaNodeId,
       display_name: config.display_name,
       endpoint: actualEndpoint,
       runtime,
     });
     peers.upsert(response.self);
-    membership.observeInbound(response.self.node_id);
+    membership.observeInbound(response.self.orca_node_id);
     membership.mergeRemote(response.members);
     return response;
   }
@@ -255,7 +255,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return postSigned<HeartbeatResponse>(
       peerUrl,
       "/cluster/heartbeat",
-      { node_id: nodeId, busy: tasks.busy(), digest: currentDigest() },
+      { orca_node_id: orcaNodeId, busy: tasks.busy(), digest: currentDigest() },
       AbortSignal.timeout(membership.timings.heartbeatTimeoutMs),
     );
   }
@@ -277,7 +277,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       if (response.members) membership.mergeRemote(response.members);
       return response;
     } catch (error) {
-      if (peer) membership.observeOutboundFail(peer.node_id);
+      if (peer) membership.observeOutboundFail(peer.orca_node_id);
       throw error;
     }
   }
@@ -290,7 +290,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: buildAuthHeader({ key, nodeId, method: "POST", path: url.pathname, body }),
+        authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: url.pathname, body }),
       },
       body,
     });
@@ -311,7 +311,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   function sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView> {
     const peer = membership.findByEndpoint(peerUrl);
     if (peer && peer.state !== "online") {
-      const error = new Error(`peer ${peer.node_id} is ${peer.state}`) as Error & { code: string };
+      const error = new Error(`peer ${peer.orca_node_id} is ${peer.state}`) as Error & { code: string };
       error.code = "peer_not_online";
       throw error;
     }
@@ -343,7 +343,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const now = membership.now();
     const targets = membership
       .list()
-      .filter((peer) => peer.endpoint && membership.needsProbe(peer.node_id, now));
+      .filter((peer) => peer.endpoint && membership.needsProbe(peer.orca_node_id, now));
     await Promise.allSettled(targets.map((peer) => heartbeat(peer.endpoint)));
     scheduleHeartbeat();
   }
@@ -355,7 +355,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });
     boundPort = Number(new URL(address).port);
     actualEndpoint = endpointFrom(config, boundPort);
-    gatewayNode.endpoint = actualEndpoint;
+    gatewayOrcaNode.endpoint = actualEndpoint;
     heartbeatStopped = false;
     void heartbeatTick();
     return { url: actualEndpoint, port: boundPort };
@@ -372,10 +372,10 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   }
 
   return {
-    get nodeId(): string {
-      return nodeId;
+    get orcaNodeId(): string {
+      return orcaNodeId;
     },
-    get config(): NodeConfig {
+    get config(): OrcaNodeConfig {
       return config;
     },
     get endpoint(): string {

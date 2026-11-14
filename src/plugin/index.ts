@@ -2,8 +2,8 @@
  * `orca-pod` — DeepSeek Harness host-side bundle for Orca.
  *
  * The bundle creates one Orca node from the plugin config, starts it without
- * blocking the DSH host, registers the `pod_*` tools, and stops the node when
- * the plugin fiber unloads. There are no module-level side effects: the node is
+ * blocking the DSH host, registers the `pod_*` tools, and stops the orca node when
+ * the plugin fiber unloads. There are no module-level side effects: the orca node is
  * only created inside `apply`.
  */
 
@@ -33,7 +33,7 @@ const consoleLogger: HostLogger = {
 /**
  * Start the pod and expose its tools to DSH.
  *
- * Startup is asynchronous and never throws into the host: a failed node start
+ * Startup is asynchronous and never throws into the host: a failed orca node start
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  */
@@ -42,12 +42,12 @@ export function apply(ctx: HostContext, config: Config): void {
   const handle = startPod(config, logger)
 
   // Cordis runs the returned disposer when the plugin fiber unloads (DSH exit,
-  // reload, or the bundle being disabled). It awaits the node shutdown.
+  // reload, or the bundle being disabled). It awaits the orca node shutdown.
   ctx.effect(
     () => async () => {
       await stopPod(handle, logger)
     },
-    "orca-pod.node",
+    "orca-pod.orca-node",
   )
 
   for (const tool of createPodTools(handle)) {

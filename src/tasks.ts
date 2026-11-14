@@ -16,7 +16,7 @@ import type { Workspace } from "./workspace.ts";
 type Running = {
   view: TaskView;
   metadata: Record<string, unknown> | undefined;
-  origin_node: string;
+  origin_orca_node: string;
   created_at: string;
   since: string;
   abort: AbortController;
@@ -67,7 +67,7 @@ export type TaskRunnerDeps = {
 
 /**
  * Owns task records and drives executor events into the A2A state machine
- * (§4.8). One node runs one task at a time (§6.9): busy => node_busy.
+ * (§4.8). One orca node runs one task at a time (§6.9): busy => orca_node_busy.
  */
 export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const tasks = new Map<string, Running>();
@@ -78,7 +78,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   function persist(rec: Running): void {
     store.save({
       view: cloneView(rec.view),
-      origin_node: rec.origin_node,
+      origin_orca_node: rec.origin_orca_node,
       created_at: rec.created_at,
       updated_at: nowIso(),
     });
@@ -155,7 +155,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   }
 
   function submit(input: SubmitTaskInput): TaskView {
-    if (activeTaskId !== null) throw new TaskError("node_busy", "node is busy with another task");
+    if (activeTaskId !== null) throw new TaskError("orca_node_busy", "orca node is busy with another task");
     try {
       echoScriptFrom(input.metadata); // validate before a task exists (§6.3)
     } catch (error) {
@@ -174,7 +174,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         metadata: input.metadata ?? {},
       },
       metadata: input.metadata,
-      origin_node: input.originNode ?? "unknown",
+      origin_orca_node: input.originOrcaNode ?? "unknown",
       created_at: createdAt,
       since: createdAt,
       abort: new AbortController(),
@@ -213,7 +213,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       throw new TaskError("bad_request", "task is not input-required");
     }
     if (activeTaskId !== null && activeTaskId !== taskId) {
-      throw new TaskError("node_busy", "node is busy with another task");
+      throw new TaskError("orca_node_busy", "orca node is busy with another task");
     }
     activeTaskId = taskId;
     void pump(rec, message);
@@ -237,7 +237,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     if (activeTaskId === null) return null;
     const rec = tasks.get(activeTaskId);
     if (!rec) return null;
-    return { task_id: rec.view.id, origin_node: rec.origin_node, since: rec.since };
+    return { task_id: rec.view.id, origin_orca_node: rec.origin_orca_node, since: rec.since };
   }
 
   /** §8.3: a restart never silently resumes work; every unfinished task fails. */
@@ -245,13 +245,13 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     let count = 0;
     for (const stored of store.list()) {
       if (isTerminal(stored.view.status.state)) continue;
-      const message = textMessage("task was interrupted by a node restart");
+      const message = textMessage("task was interrupted by an orca node restart");
       store.save({
         view: {
           ...stored.view,
           status: { state: "failed", timestamp: nowIso(), message, reason: "node_restart" },
         },
-        origin_node: stored.origin_node,
+        origin_orca_node: stored.origin_orca_node,
         created_at: stored.created_at,
         updated_at: nowIso(),
       });

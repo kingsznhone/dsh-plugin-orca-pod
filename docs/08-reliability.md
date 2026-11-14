@@ -40,14 +40,14 @@ origin 轮询 tasks/get
 
 ### 8.4 幂等键
 
-- 作用域 `(workgroup_id, origin_node, idempotency_key)`，窗口 24h；
+- 作用域 `(workgroup_id, origin_orca_node, idempotency_key)`，窗口 24h；
 - 重复提交（同键）返回已有 task，不新建；
 - 不承担重试语义：重试必须显式，且产生新 task（带 `retry_of`），由人决定。
 
 ### 8.5 超时与背压
 
 - `task_ttl_s` 默认 3600；超时 → `failed(timeout)` + 尽力 `tasks/cancel`；
-- orca node 单槽：同一时间只跑 1 个任务（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）；忙时 `429 node_busy` + `Retry-After`，不排队；
+- orca node 单槽：同一时间只跑 1 个任务（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）；忙时 `429 orca_node_busy` + `Retry-After`，不排队；
 - origin 侧轮询退避到 2s 后不再增长（避免“等太久以为挂了”）。
 
 ### 8.6 放大、扇出与唤醒
@@ -66,7 +66,7 @@ origin 轮询 tasks/get
 - **预算**：`max_hop` 默认 0、可配 1–3；`max_fanout` 默认 0、可配（按 `root` 计）。超限直接拒，不排队。
 - **单槽仍在**：每个 target 同一时间只跑 1 个任务；多余的请求在**建 task 之前**就 429，不创建进程——唤醒成本 = 一个 429 响应。
 - **祖先禁调（硬限制）**：子任务不能指向 `chain` 里的任何 orca node 或自身；网关直接 `403 ancestor_call_forbidden`。A→B→A 在第一跳就断，不依赖 `max_hop` 的深度。
-- **兄弟互调不会僵死**：单槽下先占槽的一方还在跑自己的任务，另一方调它时直接 `429 node_busy`——不会出现“两边都等着对方把活干完”。拿到 429 的一方把这个事实写进 `blocked` 回报 A，由 A 协调（换顺序、拆任务，或回报用户）。TTL 只兜底极端情况（两边恰好都在 `input-required` 被同时唤醒），到期 `failed(timeout)`。
+- **兄弟互调不会僵死**：单槽下先占槽的一方还在跑自己的任务，另一方调它时直接 `429 orca_node_busy`——不会出现“两边都等着对方把活干完”。拿到 429 的一方把这个事实写进 `blocked` 回报 A，由 A 协调（换顺序、拆任务，或回报用户）。TTL 只兜底极端情况（两边恰好都在 `input-required` 被同时唤醒），到期 `failed(timeout)`。
 - **重试**：服务端从不自动重试；模型重试必须退避 + 抖动。幂等键只防重复建 task，不制造重试。
 - **熔断**：连续失败 → peer 进 suspect/unreachable，发送停止并退避（[§3.3](03-membership.md#33-心跳与双向看门狗)）；不会“越连不上越猛试”。
 - **总闸**：本机总开关一次性取消所有远程任务（[§7.13](07-security.md#713-目标侧硬拒绝清单)），不依赖网络。
@@ -98,13 +98,13 @@ origin 轮询 tasks/get
 - `pod_task_duration_seconds{skill}`
 - `pod_grants_issued_total{mode}`、`pod_grants_denied_total{reason}`
 - `pod_approvals_total{result}`、`pod_approval_latency_seconds`
-- `pod_workspace_bytes{workgroup}`、`pod_node_busy`、`pod_node_busy_seconds_total`、`pod_node_busy_rejected_total{reason}`
+- `pod_workspace_bytes{workgroup}`、`pod_orca_node_busy`、`pod_orca_node_busy_seconds_total`、`pod_orca_node_busy_rejected_total{reason}`
 - `pod_blob_uploads_total{result}`、`pod_blob_downloads_total`、`pod_blob_bytes{workgroup}`、`pod_blob_gc_total{reason}`
 - `pod_heartbeat_rtt_seconds{peer}`
 - `pod_executor_errors_total{type}`
 
-日志：JSON；必带 `trace_id`、`task_id`、`origin_node`、`target_node`、`grant_id`；不记录密码、签名、密钥；错误带类型与可重试标记。
+日志：JSON；必带 `trace_id`、`task_id`、`origin_orca_node`、`target_node`、`grant_id`；不记录密码、签名、密钥；错误带类型与可重试标记。
 
-UI（orca node 卡片）至少展示：`display_name (node_id)`、OS 与版本、CPU/内存、DSH 版本、在线状态与延迟、group workspace 用量与配额、忙闲（正在跑哪个任务、已跑多久）、最近一次任务、当前会话权限模式。
+UI（orca node 卡片）至少展示：`display_name (orca_node_id)`、OS 与版本、CPU/内存、DSH 版本、在线状态与延迟、group workspace 用量与配额、忙闲（正在跑哪个任务、已跑多久）、最近一次任务、当前会话权限模式。
 
 ---

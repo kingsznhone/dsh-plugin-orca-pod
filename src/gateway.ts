@@ -14,7 +14,7 @@ import {
   PROTOCOL_VERSION,
   isHttpEndpoint,
   membersDigest,
-  normalizeNodeId,
+  normalizeOrcaNodeId,
   runtimeDigest,
   TaskError,
   type BusyState,
@@ -31,15 +31,15 @@ import {
 } from "./protocol.ts";
 import { sha256Hex, type BlobStore, type PeerStore } from "./storage.ts";
 
-export type GatewayNode = {
-  node_id: string;
+export type GatewayOrcaNode = {
+  orca_node_id: string;
   display_name: string;
   workgroup_id: string;
   endpoint: string | null;
 };
 
 export type GatewayDeps = {
-  node: GatewayNode;
+  orcaNode: GatewayOrcaNode;
   key: Buffer;
   peers: PeerStore;
   nonceCache: NonceCache;
@@ -55,7 +55,7 @@ type JsonRpcEnvelope = { id?: unknown; method?: string; params?: unknown };
 /** Task failures are protocol-level; the HTTP status mirrors the documented code (§6.3, §6.9). */
 const TASK_ERROR_STATUS: Record<string, number> = {
   bad_echo_script: 400,
-  node_busy: 429,
+  orca_node_busy: 429,
   task_not_found: 404,
   bad_request: 400,
   unsupported: 400,
@@ -122,17 +122,17 @@ function authenticate(request: FastifyRequest, deps: GatewayDeps): VerifiedAuth 
   });
 }
 
-/** Roster view incl. self; reads `deps.node.endpoint` live and digests self too. */
+/** Roster view incl. self; reads `deps.orcaNode.endpoint` live and digests self too. */
 function membership(deps: GatewayDeps): {
   self: SelfRecord;
   roster: PeerView[];
   digest: string;
 } {
   const self: SelfRecord = {
-    node_id: deps.node.node_id,
-    display_name: deps.node.display_name,
-    endpoint: deps.node.endpoint ?? "",
-    workgroup_id: deps.node.workgroup_id,
+    orca_node_id: deps.orcaNode.orca_node_id,
+    display_name: deps.orcaNode.display_name,
+    endpoint: deps.orcaNode.endpoint ?? "",
+    workgroup_id: deps.orcaNode.workgroup_id,
     protocol_version: PROTOCOL_VERSION,
     runtime: deps.runtime,
     runtime_digest: runtimeDigest(deps.runtime),
@@ -163,9 +163,9 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   app.get("/health", async () => ({ status: "ok", version: PROTOCOL_VERSION }));
 
   app.get("/.well-known/agent-card.json", async () => ({
-    name: deps.node.display_name,
+    name: deps.orcaNode.display_name,
     protocol_version: PROTOCOL_VERSION,
-    url: deps.node.endpoint ? `${deps.node.endpoint}/a2a` : "",
+    url: deps.orcaNode.endpoint ? `${deps.orcaNode.endpoint}/a2a` : "",
   }));
 
   app.post("/a2a", async (request, reply) => {
@@ -189,7 +189,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
           result = deps.tasks.submit({
             message,
             metadata: params["metadata"] as SubmitTaskInput["metadata"],
-            originNode: auth.nodeId,
+            originOrcaNode: auth.orcaNodeId,
           });
         }
       } else if (body.method === "tasks/get") {
@@ -205,14 +205,14 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       return { jsonrpc: "2.0", id, result };
     } catch (error) {
       if (error instanceof TaskError) {
-        if (error.code === "node_busy") {
+        if (error.code === "orca_node_busy") {
           reply.code(429).header("retry-after", "30").send({
             jsonrpc: "2.0",
             id,
             error: {
               code: -32000,
-              message: "node_busy",
-              data: { code: "node_busy", retry_after_s: 30, holder: deps.tasks.busy() },
+              message: "orca_node_busy",
+              data: { code: "orca_node_busy", retry_after_s: 30, holder: deps.tasks.busy() },
             },
           });
           return reply;
@@ -283,7 +283,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const exp = String(Math.floor(expiresAtMs / 1000));
     const sig = linkSignature(deps.key, blobId, exp);
     return {
-      url: `${deps.node.endpoint ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
+      url: `${deps.orcaNode.endpoint ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
       expires_at: new Date(expiresAtMs).toISOString(),
     };
   });
@@ -293,13 +293,13 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const body = asObject(request.body);
     if (!body) return badRequest(reply, "body must be a JSON object");
 
-    if (body["workgroup_id"] !== deps.node.workgroup_id) {
-      return reply.code(400).send({ code: "workgroup_mismatch", message: "workgroup_id does not match this node" });
+    if (body["workgroup_id"] !== deps.orcaNode.workgroup_id) {
+      return reply.code(400).send({ code: "workgroup_mismatch", message: "workgroup_id does not match this orca node" });
     }
 
-    const nodeId = normalizeNodeId(String(body["node_id"] ?? ""));
-    if (!nodeId || nodeId !== auth.nodeId) {
-      return badRequest(reply, "node_id does not match the authenticated node");
+    const orcaNodeId = normalizeOrcaNodeId(String(body["orca_node_id"] ?? ""));
+    if (!orcaNodeId || orcaNodeId !== auth.orcaNodeId) {
+      return badRequest(reply, "orca_node_id does not match the authenticated orca node");
     }
 
     const displayName = body["display_name"];
@@ -319,7 +319,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const runtime = runtimeValue as RuntimeInfo | null;
 
     deps.peers.upsert({
-      node_id: nodeId,
+      orca_node_id: orcaNodeId,
       display_name: displayName,
       endpoint,
       runtime,
@@ -343,25 +343,25 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const body = asObject(request.body);
     if (!body) return badRequest(reply, "body must be a JSON object");
 
-    const nodeId = normalizeNodeId(String(body["node_id"] ?? ""));
-    if (nodeId !== auth.nodeId) {
-      return badRequest(reply, "node_id does not match the authenticated node");
+    const orcaNodeId = normalizeOrcaNodeId(String(body["orca_node_id"] ?? ""));
+    if (orcaNodeId !== auth.orcaNodeId) {
+      return badRequest(reply, "orca_node_id does not match the authenticated orca node");
     }
 
-    const isSelf = auth.nodeId === deps.node.node_id;
-    if (!isSelf && !deps.peers.touch(auth.nodeId)) {
-      return reply.code(404).send({ code: "unknown_node" });
+    const isSelf = auth.orcaNodeId === deps.orcaNode.orca_node_id;
+    if (!isSelf && !deps.peers.touch(auth.orcaNodeId)) {
+      return reply.code(404).send({ code: "unknown_orca_node" });
     }
 
     const busy = body["busy"];
     if (busy !== undefined) {
-      const peer = deps.peers.get(auth.nodeId);
+      const peer = deps.peers.get(auth.orcaNodeId);
       if (peer) deps.peers.upsert({ ...peer, busy: busy as BusyState | null });
     }
 
     const { roster, digest } = membership(deps);
     const response: HeartbeatResponse = {
-      from: deps.node.node_id,
+      from: deps.orcaNode.orca_node_id,
       busy: deps.tasks.busy(),
       members_digest: digest,
       members: body["digest"] === digest ? null : roster,
@@ -378,7 +378,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
 
   app.post("/cluster/leave", async (request) => {
     const auth = authenticate(request, deps);
-    deps.peers.remove(auth.nodeId);
+    deps.peers.remove(auth.orcaNodeId);
     return { ok: true };
   });
 

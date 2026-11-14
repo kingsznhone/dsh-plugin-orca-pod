@@ -1,5 +1,5 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { normalizeNodeId, type NodeId } from "./protocol.ts";
+import { normalizeOrcaNodeId, type OrcaNodeId } from "./protocol.ts";
 
 export const AUTH_SCHEME = "Pod";
 export const PROOF_VERSION = "pod-v1";
@@ -71,7 +71,7 @@ export function computeProof(key: Buffer, fields: ProofFields): string {
 
 export type AuthHeaderOptions = {
   key: Buffer;
-  nodeId: NodeId;
+  orcaNodeId: OrcaNodeId;
   method: string;
   path: string;
   body?: Uint8Array | string;
@@ -89,11 +89,11 @@ export function buildAuthHeader(options: AuthHeaderOptions): string {
     ts,
     nonce,
   });
-  return `${AUTH_SCHEME} node_id=${options.nodeId}; ts=${ts}; nonce=${nonce}; proof=${proof}`;
+  return `${AUTH_SCHEME} orca_node_id=${options.orcaNodeId}; ts=${ts}; nonce=${nonce}; proof=${proof}`;
 }
 
 export type ParsedAuthHeader = {
-  nodeId: string;
+  orcaNodeId: string;
   ts: number;
   nonce: string;
   proof: string;
@@ -110,14 +110,14 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
     if (separator <= 0) return null;
     fields.set(part.slice(0, separator).trim().toLowerCase(), part.slice(separator + 1).trim());
   }
-  const nodeId = fields.get("node_id");
+  const orcaNodeId = fields.get("orca_node_id");
   const ts = fields.get("ts");
   const nonce = fields.get("nonce");
   const proof = fields.get("proof");
-  if (!nodeId || !ts || !nonce || !proof) return null;
+  if (!orcaNodeId || !ts || !nonce || !proof) return null;
   const tsValue = Number(ts);
   if (!Number.isSafeInteger(tsValue)) return null;
-  return { nodeId, ts: tsValue, nonce, proof };
+  return { orcaNodeId, ts: tsValue, nonce, proof };
 }
 
 /** Bounded set of recently seen nonces. remember() returns false on replay. */
@@ -166,7 +166,7 @@ export type VerifyAuthOptions = {
 };
 
 export type VerifiedAuth = {
-  nodeId: NodeId;
+  orcaNodeId: OrcaNodeId;
   ts: number;
   nonce: string;
 };
@@ -179,9 +179,9 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
       options.header ? "malformed Authorization header" : "missing Authorization header",
     );
   }
-  const nodeId = normalizeNodeId(parsed.nodeId);
-  if (!nodeId) {
-    throw new PodAuthError("malformed_auth", "node_id in Authorization header is not a valid node id");
+  const orcaNodeId = normalizeOrcaNodeId(parsed.orcaNodeId);
+  if (!orcaNodeId) {
+    throw new PodAuthError("malformed_auth", "orca_node_id in Authorization header is not a valid orca node id");
   }
   const now = options.now ?? Date.now();
   const skewMs = options.skewMs ?? DEFAULT_CLOCK_SKEW_MS;
@@ -200,8 +200,8 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
     throw new PodAuthError("bad_proof", "signature does not match");
   }
-  if (!options.nonceCache.remember(`${nodeId}:${parsed.nonce}`, now)) {
+  if (!options.nonceCache.remember(`${orcaNodeId}:${parsed.nonce}`, now)) {
     throw new PodAuthError("nonce_replay", "nonce already used");
   }
-  return { nodeId, ts: parsed.ts, nonce: parsed.nonce };
+  return { orcaNodeId, ts: parsed.ts, nonce: parsed.nonce };
 }

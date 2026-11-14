@@ -9,7 +9,7 @@
 ```json
 {
   "workgroup_id": "orca-dev",
-  "origin_node": "N7K3QM",
+  "origin_orca_node": "N7K3QM",
   "target_node": "P2W8XA",
   "trace_id": "01J...",
   "idempotency_key": "N7K3QM:ctx-42:1",
@@ -28,7 +28,7 @@
 - `idempotency_key` 作用域 = 同一 workgroup 内；目标 orca node 去重窗口默认 24h。它只防重复提交，不承担重发。
 - `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。
 - `pod.hop`：任务已经跨了几跳。origin 建 task 时为 0。target 是否接受 `hop > 0` 由 `delegation.max_hop` 决定（默认 **0** → `400 hop_limit`；可配 1–3）。target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
-- `pod.chain`：经过的 node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
+- `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
 - `pod.root`：这条调用树的根 task id，扇出预算按它计（`max_fanout`）。origin 建 task 时等于自己的 task id。
 - 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
 - **祖先禁调（硬限制）**：子任务的目标集合必须排除 `pod.chain` 里的所有 orca node 和自身。尝试调用 → `403 ancestor_call_forbidden`。这条不受 `max_hop` 影响，开了多跳也一样——A→B→A 在第一次就被拒绝，而不是等到第 N 跳才断。
@@ -68,7 +68,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 **Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包)），但**后台 tracker、`inject`/`followup` 唤醒、`pod_wait`（已明确不做）都未实现**；当前完成通知要靠 agent 自己 `pod_status` 轮询，`scripts/cross.ts` 是联调入口。
 
-派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
+派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
 
 **为什么不让模型用 bash 长轮询**：`sleep 2 && pod_status` 每跑一次就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消、能挂 SSE，也知道任务该等多久。
 
@@ -148,7 +148,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 **目标字段**（当前 payload JSON 已包含其中的视图部分，`target_node/workgroup_id/session_id/grant_id` 等字段随里程碑补齐）：
 
 ```text
-task_id, context_id, origin_node, target_node,
+task_id, context_id, origin_orca_node, target_node,
 state, created_at, updated_at,
 idempotency_key, trace_id, grant_id,
 workgroup_id, session_id, artifacts, error, reason
@@ -179,7 +179,7 @@ workgroup_id, session_id, artifacts, error, reason
 
 ```http
 POST /blobs
-Authorization: Pod node_id=N7K3QM; ts=...; nonce=...; proof=...
+Authorization: Pod orca_node_id=N7K3QM; ts=...; nonce=...; proof=...
 X-Pod-Body-SHA256: <hex>
 Content-Type: application/octet-stream
 Content-Length: 1048576

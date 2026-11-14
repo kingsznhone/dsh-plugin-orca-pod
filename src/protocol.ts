@@ -14,10 +14,10 @@ export const ERROR_CODES = [
   "bad_proof",
   "bad_request",
   "workgroup_mismatch",
-  "node_id_conflict",
-  "unknown_node",
+  "orca_node_id_conflict",
+  "unknown_orca_node",
   "not_found",
-  "node_busy",
+  "orca_node_busy",
   "bad_echo_script",
   "task_not_found",
   "task_not_terminal",
@@ -27,7 +27,7 @@ export const ERROR_CODES = [
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
-export type NodeId = string;
+export type OrcaNodeId = string;
 export type WorkgroupId = string;
 export type PeerState = "unknown" | "online" | "suspect" | "offline";
 
@@ -42,12 +42,12 @@ export type RuntimeInfo = {
 
 export type BusyState = {
   task_id: string;
-  origin_node: NodeId;
+  origin_orca_node: OrcaNodeId;
   since: string;
 };
 
 export type PeerView = {
-  node_id: NodeId;
+  orca_node_id: OrcaNodeId;
   display_name: string;
   endpoint: string;
   runtime: RuntimeInfo | null;
@@ -64,7 +64,7 @@ export type SelfRecord = PeerView & {
 
 export type JoinRequest = {
   workgroup_id: WorkgroupId;
-  node_id: NodeId;
+  orca_node_id: OrcaNodeId;
   display_name: string;
   endpoint: string;
   runtime: RuntimeInfo | null;
@@ -77,14 +77,14 @@ export type JoinResponse = {
 };
 
 export type HeartbeatRequest = {
-  node_id: NodeId;
+  orca_node_id: OrcaNodeId;
   busy: BusyState | null;
   /** 本 orca node 当前成员视图的摘要；与对端不一致时对端会回目录（候选端点）。 */
   digest: string | null;
 };
 
 export type HeartbeatResponse = {
-  from: NodeId;
+  from: OrcaNodeId;
   busy: BusyState | null;
   members_digest: string;
   /** 仅当请求摘要与本地不一致时返回；只是候选端点，不声明在线。 */
@@ -96,7 +96,7 @@ export type MembersResponse = {
   members: PeerView[];
 };
 
-export function generateNodeId(bytes: Uint8Array = randomBytes(5)): NodeId {
+export function generateOrcaNodeId(bytes: Uint8Array = randomBytes(5)): OrcaNodeId {
   let acc = 0;
   let bits = 0;
   let out = "";
@@ -114,12 +114,12 @@ export function generateNodeId(bytes: Uint8Array = randomBytes(5)): NodeId {
   return out;
 }
 
-export function normalizeNodeId(raw: string): NodeId | null {
+export function normalizeOrcaNodeId(raw: string): OrcaNodeId | null {
   const value = raw.trim().toUpperCase();
-  return isNodeId(value) ? value : null;
+  return isOrcaNodeId(value) ? value : null;
 }
 
-export function isNodeId(value: unknown): value is NodeId {
+export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
   if (typeof value !== "string" || value.length !== NODE_ID_LENGTH) return false;
   for (const char of value) {
     if (!NODE_ID_ALPHABET.includes(char)) return false;
@@ -147,9 +147,9 @@ export function runtimeDigest(runtime: RuntimeInfo | null): string {
 }
 
 export function membersDigest(
-  peers: ReadonlyArray<Pick<PeerView, "node_id" | "endpoint" | "runtime_digest">>,
+  peers: ReadonlyArray<Pick<PeerView, "orca_node_id" | "endpoint" | "runtime_digest">>,
 ): string {
-  const lines = peers.map((peer) => `${peer.node_id}|${peer.endpoint}|${peer.runtime_digest}`).sort();
+  const lines = peers.map((peer) => `${peer.orca_node_id}|${peer.endpoint}|${peer.runtime_digest}`).sort();
   return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
 
@@ -228,7 +228,7 @@ export type SubmitTaskInput = {
   message: A2AMessage;
   metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
   /** Authenticated origin; recorded on the task for busy/holder reporting (§6.9). */
-  originNode?: NodeId;
+  originOrcaNode?: OrcaNodeId;
 };
 
 /** Implemented by orca_node (needs an executor), consumed by the gateway. */

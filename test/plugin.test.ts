@@ -71,7 +71,7 @@ describe("plugin config", () => {
 describe("pod tools", () => {
   const handle: PodHandle = {
     ready: Promise.resolve(),
-    runtime: { node: null, url: null, port: null, started_at: null, error: null },
+    runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
   }
   const tools = createPodTools(handle)
 
@@ -92,13 +92,13 @@ describe("pod tools", () => {
   })
 
   it("renders results as JSON text", () => {
-    const blocks = tool(tools, "pod_members").output.render({}, { self: { node_id: "abc" } })
+    const blocks = tool(tools, "pod_members").output.render({}, { self: { orca_node_id: "abc" } })
     expect(blocks).toEqual([
-      { type: "text", text: JSON.stringify({ self: { node_id: "abc" } }, null, 2) },
+      { type: "text", text: JSON.stringify({ self: { orca_node_id: "abc" } }, null, 2) },
     ])
   })
 
-  it("validates arguments before touching the node", async () => {
+  it("validates arguments before touching the orca node", async () => {
     await expect(tool(tools, "pod_send").execute({})).rejects.toThrow(/peer/)
     await expect(tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1" })).rejects.toThrow(/text/)
     await expect(tool(tools, "pod_status").execute({ peer: "http://127.0.0.1:1" })).rejects.toThrow(
@@ -106,7 +106,7 @@ describe("pod tools", () => {
     )
   })
 
-  it("fails clearly when the node is not running", async () => {
+  it("fails clearly when the orca node is not running", async () => {
     await expect(tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
       /orca node is not running/,
     )

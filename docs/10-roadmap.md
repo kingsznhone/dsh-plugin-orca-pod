@@ -16,7 +16,7 @@
 
 - core 已跑通：`npm test` 106 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
-- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
+- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三个 orca node full mesh 与惰性收敛
@@ -39,7 +39,7 @@
 - `HeadlessExecutor` → `AcpExecutor`；专属 profile；cwd = group workspace。
 - context → session 绑定；`session/update` → task 事件；thought 过滤。
 - 取消（process tree / `session/cancel`）；`input-required` 透传。
-- 工作区持久化、`notes/STATUS.md` 约定、配额；单槽 busy（`429 node_busy` + `Retry-After`）。
+- 工作区持久化、`notes/STATUS.md` 约定、配额；单槽 busy（`429 orca_node_busy` + `Retry-After`）。
 - blob 通道（[§5.6](05-tasks.md#56-文件交换blob-通道)）：上传素材、下载产物、去重、GC；结论文本内联回传。
 - 权限模式继承（先只做 `read-only`/`workspace-write` 两档的映射，escalate 先回固定 deny）。
 - 验收：真实任务完成；跨任务续跑能看到上次的文件与 notes；orca node 失联 → 12s 内 `failed(node_unreachable)`；取消生效；重启后 `working` 标 `failed(node_restart)`；上传→任务→下载 roundtrip 通过；orca node 忙时第二个任务返回 429 且 UI 显示持有者。
@@ -106,7 +106,7 @@
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
 - [ ] `credential_readback=ask` 时私钥内容回传需 origin 批准
 - [ ] 绝对路径与 `..` 被拒（协议层根本不接受路径）
-- [x] orca node 忙时第二个任务返回 429 `node_busy` + `Retry-After`，调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换 orca node 或向用户回报（UI 显示持有者尚未实现）
+- [x] orca node 忙时第二个任务返回 429 `orca_node_busy` + `Retry-After`，调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换 orca node 或向用户回报（UI 显示持有者尚未实现）
 - [ ] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
@@ -125,7 +125,7 @@
 - [x] `pod_send` 立即返回 `task_id`，工具调用不挂到任务结束（插件 smoke 验证）
 - [ ] 插件后台 tracker 按 500ms→2s 拉状态；target 开了 `message/stream` 时改持 SSE，两种模式行为一致
 - [x] agent 工具列表里没有任何阻塞等待工具（没有 `pod_wait`），`pod_send`/`pod_status` 都在毫秒级返回
-- [ ] target 忙时 `pod_send` 拿到 `429 node_busy` + 持有者，agent 把“B 忙、约 N 秒”回报用户并结束本轮（或先做别的），不自动重试
+- [ ] target 忙时 `pod_send` 拿到 `429 orca_node_busy` + 持有者，agent 把“B 忙、约 N 秒”回报用户并结束本轮（或先做别的），不自动重试
 - [ ] 普通完成走 `agent.inject()`：日志出现 `agent/inbox/spliced`，下一轮上下文能看到，**没有**凭空开新一轮
 - [ ] `permission_request` 走 `agent.followup()`：新一轮开始并弹出审批卡片
 - [ ] 全程没有 `sleep`/长轮询的 bash 命令；agent 工具列表里没有 `orca-node wait`
@@ -152,7 +152,7 @@
 - [ ] 开 `max_hop=2` 后二跳任务能跑通（子任务 `hop=2`）；`hop=3` 被拒
 - [ ] 子任务目标集合排除 `chain` 中 orca node 与自身：B 尝试调 A → `403 ancestor_call_forbidden`，不建 task
 - [ ] B 卡住 → task 变 `input-required` 且 `blocked` 可读；B 的槽已释放（其他 origin 能立刻建 task）；A 回复后任务继续
-- [ ] B、C 互调：后到的一方拿到 `429 node_busy` 并能把它写进 `blocked` 回报 A；不出现两边都卡到 TTL
+- [ ] B、C 互调：后到的一方拿到 `429 orca_node_busy` 并能把它写进 `blocked` 回报 A；不出现两边都卡到 TTL
 - [ ] 开 `max_fanout=2` 后，同一 root 的第 3 个活跃子任务被拒；关掉后行为恢复默认
 - [ ] origin 对同一 target 并发 10 个请求：target 只创建 1 个 agent 进程，其余 429
 - [ ] 一个 origin 连续快速失败后进入退避，不出现“越失败越发”的请求上升
@@ -163,7 +163,7 @@
 
 1. **仓库骨架**：单包（根 src/ + 	est/）、tsconfig/vitest、CI（只跑进程内测试）。
 2. **headless node core**：protocol/crypto/storage/gateway/node + EchoExecutor；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单 orca node。
-3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `npm run harness -- --nodes 3` 起真实进程和 socket；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
+3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `npm run harness -- --orca-nodes 3` 起真实进程和 socket；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
 4. **Echo 行为与回调**：按 10.6 的“Echo 脚本”“三台 orca node”逐条跑；挂起/恢复/取消/TTL/blob 在这一层定死，后面的执行器只换实现、不换协议。
 5. **真实执行器**：HeadlessExecutor（ACP stdio）→ AcpExecutor；cwd 是工作区、context→session 绑定、取消、`input-required` 映射。放在插件之前，是为了让“协议正确”和“DSH 集成正确”分两次验证，不同时调两个未知量。
 6. **DSH 插件**：`apply` 启动 orca node、注册工具、后台 tracker、inject/followup、审批卡片与状态卡片。先在单机两个 DSH 实例之间跑通（不同端口、不同 profile）。

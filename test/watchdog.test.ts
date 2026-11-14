@@ -24,27 +24,27 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
 }
 
 describe("heartbeat loop and watchdog", () => {
-  it("converges a three-node mesh, marks a stopped node offline, then prunes it", async () => {
-    const mesh = await createMesh({ nodes: 3, timings: FAST });
-    const victim = mesh.nodes[2];
-    const survivors = mesh.nodes.slice(0, 2) as OrcaNode[];
-    if (!victim) throw new Error("mesh did not create three nodes");
+  it("converges a three-orca-node mesh, marks a stopped orca node offline, then prunes it", async () => {
+    const mesh = await createMesh({ orcaNodes: 3, timings: FAST });
+    const victim = mesh.orcaNodes[2];
+    const survivors = mesh.orcaNodes.slice(0, 2) as OrcaNode[];
+    if (!victim) throw new Error("mesh did not create three orca nodes");
 
     try {
       await waitFor(() =>
-        mesh.nodes.every(
-          (node) =>
-            node.members().length === 2 && node.members().every((peer) => peer.state === "online"),
+        mesh.orcaNodes.every(
+          (orcaNode) =>
+            orcaNode.members().length === 2 && orcaNode.members().every((peer) => peer.state === "online"),
         ),
       );
 
       await victim.stop();
 
       await waitFor(() =>
-        survivors.every((node) =>
-          node
+        survivors.every((orcaNode) =>
+          orcaNode
             .members()
-            .some((peer) => peer.node_id === victim.nodeId && peer.state === "offline"),
+            .some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
         ),
       );
 
@@ -58,25 +58,25 @@ describe("heartbeat loop and watchdog", () => {
       }
 
       await waitFor(() =>
-        survivors.every((node) => node.members().every((peer) => peer.node_id !== victim.nodeId)),
+        survivors.every((orcaNode) => orcaNode.members().every((peer) => peer.orca_node_id !== victim.orcaNodeId)),
       );
     } finally {
-      await Promise.allSettled(survivors.map((node) => node.stop()));
+      await Promise.allSettled(survivors.map((orcaNode) => orcaNode.stop()));
     }
   });
 
   it("keeps peers online while heartbeats flow", async () => {
-    const mesh = await createMesh({ nodes: 2, timings: FAST });
+    const mesh = await createMesh({ orcaNodes: 2, timings: FAST });
     try {
       await waitFor(() =>
-        mesh.nodes.every(
-          (node) =>
-            node.members().length === 1 && node.members().every((peer) => peer.state === "online"),
+        mesh.orcaNodes.every(
+          (orcaNode) =>
+            orcaNode.members().length === 1 && orcaNode.members().every((peer) => peer.state === "online"),
         ),
       );
       await new Promise((resolve) => setTimeout(resolve, 150));
-      for (const node of mesh.nodes) {
-        expect(node.members().every((peer) => peer.state === "online")).toBe(true);
+      for (const orcaNode of mesh.orcaNodes) {
+        expect(orcaNode.members().every((peer) => peer.state === "online")).toBe(true);
       }
     } finally {
       await mesh.stop();

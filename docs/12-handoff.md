@@ -23,10 +23,10 @@ Read docs/README.md and docs/01-overview.md first, then 02 → 03 → 04 as need
 Hard constraints that must not be undone:
 - Topology is full mesh only. There is no ring, no gossip, no coordinator.
 - There is no epoch, no incarnation, no global membership table.
-  A node's table contains only peers it directly heard from; roster entries
+  An orca node's table contains only peers it directly heard from; roster entries
   carried by heartbeat are candidate endpoints, never liveness claims.
 - Listener is plain HTTP/1.1 with keep-alive. TLS is terminated by Caddy/nginx.
-- node_id is a 6-char Crockford base32 label generated at install, editable,
+- orca_node_id is a 6-char Crockford base32 label generated at install, editable,
   persisted in plugin config. It is NOT a security principal.
 - Auth = workgroup_id + non-empty password -> HKDF key -> per-request HMAC.
   No session token, no TTL, no empty password.
@@ -34,19 +34,19 @@ Hard constraints that must not be undone:
   busy state sit behind signed endpoints only.
 - File exchange goes through a content-addressed blob channel. Task conclusions
   come back inline as text; artifacts are pulled explicitly by blob id.
-- Approval happens on the ORIGIN node and follows the origin session's
+- Approval happens on the ORIGIN orca node and follows the origin session's
   permission mode. The target never opens a local approval dialog.
 - Execution dir is the persistent per-workgroup workspace; there is no
-  published-root concept. One task at a time per node (single slot), otherwise
-  429 node_busy with retry_after and holder; the calling model decides whether
-  to retry, switch node, or report back to the user. No server-side queue.
-  One endpoint per node. Absolute paths from origin are rejected.
+  published-root concept. One task at a time per orca node (single slot), otherwise
+  429 orca_node_busy with retry_after and holder; the calling model decides whether
+  to retry, switch orca node, or report back to the user. No server-side queue.
+  One endpoint per orca node. Absolute paths from origin are rejected.
 - Tasks are single-hop by default: no forwarding, no callbacks. The gateway, not
   the agent, decides hop/chain/root. Multi-hop and fan-out exist as opt-in
   capabilities (max_hop/max_fanout default 0); when enabled, the gateway injects
-  hop+1, appends the node to chain, keeps root stable, and rejects over-budget
+  hop+1, appends the orca node to chain, keeps root stable, and rejects over-budget
   children. Nodes never wake each other except by an origin-issued request.
-- A child task may never target a node already in its chain: the gateway returns
+- A child task may never target an orca node already in its chain: the gateway returns
   403 ancestor_call_forbidden, regardless of max_hop. A blocked sub-agent reports
   via input-required with a `blocked` payload and releases its slot; the origin
   decides and continues the task with a follow-up message. No reverse calls.
@@ -60,17 +60,17 @@ Hard constraints that must not be undone:
   a blocked sub-agent, a hard failure) also use followup(). Never implement waiting
   with bash sleep loops, and provide no blocking wait tool at all: dispatch returns
   immediately, completion arrives by inject/wake, and a busy target answers 429
-  node_busy (with holder and retry_after_s) which the agent reports to the user
+  orca_node_busy (with holder and retry_after_s) which the agent reports to the user
   before ending the turn or doing unrelated work.
 - Task and blob ids are the only access handles: any workgroup member holding a
   task_id or blob_id can read it; there is no per-task/per-blob ACL and no
-  listing. Id leakage is the exposure boundary. One shared key means node-level
+  listing. Id leakage is the exposure boundary. One shared key means orca-node-level
   checks are policy, not cryptographic isolation.
 - Continuation is a new task with `continuation_of` pointing at a terminal task;
   it reuses the same context and workspace and never mutates the old task.
-- Password rotation rebuilds the whole group. There is no per-node revocation
+- Password rotation rebuilds the whole group. There is no per-orca-node revocation
   and no transition window with two passwords.
-- Task storage is single-node SQLite (WAL). Node loss fails the task; do not
+- Task storage is single-orca-node SQLite (WAL). Orca node loss fails the task; do not
   re-dispatch and do not invent a resume.
 ```
 
@@ -89,6 +89,6 @@ Hard constraints that must not be undone:
 - 密码分发与轮换 runbook：07.3（[§7.3](07-security.md#73-密钥与密码的分发)）的附录。
 - Windows 路径 / 保留名 / 长路径测试矩阵：[10.6](10-roadmap.md#106-验收标准) 的展开。
 - EchoExecutor 场景脚本样例集：[06.3](06-execution.md#63-echoexecutor用脚本模拟任务) 的附录。
-- ADR：`0001-full-mesh-no-ring.md`、`0002-node-id-as-label.md`、`0003-password-derived-hmac.md`、`0004-approval-on-origin.md`、`0005-group-workspace.md`、`0006-fail-fast-on-node-loss.md`、`0007-candidate-lists-are-not-liveness.md`、`0008-plain-http-behind-proxy.md`、`0009-sqlite-task-store.md`。
+- ADR：`0001-full-mesh-no-ring.md`、`0002-orca-node-id-as-label.md`、`0003-password-derived-hmac.md`、`0004-approval-on-origin.md`、`0005-group-workspace.md`、`0006-fail-fast-on-orca-node-loss.md`、`0007-candidate-lists-are-not-liveness.md`、`0008-plain-http-behind-proxy.md`、`0009-sqlite-task-store.md`。
 
 ---

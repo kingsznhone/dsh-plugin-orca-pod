@@ -3,14 +3,14 @@ import { describe, expect, it } from "vitest";
 import { NonceCache, buildAuthHeader } from "../src/crypto.ts";
 import {
   TaskError,
-  generateNodeId,
+  generateOrcaNodeId,
   type BusyState,
   type TaskRunner,
 } from "../src/protocol.ts";
 import { createMemoryBlobStore, createMemoryPeerStore, sha256Hex } from "../src/storage.ts";
-import { createGateway, type GatewayDeps, type GatewayNode } from "../src/gateway.ts";
+import { createGateway, type GatewayDeps, type GatewayOrcaNode } from "../src/gateway.ts";
 
-const ENDPOINT = "http://node.test";
+const ENDPOINT = "http://orca-node.test";
 
 const idleTasks: TaskRunner = {
   submit() {
@@ -41,15 +41,15 @@ type Harness = {
 
 function createHarness(tasks: TaskRunner = idleTasks): Harness {
   const key = randomBytes(32);
-  const nodeId = generateNodeId();
-  const node: GatewayNode = {
-    node_id: nodeId,
-    display_name: "blob-test-node",
+  const orcaNodeId = generateOrcaNodeId();
+  const orcaNode: GatewayOrcaNode = {
+    orca_node_id: orcaNodeId,
+    display_name: "blob-test-orca-node",
     workgroup_id: "orca-dev",
     endpoint: ENDPOINT,
   };
   const deps: GatewayDeps = {
-    node,
+    orcaNode,
     key,
     peers: createMemoryPeerStore(),
     nonceCache: new NonceCache(),
@@ -60,7 +60,7 @@ function createHarness(tasks: TaskRunner = idleTasks): Harness {
   return {
     app: createGateway(deps),
     key,
-    sign: (method, path, body) => buildAuthHeader({ key, nodeId, method, path, body }),
+    sign: (method, path, body) => buildAuthHeader({ key, orcaNodeId, method, path, body }),
   };
 }
 
@@ -184,15 +184,15 @@ describe("blob channel", () => {
 });
 
 describe("a2a busy response", () => {
-  it("answers node_busy with 429, Retry-After and the holder", async () => {
+  it("answers orca_node_busy with 429, Retry-After and the holder", async () => {
     const holder: BusyState = {
       task_id: "TASK1",
-      origin_node: generateNodeId(),
+      origin_orca_node: generateOrcaNodeId(),
       since: new Date().toISOString(),
     };
     const tasks: TaskRunner = {
       submit() {
-        throw new TaskError("node_busy", "node is busy");
+        throw new TaskError("orca_node_busy", "node is busy");
       },
       get() {
         return null;
@@ -233,8 +233,8 @@ describe("a2a busy response", () => {
       id: "req-1",
       error: {
         code: -32000,
-        message: "node_busy",
-        data: { code: "node_busy", retry_after_s: 30, holder },
+        message: "orca_node_busy",
+        data: { code: "orca_node_busy", retry_after_s: 30, holder },
       },
     });
   });

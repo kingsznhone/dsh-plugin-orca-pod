@@ -55,11 +55,11 @@ the config afterwards.
 | Field                | Required | Default                         | Meaning                                                                 |
 | -------------------- | -------- | ------------------------------- | ----------------------------------------------------------------------- |
 | `workgroup_id`       | yes      | —                               | Workgroup to join; `[a-z0-9][a-z0-9-]{1,31}`                            |
-| `workgroup_password` | yes      | —                               | Shared password; the node key is derived from it (prototype: plaintext) |
-| `display_name`       | no       | `orca-<node_id>` from node config | Human-readable node name                                              |
+| `workgroup_password` | yes      | —                               | Shared password; the orca node key is derived from it (prototype: plaintext) |
+| `display_name`       | no       | `orca-<orca_node_id>` from node config | Human-readable orca node name                                              |
 | `port`               | no       | `11811`                         | Local listen port (`0` = OS-assigned)                                   |
 | `endpoint`           | no       | `http://<host>:<port>`          | Public endpoint advertised to peers                                     |
-| `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (node identity)             |
+| `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (orca node identity)             |
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。

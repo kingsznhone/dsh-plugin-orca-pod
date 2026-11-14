@@ -8,7 +8,7 @@ import { createOrcaNode, createPersistentStorage } from "./index.ts";
 const USAGE = `orca-node
 
 Usage:
-  orca-node serve --config <path>   start a node from a config file
+  orca-node serve --config <path>   start an orca node from a config file
   orca-node --help                  show this help
 `;
 
@@ -18,12 +18,12 @@ async function serve(args: string[]): Promise<void> {
   if (!configPath) throw new Error("serve requires --config <path>");
 
   const config = await loadConfig(configPath);
-  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
-  const { url } = await node.start();
-  process.stdout.write(`orca-node ${node.nodeId} listening on ${url}\n`);
+  const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });
+  const { url } = await orcaNode.start();
+  process.stdout.write(`orca-node ${orcaNode.orcaNodeId} listening on ${url}\n`);
 
   const shutdown = (): void => {
-    void node.stop().then(() => process.exit(0));
+    void orcaNode.stop().then(() => process.exit(0));
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

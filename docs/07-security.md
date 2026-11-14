@@ -23,7 +23,7 @@ k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32
 每个请求自带证明，服务端用同一把 `k` 现验：
 
 ```http
-Authorization: Pod node_id=N7K3QM; ts=1763100000; nonce=9f2c1a; proof=<base64url>
+Authorization: Pod orca_node_id=N7K3QM; ts=1763100000; nonce=9f2c1a; proof=<base64url>
 ```
 
 ```text
@@ -35,7 +35,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 1. `ts` 与本地时间差 ≤ 60s（时钟漂移单独报错，别混进 401）；
 2. `nonce` 未在 5 分钟窗口内出现过（每 orca node LRU，容量 10k）；
 3. `proof` 常量时间比较；
-4. 通过后按 `node_id` 找/建 peer 记录（首次即登记，见 [§3.2](03-membership.md#32-引导与加入)）。
+4. 通过后按 `orca_node_id` 找/建 peer 记录（首次即登记，见 [§3.2](03-membership.md#32-引导与加入)）。
 
 性质与代价：
 
@@ -77,7 +77,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 - 任务 prompt、artifact 内容、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
-- 审计记录：谁（origin_node）、何时、对哪个任务/工作区、用了什么 mode、批了什么。
+- 审计记录：谁（origin_orca_node）、何时、对哪个任务/工作区、用了什么 mode、批了什么。
 
 ### 7.6 授权矩阵
 
@@ -85,7 +85,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 | 维度 | 默认 | 可配 |
 |---|---|---|
-| 谁能派任务 | 同 workgroup 的任意已加入 orca node | 按 node_id 白名单 |
+| 谁能派任务 | 同 workgroup 的任意已加入 orca node | 按 orca_node_id 白名单 |
 | 权限上限 | 继承 origin 会话 mode | 本机可再降一档 |
 | group workspace 可见性 | 同 workgroup | 仅本机 |
 | 任务/产物读取 | 同 workgroup 凭 id | —（无 per-task / per-blob ACL） |
@@ -138,7 +138,7 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 {
   "grant_id": "g_01JABC",
   "workgroup_id": "orca-dev",
-  "origin_node": "N7K3QM",
+  "origin_orca_node": "N7K3QM",
   "target_node": "P2W8XA",
   "task_id": "t_01JABD",
   "permission_mode": "workspace-write",
@@ -152,7 +152,7 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 
 校验：
 
-- 绑定 `(workgroup_id, origin_node, target_node, task_id, nonce)`，五者任一不符即拒；
+- 绑定 `(workgroup_id, origin_orca_node, target_node, task_id, nonce)`，五者任一不符即拒；
 - 只能**收窄**：target 拿到的 mode 不能高于 origin 会话当时的 mode；
 - `expires_at` 到点即失效；任务 cancel / 完成即吊销（target 本地删记录，不需要广播）；
 - 无 grant 的请求直接 `deny(missing_grant)`，不接受“老客户端”兼容。

@@ -14,13 +14,13 @@ const TIMINGS: MembershipTimings = {
   heartbeatTimeoutMs: 50,
 };
 
-function peerView(nodeId: string, overrides: Partial<PeerView> = {}): PeerView {
+function peerView(orcaNodeId: string, overrides: Partial<PeerView> = {}): PeerView {
   return {
-    node_id: nodeId,
-    display_name: `node-${nodeId}`,
+    orca_node_id: orcaNodeId,
+    display_name: `orca-node-${orcaNodeId}`,
     endpoint: `http://127.0.0.1:11811`,
     runtime: null,
-    runtime_digest: `digest-${nodeId}`,
+    runtime_digest: `digest-${orcaNodeId}`,
     state: "online",
     busy: null,
     last_recv_at: null,
@@ -31,7 +31,7 @@ function peerView(nodeId: string, overrides: Partial<PeerView> = {}): PeerView {
 function setup() {
   let now = 1000;
   const membership = createMembership({
-    selfNodeId: "AAAAAA",
+    selfOrcaNodeId: "AAAAAA",
     timings: TIMINGS,
     clock: { monotonicMs: () => now, wallIso: () => new Date(now).toISOString() },
   });

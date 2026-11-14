@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   NODE_ID_ALPHABET,
-  generateNodeId,
+  generateOrcaNodeId,
   isHttpEndpoint,
-  isNodeId,
+  isOrcaNodeId,
   isWorkgroupId,
   membersDigest,
-  normalizeNodeId,
+  normalizeOrcaNodeId,
   runtimeDigest,
   type PeerView,
   type RuntimeInfo,
@@ -25,71 +25,71 @@ function makeRuntime(): RuntimeInfo {
   };
 }
 
-type DigestPeer = Pick<PeerView, "node_id" | "endpoint" | "runtime_digest">;
+type DigestPeer = Pick<PeerView, "orca_node_id" | "endpoint" | "runtime_digest">;
 
-function makePeer(nodeId: string, endpoint: string, runtime: RuntimeInfo): DigestPeer {
-  return { node_id: nodeId, endpoint, runtime_digest: runtimeDigest(runtime) };
+function makePeer(orcaNodeId: string, endpoint: string, runtime: RuntimeInfo): DigestPeer {
+  return { orca_node_id: orcaNodeId, endpoint, runtime_digest: runtimeDigest(runtime) };
 }
 
-describe("generateNodeId", () => {
+describe("generateOrcaNodeId", () => {
   it("produces 6 characters drawn from the node id alphabet", () => {
-    const id = generateNodeId();
+    const id = generateOrcaNodeId();
     expect(id).toHaveLength(6);
     for (const char of id) expect(NODE_ID_ALPHABET).toContain(char);
   });
 
   it("produces 200 ids that are all valid", () => {
     for (let index = 0; index < 200; index += 1) {
-      expect(isNodeId(generateNodeId())).toBe(true);
+      expect(isOrcaNodeId(generateOrcaNodeId())).toBe(true);
     }
   });
 
   it("does not repeat on consecutive calls", () => {
-    expect(generateNodeId()).not.toBe(generateNodeId());
+    expect(generateOrcaNodeId()).not.toBe(generateOrcaNodeId());
   });
 });
 
-describe("isNodeId", () => {
+describe("isOrcaNodeId", () => {
   it("accepts a valid id", () => {
-    expect(isNodeId(VALID_NODE_ID)).toBe(true);
-    expect(isNodeId(generateNodeId())).toBe(true);
+    expect(isOrcaNodeId(VALID_NODE_ID)).toBe(true);
+    expect(isOrcaNodeId(generateOrcaNodeId())).toBe(true);
   });
 
   it("rejects ids with the wrong length", () => {
-    expect(isNodeId("ABC12")).toBe(false);
-    expect(isNodeId("ABC1234")).toBe(false);
-    expect(isNodeId("")).toBe(false);
+    expect(isOrcaNodeId("ABC12")).toBe(false);
+    expect(isOrcaNodeId("ABC1234")).toBe(false);
+    expect(isOrcaNodeId("")).toBe(false);
   });
 
   it("rejects lowercase ids", () => {
-    expect(isNodeId("abc123")).toBe(false);
+    expect(isOrcaNodeId("abc123")).toBe(false);
   });
 
   it("rejects the ambiguous characters I, L, O and U", () => {
     for (const char of ["I", "L", "O", "U"]) {
-      expect(isNodeId(`ABC${char}23`)).toBe(false);
+      expect(isOrcaNodeId(`ABC${char}23`)).toBe(false);
     }
   });
 
   it("rejects non-strings", () => {
-    expect(isNodeId(42)).toBe(false);
-    expect(isNodeId(null)).toBe(false);
-    expect(isNodeId(undefined)).toBe(false);
+    expect(isOrcaNodeId(42)).toBe(false);
+    expect(isOrcaNodeId(null)).toBe(false);
+    expect(isOrcaNodeId(undefined)).toBe(false);
   });
 });
 
-describe("normalizeNodeId", () => {
+describe("normalizeOrcaNodeId", () => {
   it("uppercases a lowercase id", () => {
-    expect(normalizeNodeId("abc123")).toBe(VALID_NODE_ID);
+    expect(normalizeOrcaNodeId("abc123")).toBe(VALID_NODE_ID);
   });
 
   it("trims surrounding whitespace", () => {
-    expect(normalizeNodeId("  abc123  ")).toBe(VALID_NODE_ID);
+    expect(normalizeOrcaNodeId("  abc123  ")).toBe(VALID_NODE_ID);
   });
 
   it("returns null for garbage", () => {
-    expect(normalizeNodeId("not-a-node-id")).toBeNull();
-    expect(normalizeNodeId("")).toBeNull();
+    expect(normalizeOrcaNodeId("not-an-orca-node-id")).toBeNull();
+    expect(normalizeOrcaNodeId("")).toBeNull();
   });
 });
 
@@ -158,8 +158,8 @@ describe("membersDigest", () => {
     expect(membersDigest([alpha, beta])).toBe(membersDigest([beta, alpha]));
   });
 
-  it("changes when a node id changes", () => {
-    expect(membersDigest([{ ...alpha, node_id: "ABC124" }, beta])).not.toBe(
+  it("changes when an orca node id changes", () => {
+    expect(membersDigest([{ ...alpha, orca_node_id: "ABC124" }, beta])).not.toBe(
       membersDigest([alpha, beta]),
     );
   });

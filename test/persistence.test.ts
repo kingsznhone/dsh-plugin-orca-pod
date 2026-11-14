@@ -4,13 +4,13 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createNodeConfig } from "../src/config.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
 import type { OrcaNode } from "../src/orca_node.ts";
 import type { TaskView } from "../src/protocol.ts";
 
 const dirs: string[] = [];
-const nodes: OrcaNode[] = [];
+const orcaNodes: OrcaNode[] = [];
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "orca-persist-"));
@@ -19,20 +19,20 @@ function tempDir(): string {
 }
 
 afterEach(async () => {
-  for (const node of nodes.splice(0)) await node.stop().catch(() => undefined);
+  for (const orcaNode of orcaNodes.splice(0)) await orcaNode.stop().catch(() => undefined);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 function nodeFor(dataRoot: string): OrcaNode {
-  const config = createNodeConfig({
+  const config = createOrcaNodeConfig({
     workgroupId: "orca-persist",
     password: "secret",
     dataRoot,
     port: 0,
   });
-  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
-  nodes.push(node);
-  return node;
+  const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });
+  orcaNodes.push(orcaNode);
+  return orcaNode;
 }
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -43,7 +43,7 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 5000): Promise
   }
 }
 
-describe("node persistence", () => {
+describe("orca node persistence", () => {
   it("serves a completed task after a restart", async () => {
     const dataRoot = tempDir();
     const first = nodeFor(dataRoot);

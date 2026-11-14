@@ -15,7 +15,7 @@ import type { PodHandle } from "./lifecycle.ts"
 import { describeError } from "./util.ts"
 
 const ASYNC_NOTE =
-  "The task is executed asynchronously on the remote node, so this call returns as soon as the remote accepts it; poll pod_status with the returned task_id to observe completion."
+  "The task is executed asynchronously on the remote orca node, so this call returns as soon as the remote accepts it; poll pod_status with the returned task_id to observe completion."
 
 /**
  * Output values differ per tool (send/status/cancel return task views, members
@@ -65,22 +65,22 @@ function optionalEchoScript(args: Record<string, unknown>): Record<string, unkno
   return value as Record<string, unknown>
 }
 
-/** Wait for startup, then fail the tool call when the node is not usable. */
+/** Wait for startup, then fail the tool call when the orca node is not usable. */
 async function requireNode(handle: PodHandle): Promise<OrcaNode> {
   await handle.ready
   if (handle.runtime.error !== null) {
     throw new Error(`orca node is not running: ${handle.runtime.error.message}`)
   }
-  const node = handle.runtime.node
-  if (node === null) {
+  const orcaNode = handle.runtime.orcaNode
+  if (orcaNode === null) {
     throw new Error("orca node is not running")
   }
-  return node
+  return orcaNode
 }
 
 function peerSummary(peer: PeerView): Record<string, unknown> {
   return {
-    node_id: peer.node_id,
+    orca_node_id: peer.orca_node_id,
     display_name: peer.display_name,
     endpoint: peer.endpoint,
     state: peer.state,
@@ -120,11 +120,11 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
       const peer = normalizePeer(record["peer"])
       const text = requiredString(record, "text")
       const echo = optionalEchoScript(record)
-      const node = await requireNode(handle)
+      const orcaNode = await requireNode(handle)
       const message: A2AMessage = { role: "user", parts: [{ kind: "text", text }] }
       const input: SubmitTaskInput = echo === undefined ? { message } : { message, metadata: { echo } }
       try {
-        const view = await node.sendTask(peer, input)
+        const view = await orcaNode.sendTask(peer, input)
         return { task_id: view.id, state: view.status.state, peer }
       } catch (error) {
         throw describeError("pod_send", error)
@@ -136,7 +136,7 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
     name: "pod_status",
     description:
       "Fetch the current state of a remote Orca task and its artifacts. " +
-      "Tasks on the remote node are asynchronous; terminal states are completed, failed and canceled.",
+      "Tasks on the remote orca node are asynchronous; terminal states are completed, failed and canceled.",
     parameters: {
       type: "object",
       properties: {
@@ -154,9 +154,9 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
       const record = asRecord(args)
       const peer = normalizePeer(record["peer"])
       const taskId = requiredString(record, "task_id")
-      const node = await requireNode(handle)
+      const orcaNode = await requireNode(handle)
       try {
-        const view = await node.getTask(peer, taskId)
+        const view = await orcaNode.getTask(peer, taskId)
         return { ...view, terminal: isTerminal(view.status.state) }
       } catch (error) {
         throw describeError("pod_status", error)
@@ -168,7 +168,7 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
     name: "pod_cancel",
     description:
       "Request cancellation of a remote Orca task. " +
-      "The remote node finishes the cancellation asynchronously; the returned task view is the state observed at cancel time, so poll pod_status when it is not yet terminal.",
+      "The remote orca node finishes the cancellation asynchronously; the returned task view is the state observed at cancel time, so poll pod_status when it is not yet terminal.",
     parameters: {
       type: "object",
       properties: {
@@ -186,9 +186,9 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
       const record = asRecord(args)
       const peer = normalizePeer(record["peer"])
       const taskId = requiredString(record, "task_id")
-      const node = await requireNode(handle)
+      const orcaNode = await requireNode(handle)
       try {
-        const view = await node.cancelTask(peer, taskId)
+        const view = await orcaNode.cancelTask(peer, taskId)
         return { ...view, terminal: isTerminal(view.status.state) }
       } catch (error) {
         throw describeError("pod_cancel", error)
@@ -199,7 +199,7 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
   const members: ToolDefinition = {
     name: "pod_members",
     description:
-      "List the local Orca node and the peers it has discovered in this workgroup, with node ids, endpoints and states. Use the endpoint values with pod_send, pod_status and pod_cancel.",
+      "List the local Orca node and the peers it has discovered in this workgroup, with orca node ids, endpoints and states. Use the endpoint values with pod_send, pod_status and pod_cancel.",
     parameters: {
       type: "object",
       properties: {},
@@ -207,12 +207,12 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     async execute() {
-      const node = await requireNode(handle)
-      const self = node.self()
+      const orcaNode = await requireNode(handle)
+      const self = orcaNode.self()
       return {
         self: peerSummary(self),
-        members: node.members().map(peerSummary),
-        members_digest: node.membersDigest(),
+        members: orcaNode.members().map(peerSummary),
+        members_digest: orcaNode.membersDigest(),
       }
     },
   }

@@ -1,14 +1,14 @@
 /**
  * Node lifecycle for the Orca pod DSH bundle.
  *
- * The DSH host must not block on a node: `startPod` returns a handle
- * synchronously and performs config resolution, `node.start()`, and initial
+ * The DSH host must not block on an orca node: `startPod` returns a handle
+ * synchronously and performs config resolution, `orcaNode.start()`, and initial
  * `join`s on a promise that never rejects. Failures are recorded on
  * `handle.runtime.error` and logged, so `apply` always returns quickly.
  */
 
-import { configPath, createNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../config.ts"
-import type { NodeConfig } from "../config.ts"
+import { configPath, createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../config.ts"
+import type { OrcaNodeConfig } from "../config.ts"
 import { deriveWorkgroupKey } from "../crypto.ts"
 import { createOrcaNode, createPersistentStorage } from "../orca_node.ts"
 import type { OrcaNode } from "../orca_node.ts"
@@ -19,11 +19,11 @@ import { errorMessage } from "./util.ts"
 
 /** Observable state of the pod owned by one plugin fiber. */
 export interface PodRuntime {
-  /** Created node, or null before creation / after a failed creation. */
-  node: OrcaNode | null
-  /** Endpoint reported by `node.start()`. */
+  /** Created orca node, or null before creation / after a failed creation. */
+  orcaNode: OrcaNode | null
+  /** Endpoint reported by `orcaNode.start()`. */
   url: string | null
-  /** Bound listen port reported by `node.start()`. */
+  /** Bound listen port reported by `orcaNode.start()`. */
   port: number | null
   /** ISO timestamp of a successful start. */
   started_at: string | null
@@ -39,7 +39,7 @@ export interface PodHandle {
 }
 
 function createRuntime(): PodRuntime {
-  return { node: null, url: null, port: null, started_at: null, error: null }
+  return { orcaNode: null, url: null, port: null, started_at: null, error: null }
 }
 
 /** Treat "file does not exist" as an empty install; other read errors are logged. */
@@ -52,35 +52,35 @@ function isMissingFile(error: unknown): boolean {
   )
 }
 
-async function loadStoredConfig(path: string, logger: HostLogger): Promise<NodeConfig | null> {
+async function loadStoredConfig(path: string, logger: HostLogger): Promise<OrcaNodeConfig | null> {
   try {
     return await loadConfig(path)
   } catch (error) {
     if (!isMissingFile(error)) {
-      logger.warn(`orca-pod: ignoring unreadable node config ${path}: ${errorMessage(error)}`)
+      logger.warn(`orca-pod: ignoring unreadable orca node config ${path}: ${errorMessage(error)}`)
     }
     return null
   }
 }
 
-function sameConfig(left: NodeConfig, right: NodeConfig): boolean {
+function sameConfig(left: OrcaNodeConfig, right: OrcaNodeConfig): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
 /**
- * Resolve the persisted node identity for the configured workgroup.
+ * Resolve the persisted orca node identity for the configured workgroup.
  *
- * An existing `config.json` for the same workgroup is reused (stable node id
+ * An existing `config.json` for the same workgroup is reused (stable orca node id
  * and creation time) with its key re-derived from the configured password;
- * otherwise a fresh node config is created and persisted.
+ * otherwise a fresh orca node config is created and persisted.
  */
-export async function resolveNodeConfig(config: Config, logger: HostLogger): Promise<NodeConfig> {
+export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger): Promise<OrcaNodeConfig> {
   const dataRoot = config.data_root ?? defaultDataRoot()
   const path = configPath(dataRoot)
   const stored = await loadStoredConfig(path, logger)
   const keyBase64 = deriveWorkgroupKey(config.workgroup_id, config.workgroup_password).toString("base64")
 
-  let next: NodeConfig
+  let next: OrcaNodeConfig
   if (stored !== null && stored.workgroup_id === config.workgroup_id) {
     next = {
       ...stored,
@@ -93,7 +93,7 @@ export async function resolveNodeConfig(config: Config, logger: HostLogger): Pro
       key_base64: keyBase64,
     }
   } else {
-    next = createNodeConfig({
+    next = createOrcaNodeConfig({
       workgroupId: config.workgroup_id,
       password: config.workgroup_password,
       dataRoot,
@@ -107,7 +107,7 @@ export async function resolveNodeConfig(config: Config, logger: HostLogger): Pro
     try {
       await saveConfig(path, next)
     } catch (error) {
-      logger.warn(`orca-pod: could not persist node config ${path}: ${errorMessage(error)}`)
+      logger.warn(`orca-pod: could not persist orca node config ${path}: ${errorMessage(error)}`)
     }
   }
   return next
@@ -118,7 +118,7 @@ function trimTrailingSlash(url: string): string {
 }
 
 /**
- * Create and start a pod node without blocking the caller.
+ * Create and start a pod orca node without blocking the caller.
  *
  * The returned `ready` promise resolves after startup (success or failure) and
  * never rejects; inspect `runtime.error` for the failure cause.
@@ -128,16 +128,16 @@ export function startPod(config: Config, logger: HostLogger): PodHandle {
 
   const ready = (async () => {
     try {
-      const nodeConfig = await resolveNodeConfig(config, logger)
-      const node = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig) })
-      runtime.node = node
+      const nodeConfig = await resolveOrcaNodeConfig(config, logger)
+      const orcaNode = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig) })
+      runtime.orcaNode = orcaNode
 
-      const info = await node.start()
+      const info = await orcaNode.start()
       runtime.url = info.url
       runtime.port = info.port
       runtime.started_at = new Date().toISOString()
       logger.info(
-        `orca-pod: node ${nodeConfig.node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
+        `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
       )
 
       const seen = new Set<string>()
@@ -146,17 +146,17 @@ export function startPod(config: Config, logger: HostLogger): PodHandle {
         if (peer === trimTrailingSlash(info.url) || seen.has(peer)) continue
         seen.add(peer)
         try {
-          const response = await node.join(peer)
+          const response = await orcaNode.join(peer)
           logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`)
         } catch (error) {
-          // A peer that is down at boot must not take the local node down.
+          // A peer that is down at boot must not take the local orca node down.
           logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`)
         }
       }
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error))
       runtime.error = failure
-      logger.error(`orca-pod: node failed to start: ${errorMessage(failure)}`)
+      logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`)
     }
   })()
 
@@ -166,12 +166,12 @@ export function startPod(config: Config, logger: HostLogger): PodHandle {
 /** Stop the pod; safe to call after a failed startup and safe to await twice. */
 export async function stopPod(handle: PodHandle, logger: HostLogger): Promise<void> {
   await handle.ready
-  const node = handle.runtime.node
-  if (node === null) return
+  const orcaNode = handle.runtime.orcaNode
+  if (orcaNode === null) return
   try {
-    await node.stop()
-    logger.info("orca-pod: node stopped")
+    await orcaNode.stop()
+    logger.info("orca-pod: orca node stopped")
   } catch (error) {
-    logger.warn(`orca-pod: node stop failed: ${errorMessage(error)}`)
+    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`)
   }
 }
