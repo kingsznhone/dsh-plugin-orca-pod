@@ -22,6 +22,27 @@ window.__ModuleLoader__.load({
     const POLL_MS = 2000;
     const NS = "orca-pod";
 
+    /* Sidebar entry + floating panel share one open flag; the overlay slot is
+     * frame-wide, and the sidebar footer action is the trigger. */
+    let panelOpen = false;
+    const openListeners = new Set();
+
+    function setPanelOpen(next) {
+      if (panelOpen === next) return;
+      panelOpen = next;
+      openListeners.forEach((listener) => listener());
+    }
+
+    function usePanelOpen() {
+      const [, bump] = React.useState(0);
+      React.useEffect(() => {
+        const listener = () => bump((value) => value + 1);
+        openListeners.add(listener);
+        return () => openListeners.delete(listener);
+      }, []);
+      return panelOpen;
+    }
+
     /** Styles shared by every table cell. */
     const CELL = {
       padding: "4px 10px 4px 0",
@@ -300,10 +321,101 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** Register the panel as one Settings page. */
+    const CARD = {
+      width: "min(720px, calc(100vw - 96px))",
+      maxHeight: "78vh",
+      overflow: "auto",
+      borderRadius: 12,
+      border: "1px solid var(--dsw-alias-border-l1)",
+      background: "var(--dsw-alias-bg-layer-1)",
+      boxShadow: "0 18px 48px rgba(0, 0, 0, 0.28)",
+      color: "var(--dsw-alias-label-primary)",
+    };
+    const OVERLAY = {
+      position: "fixed",
+      inset: 0,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.35))",
+      pointerEvents: "auto",
+      zIndex: 900,
+    };
+    const ICON_BUTTON = {
+      ...BUTTON,
+      padding: "2px 8px",
+      fontSize: 14,
+      lineHeight: 1.2,
+    };
+    const FOOTER_ACTION = {
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      width: "100%",
+      padding: "6px 8px",
+      borderRadius: 8,
+      border: "1px solid transparent",
+      background: "transparent",
+      color: "var(--dsw-alias-label-secondary)",
+      fontSize: 13,
+      textAlign: "left",
+    };
+
+    /** Sidebar-foot button: opens the floating Orca Pod panel. */
+    function SidebarAction(props) {
+      const wide = !props || props.wide !== false;
+      return h(
+        "button",
+        {
+          type: "button",
+          style: FOOTER_ACTION,
+          title: "Orca Pod",
+          onClick: () => setPanelOpen(!panelOpen),
+        },
+        h("span", { style: { fontSize: 15, lineHeight: 1 } }, "◈"),
+        wide ? h("span", null, "Orca Pod") : null,
+      );
+    }
+
+    /** Frame-wide floating panel; closes on backdrop click or Escape. */
+    function OverlayPanel() {
+      const open = usePanelOpen();
+      React.useEffect(() => {
+        if (!open) return undefined;
+        function onKey(event) {
+          if (event.key === "Escape") setPanelOpen(false);
+        }
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [open]);
+      if (!open) return null;
+      return h(
+        "div",
+        { style: OVERLAY, onClick: (event) => { if (event.target === event.currentTarget) setPanelOpen(false); } },
+        h(
+          "div",
+          { style: CARD },
+          h(
+            "div",
+            { style: { display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "8px 10px 0" } },
+            h("button", { type: "button", style: ICON_BUTTON, title: "Close", onClick: () => setPanelOpen(false) }, "×"),
+          ),
+          h(Panel),
+        ),
+      );
+    }
+
+    /** Register the panel as one Settings page, a sidebar entry and a floating panel. */
     function apply(ctx) {
       ctx.slots.inject("settings.section", () =>
         ctx.slots.register({ name: "settings.section", id: NS, order: 60, label: "Orca Pod" }, Panel),
+      );
+      ctx.slots.inject("sidebar.footer.action", () =>
+        ctx.slots.register({ name: "sidebar.footer.action", id: NS, order: 10, label: "Orca Pod" }, SidebarAction),
+      );
+      ctx.slots.inject("shell.overlay", () =>
+        ctx.slots.register({ name: "shell.overlay", id: NS + ".panel", order: 60 }, OverlayPanel),
       );
     }
 

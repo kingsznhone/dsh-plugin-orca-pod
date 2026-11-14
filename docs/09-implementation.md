@@ -125,7 +125,15 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 
 #### 9.2.2 客户端 bundle（`client.js`）
 
-包根 `client.js` 是 DSH 客户端 lazy-CJS 工厂：`window.__ModuleLoader__.load({id:"orca-pod", factory(require){…}})`，factory 内只 `require('react')`，返回 `{inject:['slots'], apply}`；`apply` 里 `ctx.slots.inject('settings.section', () => ctx.slots.register({name:'settings.section', id:'orca-pod', order:60, label:'Orca Pod'}, Panel))`。面板每 2s `fetch('/orca-api/state')`，渲染成员（state/busy/endpoints/OS）、待审批（approve/deny 按钮）、最近任务（状态、来源、产物直链、cancel）、工作区（`notes/` 文件、`inputs/` 目录）。样式只用内联对象与 `--dsw-alias-*` 主题 token，不写 `document.body`，卸载时清理定时器。
+包根 `client.js` 是 DSH 客户端 lazy-CJS 工厂：`window.__ModuleLoader__.load({id:"orca-pod", factory(require){…}})`，factory 内只 `require('react')`，返回 `{inject:['slots'], apply}`；`apply` 注册三个 Slot：
+
+| Slot | id | 作用 |
+|---|---|---|
+| `settings.section` | `orca-pod` | 一页设置面板（order 60，排在 Plugins 之后） |
+| `sidebar.footer.action` | `orca-pod` | 侧边栏底部 Settings 旁的动作按钮（面板收起时只显示 `◈` 图标，`wide` 时带文字） |
+| `shell.overlay` | `orca-pod.panel` | 全框浮动面板；点侧边栏按钮打开，点遮罩或按 Esc 关闭 |
+
+设置页与浮动面板共用同一份 `Panel` 内容。面板每 2s `fetch('/orca-api/state')`，渲染成员（state/busy/endpoints/OS）、待审批（approve/deny 按钮）、最近任务（状态、来源、产物直链、cancel）、工作区（`notes/` 文件、`inputs/` 目录）。样式只用内联对象与 `--dsw-alias-*` 主题 token，不写 `document.body`，卸载时清理定时器。
 
 清单接线：`package.json` 的 `exports["./client"] = "./client.js"`、`dsh.client = {platform:"web", immediately:true}`、`files` 含 `client.js`；Host 侧 `apply` 把 `createPodAdmin(handle, tracker)` 传给 `registerPodWeb`。
 
