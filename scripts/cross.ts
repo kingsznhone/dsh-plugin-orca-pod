@@ -1,5 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "@orca/config";
+import { readFile } from "node:fs/promises";
+import { buildAuthHeader, bodySha256 } from "@orca/crypto";
+import { createNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "@orca/config";
 import { createNode, type OrcaNode } from "@orca/orca-node";
 
 type Args = Map<string, string>;
@@ -128,11 +130,55 @@ async function task(args: Args): Promise<void> {
   await node.stop();
 }
 
+async function blob(args: Args): Promise<void> {
+  const configFile = required(args, "config");
+  const peer = required(args, "peer").replace(/\/$/, "");
+  const config = await loadConfig(configFile);
+  const key = workgroupKey(config);
+  const nodeId = config.node_id;
+  const content = args.get("file")
+    ? await readFile(required(args, "file"))
+    : Buffer.from(args.get("text") ?? "hello blob\n", "utf8");
+  const name = args.get("name") ?? "blob.txt";
+
+  const uploadPath = "/blobs";
+  const uploadUrl = `${peer}${uploadPath}?name=${encodeURIComponent(name)}`;
+  const upload = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      authorization: buildAuthHeader({ key, nodeId, method: "POST", path: uploadPath, body: content }),
+      "content-type": "application/octet-stream",
+      "x-pod-body-sha256": bodySha256(content),
+    },
+    body: content,
+  });
+  const stored = (await upload.json()) as { blob_id: string; size: number; name: string | null };
+  console.log(`upload status=${upload.status} blob_id=${stored.blob_id} size=${stored.size} name=${stored.name}`);
+
+  const blobPath = `/blobs/${stored.blob_id}`;
+  const download = await fetch(`${peer}${blobPath}`, {
+    headers: { authorization: buildAuthHeader({ key, nodeId, method: "GET", path: blobPath }) },
+  });
+  const downloaded = Buffer.from(await download.arrayBuffer());
+  console.log(`download status=${download.status} bytes=${downloaded.length} sha_match=${bodySha256(downloaded) === stored.blob_id}`);
+
+  const linkPath = `/blobs/${stored.blob_id}/link`;
+  const linkResponse = await fetch(`${peer}${linkPath}`, {
+    method: "POST",
+    headers: { authorization: buildAuthHeader({ key, nodeId, method: "POST", path: linkPath }) },
+  });
+  const link = (await linkResponse.json()) as { url: string; expires_at: number };
+  const viaLink = await fetch(link.url);
+  const linked = Buffer.from(await viaLink.arrayBuffer());
+  console.log(`link status=${viaLink.status} bytes=${linked.length} url=${link.url}`);
+}
+
 function printHelp(): void {
   console.log("usage:");
   console.log("  node scripts/cross.ts serve --workgroup <id> --password <secret> [--port 11811] [--host 0.0.0.0] [--endpoint http://ip:port] [--name host]");
   console.log("  node scripts/cross.ts join  --peer <url> --workgroup <id> --password <secret> [--name guest]");
   console.log("  node scripts/cross.ts task  --config <file> --peer <url> [--text hello] [--echo '<json>'] [--auto-resume true]");
+  console.log("  node scripts/cross.ts blob  --config <file> --peer <url> [--text hello] [--file path] [--name blob.txt]");
 }
 
 const { command, args } = parseArgs(process.argv.slice(2));
@@ -142,6 +188,8 @@ if (command === "serve") {
   await join(args);
 } else if (command === "task") {
   await task(args);
+} else if (command === "blob") {
+  await blob(args);
 } else {
   printHelp();
 }

@@ -224,6 +224,8 @@ export type PodTaskMetadata = {
 export type SubmitTaskInput = {
   message: A2AMessage;
   metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
+  /** Authenticated origin; recorded on the task for busy/holder reporting (§6.9). */
+  originNode?: NodeId;
 };
 
 /** Implemented by orca_node (needs an executor), consumed by the gateway. */
@@ -232,6 +234,8 @@ export interface TaskRunner {
   get(taskId: string): TaskView | null;
   resume(taskId: string, message: A2AMessage): TaskView;
   cancel(taskId: string): TaskView;
+  /** Currently running task (single-slot, §6.9); null when idle. */
+  busy(): BusyState | null;
 }
 
 /** Task-level failure carrying a stable code for the gateway's HTTP mapping. */

@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -28,7 +29,7 @@ import {
   type A2AMessage,
   type SubmitTaskInput,
 } from "@orca/protocol";
-import type { PeerStore } from "@orca/storage";
+import { sha256Hex, type BlobStore, type PeerStore } from "@orca/storage";
 
 export type GatewayNode = {
   node_id: string;
@@ -44,6 +45,7 @@ export type GatewayDeps = {
   nonceCache: NonceCache;
   runtime: RuntimeInfo | null;
   tasks: TaskRunner;
+  blobs: BlobStore;
 };
 
 type RawBodyRequest = FastifyRequest & { rawBody?: Buffer };
@@ -71,6 +73,42 @@ function asObject(value: unknown): JsonObject | null {
 
 function badRequest(reply: FastifyReply, message: string): FastifyReply {
   return reply.code(400).send({ code: "bad_request", message });
+}
+
+/** Blob channel limits and link TTL (§5.6). */
+const MAX_BLOB_BYTES = 256 * 1024 * 1024;
+const BLOB_LINK_TTL_S = 300;
+
+/** Short-lived link token (§5.6): HMAC over blob id + expiry, no server-side state. */
+function linkSignature(key: Buffer, blobId: string, exp: string): string {
+  return createHmac("sha256", key).update(`link|${blobId}|${exp}`).digest("base64url");
+}
+
+function linkSignatureValid(key: Buffer, blobId: string, exp: string, sig: string): boolean {
+  const actual = Buffer.from(sig, "base64url");
+  const expected = Buffer.from(linkSignature(key, blobId, exp), "base64url");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+/** Names are hints only (§5.6): reject separators, traversal and absolute/drive paths. */
+function badBlobName(name: string): boolean {
+  return (
+    name.length === 0 ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    name.includes("..") ||
+    /^[A-Za-z]:/.test(name)
+  );
+}
+
+/** Raw body parser: keeps bytes for signature verification and exposes no parsed body. */
+function rawBodyParser(
+  request: FastifyRequest,
+  body: Buffer,
+  done: (error: Error | null, payload?: unknown) => void,
+): void {
+  (request as RawBodyRequest).rawBody = body;
+  done(null, undefined);
 }
 
 function authenticate(request: FastifyRequest, deps: GatewayDeps): VerifiedAuth {
@@ -107,7 +145,7 @@ function membership(deps: GatewayDeps): {
 }
 
 export function createGateway(deps: GatewayDeps): FastifyInstance {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, bodyLimit: MAX_BLOB_BYTES });
 
   app.addContentTypeParser<Buffer>(
     "application/json",
@@ -118,6 +156,10 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     },
   );
 
+  // Blob uploads (§5.6) are raw bytes; signature verification needs the raw body too.
+  app.addContentTypeParser<Buffer>("application/octet-stream", { parseAs: "buffer" }, rawBodyParser);
+  app.addContentTypeParser<Buffer>("*", { parseAs: "buffer" }, rawBodyParser);
+
   app.get("/health", async () => ({ status: "ok", version: PROTOCOL_VERSION }));
 
   app.get("/.well-known/agent-card.json", async () => ({
@@ -127,7 +169,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   }));
 
   app.post("/a2a", async (request, reply) => {
-    authenticate(request, deps);
+    const auth = authenticate(request, deps);
     const body = asObject(request.body) as JsonRpcEnvelope | null;
     if (!body || typeof body.method !== "string") {
       return badRequest(reply, "body must be a JSON-RPC request");
@@ -144,7 +186,11 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
         if (typeof message.taskId === "string" && message.taskId.length > 0) {
           result = deps.tasks.resume(message.taskId, message);
         } else {
-          result = deps.tasks.submit({ message, metadata: params["metadata"] as SubmitTaskInput["metadata"] });
+          result = deps.tasks.submit({
+            message,
+            metadata: params["metadata"] as SubmitTaskInput["metadata"],
+            originNode: auth.nodeId,
+          });
         }
       } else if (body.method === "tasks/get") {
         const taskId = String(params["id"] ?? "");
@@ -159,6 +205,18 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       return { jsonrpc: "2.0", id, result };
     } catch (error) {
       if (error instanceof TaskError) {
+        if (error.code === "node_busy") {
+          reply.code(429).header("retry-after", "30").send({
+            jsonrpc: "2.0",
+            id,
+            error: {
+              code: -32000,
+              message: "node_busy",
+              data: { code: "node_busy", retry_after_s: 30, holder: deps.tasks.busy() },
+            },
+          });
+          return reply;
+        }
         const status = TASK_ERROR_STATUS[error.code] ?? 500;
         reply.code(status).send({
           jsonrpc: "2.0",
@@ -169,6 +227,65 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       }
       throw error;
     }
+  });
+
+  app.post("/blobs", async (request, reply) => {
+    authenticate(request, deps);
+    const body = (request as RawBodyRequest).rawBody ?? Buffer.alloc(0);
+    const blobId = sha256Hex(body);
+    if (request.headers["x-pod-body-sha256"] !== blobId) {
+      return reply.code(400).send({ code: "blob_digest_mismatch" });
+    }
+    const rawName = (request.query as { name?: unknown }).name;
+    let name: string | undefined;
+    if (rawName !== undefined) {
+      if (typeof rawName !== "string" || badBlobName(rawName)) {
+        return reply.code(400).send({ code: "bad_blob_name" });
+      }
+      name = rawName;
+    }
+    const existed = deps.blobs.has(blobId);
+    const blob = deps.blobs.put(body, { name });
+    return reply.code(existed ? 200 : 201).send({
+      blob_id: blob.blob_id,
+      size: blob.size,
+      name: blob.name,
+      expires_at: blob.expires_at,
+    });
+  });
+
+  app.get("/blobs/:blob_id", async (request, reply) => {
+    const { blob_id: blobId } = request.params as { blob_id: string };
+    const query = request.query as { exp?: unknown; sig?: unknown };
+    if (typeof query.exp === "string" && typeof query.sig === "string") {
+      if (!linkSignatureValid(deps.key, blobId, query.exp, query.sig)) {
+        return reply.code(403).send({ code: "link_invalid" });
+      }
+      if (Number(query.exp) * 1000 <= Date.now()) {
+        return reply.code(410).send({ code: "link_expired" });
+      }
+    } else {
+      authenticate(request, deps);
+    }
+    const blob = deps.blobs.get(blobId);
+    if (!blob) return reply.code(404).send({ code: "blob_not_found" });
+    if (blob.expires_at !== null && Date.parse(blob.expires_at) <= Date.now()) {
+      return reply.code(410).send({ code: "blob_expired" });
+    }
+    return reply.header("content-type", "application/octet-stream").send(blob.bytes);
+  });
+
+  app.post("/blobs/:blob_id/link", async (request, reply) => {
+    authenticate(request, deps);
+    const { blob_id: blobId } = request.params as { blob_id: string };
+    if (!deps.blobs.has(blobId)) return reply.code(404).send({ code: "blob_not_found" });
+    const expiresAtMs = Date.now() + BLOB_LINK_TTL_S * 1000;
+    const exp = String(Math.floor(expiresAtMs / 1000));
+    const sig = linkSignature(deps.key, blobId, exp);
+    return {
+      url: `${deps.node.endpoint ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
+      expires_at: new Date(expiresAtMs).toISOString(),
+    };
   });
 
   app.post("/cluster/join", async (request, reply) => {
@@ -265,6 +382,10 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   });
 
   app.setErrorHandler((error: unknown, _request, reply) => {
+    if ((error as { code?: unknown }).code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+      reply.code(413).send({ code: "blob_too_large" });
+      return;
+    }
     if (error instanceof PodAuthError) {
       reply.code(401).send({ code: error.code, message: error.message });
       return;

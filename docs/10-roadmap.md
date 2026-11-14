@@ -10,7 +10,14 @@
 - 短 id 生成 + 持久化；workgroup_id + 非空密码；HKDF + 请求签名。
 - EchoExecutor（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)）：按脚本模拟耗时、挂起（`blocked`/`permission`）、最终文本与产物；`ping` 只返回节点信息。
 - `message/send` + `tasks/get` + `tasks/cancel`；SQLite task store。
-- 验收：`/health` OK；带签名能读 Agent Card；join 成功；两节点双向心跳；kill 一方 12s 内从在线集消失；重启后 task store 仍可查。
+- 验收：`/health` OK；Agent Card 公开可读（当前仅最小字段，签名接口另测）；join 成功；两节点双向心跳；kill 一方 12s 内从在线集消失；重启后 task store 仍可查。
+
+**Phase 0 进展**
+
+- core 已跑通：`npm test` 61 个测试通过（protocol 30、crypto 15、harness mesh 1、harness a2a 7、gateway blobs 8），`npm run typecheck` 通过。
+- 跨机 join 已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，双方 `members_digest` 一致。
+- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；task store 与 blob store 为进程内内存。
+- 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、后台心跳循环与 12s 看门狗、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三节点 full mesh 与惰性收敛
 
@@ -50,22 +57,25 @@
 
 ### 10.6 验收标准
 
+> 只勾已经由当前代码与测试或跨机实测覆盖的项；未勾表示尚未验收，不代表设计被删除。
+
 #### 两台节点
 
-- [ ] `/health` 无鉴权可达；Agent Card 公开可读且不含 runtime/路径/拓扑；`/cluster/members` 无签名被 401
+- [x] `/health` 无鉴权可达；Agent Card 公开可读且不含 runtime/路径/拓扑；`/cluster/members` 无签名被 401
 - [ ] 错误 workgroup / 错误密码被 401（同一文案，不区分）
-- [ ] 正确密码 + 签名可 join、心跳、拉目录
+- [x] 正确密码 + 签名可 join、心跳、拉目录
 - [ ] 两节点双向心跳；kill 一方 12s 内从在线集消失
 - [ ] 节点重启后 task store 与工作区仍在
 
 #### Echo 脚本（Phase 0/1）
 
-- [ ] `echo.final.text` 原样出现在 `tasks/get` 的 `status.message.text`，逐字节相等
-- [ ] 到 `at_ms` 时任务变 `input-required`，`blocked`/`permission_request` 可读，槽位释放
-- [ ] 恢复后从上次位置继续，不重放已过去的 step；总时长约等于各 step 间隔之和（不含挂起时间）
-- [ ] `artifacts[].blob_id == sha256(content)`，产物可被另一节点 GET
-- [ ] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
-- [ ] 非法脚本（`at_ms` 递减、未知字段、`state` 非法）在建 task 前 `400 bad_echo_script`
+- [x] `echo.final.text` 原样出现在 `tasks/get` 的 `status.message.text`，逐字节相等
+- [x] 到 `at_ms` 时任务变 `input-required`，`blocked`/`permission_request` 可读，槽位释放
+- [x] 恢复后从上次位置继续，不重放已过去的 step；总时长约等于各 step 间隔之和（不含挂起时间）
+- [x] rtifacts[].blob_id == sha256(content)，artifact 元数据与字节数正确
+- [ ] 产物 blob 可被另一节点 GET（跨节点取产物尚未实测）
+- [x] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
+- [x] 非法脚本（`at_ms` 递减、未知字段、`state` 非法）在建 task 前 `400 bad_echo_script`
 
 #### 三台节点
 
@@ -73,7 +83,7 @@
 - [ ] 拔掉 B 的网线：A 与 C 都判 offline，且不会通过 hints 互相把 B 刷回 online
 - [ ] B 恢复后仅凭自己的心跳回到 online（无人手动清缓存）
 - [ ] B 离线 7 天后记录被修剪
-- [ ] 不出现任何 epoch/incarnation 字段
+- [x] 不出现任何 epoch/incarnation 字段
 
 #### 权限与工作区
 
@@ -83,19 +93,19 @@
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
 - [ ] `credential_readback=ask` 时私钥内容回传需 origin 批准
 - [ ] 绝对路径与 `..` 被拒（协议层根本不接受路径）
-- [ ] 节点忙时第二个任务返回 429 `node_busy` + `Retry-After`，UI 显示当前持有者；调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换节点或向用户回报（全场只有一台能执行时，回报用户即正确结局）
+- [x] 节点忙时第二个任务返回 429 `node_busy` + `Retry-After`，调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换节点或向用户回报（UI 显示持有者尚未实现）
 - [ ] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举
 - [ ] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
 
 #### 文件交换
 
-- [ ] 上传 1 MiB 文件返回 201，`blob_id == sha256(bytes)`
-- [ ] 重复上传同内容返回 200，不占新空间
-- [ ] `X-Pod-Body-SHA256` 与实际字节不符 → 400 且不落盘
-- [ ] 素材上传 → 任务引用 → 产物下载 roundtrip 通过
-- [ ] 短期直链 token 过期后不可用；换 blob 或篡改 blob_id 被拒；token 不可由本地密钥伪造
-- [ ] 未被任务引用的 blob 在 TTL 后被 GC，下载返回 410
+- [x] 上传 1 MiB 文件返回 201，`blob_id == sha256(bytes)`
+- [x] 重复上传同内容返回 200，不占新空间
+- [x] `X-Pod-Body-SHA256` 与实际字节不符 → 400 且不落盘
+- [x] 素材上传 → 任务引用 → 产物下载 roundtrip 通过
+- [x] 短期直链过期后不可用；篡改 blob_id/exp 或换 blob 被拒（直链用 `exp+sig`，无状态 HMAC）
+- [ ] 未被任务引用的 blob 在 TTL 后被 GC，下载返回 410（GC 未实现）
 
 #### agent 侧（插件接线）
 
@@ -113,10 +123,10 @@
 
 #### 安全
 
-- [ ] 无密码不能创建 workgroup
+- [x] 无密码不能创建 workgroup
 - [ ] 密码不出现在配置、日志、错误信息中
 - [ ] 改密码后旧签名立即失效
-- [ ] 重放请求（同 nonce）被拒
+- [x] 重放请求（同 nonce）被拒
 - [ ] hint 指向 `169.254.169.254` 被拒
 
 #### 10 节点

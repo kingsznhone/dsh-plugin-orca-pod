@@ -45,11 +45,13 @@
 origin: POST message/send（带 grant）→ { task_id }
 origin: 本地任务日志落库（state=dispatched）
 origin: 轮询 tasks/get，500ms 起，指数退避到 2s
-target: task store (SQLite) 推进 submitted/working/completed
+target: task store（Phase 0 为进程内存；SQLite 见 §5.5）推进 submitted/working/completed
 origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 ```
 
-轮询规则：
+**Phase 0 现状**：协议层已经支持 `tasks/get` 轮询；`scripts/cross.ts task` 用固定 100ms、最多 300 次轮询到终态，只是联调脚本。下面的退避与自动判定属于 dsh-plugin tracker 的设计，尚未实现。target 侧 TTL 已实现：默认 3600s，可由 `metadata.pod.task_ttl_s` 覆盖，到期置 `failed(reason=timeout)`；origin 侧超时后补发 `tasks/cancel` 也尚未实现。
+
+轮询规则（dsh-plugin 目标实现）：
 
 - 初始 500ms，退避到 2s，加 ±20% 抖动；
 - 终态立即停；连续 `404` 说明目标重启丢了 task → 记 `failed(reason=task_lost)`；
@@ -64,7 +66,9 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 - 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
 - agent 只看到薄工具，没有一个会阻塞：`pod_send`（建完 task 立刻返回 `task_id`）、`pod_status(task_id)`（读缓存/任务存储，立即返回）、`pod_cancel(task_id)`、`pod_members()`。**没有 `pod_wait`**——等待不是 agent 的职责。
 
-派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 node_busy`）时也没有可等的东西——把持有者与 `retry_after_s` 回报用户、结束本轮，或先做不依赖它的活；要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)），不由协议层排队。
+**Phase 0 现状**：dsh-plugin 仍是占位包，上述工具与 tracker 均未实现；当前直接入口是 `scripts/cross.ts` 与 HTTP API。
+
+派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)），不由协议层排队。
 
 **为什么不让模型用 bash 长轮询**：`sleep 2 && pod_status` 每跑一次就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消、能挂 SSE，也知道任务该等多久。
 
@@ -139,6 +143,12 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 每个节点的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个节点不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
+**Phase 0 现状**：task store 是 `orca_node` 进程内的内存 `Map`（`packages/orca_node/src/tasks.ts`），不落盘；进程退出或重启后 task 全部丢失，`tasks/get` 返回 `task_not_found`。peer store 与 blob store 同样是内存实现。因此当前实现只适合单次联调，不能把“任务持久化”当成已具备的能力。
+
+**目标设计（SQLite，后续里程碑）**
+
+字段：
+
 ```text
 task_id, context_id, origin_node, target_node,
 state, created_at, updated_at,
@@ -152,7 +162,7 @@ workgroup_id, session_id, artifacts, error, reason
 - 表：`tasks`（状态与元数据）、`task_events`（状态变迁与错误）、`blobs`（blob_id + size + name + refs + expires_at）；
 - 一个进程独占写；不做连接池、不做服务、不共享库；
 - 备份 = 拷贝 db（WAL 下先 checkpoint）；损坏时允许丢未落盘的最近事件，不允许静默重建；
-- 内存 store 只用于协议单测。
+- 内存 store 只用于协议单测（SQLite 落地后；Phase 0 它就是主存储）。
 
 发起节点另有**本地任务日志**（同一张表的 `role=origin` 行或独立表），只记录“我派过什么、最后一次看到什么”，不与目标库对账（[§8.2](08-reliability.md#82-节点失联-任务失败不重发)）。
 
@@ -162,6 +172,8 @@ workgroup_id, session_id, artifacts, error, reason
 - origin 额外拥有交互权：`input-required` 后补发消息、`tasks/cancel`；其他节点只读（不能取消、看不到 live 事件）。
 - 因此**`task_id` 泄露 = 结果泄露**。它只该出现在任务消息、审计和给人看的日志里，不要贴到公开 issue 或截图里。
 - 同组是信任域：密钥共享、节点身份可伪造，所以“谁能读”是约定与审计问题，不是密码学保证（[§7.1](07-security.md#71-workgroup-与密码)）。
+
+**Phase 0 实现**：`tasks/get`、`tasks/cancel` 与 `message/send` 恢复只校验 workgroup 签名，不区分 origin 与其他同组节点；上面“origin 额外拥有交互权、其他节点只读”尚未实现。修复前应把 `task_id` 当作同组内可读写的句柄。
 
 ### 5.6 文件交换（blob 通道）
 
@@ -204,6 +216,8 @@ Authorization: Pod ...
 - **不做 per-blob ACL**：同 workgroup 的任意节点知道 `blob_id` 就能 `GET`。跨节点直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。跨节点交接产物就是传一个 id；id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新 blob。
+
+**Phase 0 实现**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现，存储是进程内存（重启即丢）；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。**未实现**：每 workgroup 5 GiB 配额、7 天 GC 与引用延期、`Content-Disposition` 文件名恢复、断点续传。
 
 **输入**：origin 先把素材 `POST /blobs` 到 target，任务消息里带 `inputs: [{blob_id, name, media_type}]`；target 直接读本地已落盘的 blob（上传即到达），不需要回源。小于 64 KiB 的可以直接内联 `bytes`（A2A file part），省一次往返。
 

@@ -101,7 +101,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
     workgroup_id: config.workgroup_id,
     endpoint: actualEndpoint,
   };
-  const app = createGateway({ node: gatewayNode, key, peers, nonceCache, runtime, tasks });
+  const app = createGateway({ node: gatewayNode, key, peers, nonceCache, runtime, tasks, blobs });
 
   function selfPeer(): PeerView {
     return {

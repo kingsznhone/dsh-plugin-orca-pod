@@ -14,27 +14,30 @@
 
 ### 4.2 路由表
 
-| Method | Path | 用途 | 鉴权 |
-|---|---|---|---|
-| GET | `/.well-known/agent-card.json` | A2A Agent Card（不含敏感信息） | 公开 |
-| POST | `/a2a` | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`、`message/stream` | workgroup 签名 |
-| GET | `/health` | 进程存活探针（给代理/监控用） | 无鉴权，仅返回极小 JSON |
-| POST | `/blobs` | 上传文件（内容寻址，流式） | workgroup 签名 |
-| GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（凭 `blob_id` 即可取）或 `/link` 换来的短期 token |
-| POST | `/cluster/join` | 引导：返回自述 + 全量目录 | workgroup 签名 |
-| POST | `/cluster/heartbeat` | 心跳 + 摘要 + hints（+ 首次的 full self） | workgroup 签名 |
-| GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 |
-| POST | `/cluster/leave` | 主动离开（best-effort，不是安全操作） | workgroup 签名 |
+| Method | Path | 用途 | 鉴权 | 现状 |
+|---|---|---|---|---|
+| GET | `/.well-known/agent-card.json` | A2A Agent Card（不含敏感信息） | 公开 | 已实现（最小字段，见 §4.6） |
+| POST | `/a2a` | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`（当前实现子集，见 §4.7） | workgroup 签名 | 已实现 |
+| GET | `/health` | 进程存活探针（给代理/监控用） | 无鉴权，仅返回极小 JSON | 已实现 |
+| POST | `/blobs` | 上传文件（内容寻址） | workgroup 签名 | 已实现（内存存储；见 §5.6） |
+| GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（凭 `blob_id` 即可取）或 `/link` 直链 | 已实现 |
+| POST | `/blobs/{blob_id}/link` | 换一条短期直链（`?exp=&sig=`） | workgroup 签名 | 已实现 |
+| POST | `/cluster/join` | 引导：返回自述 + 全量目录 | workgroup 签名 | 已实现 |
+| POST | `/cluster/heartbeat` | 心跳 + 摘要 + hints（+ 首次的 full self） | workgroup 签名 | 已实现（仅接收与登记，不做周期发送/看门狗） |
+| GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 | 已实现 |
+| POST | `/cluster/leave` | 主动离开（best-effort，不是安全操作） | workgroup 签名 | 已实现 |
+
+`/blobs` 已实现内存版（内容寻址、去重、256 MiB 上限、直链 TTL 300s）；配额、GC、`Content-Disposition` 见 §5.6 的未实现部分。
 
 约定：
 
 - `/health` 返回 `{"status":"ok","version":"0.1.0"}` 这类极小 JSON。不暴露节点 id、成员数、工作区、忙闲、错误栈。
-- **Agent Card 公开可读，但不含敏感信息**：名字、端点、skills、协议版本。runtime、忙闲、配额、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
+- **Agent Card 公开可读，但不含敏感信息**：目标字段是名字、端点、skills、协议版本；Phase 0 的卡只有名字、端点、协议版本（见 §4.6）。runtime、忙闲、配额、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
 - 不提供 WebSocket：一条连接一种语义，WS 会变成第二套状态机。需要实时性时：
   - 任务进度 → `/a2a` 的 `message/stream`（SSE，同一 endpoint）；
   - 成员变化 → 心跳周期（2s）已足够；UI 需要更实时就等下一次心跳。
 - Agent Card 的 `url` 指向 `/a2a`，不是根路径。
-- 请求体上限（默认 8 MiB，artifact 走独立通道/引用）、读超时、连接数上限都要显式配置，别吃 Node 默认值。
+- 请求体上限（默认 8 MiB，artifact 走独立通道/引用）、读超时、连接数上限都要显式配置，别吃 Node 默认值。Phase 0 为了 blob 上传把全局 `bodyLimit` 放到 256 MiB，JSON 路由也一起放宽；后续应改成 blob 路由单独限额、JSON 回落到 8 MiB。
 
 ### 4.3 反向代理注意事项
 
@@ -82,6 +85,8 @@
 }
 ```
 
+**Phase 0 实现**：当前 `url` 已指向 `<endpoint>/a2a`；网关只返回 `name`、`protocol_version`、`url` 三个字段（实现用 snake_case `protocol_version`，值为 `0.1.0`），其余字段尚未实现。完整 Card 字段与 A2A schema 的对齐是后续里程碑。
+
 要求：
 
 - Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-节点自述记录selfrecord)）。
@@ -90,13 +95,20 @@
 
 ### 4.7 方法与异步语义
 
-- `message/send`：提交消息；返回 `Task`（通常是 `submitted`/`working`）或直接 `Message`。
-- `tasks/get`：按 task id 取状态/artifact。
-- `tasks/cancel`：请求取消。
-- 接续（C 接着在 B 上干）不单独设方法：就是一次带 `continuation_of` 的 `message/send`（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。
-- `message/stream`：SSE 流式接收状态/artifact 事件（可选）。
-- `tasks/resubscribe`：断线后重连到已有流（可选）。
-- push notification：后置，需要 webhook 鉴权、重试、SSRF 防护。
+当前已实现的方法子集（Phase 0）：
+
+- `message/send`（已实现）：提交消息，始终返回 `Task`（`submitted`/`working`）。`message.taskId` 为空时新建 task；非空时只接受处于 `input-required` 的 task，视为对挂起任务的恢复，其他状态返回 `bad_request`。
+- `tasks/get`（已实现）：按 task id 取状态与 artifact；未知 id 返回 `task_not_found`。
+- `tasks/cancel`（已实现）：请求取消；对终态 task 原样返回，不报错；`hang` 任务只能被取消或 TTL 结束。
+
+设计与尚未实现的方法：
+
+- 接续（C 接着在 B 上干）不单独设方法：就是一次带 `continuation_of` 的 `message/send`（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。当前实现未处理 `continuation_of` 元数据。
+- `message/stream`：SSE 流式接收状态/artifact 事件（可选，**未实现**）。
+- `tasks/resubscribe`：断线后重连到已有流（可选，**未实现**）。
+- push notification：后置，需要 webhook 鉴权、重试、SSRF 防护（**未实现**）。
+
+**Phase 0 错误形态**：gateway 统一用 JSON-RPC error `code: -32000`，`message` 为业务错误码（`node_busy`、`bad_echo_script`、`task_not_found`、`bad_request`、`unsupported`），HTTP 状态码依次为 429/400/404/400/400；尚未使用 A2A 规范里的细分错误码。
 
 用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。
 
@@ -126,5 +138,7 @@ submitted ──► working ──► input-required ──► working
 - 远程 agent 卡住时**不允许反向调用**祖先节点（[§5.1](05-tasks.md#51-任务标识与元数据)），只能把问题写进 `blocked` 并结束本轮；这既是防环，也是“异步任务”的正确表达。
 - `completed` / `failed` / `canceled`：终态。
 - 终态不可逆；重试要产生新的 task（带 `retry_of`），不复活旧 task。
+
+**Phase 0 实现**：六种状态与 `input-required`/取消/恢复路径已在 `orca_node` 的 TaskRunner 中实现；`input-required` 载荷位于 `status.message.parts[0]`，data part 形如 `{"blocked":{...}}` 或 `{"permission_request":{...}}`；进入 `input-required` 时释放单槽，恢复时重新竞争。尚未实现 `session/resume` 续接与 `resume=degraded` 标记，`retry_of` 也未接入。任务状态存在进程内存里（[§5.5](05-tasks.md#55-任务存储)），进程退出即丢失。
 
 ---

@@ -34,14 +34,16 @@ interface LocalExecutor {
 
 `permissionMode` 必须来自 origin 会话，由 A2A 请求携带并签名；target 不得上调它，只能按它执行或在越界时 escalate。
 
+**Phase 0 实现**：`packages/executor` 当前的 `LocalExecutor` 是事件流接口——`run(input: { taskId, contextId?, metadata? }, signal: AbortSignal): AsyncGenerator<ExecutorEvent>`，事件为 `suspend | artifact | completed | failed`；上面的 `submit/get/cancel/subscribe/onPermissionRequest` 是目标接口，尚未实现。
+
 ### 6.2 实现
 
-| 实现 | 适用 | 优点 | 缺点 |
-|---|---|---|---|
-| `EchoExecutor` | Phase 0 协议验证 | 无 DSH 依赖、确定性 | 不执行真实任务 |
-| `HeadlessExecutor` | 一次性任务 | 最简单，`dsh headless "..."` | 无流式、无协作取消、无多轮 |
-| `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent |
-| `InProcessExecutor` | 深度集成 | 无子进程协议、性能好 | 与 DSH 内部 API 耦合，升级易碎 |
+| 实现 | 适用 | 优点 | 缺点 | 现状 |
+|---|---|---|---|---|
+| `EchoExecutor` | Phase 0 协议验证 | 无 DSH 依赖、确定性 | 不执行真实任务 | 已实现 |
+| `HeadlessExecutor` | 一次性任务 | 最简单，`dsh headless "..."` | 无流式、无协作取消、无多轮 | 未实现 |
+| `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent | 未实现 |
+| `InProcessExecutor` | 深度集成 | 无子进程协议、性能好 | 与 DSH 内部 API 耦合，升级易碎 | 未实现 |
 
 推荐顺序：Echo → Headless → ACP。不要一开始就耦合 ACP。
 
@@ -64,15 +66,17 @@ Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗
 }
 ```
 
-规则：
+**Phase 0 实现**：`EchoExecutor` 已按本节实现；它从 `params.metadata.echo` 取脚本，在建立 task 之前校验，执行结果通过 `AsyncGenerator<ExecutorEvent>` 交给 TaskRunner；artifact 写入内存 `BlobStore`（当前无落盘）。
 
-- `steps` 最多 8 个，`at_ms` 严格递增，总和 ≤ 60s；`at_ms` 从任务开始计，**挂起等待的时间不计入**（恢复后从上次位置继续），断言不依赖机器速度。
-- `suspend.kind` 只有 `blocked` 与 `permission` 两种，分别生成 [§4.8](04-transport.md#48-任务状态机) 的 `blocked` 和 [§7.12](07-security.md#712-升级回路任务状态不是反向调用) 的 `permission_request`；恢复需要 origin 发后续 message。
-- `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB，**原样返回**，不做模板替换，便于逐字节断言。
-- `artifacts` ≤ 4 个、每个 `content` ≤ 4 KiB：executor 真的写 blob 存储，返回的 `blob_id` 必须等于 `sha256(content)`。
-- 脚本缺省等价于 `{ steps: [], final: { state: "completed", text: "echo" } }`，用于纯连通性探测。
-- 非法脚本（未知字段、`at_ms` 不递增、`state` 非法）在**建 task 之前**就 `400 bad_echo_script`，不要执行到一半才炸。
-- 真 executor 收到 `echo` 字段直接忽略，避免脚本泄漏到生产路径。
+规则（与实现一致）：
+
+- `steps` 最多 8 个；每个 `at_ms` 必须是非负整数、严格递增、且 ≤ 60000（最后一步不会超过 60s）。`at_ms` 从任务开始计，**挂起等待的时间不计入**（恢复后从上次位置继续），断言不依赖机器速度。
+- `suspend.kind` 只有 `blocked` 与 `permission` 两种：`blocked` 需要 `reason`、`question`（可选 `options: string[]`），`permission` 需要 `tool` 与 `requested` 对象；分别生成 [§4.8](04-transport.md#48-任务状态机) 的 `blocked` 和 [§7.12](07-security.md#712-升级回路任务状态不是反向调用) 的 `permission_request`。恢复需要 origin 发一条带 `message.taskId` 的 `message/send`，且 task 必须处于 `input-required`。
+- `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB（按 UTF-8 字节），**原样返回**，不做模板替换，便于逐字节断言。
+- `final.text` 缺省为空串；`echo` 缺省（或 `null`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
+- `artifacts` ≤ 4 个、每个 `content` ≤ 4 KiB（UTF-8）；`name` 必须是非空纯文件名（不得含 `/`、`\`），只作提示。executor 真的写 blob 存储，返回的 `artifactId` = `sha256(content)` 的 hex（即 `blob_id`）；当前 `media_type` 固定为 `text/plain`。**artifact 事件先于终态事件产出**，因此 `completed`/`failed`/`hang` 都可能带 artifact。
+- 非法脚本（未知字段、`at_ms` 不递增/越界、`suspend` 类型或必填字段错误、`final.state` 非法、`text`/`content` 超限、artifact 超过 4 个、文件名含路径分隔符）在**建 task 之前**返回 `400 bad_echo_script`，不会执行到一半才炸；节点忙时先回 `429 node_busy`，脚本校验在忙检查之后、建 task 之前。
+- 真 executor 收到 `echo` 字段直接忽略（当前尚无真 executor），避免脚本泄漏到生产路径。
 
 ### 6.4 ACP 的位置
 
@@ -138,22 +142,25 @@ Pod gateway (local)
 ### 6.9 单槽执行：一个节点同一时间只做一件事
 
 - 网关维护一个槽位：`busy = null | { task_id, origin_node, since }`。
-- 槽位被占时，新的 `message/send` 直接回 `429 node_busy` + `Retry-After`（默认 30s）+ 当前持有者，**不排队、服务端不自动重试**。
+- 槽位被占时，新的 `message/send` 直接回 `429 node_busy`，**不排队、服务端不自动重试**。
 - **决策交给调用方的模型**，网关只报事实：
-  1. 等 `retry_after_s` 再试一次（读类任务通常够用）；
+  1. 重试一次（响应会带 `retry_after_s`，读类任务通常够用）；
   2. 换另一个能跑这个任务的节点；
   3. 直接向用户回报“X 正忙，已跑 N 分钟”——尤其当**整个 mesh 只有这一台能执行该任务**时，这就是正确结局：把决策交还给人。
 
 ```json
+// 429 的 error.data（Phase 0 已实现，另带 HTTP 头 Retry-After: 30）
 { "code": "node_busy",
   "retry_after_s": 30,
   "holder": { "task_id": "t_01JABD", "origin_node": "N7K3QM", "since": "2026-11-14T05:10:00Z" } }
 ```
 
+**Phase 0 实现**：忙时返回 HTTP 429 + `Retry-After: 30`，JSON-RPC `error.code=-32000`、`error.message="node_busy"`，`error.data={code:"node_busy",retry_after_s:30,holder:{...}}`。`busy` 状态由 TaskRunner 内部维护；self record 与心跳里的 `busy` 仍固定为 `null`，UI 暂时看不到持有者（[§2.5](02-model.md#25-节点自述记录selfrecord)）。
+
 - 忙时拒绝发生在**建 task 之前**：不产生 task、不消耗幂等键；模型重试就是一次新的 `message/send`。
-- `busy` 写进 self record（[§2.5](02-model.md#25-节点自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证。
+- `busy` 写进 self record（[§2.5](02-model.md#25-节点自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证（Phase 0 未实现，见上）。
 - **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一节点上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
-- 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。网关崩溃后按 `task_ttl_s` 过期，重启时清空并按下文对账。
+- 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。进程崩溃或重启后 Phase 0 的进程内 task store 会丢失（[§6.10](06-execution.md#610-session-context-workspace-的绑定)）；SQLite 落地后再按 `task_ttl_s` 过期并对账。
 
 ### 6.10 session / context / workspace 的绑定
 
@@ -165,7 +172,7 @@ session_id → workspace（本节点唯一的那份）
 - 同一个 context 的后续任务复用同一 session（同 cwd、同对话历史）。
 - 不同 context 各自新 session，但**共用同一份工作区**，所以文件上下文不断。
 - 网关重启 / session 丢失：**不猜旧 session**，直接开新 session、cwd 不变；第一条 prompt 里带一句“先读 `notes/STATUS.md`”。会话可丢，工作区不丢。
-- 目标节点重启后 task 状态在 SQLite 里，`working` 的按 [§8.3](08-reliability.md#83-目标重启) 处理。
+- 目标节点重启后：Phase 0 的内存 task store 会连同 task 一起丢失，重启后 `tasks/get` 返回 `task_not_found`；SQLite 落地后 task 状态应保留，`working` 的按 [§8.3](08-reliability.md#83-目标重启) 处理。
 
 ### 6.11 任务结果与产物
 

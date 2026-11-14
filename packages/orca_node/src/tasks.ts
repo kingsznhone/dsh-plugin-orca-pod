@@ -4,6 +4,7 @@ import {
   newTaskId,
   TaskError,
   type A2AMessage,
+  type BusyState,
   type SubmitTaskInput,
   type TaskRunner,
   type TaskState,
@@ -14,6 +15,8 @@ import type { BlobStore } from "@orca/storage";
 type Running = {
   view: TaskView;
   metadata: Record<string, unknown> | undefined;
+  origin_node: string;
+  since: string;
   abort: AbortController;
   iterator: AsyncGenerator<ExecutorEvent, void, unknown> | null;
   ttl: ReturnType<typeof setTimeout> | null;
@@ -143,6 +146,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         metadata: input.metadata ?? {},
       },
       metadata: input.metadata,
+      origin_node: input.originNode ?? "unknown",
+      since: nowIso(),
       abort: new AbortController(),
       iterator: null,
       ttl: null,
@@ -189,5 +194,12 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return cloneView(rec.view);
   }
 
-  return { submit, get, resume, cancel };
+  function busy(): BusyState | null {
+    if (activeTaskId === null) return null;
+    const rec = tasks.get(activeTaskId);
+    if (!rec) return null;
+    return { task_id: rec.view.id, origin_node: rec.origin_node, since: rec.since };
+  }
+
+  return { submit, get, resume, cancel, busy };
 }

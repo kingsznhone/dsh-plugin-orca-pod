@@ -45,7 +45,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 - **重放窗口**：60s + nonce 去重；跨节点时钟必须大致同步（NTP）；
 - **代理友好**：签名覆盖 method/path/body，代理改写 body 会验签失败（这是特性）。
 - **大 body 的签名**：带 body 的请求加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘后再自校验，不一致即 `400 body_digest_mismatch`。
-- **下载可换短期直链**：授权方调 `POST /blobs/{id}/link`，服务端生成一个**不可预测的随机 token**（32 字节，存库，绑定 `blob_id + exp`，TTL 5 分钟），返回 `GET /blobs/{id}?token=...`。浏览器/curl/前端直链不用带长期请求头。token 是服务端签发的，不是本地 HMAC——否则任何持有共享密钥的成员都能自造一条无需服务端确认的链接。撤销 = 删库行。
+- **下载可换短期直链**：任意同组节点调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = HMAC(k, "link|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
 
 `/cluster/join` 用同一种签名；区别只是它同时返回目录。`/health` 不签。
 
