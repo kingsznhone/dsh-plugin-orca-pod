@@ -7,10 +7,14 @@
  * only created inside `apply`.
  */
 
+import { fileURLToPath } from "node:url"
+
+import { defaultDataRoot } from "../config.ts"
 import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
 import type { HostContext, HostLogger, StandardSchemaV1 } from "./dsh.ts"
 import { startPod, stopPod } from "./lifecycle.ts"
+import { installSkill } from "./skill.ts"
 import { createPodTools } from "./tools.ts"
 import { createTracker } from "./tracker.ts"
 import { errorMessage } from "./util.ts"
@@ -45,6 +49,20 @@ export function apply(ctx: HostContext, config: Config): void {
   // Background task tracker: polls tasks dispatched by this session and returns
   // their terminal state to the dispatching agent (notify: auto).
   const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
+
+  // Headless and ACP executors run in their own `dsh` subprocesses and cannot
+  // see this host's tools, so the CLI is handed to them as a user skill.
+  // Installation is idempotent: the file is rewritten only when stale.
+  if (config.skill_injection) {
+    const cliPath = fileURLToPath(new URL("../cli.ts", import.meta.url))
+    const dataRoot = config.data_root ?? defaultDataRoot()
+    void installSkill({ cliPath, dataRoot }).then(
+      (installed) => {
+        if (installed.written) logger.info(`orca-pod: installed skill at ${installed.path}`)
+      },
+      (error) => logger.warn(`orca-pod: could not install skill: ${errorMessage(error)}`),
+    )
+  }
 
   // Cordis runs the returned disposer when the plugin fiber unloads (DSH exit,
   // reload, or the bundle being disabled). It awaits the orca node shutdown.

@@ -31,8 +31,8 @@ orca-pod/（仓库根目录）
     orca_node.ts      组合根：一个进程 = 一个 orca node
     harness.ts        进程内多 orca node，测试用
     cli.ts            `orca-node` CLI：serve / send / status / wait / members
-    plugin/           DSH bundle：Config、apply、pod_* 工具、后台 tracker
-  test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/tracker/approval/watchdog）
+    plugin/           DSH bundle：Config、apply、pod_* 工具、后台 tracker、skill.ts（安装期技能注入）
+  test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/tracker/skill/approval/watchdog）
 ```
 
 当前代码状态：
@@ -55,7 +55,7 @@ orca-pod/（仓库根目录）
 | `tasks.ts` | 已实现 | 单槽状态机；TaskStore 可注入（默认内存，CLI/插件用 SQLite），启动时把非终态标 `failed(node_restart)` |
 | `orca_node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）；mesh/A2A/discovery/formation/transport 测试 |
-| `plugin/` | 部分实现 | `apply` 启动 orca node、注册 5 个 `pod_*` 工具（含 `pod_approve`）；后台 tracker 轮询终态并 `inject`/`followup`，权限请求强制唤醒；审批卡片已接线；client bundle、credentials 读取未做 |
+| `plugin/` | 部分实现 | `apply` 启动 orca node、注册 5 个 `pod_*` 工具（含 `pod_approve`）；后台 tracker 轮询终态并 `inject`/`followup`，权限请求强制唤醒；审批卡片已接线（reason 显示来源链）；安装期幂等写 user skill `orca-node/SKILL.md`；client bundle、credentials 读取未做 |
 | `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
 
 “已实现”指当前可运行、有测试或用例覆盖；未列出的目标能力属于后续里程碑。
@@ -105,7 +105,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 8 个、approval 10 个、chain 13 个、headless 7 个、acp 7 个、cli 8 个、escalation 3 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 162 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 10 个、chain 13 个、headless 7 个、acp 7 个、cli 8 个、escalation 3 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 167 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 
@@ -147,16 +147,18 @@ orca-pod/（仓库根目录）
   cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod' }  # Host 行
   src/index.ts       export { Config, apply, inject } from './plugin/index.ts'
                      + 全部库导出（createOrcaNode 等），DSH 与库共用一个入口
-  src/plugin/        apply / config / lifecycle（orca node 生命周期）/ tools / tracker（后台终态跟踪） / 最小 DSH 类型
+  src/plugin/        apply / config / lifecycle（orca node 生命周期）/ tools / tracker（后台终态跟踪） / skill（安装 orca-node 技能） / 最小 DSH 类型
 ```
 
-`apply` 只做四件事，其余都靠注入（实际实现见 `src/plugin/index.ts`）：
+`apply` 只做五件事，其余都靠注入（实际实现见 `src/plugin/index.ts`）：
 
 ```ts
 export function apply(ctx, config) {
   const handle = startPod(config, ctx.logger)          // 非阻塞启动，失败只记日志/状态
-  ctx.effect(() => async () => stopPod(handle, ctx.logger), "orca-pod.orca-node")
-  for (const tool of createPodTools(handle)) ctx.tools.register(tool)
+  const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
+  if (config.skill_injection) void installSkill({ cliPath, dataRoot })  // 幂等写 user skill
+  ctx.effect(() => async () => { tracker.stop(); await stopPod(handle) }, "orca-pod.orca-node")
+  for (const tool of createPodTools(handle, tracker, { approval: ctx.approval })) ctx.tools.register(tool)
   // 密码：原型阶段从 patch config 读；生产应改为 ctx.credentials.readRecord('orca-pod')
 }
 ```

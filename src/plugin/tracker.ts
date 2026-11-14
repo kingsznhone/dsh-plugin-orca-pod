@@ -73,9 +73,21 @@ const DEFAULT_MAX_CONSECUTIVE_WAKES = 3
 const SUMMARY_MAX_CHARS = 120
 
 /** One suspended permission request reduced to the line shown to the agent. */
+/**
+ * Human-readable suffix naming the orca nodes a permission request travelled
+ * through. Chain-relayed requests carry `upstream` (the orca node that really
+ * needs the permission) and `via` (ancestors); single-hop requests carry
+ * neither and render as an empty string.
+ */
+export function permissionOriginNote(request: PermissionRequest): string {
+  const origin = request.upstream?.filter((id) => id !== request.requested_by) ?? []
+  const chain = [...(request.via ?? []), ...origin]
+  return chain.length === 0 ? "" : ` via ${chain.join(" → ")}`
+}
+
 export function permissionNoticeLine(request: PermissionRequest, peer: string): string {
   const details = JSON.stringify(request.requested)
-  return `task ${request.task_id} on ${peer} needs permission for "${request.tool}" (${details}); call pod_approve with peer, task_id and decision to answer`
+  return `task ${request.task_id} on ${peer} needs permission for "${request.tool}" (${details})${permissionOriginNote(request)}; call pod_approve with peer, task_id and decision to answer`
 }
 
 /** One terminal task reduced to the line shown to the agent. */

@@ -7,16 +7,26 @@
  */
 
 import { isHttpEndpoint, isTerminal, permissionRequestOf } from "../protocol.ts"
+import type { PermissionRequest } from "../protocol.ts"
 import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 
 import type { ApprovalService, ContentBlock, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts"
 import type { PodHandle } from "./lifecycle.ts"
-import type { Tracker } from "./tracker.ts"
+import { permissionOriginNote, type Tracker } from "./tracker.ts"
 import { describeError } from "./util.ts"
 
 const ASYNC_NOTE =
   "The task is executed asynchronously on the remote orca node, so this call returns as soon as the remote accepts it; poll pod_status with the returned task_id to observe completion."
+
+/**
+ * Human-facing text of the approval card `pod_approve` raises. Chain-relayed
+ * requests name the orca nodes they travelled through; single-hop requests
+ * read as a plain "wants to run X".
+ */
+export function approvalReason(taskId: string, peer: string, request: PermissionRequest): string {
+  return `Remote task ${taskId} on ${peer} wants to run "${request.tool}"${permissionOriginNote(request)}: ${JSON.stringify(request.requested)}`
+}
 
 /**
  * Output values differ per tool (send/status/cancel return task views, members
@@ -257,7 +267,7 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
         const outcome = await approval.request({
           agent: exec.agent,
           toolName: "pod_approve",
-          reason: `Remote task ${taskId} on ${peer} wants to run "${request.tool}": ${JSON.stringify(request.requested)}`,
+          reason: approvalReason(taskId, peer, request),
         })
         if (outcome !== "allowed-once") {
           const task = await orcaNode.denyTask(peer, view, `approval ${outcome}`)

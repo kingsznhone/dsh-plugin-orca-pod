@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest"
 
+import { permissionRequestOf } from "../src/protocol.ts"
 import type { TaskState, TaskView } from "../src/protocol.ts"
 import type { AgentNotice, ToolAgent } from "../src/plugin/dsh.ts"
-import { createTracker, taskNoticeLine } from "../src/plugin/tracker.ts"
+import { createTracker, permissionOriginNote, taskNoticeLine } from "../src/plugin/tracker.ts"
+import { approvalReason } from "../src/plugin/tools.ts"
 
 class FakeAgent implements ToolAgent {
   readonly id = "agent-1"
@@ -196,6 +198,29 @@ describe("createTracker", () => {
     tracker.stop()
   })
 
+  it("names the orca nodes a permission request travelled through", () => {
+    const request = permissionRequestOf(permissionView("01TASK", "req-1"))
+    if (request === null) throw new Error("permission request missing")
+    expect(permissionOriginNote(request)).toBe(" via ORIGIN")
+    expect(permissionOriginNote({ ...request, via: [], upstream: ["LEAF"] })).toBe(" via LEAF")
+    expect(permissionOriginNote({ ...request, via: [] })).toBe("")
+  })
+
+  it("shows the escalation chain in the approval card reason", () => {
+    const reason = approvalReason("01TASK", "http://peer:11811", {
+      request_id: "req-1",
+      task_id: "01TASK",
+      tool: "write_file",
+      requested: { path: "note.txt" },
+      requested_by: "TARGET1",
+      via: ["ORIGIN"],
+      upstream: ["LEAF"],
+      expires_at: "2026-01-01T00:00:00.000Z",
+    })
+    expect(reason).toContain('wants to run "write_file"')
+    expect(reason).toContain("via ORIGIN → LEAF")
+    expect(reason).toContain('"path":"note.txt"')
+  })
   it("drops pending work on stop()", async () => {
     const agent = new FakeAgent()
     const views = new Map([["01TASK", taskView("01TASK", "completed")]])

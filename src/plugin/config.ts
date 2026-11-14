@@ -34,6 +34,11 @@ export interface Config {
   endpoint?: string
   /** Directory for the persisted orca node config; defaults to `defaultDataRoot()`. */
   data_root?: string
+  /**
+   * Install the `orca-node` skill under `$DSH_HOME/skills` so headless/ACP
+   * sessions on this machine can drive the CLI; defaults to true.
+   */
+  skill_injection: boolean
   /** Initial peers to `join` on startup; failures are logged, not fatal. */
   peers: string[]
 }
@@ -146,9 +151,19 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
+  let skill_injection = true
+  const skillInjectionRaw = value["skill_injection"]
+  if (skillInjectionRaw !== undefined) {
+    if (typeof skillInjectionRaw !== "boolean") {
+      issues.push({ path: ["skill_injection"], message: "must be a boolean when present" })
+    } else {
+      skill_injection = skillInjectionRaw
+    }
+  }
+
   if (issues.length > 0) throw new ConfigValidationError(issues)
 
-  const config: Config = { workgroup_id, workgroup_password, port, peers }
+  const config: Config = { workgroup_id, workgroup_password, port, skill_injection, peers }
   if (display_name !== undefined) config.display_name = display_name
   if (endpoint !== undefined) config.endpoint = endpoint
   if (data_root !== undefined) config.data_root = data_root

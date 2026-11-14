@@ -65,8 +65,9 @@ the config afterwards.
 | `endpoint`           | no       | `http://<host>:<port>`          | Public endpoint advertised to peers                                     |
 | `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (orca node identity)             |
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
+| `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (headless/ACP profiles) find the CLI; set `false` to opt out |
 
-orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。
+orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
 
 执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。
 

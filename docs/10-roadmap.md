@@ -14,7 +14,7 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 162 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 8、approval 10、chain 13、headless 7、acp 7、cli 8、escalation 3、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 167 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 10、skill 3、approval 10、chain 13、headless 7、acp 7、cli 8、escalation 3、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（5 个非阻塞工具 + 后台 tracker/inject/followup）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`；权限、工作区与 session 已在 Phase 2/3 落地。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
@@ -47,7 +47,7 @@
 **Phase 2 进展**
 
 - 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用），并在 Windows 本机用真实 `dsh` + 模型凭据跑通（`scripts/e2e-headless.ts`：两任务 `completed`，第二个复用 session）；`AcpExecutor`（[§6.15](06-execution.md#615-acpexecutorphase-23-长任务执行器)，`dsh --profile acp` stdio、`session/update`→文本、`session/request_permission`→`input-required`、grant 回 allow-once、`session/cancel` 取消、session 复用与重启 `session/resume`）；`orca-node` CLI（`send`/`status`/`wait`/`members`，签名打本机或对端 `/a2a`，`--json`、`--text -` 读 stdin、退出码 0/1/2/3）与 AcpExecutor 的 prompt preamble（把 CLI 绝对路径、task id 与用法注入 ACP 会话，agent 用自带 shell 调用），ACP 会话因此不需要 MCP schema 常驻。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh）、`acp.test.ts` 7 条（假 ACP server；含一条 ACP 叶子经 relay 链升级的端到端），`cli.test.ts` 8 条（真实 HTTP + 子进程，含 `escalate` 错误路径），`escalation.test.ts` 3 条（父任务挂起、批准派生 child grant、拒绝向下传播），全套 162 通过。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh）、`acp.test.ts` 7 条（假 ACP server；含一条 ACP 叶子经 relay 链升级的端到端），`cli.test.ts` 8 条（真实 HTTP + 子进程，含 `escalate` 错误路径），`escalation.test.ts` 3 条（父任务挂起、批准派生 child grant、拒绝向下传播）、`skill.test.ts` 3 条（技能内容/幂等安装/DSH_HOME 解析），全套 167 通过。
 - 未实现：`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
@@ -60,7 +60,7 @@
 - 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - 验收：越界写被拒；权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
 
-**Phase 3 进展**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 8 条，[§5.2](05-tasks.md#52-任务回报)）。审批回路第一版已实现：grant 用 workgroup key 做 HMAC 签发/校验（§7.11）、`permission_request` 写进 task 状态、只有 origin 能 resume（其他成员 403）、插件 `pod_approve` 在 open turn 内调 DSH approval 卡片、tracker 对权限请求强制唤醒；`test/approval.test.ts` 10 条覆盖批准/拒绝/篡改/过期/非 origin/无 grant 六种情形。链式第一版已实现：`chain.ts` 提供 `childPodMetadata`/`validatePodMetadata`/`deriveChildGrant`，`submit` 校验 hop（超限 `400 hop_limit`）与祖先链（`403 ancestor_call_forbidden`），`approveTask({parentGrant})` 校验父 grant 后派生收窄的 child grant（失败 `escalation_required`/`grant_expired`）；`test/chain.test.ts` 11 条；同文件另有 2 条 Echo relay 原型（父任务以 `relay` 挂起 → origin 批准 → 派生 child grant 下发 → 子任务继续；拒绝向下传播），全套 162 通过。显式 escalate 已实现：中间 orca node 的 task 可在执行中自己挂起（CLI `orca-node escalate --peer <child> --task <child task> --local-task <this task>` → 本机 `tasks/escalate` → runner 置 `input-required` 并带上游请求），origin 批准后派生 child grant 下发、拒绝向下传播，执行器不被打断（`test/escalation.test.ts` 3 条；`test/cli.test.ts` 8 条含 CLI 错误路径）。AcpExecutor 已把权限挂起接进真实执行器（`session/request_permission` → `input-required` → grant 回 allow-once，`test/acp.test.ts` 7 条），并透传 `mcp_servers` 给 ACP 会话；ACP 叶子已能被链式 relay 覆盖（子任务在 C 上由 ACP 挂起 permission → B 以 `relay` 挂起父任务 → A 批准 → B 派生 child grant 下发 → C 的 ACP 会话回 allow-once 并完成）。ACP 会话的工具入口改走 CLI（preamble 注入 `orca-node` 路径与用法，agent 用自带 shell 调用），MCP bridge 降级为可选；仍待接线：父任务自动感知子任务的权限请求（现在必须由 agent 显式调 `escalate`）、卡片展示 `upstream` 来源链。`permission_mode`/`limits` 收窄、预授权策略、`credential_readback`、配额与 Windows 路径矩阵仍未开始。
+**Phase 3 进展**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 8 条，[§5.2](05-tasks.md#52-任务回报)）。审批回路第一版已实现：grant 用 workgroup key 做 HMAC 签发/校验（§7.11）、`permission_request` 写进 task 状态、只有 origin 能 resume（其他成员 403）、插件 `pod_approve` 在 open turn 内调 DSH approval 卡片、tracker 对权限请求强制唤醒；`test/approval.test.ts` 10 条覆盖批准/拒绝/篡改/过期/非 origin/无 grant 六种情形。链式第一版已实现：`chain.ts` 提供 `childPodMetadata`/`validatePodMetadata`/`deriveChildGrant`，`submit` 校验 hop（超限 `400 hop_limit`）与祖先链（`403 ancestor_call_forbidden`），`approveTask({parentGrant})` 校验父 grant 后派生收窄的 child grant（失败 `escalation_required`/`grant_expired`）；`test/chain.test.ts` 11 条；同文件另有 2 条 Echo relay 原型（父任务以 `relay` 挂起 → origin 批准 → 派生 child grant 下发 → 子任务继续；拒绝向下传播），全套 162 通过。显式 escalate 已实现：中间 orca node 的 task 可在执行中自己挂起（CLI `orca-node escalate --peer <child> --task <child task> --local-task <this task>` → 本机 `tasks/escalate` → runner 置 `input-required` 并带上游请求），origin 批准后派生 child grant 下发、拒绝向下传播，执行器不被打断（`test/escalation.test.ts` 3 条；`test/cli.test.ts` 8 条含 CLI 错误路径）。AcpExecutor 已把权限挂起接进真实执行器（`session/request_permission` → `input-required` → grant 回 allow-once，`test/acp.test.ts` 7 条），并透传 `mcp_servers` 给 ACP 会话；ACP 叶子已能被链式 relay 覆盖（子任务在 C 上由 ACP 挂起 permission → B 以 `relay` 挂起父任务 → A 批准 → B 派生 child grant 下发 → C 的 ACP 会话回 allow-once 并完成）。ACP 会话的工具入口改走 CLI（preamble 注入 `orca-node` 路径与用法，agent 用自带 shell 调用），MCP bridge 降级为可选；安装期技能注入已实现：`apply` 把 CLI 用法写成 user skill `$DSH_HOME/skills/orca-node/SKILL.md`（幂等，`skill_injection` 可关），headless/ACP 子进程会话因此能发现 `orca-node`；审批卡片与 tracker 通知显示来源链（`permissionOriginNote`/`approvalReason`，形如 ` via A → B`）。仍待接线：父任务自动感知子任务的权限请求（现在必须由 agent 显式调 `escalate`）。`permission_mode`/`limits` 收窄、预授权策略、`credential_readback`、配额与 Windows 路径矩阵仍未开始。
 
 ### 10.5 Phase 4：安全与规模化
 
@@ -122,6 +122,7 @@
 - [ ] origin 只读会话 → target 写文件被 escalate/deny
 - [ ] origin workspace-write → target 只能在 group workspace 内写
 - [x] 升级请求只在 origin 弹审批卡片，target 无本地弹窗（`pod_approve` 在 origin 的 open turn 内调 `approval.request`；target 侧无审批 UI）
+- [x] 审批卡片 reason 与 tracker 通知显示来源链（`permissionOriginNote`/`approvalReason`，形如 `wants to run "write_file" via A → B`）
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
 - [ ] `credential_readback=ask` 时私钥内容回传需 origin 批准
 - [ ] 绝对路径与 `..` 被拒（协议层根本不接受路径）
@@ -148,6 +149,7 @@
 - [ ] target 忙时 `pod_send` 拿到 `429 orca_node_busy` + 持有者，agent 把“B 忙、约 N 秒”回报用户并结束本轮（或先做别的），不自动重试
 - [x] 普通完成按 `pod.notify` 投递：running → `agent.inject()`（不打断），idle → `agent.followup()`（开新一轮）
 - [x] `permission_request` 走 `agent.followup()`：tracker 强制唤醒（不受预算限制），模型调用 `pod_approve` 后弹出审批卡片
+- [x] 安装期技能注入：`apply` 幂等写 `$DSH_HOME/skills/orca-node/SKILL.md`（`skill_injection: false` 可关），子进程会话能发现 `orca-node` 技能
 - [ ] 全程没有 `sleep`/长轮询的 bash 命令；agent 工具列表里没有 `orca-node wait`
 - [ ] `notify: auto`：派发后 `turn/end`、任务才完成 → 只唤醒一次，新一轮读到结果并继续
 - [x] 同一轮内完成的任务不触发唤醒（agent 仍在 running，只 `inject`）
