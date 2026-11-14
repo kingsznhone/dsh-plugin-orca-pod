@@ -49,7 +49,31 @@ export interface ToolDefinition {
   description: string
   parameters: RawJsonSchema
   output: ToolOutputDefinition
-  execute(args: unknown, exec?: unknown): Promise<unknown>
+  execute(args: unknown, exec?: ToolExecution): Promise<unknown>
+}
+
+/** User-role notice the bundle hands back to the dispatching agent. */
+export interface AgentNotice {
+  id: string
+  role: "user"
+  content: [{ type: "text"; text: string }]
+  source: { kind: "orca-pod"; form: "notice"; summary: string }
+}
+
+/**
+ * The DSH Agent subset needed by `pod_send`: identify the caller, observe
+ * whether its turn is in flight, and return a notice to it later.
+ */
+export interface ToolAgent {
+  readonly id: string
+  readonly status: "idle" | "running"
+  inject(message: AgentNotice): void
+  followup(message: AgentNotice): void
+}
+
+/** Execution context passed to `ToolDefinition.execute`. */
+export interface ToolExecution {
+  agent?: ToolAgent
 }
 
 /** Tool registry service exposed to plugins as `ctx.tools`. */

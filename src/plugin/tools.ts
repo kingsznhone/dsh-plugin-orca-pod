@@ -10,8 +10,9 @@ import { isHttpEndpoint, isTerminal } from "../protocol.ts"
 import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 
-import type { ContentBlock, RawJsonSchema, ToolDefinition } from "./dsh.ts"
+import type { ContentBlock, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts"
 import type { PodHandle } from "./lifecycle.ts"
+import type { Tracker } from "./tracker.ts"
 import { describeError } from "./util.ts"
 
 const ASYNC_NOTE =
@@ -88,7 +89,7 @@ function peerSummary(peer: PeerView): Record<string, unknown> {
 }
 
 /** Build the four `pod_*` tool definitions bound to one running pod handle. */
-export function createPodTools(handle: PodHandle): ToolDefinition[] {
+export function createPodTools(handle: PodHandle, tracker: Tracker): ToolDefinition[] {
   const send: ToolDefinition = {
     name: "pod_send",
     description:
@@ -115,7 +116,7 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
       additionalProperties: false,
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
-    async execute(args) {
+    async execute(args, exec: ToolExecution | undefined) {
       const record = asRecord(args)
       const peer = normalizePeer(record["peer"])
       const text = requiredString(record, "text")
@@ -125,6 +126,9 @@ export function createPodTools(handle: PodHandle): ToolDefinition[] {
       const input: SubmitTaskInput = echo === undefined ? { message } : { message, metadata: { echo } }
       try {
         const view = await orcaNode.sendTask(peer, input)
+        // Track the task so the dispatching agent is told when it finishes, even
+        // after its turn ends (notify: auto).
+        if (exec?.agent !== undefined) tracker.track(exec.agent, peer, view.id)
         return { task_id: view.id, state: view.status.state, peer }
       } catch (error) {
         throw describeError("pod_send", error)

@@ -27,8 +27,8 @@ orca-pod/（仓库根目录）
     orca_node.ts      组合根：一个进程 = 一个 orca node
     harness.ts        进程内多 orca node，测试用
     cli.ts            `orca-node serve --config <path>`
-    plugin/           DSH bundle：Config、apply、pod_* 工具
-  test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/watchdog）
+    plugin/           DSH bundle：Config、apply、pod_* 工具、后台 tracker
+  test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/tracker/watchdog）
 ```
 
 当前代码状态：
@@ -47,7 +47,7 @@ orca-pod/（仓库根目录）
 | `tasks.ts` | 已实现 | 单槽状态机；TaskStore 可注入（默认内存，CLI/插件用 SQLite），启动时把非终态标 `failed(node_restart)` |
 | `orca_node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）；mesh/A2A/discovery/formation/transport 测试 |
-| `plugin/` | 部分实现 | `apply` 启动 orca node、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
+| `plugin/` | 部分实现 | `apply` 启动 orca node、注册 4 个 `pod_*` 工具；后台 tracker 轮询终态并 `inject`/`followup`；client bundle、审批卡片、credentials 读取未做 |
 | `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
 
 “已实现”指当前可运行、有测试或用例覆盖；未列出的目标能力属于后续里程碑。
@@ -89,7 +89,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 106 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 6 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 112 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 
@@ -131,7 +131,7 @@ orca-pod/（仓库根目录）
   cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod' }  # Host 行
   src/index.ts       export { Config, apply, inject } from './plugin/index.ts'
                      + 全部库导出（createOrcaNode 等），DSH 与库共用一个入口
-  src/plugin/        apply / config / lifecycle（orca node 生命周期）/ tools / 最小 DSH 类型
+  src/plugin/        apply / config / lifecycle（orca node 生命周期）/ tools / tracker（后台终态跟踪） / 最小 DSH 类型
 ```
 
 `apply` 只做四件事，其余都靠注入（实际实现见 `src/plugin/index.ts`）：
@@ -155,7 +155,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createOrcaNode()`。**
 
-**Phase 0 现状**：库根 `createOrcaNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动 orca node、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两个 orca node smoke（join、send、status、cancel、重启后 orca_node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
+**Phase 0 现状**：库根 `createOrcaNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动 orca node、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具。`pod_send` 成功后在插件侧登记任务，`createTracker` 每 1s 拉一次 `tasks/get`，终态在 2s 窗口合并成一条 notice；`agent.status === "running"` 时 `inject()`，idle 时 `followup()` 唤醒，连续唤醒预算 3（[§5.2](05-tasks.md#52-任务回报)）。已用 DSH 自带 Node 运行时做过两个 orca node smoke（join、send、status、cancel、重启后 orca_node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、按 `turn/end` 判定 `wake_pending` 与“用户发过新消息就重置预算”（当前只看 agent 当前状态）。
 
 ### 9.5 工程约定
 
@@ -210,6 +210,6 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 个 orca node 压测复用 harness。
 
-**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin 已实现；executor 只有 EchoExecutor（Headless/ACP 未开始）；ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；真实执行器与跨进程 harness 未开始。
+**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）已实现；executor 只有 EchoExecutor（Headless/ACP 未开始）；ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；真实执行器与跨进程 harness 未开始。
 
 ---

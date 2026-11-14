@@ -66,7 +66,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 - 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
 - agent 只看到薄工具，没有一个会阻塞：`pod_send`（建完 task 立刻返回 `task_id`）、`pod_status(task_id)`（读缓存/任务存储，立即返回）、`pod_cancel(task_id)`、`pod_members()`。**没有 `pod_wait`**——等待不是 agent 的职责。
 
-**Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包)），但**后台 tracker、`inject`/`followup` 唤醒、`pod_wait`（已明确不做）都未实现**；当前完成通知要靠 agent 自己 `pod_status` 轮询，`scripts/cross.ts` 是联调入口。
+**Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`pod_send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。`pod_wait` 明确不做；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
 
 派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
 
@@ -76,11 +76,11 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 | 事件 | 手段 | 效果 |
 |---|---|---|
-| 任务完成 / 失败（普通） | `agent.inject()` 写一条紧凑 notice（`pod task <id> completed: <一句话>`） | 落 `agent/inbox/spliced`，下一次 admitted step 自动进上下文；**不唤醒** agent，等下一次交互看到 |
+| 任务完成 / 失败（普通） | `notify: auto` 下由 tracker 投递：running → `agent.inject()`；idle → `agent.followup()` | 2s 窗口内多个终态合并成一条 notice；`inject` 落 `agent/inbox/spliced` 等下一步，`followup` 叫醒新一轮 |
 | `input-required` 的 `permission_request`、祖先禁调的 `blocked`、需要人立刻决定 | `agent.followup()` | 唤醒 agent 开新一轮，走审批卡片/回报流程（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
 | 任何时刻用户主动问 | `pod_status` | 从任务存储/缓存读，与会话历史无关 |
 
-只有“必须现在处理”的事件才 `followup()`——唤醒是有代价的（新一轮模型调用、可能打断用户）。普通完成一律 `inject()`，让它在下次交互时自然出现。
+普通完成是否唤醒由 `pod.notify` 决定（默认 `auto`，见下）；只有 `input-required` 里的 `permission_request`、祖先禁调的 `blocked` 这类“必须现在处理”的事件无条件走 `followup()`。唤醒是有代价的（新一轮模型调用、可能打断用户），所以 `auto` 用预算和 idle 判定兜住。
 
 `followup()` 的语义与边界：
 
@@ -120,6 +120,8 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 - **不反向**：唤醒是 origin 自己对自己做的，不涉及任何 target→origin 的连接；B 那边只是任务变终态。
 
 例子：A 的 `pod_send` 带 `notify: "auto"`，随后 `turn/end`；B 在 12 分钟后 `completed`；插件看到 `wake_pending` + idle + 用户没回来 → `inject()` notice + `followup()`；A 开新一轮，读到 `status.message`，发现编译报错，继续改代码。若编译通过，A 一句话总结并停。
+
+**Phase 0 实现边界**：tracker 只看 `agent.status`（running → `inject`，idle → `followup`），不判定 `wake_pending`、不监听用户新消息重置预算、也不区分 `notify: inbox | wake` 的不同投递方式；会话已归档时 notice 丢弃（任务仍在存储里，可 `pod_status` 重读）。
 
 ### 5.3 取消
 

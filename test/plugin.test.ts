@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { ConfigValidationError, validateConfigInput } from "../src/plugin/config.ts"
 import type { PodHandle } from "../src/plugin/lifecycle.ts"
 import { createPodTools } from "../src/plugin/tools.ts"
+import { createTracker } from "../src/plugin/tracker.ts"
 import * as plugin from "../src/plugin/index.ts"
 
 function tool(result: ReturnType<typeof createPodTools>, name: string) {
@@ -73,7 +74,8 @@ describe("pod tools", () => {
     ready: Promise.resolve(),
     runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
   }
-  const tools = createPodTools(handle)
+  const tracker = createTracker(() => null, { intervalMs: 60_000 })
+  const tools = createPodTools(handle, tracker)
 
   it("registers the four pod tools", () => {
     expect(tools.map((candidate) => candidate.name)).toEqual([

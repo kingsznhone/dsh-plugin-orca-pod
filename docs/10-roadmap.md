@@ -14,9 +14,9 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 106 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 112 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 6、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
-- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
+- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具 + 后台 tracker/inject/followup）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三个 orca node full mesh 与惰性收敛
@@ -47,7 +47,7 @@
 **Phase 2 进展**
 
 - 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`），全套 106 通过。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`），全套 112 通过。
 - 未实现：`HeadlessExecutor`/`AcpExecutor`、`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
@@ -58,6 +58,8 @@
 - `credential_readback` 三档 + 审计。
 - 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - 验收：越界写被拒；权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
+
+**Phase 3 进展（提前落地）**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 6 条，[§5.2](05-tasks.md#52-任务回报)）；grant、审批卡片与 `input-required` 升级回路仍未开始。
 
 ### 10.5 Phase 4：安全与规模化
 
@@ -123,16 +125,16 @@
 #### agent 侧（插件接线）
 
 - [x] `pod_send` 立即返回 `task_id`，工具调用不挂到任务结束（插件 smoke 验证）
-- [ ] 插件后台 tracker 按 500ms→2s 拉状态；target 开了 `message/stream` 时改持 SSE，两种模式行为一致
+- [x] 插件后台 tracker 定时拉 `tasks/get`（当前固定 1s；`message/stream` 的 SSE 模式未接，两种模式一致性待两项都有时再验）
 - [x] agent 工具列表里没有任何阻塞等待工具（没有 `pod_wait`），`pod_send`/`pod_status` 都在毫秒级返回
 - [ ] target 忙时 `pod_send` 拿到 `429 orca_node_busy` + 持有者，agent 把“B 忙、约 N 秒”回报用户并结束本轮（或先做别的），不自动重试
-- [ ] 普通完成走 `agent.inject()`：日志出现 `agent/inbox/spliced`，下一轮上下文能看到，**没有**凭空开新一轮
+- [x] 普通完成按 `pod.notify` 投递：running → `agent.inject()`（不打断），idle → `agent.followup()`（开新一轮）
 - [ ] `permission_request` 走 `agent.followup()`：新一轮开始并弹出审批卡片
 - [ ] 全程没有 `sleep`/长轮询的 bash 命令；agent 工具列表里没有 `orca-node wait`
 - [ ] `notify: auto`：派发后 `turn/end`、任务才完成 → 只唤醒一次，新一轮读到结果并继续
-- [ ] 同一轮内完成的任务不触发唤醒（`pod_status` 已可读，只 inject）
+- [x] 同一轮内完成的任务不触发唤醒（agent 仍在 running，只 `inject`）
 - [ ] 派发后用户发了新消息 → 完成时只 inject，不打断当前轮
-- [ ] 2s 内三个任务完成只产生一次 `followup()`；连续第 4 次后台唤醒被拦下并留 inbox
+- [x] 2s 内三个任务完成只产生一次 `followup()`；连续第 4 次后台唤醒被拦下并留 inbox（连续唤醒预算 3）
 
 #### 安全
 
