@@ -183,10 +183,12 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         const request = permissionRequestOf(view)
         if (request !== null) {
           // A suspended permission request is surfaced once; the task stays
-          // tracked until it finishes or the request changes.
+          // tracked until it finishes or the request changes. A parked
+          // `pod_approve` answers it through the UI card instead.
+          const parked = options.isPromptParked?.(entry.peer, entry.taskId) === true
+          if (parked) dropPermissionNotices(entry.peer, entry.taskId)
           if (request.request_id !== entry.seenRequest) {
             entry.seenRequest = request.request_id
-            const parked = options.isPromptParked?.(entry.peer, entry.taskId) === true
             if (!parked) {
               finished.push({ ...entry, kind: "permission", view, request })
               scheduleFlush()
@@ -196,6 +198,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         }
         if (!isTerminal(view.status.state)) continue
         pending.delete(key)
+        dropPermissionNotices(entry.peer, entry.taskId)
         finished.push({ ...entry, kind: "terminal", view })
         scheduleFlush()
       } catch (error) {
@@ -210,6 +213,20 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
     if (pending.size === 0 && pollTimer !== undefined) {
       clearInterval(pollTimer)
       pollTimer = undefined
+    }
+  }
+
+  /**
+   * Drop queued "needs permission" notices for one task. A notice can be queued
+   * before the prompt got parked (poll lands first) and would otherwise be
+   * delivered after the human answered, duplicating the card as chat noise.
+   */
+  function dropPermissionNotices(peer: string, taskId: string): void {
+    for (let index = finished.length - 1; index >= 0; index -= 1) {
+      const item = finished[index]
+      if (item !== undefined && item.kind === "permission" && item.peer === peer && item.taskId === taskId) {
+        finished.splice(index, 1)
+      }
     }
   }
 

@@ -213,6 +213,24 @@ describe("createTracker", () => {
     tracker.stop()
   })
 
+  it("drops a queued permission notice when the task settles before delivery", async () => {
+    const agent = new FakeAgent()
+    agent.status = "running"
+    const views = new Map([["01TASK", permissionView("01TASK", "req-1")]])
+    const tracker = createTracker(() => fakeNode(views), { intervalMs: 5, coalesceMs: 200 })
+    tracker.track(agent, "http://peer:11811", "01TASK")
+
+    // The first poll queues a permission notice; the human answers before the
+    // coalesce window closes, so the queued notice is stale chat noise.
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    views.set("01TASK", taskView("01TASK", "completed", "written"))
+    await waitFor(() => agent.injected.length === 1, 2000)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(agent.followed).toHaveLength(0)
+    expect(agent.injected[0]!.content[0].text).toContain("completed")
+    tracker.stop()
+  })
+
   it("names the orca nodes a permission request travelled through", () => {
     const request = permissionRequestOf(permissionView("01TASK", "req-1"))
     if (request === null) throw new Error("permission request missing")
