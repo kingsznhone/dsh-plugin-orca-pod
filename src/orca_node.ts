@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { deriveChildGrant } from "./chain.ts";
-import { createFileBlobRegistry } from "./blob-files.ts";
+import { createFileBlobRegistry, type FileBlobStore } from "./blob-files.ts";
 import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
@@ -30,7 +30,7 @@ import {
   type TaskRelay,
   type TaskView,
 } from "./protocol.ts";
-import { createSqliteTaskStore } from "./sqlite.ts";
+import { createSqliteFileBlobStore, createSqliteTaskStore } from "./sqlite.ts";
 import {
   createFsBlobStore,
   createMemoryBlobStore,
@@ -81,6 +81,8 @@ export type OrcaNodeStorage = {
   taskStore?: TaskStore;
   blobStore?: BlobStore;
   workspace?: WorkspaceManager;
+  /** Durable file-blob mapping; the CLI writes it, the gateway reads it. */
+  fileBlobStore?: FileBlobStore;
 };
 
 /**
@@ -92,6 +94,7 @@ export function createPersistentStorage(config: OrcaNodeConfig): OrcaNodeStorage
   return {
     taskStore: createSqliteTaskStore(join(config.data_root, "tasks.db")),
     blobStore: createFsBlobStore(join(config.data_root, "blobs"), { ttlMs: DEFAULT_BLOB_TTL_MS }),
+    fileBlobStore: createSqliteFileBlobStore(join(config.data_root, "tasks.db")),
     workspace: createWorkspaceManager({ dataRoot: config.data_root, workgroupId: config.workgroup_id }),
   };
 }
@@ -194,7 +197,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const nonceCache = new NonceCache();
   const runtime = options.runtime ?? collectRuntime();
   const blobs = options.storage?.blobStore ?? createMemoryBlobStore();
-  const fileBlobs = createFileBlobRegistry();
+  const fileBlobs = createFileBlobRegistry(options.storage?.fileBlobStore);
   /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
   const maxTaskTtlS = config.task_timeout_s ?? 3600;
   const workspaceManager = options.storage?.workspace ?? null;
@@ -521,6 +524,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     await app.close();
     executor.close?.();
     options.storage?.taskStore?.close?.();
+    options.storage?.fileBlobStore?.close?.();
   }
 
   return {

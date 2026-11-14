@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
-import { configPath, defaultDataRoot, loadConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { buildAuthHeader } from "./crypto.ts";
+import { createFileBlobRegistry } from "./blob-files.ts";
+import { configPath, defaultDataRoot, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
+import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
 import { createOrcaNode, createPersistentStorage } from "./index.ts";
 import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
 import { permissionRequestOf } from "./protocol.ts";
+import { createSqliteFileBlobStore } from "./sqlite.ts";
 
 const USAGE = `orca-node
 
@@ -174,6 +177,16 @@ async function serve(args: string[]): Promise<void> {
   const config = await loadConfig(explicit);
   const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });
   const { url } = await orcaNode.start();
+  // Record the address other orca nodes should dial: `endpoint` is what peers
+  // store, and `port: 0` only learns its real port at listen time.
+  if (config.endpoint !== url) {
+    const port = Number(new URL(url).port);
+    await saveConfig(explicit, {
+      ...config,
+      endpoint: url,
+      bind: { ...config.bind, port: Number.isInteger(port) && port > 0 ? port : config.bind.port },
+    });
+  }
   process.stdout.write(`orca-node ${orcaNode.orcaNodeId} listening on ${url}\n`);
 
   const shutdown = (): void => {
@@ -211,10 +224,33 @@ async function send(args: string[]): Promise<number> {
   return 0;
 }
 
+/** Index of the first bare token, skipping `--flag value` pairs (global flags may precede it). */
+function firstPositionalIndex(args: string[]): number {
+  const valueFlags = new Set(["--data-root", "--config", "--path", "--ttl"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string;
+    if (valueFlags.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (!arg.startsWith("--")) return index;
+  }
+  return -1;
+}
+
+/**
+ * Publish a produced file as a blob URL (§5.6). Registration writes the mapping
+ * straight into the node's SQLite database — no HTTP route, because a shared
+ * workgroup key cannot prove which node signed a request, so "only local callers
+ * may publish paths" cannot be enforced over the network. The URL is signed
+ * locally and works while the node runs.
+ */
 async function publish(args: string[]): Promise<number> {
-  const [first, ...rest] = args;
-  const positional = first !== undefined && !first.startsWith("--") ? first : undefined;
-  const flags = parseFlags(positional === undefined ? args : rest);
+  const positionalIndex = firstPositionalIndex(args);
+  const positional = positionalIndex >= 0 ? (args[positionalIndex] as string) : undefined;
+  const rest =
+    positionalIndex >= 0 ? [...args.slice(0, positionalIndex), ...args.slice(positionalIndex + 1)] : args;
+  const flags = parseFlags(rest);
   const config = await loadNodeConfig(flags);
   const path = positional ?? requireFlag(flags, "path");
   const rawTtl = flag(flags, "ttl");
@@ -222,13 +258,29 @@ async function publish(args: string[]): Promise<number> {
   if (ttlS !== undefined && (!Number.isFinite(ttlS) || ttlS <= 0)) {
     throw new Error("--ttl must be a positive number of seconds");
   }
-  const result = await signedJson<{ blob_id: string; size: number; expires_at: string | null; url: string }>(
-    config,
-    localEndpoint(config),
-    "POST",
-    "/blobs/register",
-    { path, ...(ttlS === undefined ? {} : { ttl_s: ttlS }) },
-  );
+  const store = createSqliteFileBlobStore(join(config.data_root, "tasks.db"));
+  let blob;
+  try {
+    blob = await createFileBlobRegistry(store).register(path, ttlS);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot publish ${path}: ${message}`);
+  } finally {
+    store.close();
+  }
+  const expiresAtMs = Date.now() + 24 * 3600 * 1000;
+  const exp = String(Math.floor(expiresAtMs / 1000));
+  const sig = blobLinkSignature(workgroupKey(config), blob.blob_id, exp);
+  const base = config.endpoint ?? (config.bind.port > 0 ? localEndpoint(config) : null);
+  if (base === null) {
+    throw new Error("publish needs a known endpoint: set `endpoint` in the config or run `orca-node serve` once");
+  }
+  const result = {
+    blob_id: blob.blob_id,
+    size: blob.size,
+    expires_at: blob.expires_at,
+    url: `${base.replace(/\/+$/, "")}/blobs/${blob.blob_id}?exp=${exp}&sig=${sig}`,
+  };
   process.stdout.write(`${wantsJson(flags) ? JSON.stringify(result) : result.url}\n`);
   return 0;
 }

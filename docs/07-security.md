@@ -17,6 +17,7 @@ k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32
 ```
 
 - 换密码：**改过的 orca node 用新密码重启，重新 join 组成新 group**；没改的 orca node 留在旧 mesh 里，签名对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
+- **同组 = 同一密码学主体**：任意成员都能为任意 `orca_node_id` 生成合法签名，签名里的 id 不证明“谁在调用”。因此凡是“只有本机可以做”的能力，一律不能用签名身份判定，只能用传输层事实判定：监听在回环、没有转发头、或干脆不经过网络（本机 CLI 直写本机状态）。已落实的一例是文件 blob 登记：[§5.6](05-tasks.md#56-文件交换blob-通道) 里 `publish` 由 CLI 直写本机 SQLite，不提供 HTTP 路由——曾经的设计是 `POST /blobs/register` 加 `auth.orcaNodeId === self` 检查，那等于任何 peer 都能让目标节点读任意本机路径。要真正区分“谁”只有 per-node keypair / mTLS，本设计不做。
 
 ### 7.2 请求签名（没有 session token）
 

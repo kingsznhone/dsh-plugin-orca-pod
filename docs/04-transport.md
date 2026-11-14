@@ -22,13 +22,12 @@
 | POST | `/blobs` | 上传文件（内容寻址） | workgroup 签名 | 已实现（内存存储；见 §5.6） |
 | GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（凭 `blob_id` 即可取）或 `/link` 直链 | 已实现 |
 | POST | `/blobs/{blob_id}/link` | 换一条短期直链（`?exp=&sig=`） | workgroup 签名 | 已实现 |
-| POST | `/blobs/register` | 登记本机文件路径，返回带 TTL 的直链（不复制字节） | 仅本 orca node 自己的签名 | 已实现（见 §5.6） |
 | POST | `/cluster/join` | 引导：返回自述 + 全量目录 | workgroup 签名 | 已实现 |
 | POST | `/cluster/heartbeat` | 心跳 + 摘要；摘要不一致时响应回目录（候选端点）；可带首次 self | workgroup 签名 | 已实现（含周期发送与看门狗） |
 | GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 | 已实现 |
 | POST | `/cluster/leave` | 主动离开（best-effort，不是安全操作） | workgroup 签名 | 已实现 |
 
-`/blobs` 默认 fs 内容寻址存储（内存版仅测试用；去重、256 MiB 上限、直链 TTL 300s）；本地文件登记见 `/blobs/register`；配额、GC、`Content-Disposition` 见 §5.6 的未实现部分。
+`/blobs` 默认 fs 内容寻址存储（内存版仅测试用；去重、256 MiB 上限、直链 TTL 300s）；本机文件的登记没有 HTTP 路由，由 `orca-node publish` 直写节点本地库（[§5.6](05-tasks.md#56-文件交换blob-通道)）；配额、GC、`Content-Disposition` 见 §5.6 的未实现部分。
 
 约定：
 

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import Fastify, {
@@ -7,6 +7,7 @@ import Fastify, {
   type FastifyRequest,
 } from "fastify";
 import {
+  blobLinkSignature,
   PodAuthError,
   verifyAuth,
   type NonceCache,
@@ -94,13 +95,9 @@ const MAX_BLOB_BYTES = 256 * 1024 * 1024;
 const BLOB_LINK_TTL_S = 300;
 
 /** Short-lived link token (§5.6): HMAC over blob id + expiry, no server-side state. */
-function linkSignature(key: Buffer, blobId: string, exp: string): string {
-  return createHmac("sha256", key).update(`link|${blobId}|${exp}`).digest("base64url");
-}
-
 function linkSignatureValid(key: Buffer, blobId: string, exp: string, sig: string): boolean {
   const actual = Buffer.from(sig, "base64url");
-  const expected = Buffer.from(linkSignature(key, blobId, exp), "base64url");
+  const expected = Buffer.from(blobLinkSignature(key, blobId, exp), "base64url");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
@@ -284,42 +281,6 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     });
   });
 
-  app.post("/blobs/register", async (request, reply) => {
-    const auth = authenticate(request, deps);
-    // Publishing a path is a local capability: another member must not be able
-    // to turn this orca node into a file reader for arbitrary paths.
-    if (auth.orcaNodeId !== deps.orcaNode.orca_node_id) {
-      return reply.code(403).send({ code: "register_local_only" });
-    }
-    const body = asObject(request.body);
-    if (!body) return badRequest(reply, "body must be a JSON object");
-    const path = body["path"];
-    if (typeof path !== "string" || path.length === 0) {
-      return badRequest(reply, "path must be a non-empty string");
-    }
-    const rawTtl = body["ttl_s"];
-    const ttlS = rawTtl === undefined ? undefined : Number(rawTtl);
-    if (ttlS !== undefined && (!Number.isFinite(ttlS) || ttlS <= 0)) {
-      return badRequest(reply, "ttl_s must be a positive number");
-    }
-    let blob;
-    try {
-      blob = await fileBlobs.register(path, ttlS);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return reply.code(400).send({ code: "file_not_readable", message });
-    }
-    const expiresAtMs = blob.expires_at === null ? Date.now() + 24 * 3600 * 1000 : Date.parse(blob.expires_at);
-    const exp = String(Math.floor(expiresAtMs / 1000));
-    const sig = linkSignature(deps.key, blob.blob_id, exp);
-    return reply.code(201).send({
-      blob_id: blob.blob_id,
-      size: blob.size,
-      expires_at: blob.expires_at,
-      url: `${deps.orcaNode.endpoint ?? ""}/blobs/${blob.blob_id}?exp=${exp}&sig=${sig}`,
-    });
-  });
-
   app.get("/blobs/:blob_id", async (request, reply) => {
     const { blob_id: blobId } = request.params as { blob_id: string };
     const query = request.query as { exp?: unknown; sig?: unknown };
@@ -358,7 +319,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     if (!deps.blobs.has(blobId)) return reply.code(404).send({ code: "blob_not_found" });
     const expiresAtMs = Date.now() + BLOB_LINK_TTL_S * 1000;
     const exp = String(Math.floor(expiresAtMs / 1000));
-    const sig = linkSignature(deps.key, blobId, exp);
+    const sig = blobLinkSignature(deps.key, blobId, exp);
     return {
       url: `${deps.orcaNode.endpoint ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
       expires_at: new Date(expiresAtMs).toISOString(),

@@ -5,6 +5,12 @@
  * uploading a copy: the registry maps the file's sha256 to its local path and a
  * TTL. The child then appends the returned blob URL to its summary, and the
  * origin pulls the bytes only if it wants them.
+ *
+ * Registration is a local capability, not an HTTP route: publishing a path is
+ * equivalent to reading it, and a shared workgroup key cannot prove which node
+ * signed a request (any member could sign as any `orca_node_id`). The CLI
+ * therefore writes the mapping straight into the node's SQLite database; peers
+ * only ever see content-addressed URLs, never a path.
  */
 
 import { createHash } from "node:crypto";
@@ -18,6 +24,14 @@ export type FileBlob = {
   path: string;
   size: number;
   expires_at: string | null;
+};
+
+/** Durable mapping storage; the SQLite implementation lives in `sqlite.ts`. */
+export type FileBlobStore = {
+  save(blob: FileBlob): void;
+  get(blobId: string): FileBlob | undefined;
+  /** Optional: SQLite handles need closing so Windows can delete the data dir. */
+  close?(): void;
 };
 
 export type FileBlobRegistry = {
@@ -43,7 +57,11 @@ async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   return { sha: hash.digest("hex"), size };
 }
 
-export function createFileBlobRegistry(): FileBlobRegistry {
+/**
+ * With a store the mapping survives restarts and is shared with the CLI; without
+ * one (unit tests, in-memory orca nodes) it lives in a `Map` for the process.
+ */
+export function createFileBlobRegistry(store?: FileBlobStore): FileBlobRegistry {
   const entries = new Map<string, FileBlob>();
   return {
     async register(path: string, ttlS: number = DEFAULT_FILE_BLOB_TTL_S): Promise<FileBlob> {
@@ -55,15 +73,16 @@ export function createFileBlobRegistry(): FileBlobRegistry {
         size,
         expires_at: ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null,
       };
-      entries.set(sha, blob);
+      if (store) store.save(blob);
+      else entries.set(sha, blob);
       return { ...blob };
     },
     get(blobId: string): FileBlob | undefined {
-      const blob = entries.get(blobId);
+      const blob = store ? store.get(blobId) : entries.get(blobId);
       return blob ? { ...blob } : undefined;
     },
     has(blobId: string): boolean {
-      return entries.has(blobId);
+      return (store ? store.get(blobId) : entries.get(blobId)) !== undefined;
     },
   };
 }

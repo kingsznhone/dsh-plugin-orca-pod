@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NonceCache, buildAuthHeader } from "../src/crypto.ts";
+import { createFileBlobRegistry, type FileBlobRegistry } from "../src/blob-files.ts";
 import {
   TaskError,
   generateOrcaNodeId,
   type BusyState,
   type TaskRunner,
 } from "../src/protocol.ts";
+import { createSqliteFileBlobStore } from "../src/sqlite.ts";
 import { createMemoryBlobStore, createMemoryPeerStore, sha256Hex } from "../src/storage.ts";
 import { createGateway, type GatewayDeps, type GatewayOrcaNode } from "../src/gateway.ts";
 
@@ -46,7 +48,7 @@ type Harness = {
   sign(method: string, path: string, body?: Uint8Array | string): string;
 };
 
-function createHarness(tasks: TaskRunner = idleTasks): Harness {
+function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegistry): Harness {
   const key = randomBytes(32);
   const orcaNodeId = generateOrcaNodeId();
   const orcaNode: GatewayOrcaNode = {
@@ -63,6 +65,7 @@ function createHarness(tasks: TaskRunner = idleTasks): Harness {
     runtime: null,
     tasks,
     blobs: createMemoryBlobStore(),
+    ...(fileBlobs === undefined ? {} : { fileBlobs }),
   };
   return {
     app: createGateway(deps),
@@ -191,74 +194,63 @@ describe("blob channel", () => {
   });
 });
 
-describe("local file blobs", () => {
-  async function register(
-    harness: Harness,
-    filePath: string,
-    options: { ttlS?: number; orcaNodeId?: string } = {},
-  ) {
-    const payload = JSON.stringify({
-      path: filePath,
-      ...(options.ttlS === undefined ? {} : { ttl_s: options.ttlS }),
-    });
-    return harness.app.inject({
-      method: "POST",
-      url: "/blobs/register",
-      payload,
-      headers: {
-        "content-type": "application/json",
-        authorization: buildAuthHeader({
-          key: harness.key,
-          orcaNodeId: options.orcaNodeId ?? harness.orcaNodeId,
-          method: "POST",
-          path: "/blobs/register",
-          body: payload,
-        }),
-      },
-    });
-  }
-
-  it("publishes a local file by path and serves it through the returned URL", async () => {
-    const harness = createHarness();
+describe("file blobs registered by the local CLI", () => {
+  it("serves a registered file through a signed URL without a request signature", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
     const filePath = join(dir, "report.md");
     const content = Buffer.from("# findings\n");
     await writeFile(filePath, content);
 
-    const published = await register(harness, filePath, { ttlS: 120 });
-    expect(published.statusCode).toBe(201);
-    const body = published.json<{
-      blob_id: string;
-      size: number;
-      expires_at: string | null;
-      url: string;
-    }>();
-    expect(body.blob_id).toBe(sha256Hex(content));
-    expect(body.size).toBe(content.length);
-    expect(body.expires_at).not.toBeNull();
+    const fileBlobs = createFileBlobRegistry();
+    const blob = await fileBlobs.register(filePath, 120);
+    expect(blob.blob_id).toBe(sha256Hex(content));
+    expect(blob.size).toBe(content.length);
+    expect(blob.expires_at).not.toBeNull();
 
-    const url = new URL(body.url);
-    const response = await harness.app.inject({ method: "GET", url: `${url.pathname}${url.search}` });
+    const harness = createHarness(idleTasks, fileBlobs);
+    const exp = String(Math.floor(Date.now() / 1000) + 60);
+    const sig = createHmac("sha256", harness.key).update(`link|${blob.blob_id}|${exp}`).digest("base64url");
+    const response = await harness.app.inject({
+      method: "GET",
+      url: `/blobs/${blob.blob_id}?exp=${exp}&sig=${sig}`,
+    });
     expect(response.statusCode).toBe(200);
     expect(response.rawPayload.equals(content)).toBe(true);
   });
 
-  it("rejects a path published by another orca node with 403", async () => {
+  it("has no HTTP registration route at all", async () => {
+    // Publishing a path is reading it; a shared workgroup key cannot prove which
+    // orca node signed, so this capability stays local (CLI) and off the network.
     const harness = createHarness();
-    const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
-    const filePath = join(dir, "secret.txt");
-    await writeFile(filePath, "nope");
-    const response = await register(harness, filePath, { orcaNodeId: generateOrcaNodeId() });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ code: "register_local_only" });
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/blobs/register",
+      payload: { path: "/etc/passwd" },
+    });
+    expect(response.statusCode).toBe(404);
   });
 
-  it("answers 400 file_not_readable for a missing path", async () => {
-    const harness = createHarness();
+  it("keeps the mapping in SQLite so a later process sees it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
-    const response = await register(harness, join(dir, "absent.txt"));
-    expect(response.statusCode).toBe(400);
-    expect(response.json<{ code: string }>().code).toBe("file_not_readable");
+    const filePath = join(dir, "artifact.bin");
+    await writeFile(filePath, Buffer.from([1, 2, 3, 4]));
+    const dbPath = join(dir, "tasks.db");
+
+    const writer = createSqliteFileBlobStore(dbPath);
+    const blob = await createFileBlobRegistry(writer).register(filePath, 60);
+    writer.close();
+
+    const reader = createSqliteFileBlobStore(dbPath);
+    const seen = createFileBlobRegistry(reader).get(blob.blob_id);
+    reader.close();
+    expect(seen?.path).toBe(filePath);
+    expect(seen?.size).toBe(4);
+    expect(seen?.expires_at).not.toBeNull();
+  });
+
+  it("refuses a missing path instead of registering it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
+    await expect(createFileBlobRegistry().register(join(dir, "absent.txt"))).rejects.toThrow();
   });
 });
 

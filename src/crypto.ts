@@ -239,3 +239,12 @@ export function verifyGrant(key: Buffer, grant: SignedGrant): boolean {
   const expectedBytes = Buffer.from(expected, "base64url");
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
+
+/**
+ * Capability URL for a blob (§5.6): `GET /blobs/:id?exp&sig` works without a
+ * request signature, so a summary can paste the URL as-is. The secret is the
+ * workgroup key — every member could mint one, the URL only saves a round trip.
+ */
+export function blobLinkSignature(key: Buffer, blobId: string, exp: string): string {
+  return createHmac("sha256", key).update(`link|${blobId}|${exp}`).digest("base64url");
+}

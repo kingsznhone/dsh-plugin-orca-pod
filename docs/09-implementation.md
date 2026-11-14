@@ -105,7 +105,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 11 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 8 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个，共 199 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 9 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个，共 201 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 
@@ -228,6 +228,6 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 个 orca node 压测复用 harness。
 
-**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）、executor（Echo + Headless + ACP）已实现；InProcess executor、ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；HeadlessExecutor 已用假 `dsh` 验证协议映射，并在 Windows 本机用真实 `dsh` + 模型凭据跑通端到端（`scripts/e2e-headless.ts`：两个任务 `completed`、第二个复用 session）；AcpExecutor 已用假 ACP server 验证协议映射、权限挂起→grant→继续、取消与 session 复用/重启 `session/resume`，并在 Windows 本机用真实 `dsh --profile acp` + 模型凭据跑通端到端（`scripts/e2e-acp.mjs`：一个任务 `completed`、文本 `pong`）；`orca-node` CLI 的 send/status/wait/members 与 ACP prompt preamble 已实现（`test/cli.test.ts` 7 条）；跨进程 harness 未开始。Phase 3 的审批回路第一版（grant 用 workgroup key 做 HMAC 签发/校验、`permission_request` 载荷、`pod_approve` 在 open turn 内调 DSH approval、批准/拒绝/篡改/过期/非 origin 测试）已实现；链式逐跳升级与收窄未开始。
+**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）、executor（Echo + Headless + ACP）已实现；InProcess executor、ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；HeadlessExecutor 已用假 `dsh` 验证协议映射，并在 Windows 本机用真实 `dsh` + 模型凭据跑通端到端（`scripts/e2e-headless.ts`：两个任务 `completed`、第二个复用 session）；AcpExecutor 已用假 ACP server 验证协议映射、权限挂起→grant→继续、取消与 session 复用/重启 `session/resume`，并在 Windows 本机用真实 `dsh --profile acp` + 模型凭据跑通端到端（`scripts/e2e-acp.mjs`：一个任务 `completed`、文本 `pong`）；`orca-node` CLI 的 send/status/wait/members/publish 与 ACP prompt preamble 已实现（`test/cli.test.ts` 9 条，`publish` 直写本机 SQLite、无 HTTP 登记路由）；跨进程 harness 未开始。Phase 3 的审批回路第一版（grant 用 workgroup key 做 HMAC 签发/校验、`permission_request` 载荷、`pod_approve` 在 open turn 内调 DSH approval、批准/拒绝/篡改/过期/非 origin 测试）已实现；链式逐跳升级与收窄未开始。
 
 ---

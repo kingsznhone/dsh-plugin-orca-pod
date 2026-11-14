@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { configPath, createOrcaNodeConfig, saveConfig, type OrcaNodeConfig } from "../src/config.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/index.ts";
+import { sha256Hex } from "../src/storage.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -50,6 +51,8 @@ describe("orca-node CLI", () => {
     await saveConfig(configPath(root), config);
     node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     endpoint = (await node.start()).url;
+    // `serve` records the listen address; tests start the node in-process, so do it here.
+    await saveConfig(configPath(root), { ...config, endpoint });
   });
 
   afterAll(async () => {
@@ -136,5 +139,27 @@ describe("orca-node CLI", () => {
     ]);
     expect(escalated.code).toBe(1);
     expect(escalated.stderr).toContain("not waiting for permission");
+  });
+
+  it("publishes a produced file as a signed blob URL without any HTTP route", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orca-cli-publish-"));
+    const filePath = join(dir, "report.md");
+    const content = Buffer.from("# cli publish\n");
+    await writeFile(filePath, content);
+
+    const published = await runCli(["--data-root", root, "publish", filePath, "--json"]);
+    expect(published.code, published.stderr).toBe(0);
+    const body = JSON.parse(published.stdout) as { blob_id: string; size: number; url: string };
+    expect(body.blob_id).toBe(sha256Hex(content));
+    expect(body.size).toBe(content.length);
+
+    const response = await fetch(body.url);
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer()).equals(content)).toBe(true);
+
+    // The CLI writes the mapping locally; there is no registration endpoint to
+    // abuse from another orca node (a shared workgroup key cannot prove identity).
+    const register = await fetch(`${endpoint}/blobs/register`, { method: "POST", body: "{}" });
+    expect(register.status).toBe(404);
   });
 });
