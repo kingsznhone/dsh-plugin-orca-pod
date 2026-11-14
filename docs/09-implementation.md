@@ -6,10 +6,10 @@
 
 ### 9.1 单包内的模块划分
 
-整个项目**只有一个 npm 包** `packages/orca-pod/`。DSH 插件规范就是一个 npm 包（`package.json` + `dsh.bundle.patch`），拆成多个私有 workspace 包会让安装物不自包含：插件依赖的 `@orca/*` 在仓库外解析不到。因此用目录和 import 纪律维持模块边界，不再用包边界。
+整个项目**就是一个 npm 包**（仓库根目录）。DSH 插件规范就是一个 npm 包（`package.json` + `dsh.bundle.patch`），拆成多个私有包会让安装物不自包含：内部依赖在仓库外解析不到。因此用目录和 import 纪律维持模块边界，不再用包边界。
 
 ```text
-packages/orca-pod/
+orca-pod/（仓库根目录）
   package.json        唯一依赖 fastify；dsh.bundle.patch -> cordis.patch.yml
   cordis.patch.yml    DSH 行：id orca-pod、name 'orca-pod'
   src/
@@ -81,7 +81,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多节点 mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 92 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
+Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 92 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
@@ -101,7 +101,7 @@ const task = await origin.sendTask(targetUrl, {
   message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
   metadata: { echo: { final: { state: "completed", text: "hi" } } },
 });
-// 轮询 tasks/get 直到终态；真实断言见 packages/orca-pod/test/a2a.test.ts
+// 轮询 tasks/get 直到终态；真实断言见 test/a2a.test.ts
 ```
 
 ### 9.4 组合入口：库根在 `node.ts`，安装根是整个包
@@ -110,13 +110,13 @@ const task = await origin.sendTask(targetUrl, {
 
 | 层 | 文件 | 谁调用它 | 职责 |
 |---|---|---|---|
-| 库根 | `packages/orca-pod/src/node.ts` → `createNode(config)` | harness、plugin、将来的独立服务 | 装配一个节点：config → storage → gateway → executor。不读 argv、不读 DSH |
-| 安装根 | `packages/orca-pod/` 本身（bundle 名 `orca-pod`） | DSH 的 Loader | `apply(ctx, config)` 里 createNode、注册工具/审批/UI，cleanup 里 `stop()` |
+| 库根 | `src/node.ts` → `createNode(config)` | harness、plugin、将来的独立服务 | 装配一个节点：config → storage → gateway → executor。不读 argv、不读 DSH |
+| 安装根 | 仓库根目录本身（bundle 名 `orca-pod`） | DSH 的 Loader | `apply(ctx, config)` 里 createNode、注册工具/审批/UI，cleanup 里 `stop()` |
 
 DSH 加载一个 bundle 靠包清单里的 `dsh.bundle.patch` 行，不是 `main`：
 
 ```text
-packages/orca-pod/
+orca-pod/（仓库根目录）
   package.json       "exports": { ".": "./src/index.ts", "./testing": "./src/harness.ts" },
                      "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
                      "dependencies": { "fastify": "^5.6.0" }        # 唯一运行时依赖

@@ -143,7 +143,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 每个节点的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个节点不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
-**Phase 0 现状**：task store 是 `tasks.ts` 进程内的内存 `Map`（`packages/orca-pod/src/tasks.ts`），不落盘；进程退出或重启后 task 全部丢失，`tasks/get` 返回 `task_not_found`。peer store 与 blob store 同样是内存实现。因此当前实现只适合单次联调，不能把“任务持久化”当成已具备的能力。
+**Phase 0 现状**：task store 是 `tasks.ts` 进程内的内存 `Map`（`src/tasks.ts`），不落盘；进程退出或重启后 task 全部丢失，`tasks/get` 返回 `task_not_found`。peer store 与 blob store 同样是内存实现。因此当前实现只适合单次联调，不能把“任务持久化”当成已具备的能力。
 
 **目标设计（SQLite，后续里程碑）**
 
