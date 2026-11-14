@@ -128,6 +128,8 @@ export interface HostContext {
   webServer?: WebServerLike
   /** Cordis dependency fence; runs `callback` once the services appear. */
   inject?(dependencies: string[], callback: (sub: HostWebContext) => void): void
+  /** Contextual service lookup that does not require an `inject` declaration. */
+  get?(name: string): unknown
 }
 
 /** One Standard Schema validation issue. */

@@ -38,6 +38,29 @@ const consoleLogger: HostLogger = {
 }
 
 /**
+ * Read a service that may be absent without declaring it in `inject`.
+ *
+ * Cordis throws when a plugin reads a service property it did not inject, so
+ * optional services (approval) are fetched through `ctx.get`/a guarded read
+ * instead of `ctx.approval`.
+ */
+function optionalService<T>(ctx: HostContext, name: string): T | undefined {
+  const getter = ctx.get
+  if (typeof getter === "function") {
+    try {
+      return getter.call(ctx, name) as T | undefined
+    } catch {
+      return undefined
+    }
+  }
+  try {
+    return (ctx as unknown as Record<string, unknown>)[name] as T | undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Start the pod and expose its tools to DSH.
  *
  * Startup is asynchronous and never throws into the host: a failed orca node start
@@ -81,7 +104,7 @@ export function apply(ctx: HostContext, config: Config): void {
   const admin = createPodAdmin(handle, tracker)
   registerPodWeb(ctx, admin, logger)
 
-  for (const tool of createPodTools(handle, tracker, { approval: ctx.approval })) {
+  for (const tool of createPodTools(handle, tracker, { approval: optionalService(ctx, "approval") })) {
     try {
       ctx.tools.register(tool)
     } catch (error) {
