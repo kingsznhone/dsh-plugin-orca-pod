@@ -27,6 +27,7 @@ Exit codes (wait):
   0 completed    1 failed/canceled    2 still running    3 input-required
   With --local-task, a child permission request is escalated to this task's origin
   automatically; wait keeps going after the decision (3 only if it cannot escalate).
+  --timeout is optional: without it the origin may take as long as it needs.
 
 Exit codes (escalate):
   0 approved and this task is working again    1 denied/failed    2 timed out
@@ -225,7 +226,7 @@ async function escalateToOrigin(
   childPeer: string,
   childTask: string,
   localTask: string,
-  timeoutS: number,
+  timeoutS: number | undefined,
 ): Promise<{ state: string; view: TaskView }> {
   const child = await a2a<TaskView>(config, childPeer, "tasks/get", { id: childTask });
   const request = permissionRequestOf(child);
@@ -233,7 +234,7 @@ async function escalateToOrigin(
   const relay: TaskRelay = { peer: normalizePeer(childPeer), task_id: childTask, request };
   const local = localEndpoint(config);
   let view = await a2a<TaskView>(config, local, "tasks/escalate", { taskId: localTask, relay });
-  const deadline = Date.now() + timeoutS * 1000;
+  const deadline = timeoutS === undefined ? Number.POSITIVE_INFINITY : Date.now() + timeoutS * 1000;
   while (view.status.state === "input-required") {
     if (Date.now() >= deadline) return { state: view.status.state, view };
     await sleep(500);
@@ -248,9 +249,12 @@ async function wait(args: string[]): Promise<number> {
   const peer = requireFlag(flags, "peer");
   const task = requireFlag(flags, "task");
   const localTask = flag(flags, "local-task");
-  const timeoutS = Number(flag(flags, "timeout") ?? "30");
-  if (!Number.isFinite(timeoutS) || timeoutS <= 0) throw new Error("--timeout must be a positive number of seconds");
-  const deadline = Date.now() + timeoutS * 1000;
+  const timeoutFlag = flag(flags, "timeout");
+  const timeoutS = timeoutFlag === undefined ? undefined : Number(timeoutFlag);
+  if (timeoutS !== undefined && (!Number.isFinite(timeoutS) || timeoutS <= 0)) {
+    throw new Error("--timeout must be a positive number of seconds");
+  }
+  const deadline = timeoutS === undefined ? Number.POSITIVE_INFINITY : Date.now() + timeoutS * 1000;
   const escalated = new Set<string>();
   let view = await a2a<TaskView>(config, peer, "tasks/get", { id: task });
   for (;;) {
@@ -260,7 +264,9 @@ async function wait(args: string[]): Promise<number> {
       if (request === null || localTask === undefined) break;
       if (!escalated.has(request.request_id)) {
         escalated.add(request.request_id);
-        const seconds = Math.max(1, Math.round((deadline - Date.now()) / 1000));
+        const seconds = Number.isFinite(deadline)
+          ? Math.max(1, Math.round((deadline - Date.now()) / 1000))
+          : undefined;
         const outcome = await escalateToOrigin(config, peer, task, localTask, seconds);
         if (outcome.state === "input-required") {
           printView(view, wantsJson(flags));
@@ -289,8 +295,11 @@ async function escalate(args: string[]): Promise<number> {
   const peer = requireFlag(flags, "peer");
   const childTask = requireFlag(flags, "task");
   const localTask = requireFlag(flags, "local-task");
-  const timeoutS = Number(flag(flags, "timeout") ?? "120");
-  if (!Number.isFinite(timeoutS) || timeoutS <= 0) throw new Error("--timeout must be a positive number of seconds");
+  const timeoutFlag = flag(flags, "timeout");
+  const timeoutS = timeoutFlag === undefined ? undefined : Number(timeoutFlag);
+  if (timeoutS !== undefined && (!Number.isFinite(timeoutS) || timeoutS <= 0)) {
+    throw new Error("--timeout must be a positive number of seconds");
+  }
 
   const outcome = await escalateToOrigin(config, peer, childTask, localTask, timeoutS);
   printView(outcome.view, wantsJson(flags));

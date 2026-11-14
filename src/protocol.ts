@@ -240,7 +240,8 @@ export type PermissionRequest = {
   via: string[];
   /** Orca nodes further down the chain that actually need the permission (§7.12 relay). */
   upstream?: string[];
-  expires_at: string;
+  /** Present only when the executing orca node configures an approval timeout (§7.12). */
+  expires_at?: string;
 };
 
 /**

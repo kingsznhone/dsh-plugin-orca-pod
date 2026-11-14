@@ -58,6 +58,8 @@ export type OrcaNodeConfig = {
   acp?: AcpExecutorConfig;
   /** Multi-hop limits this orca node enforces on incoming tasks (§5.1). */
   delegation?: DelegationConfig;
+  /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
+  approval_timeout_s?: number;
 };
 
 export type CreateOrcaNodeConfigOptions = {
@@ -73,6 +75,7 @@ export type CreateOrcaNodeConfigOptions = {
   headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
   delegation?: DelegationConfig;
+  approvalTimeoutS?: number;
 };
 
 export function defaultDataRoot(): string {
@@ -90,6 +93,12 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
   if (!options.password) {
     throw new Error("password must not be empty");
   }
+  if (
+    options.approvalTimeoutS !== undefined &&
+    (!Number.isFinite(options.approvalTimeoutS) || options.approvalTimeoutS <= 0)
+  ) {
+    throw new Error("approvalTimeoutS must be a positive number of seconds");
+  }
   const key = deriveWorkgroupKey(options.workgroupId, options.password);
   return {
     orca_node_id: options.orcaNodeId ?? generateOrcaNodeId(),
@@ -104,6 +113,7 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     ...(options.headless ? { headless: options.headless } : {}),
     ...(options.acp ? { acp: options.acp } : {}),
     ...(options.delegation ? { delegation: options.delegation } : {}),
+    ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
   };
 }
 
@@ -260,6 +270,13 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   if (acp) config.acp = acp;
   const delegation = parseDelegationConfig(record["delegation"]);
   if (delegation) config.delegation = delegation;
+  const approvalTimeout = record["approval_timeout_s"];
+  if (approvalTimeout !== undefined) {
+    if (typeof approvalTimeout !== "number" || !Number.isFinite(approvalTimeout) || approvalTimeout <= 0) {
+      throw new Error("config.approval_timeout_s must be a positive number of seconds");
+    }
+    config.approval_timeout_s = approvalTimeout;
+  }
   return config;
 }
 

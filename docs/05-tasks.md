@@ -26,7 +26,7 @@
 - `task_id` 由 A2A server（目标 orca node）生成；origin 保存 `(target_node, task_id)` 映射。
 - `context_id` 把多个 task 归到同一逻辑会话；目标 orca node 把它映射到本地 DSH session，cwd 固定为本 orca node 的工作区（[§6.7](06-execution.md#67-工作区一份持久)）。
 - `idempotency_key` 作用域 = 同一 workgroup 内；目标 orca node 去重窗口默认 24h。它只防重复提交，不承担重发。
-- `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。
+- `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 - `pod.hop`：任务已经跨了几跳。origin 建 task 时为 0。target 是否接受 `hop > 0` 由 `delegation.max_hop` 决定（默认 **0** → `400 hop_limit`；可配 1–3）。target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
 - `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
 - `pod.root`：这条调用树的根 task id，扇出预算按它计（`max_fanout`）。origin 建 task 时等于自己的 task id。
@@ -51,14 +51,14 @@ target: task store（SQLite，见 §5.5）推进 submitted/working/completed
 origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 ```
 
-**Phase 0 现状**：协议层已经支持 `tasks/get` 轮询；`scripts/cross.ts task` 用固定 100ms、最多 300 次轮询到终态，只是联调脚本。下面的退避与自动判定属于 plugin tracker 的设计，尚未实现。target 侧 TTL 已实现：默认 3600s，可由 `metadata.pod.task_ttl_s` 覆盖，到期置 `failed(reason=timeout)`；origin 侧超时后补发 `tasks/cancel` 也尚未实现。
+**Phase 0 现状**：协议层已经支持 `tasks/get` 轮询；`scripts/cross.ts task` 用固定 100ms、最多 300 次轮询到终态，只是联调脚本。下面的退避与自动判定属于 plugin tracker 的设计，尚未实现。target 侧 TTL 已实现：默认 3600s，可由 `metadata.pod.task_ttl_s` 覆盖，`input-required` 期间暂停、`resume` 后重新计时，到期置 `failed(reason=timeout)`；origin 侧超时后补发 `tasks/cancel` 也尚未实现。
 
 轮询规则（plugin 目标实现）：
 
 - 初始 500ms，退避到 2s，加 ±20% 抖动；
 - 终态立即停；连续 `404` 说明目标重启丢了 task → 记 `failed(reason=task_lost)`；
 - 连续连接失败达到 `offline_after`（≈12s）→ origin 直接记 `failed(reason=node_unreachable, effects_unknown=true)`，**不重发**（[§8.2](08-reliability.md#82-orca-node-失联-任务失败不重发)）；
-- 总时长受 `task_ttl_s` 约束，超时记 `failed(reason=timeout)` 并发 `tasks/cancel`（若还能连上）。
+- 总时长受 `task_ttl_s` 约束（等待 `input-required` 时暂停、恢复后继续计时），超时记 `failed(reason=timeout)` 并发 `tasks/cancel`（若还能连上）。
 
 #### 轮询归 Host，不归 agent
 

@@ -119,10 +119,13 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 | 情形 | 谁批 | 行为 |
 | --- | --- | --- |
 | `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 弹审批卡片（`pod_approve` → DSH `approval.request`） |
-| `origin == self`，但会话没有审批面（headless/ACP 执行器自己作为根） | 无人可批 | 命中预授权则自动放行并记 `decided_by: policy`，否则超时后 `failed(permission_timeout)`；不会“往上抛”，因为它就是链根 |
+| `origin == self`，且会话本身在执行某个 inbound task（headless/ACP 执行器派出的子任务） | 链上更上游的人 | 本机不批：请求沿这条 inbound task 继续上升（CLI `wait --local-task <那个 task>` 自动 `tasks/escalate`），一直走到有人的会话为止 |
+| `origin == self`，且是本机真实根（没有 inbound task，人在这台机器前） | 本机的人 | 弹审批卡片；默认无限等待，可配置 `approval_timeout_s` 到点自动 `failed(permission_timeout)`；预授权命中则自动放行并记 `decided_by: policy` |
 | `origin != self` | 链上更上游的人 | 本机不批，只逐跳上升：`permission_request` 交给 origin（CLI 的 `wait --local-task` 自动调 `tasks/escalate`），批准后下发 child grant |
 
 不存在“节点级 attended 标志”：同一台机器通常同时跑桌面 DSH 和 headless/ACP 执行器，有没有人取决于**是哪个会话发起了这个 task**；ACP 执行器会话只有 CLI、没有审批面，所以它派出的子任务一律 escalate。链上唯一的人坐在根会话前。
+
+注意 `origin == self` 不等于“本机有人”：A→B→C 里，C 上子任务的 origin 是 B（B 的 CLI 用 B 的密钥签名），但 B 的会话正被 A 的 task 驱动，B 屏幕前没有人。所以这个请求要沿 B 自己的 inbound task 继续上升（CLI `wait --local-task <B 的 inbound task>`），直到 A 的交互式会话。
 
 链式调用（A→B→C）时，“origin”是相对的：每个 task 的 origin 负责把请求往上传，直到有人的那个 orca node——规则见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用) 的「链式调用」小节。
 
@@ -217,6 +220,8 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 **实现状态（Phase 3 第三版，Echo relay 原型）**：`tasks.ts` 支持 executor 在 permission 挂起时携带 `relay`（子任务 endpoint、task id、子任务的 `permission_request` 快照）。这时父任务自己挂成 `input-required`，请求里 `requested_by` 是本 orca node、`via` 是祖先路径、`upstream` 记着真正需要权限的下游 `requested_by`；origin 审批后，父任务用拿到的 grant `deriveChildGrant` 派生出面向下游的 child grant，通过 `message/send` 发给子任务，然后继续自己的执行；拒绝或取消则把 `permission_denied` 往下传，子任务随之失败而不是悬挂。每一跳都释放执行槽、不保持连接、不反连，所以 relay 天然非阻塞。**限制**：relay 链接只在内存里（重启后按 §8.3 整体标 `node_restart`，不会恢复）；“自动发现子任务需要权限并上升”仍要靠执行器/宿主提供挂起入口：目前 Echo 脚本能直接注入 `relay`，ACP 作为**叶子**执行器已能接住下发（`test/acp.test.ts` 的链式用例：C 的 ACP 权限请求经 B relay 上升，A 批准后下发 child grant，C 回 allow-once 继续），但“父任务自动感知子任务请求并自己挂起”仍缺 ACP 会话内的 `pod_*` 工具（MCP bridge 待做）；审批卡片尚未展示 `upstream` 来源链。
 
 **实现状态（Phase 3 第四版，显式 escalate）**：中间 orca node 的 task 可以在执行中主动挂起自己——CLI `orca-node escalate --peer <child> --task <child task> --local-task <此 task>` 取子任务的 `permission_request`，经本机 `tasks/escalate` 交给 runner；runner 把此 task 改成 `input-required` 并填一条上游请求（`requested_by`=本 orca node、`upstream`=[子请求者]、`via`=祖先链），执行器本身继续跑（不打断 ACP turn，也不动 iterator）。origin 批准后按第三版派生子 grant 发回子任务，然后把此 task 放回 `working`；拒绝则向下传 `permission_denied` 并让此 task 失败。`tasks/escalate` 只接受本 orca node 自己签名（跨节点调用一律拒绝）。ACP 的 preamble 里已写明：`wait` 退出码为 3 时用 `escalate` 把决定权交还 origin。审批卡片与 tracker 通知现在都会显示来源链：`permissionOriginNote` 把 `via` 与 `upstream` 拼成 ` via A → B` 后缀，`pod_approve` 的 `approval.request.reason` 由 `approvalReason` 生成（形如 `Remote task <id> on <peer> wants to run "<tool>" via A → B: {...}`），人能看到这张卡是替谁批的。自动感知就是轮询：`orca-node wait` 带上 `--local-task <此 task>` 时，一旦在轮询中看到子任务 `input-required` 且带 `permission_request`，会自己调用 `tasks/escalate` 把请求上升，然后继续等；同一个 `request_id` 只上升一次，批准后子任务恢复、拒绝则失败，agent 不需要再单独发一次 `escalate`。**仍未实现**：不经 CLI 的宿主（例如插件工具直接派发子任务）没有这层轮询；`permission_mode`/`limits` 收窄。
+
+**实现状态（Phase 3 第五版，默认无限等待）**：审批不再默认 120 秒过期。`permission_request.expires_at` 变成可选字段，只有配置了 `approval_timeout_s` 的 orca node 才会填；没配就是无限等待——人可能正在吃饭，任务不该因此失败。对应地，`input-required` 期间 task TTL（`task_ttl_s`）暂停，`resume` 后才重新计时，否则“等人”会被 TTL 当成“超时”。配置 `approval_timeout_s` 后，到点自动拒绝对应的挂起请求：先向下游（`pending_escalation`/`relay`）发 `permission_denied`，再让本 task `failed(permission_timeout)`。CLI 的 `wait`/`escalate` 的 `--timeout` 也变成可选：不给就一直等到 origin 决策。grant 范围内按工具/路径自动放行（预授权的自动化）仍未实现。
 
 #### 链式调用：授权向下收窄，升级向上回传
 

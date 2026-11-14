@@ -28,6 +28,10 @@ type Running = {
   abort: AbortController;
   iterator: AsyncGenerator<ExecutorEvent, void, unknown> | null;
   ttl: ReturnType<typeof setTimeout> | null;
+  /** Task TTL in seconds; paused while the task waits for input, re-armed on resume. */
+  ttl_s: number;
+  /** Auto-reject timer for a parked permission request; null means wait forever (§7.12). */
+  permission_timer: ReturnType<typeof setTimeout> | null;
   /** Set while the task waits for a human decision on one tool (§7.11). */
   pending_permission: PermissionRequest | null;
   /** Child task this task escalates for; set only by a relay suspension (§7.12). */
@@ -67,7 +71,7 @@ export type TaskRunnerDeps = {
   selfOrcaNodeId?: string;
   workgroupId?: string;
   key?: Buffer;
-  /** How long a suspended permission request stays valid, default 120s. */
+  /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
   permissionTtlS?: number;
   /** Largest `pod.hop` this orca node accepts; default 0 (single hop only, §5.1). */
   maxHop?: number;
@@ -83,7 +87,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const tasks = new Map<string, Running>();
   const store = deps.store ?? createMemoryTaskStore();
   const defaultTtlS = deps.defaultTtlS ?? 3600;
-  const permissionTtlS = deps.permissionTtlS ?? 120;
+  const permissionTtlS = deps.permissionTtlS;
   const selfOrcaNodeId = deps.selfOrcaNodeId ?? "unknown";
   let activeTaskId: string | null = null;
 
@@ -121,7 +125,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
       ...(relay ? { upstream: [relay.request.requested_by] } : {}),
-      expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString(),
+      // No expiry by default: the origin waits however long the human takes (§7.12).
+      ...(permissionTtlS === undefined
+        ? {}
+        : { expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString() }),
     };
     rec.pending_permission = request;
     rec.relay = relay ?? null;
@@ -242,9 +249,54 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     }
   }
 
+  function clearPermissionTimer(rec: Running): void {
+    if (rec.permission_timer) {
+      clearTimeout(rec.permission_timer);
+      rec.permission_timer = null;
+    }
+  }
+
+  /** Task TTL is paused while the task waits for input; resume re-arms it from now. */
+  function armTtl(rec: Running): void {
+    clearTtl(rec);
+    rec.ttl = setTimeout(() => {
+      if (!isTerminal(rec.view.status.state)) {
+        rec.abort.abort();
+        finish(rec, "failed", textMessage("task ttl exceeded"), "timeout");
+      }
+    }, rec.ttl_s * 1000);
+    rec.ttl.unref?.();
+  }
+
+  /**
+   * Only when the node configures an approval timeout does a parked request
+   * expire by itself; by default the origin may take as long as it needs (§7.12).
+   */
+  function armPermissionTimer(rec: Running): void {
+    clearPermissionTimer(rec);
+    if (permissionTtlS === undefined) return;
+    rec.permission_timer = setTimeout(() => {
+      if (rec.pending_permission === null) return;
+      const parked = rec.pending_escalation;
+      if (parked !== null) {
+        rec.pending_escalation = null;
+        void sendRelayControl(parked, { permission_denied: true, reason: "permission_timeout" }).catch(() => {});
+      }
+      const relay = rec.relay;
+      if (relay !== null) {
+        rec.relay = null;
+        void sendRelayControl(relay, { permission_denied: true, reason: "permission_timeout" }).catch(() => {});
+      }
+      rec.pending_permission = null;
+      finish(rec, "failed", textMessage("permission request timed out"), "permission_timeout");
+    }, permissionTtlS * 1000);
+    rec.permission_timer.unref?.();
+  }
+
   function finish(rec: Running, state: TaskState, message?: A2AMessage, reason?: string): void {
     rec.view.status = { state, timestamp: nowIso(), ...(message ? { message } : {}), ...(reason ? { reason } : {}) };
     clearTtl(rec);
+    clearPermissionTimer(rec);
     releaseSlot(rec);
     persist(rec);
   }
@@ -273,6 +325,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         const event = step.value;
         if (event.type === "suspend") {
           rec.view.status = { state: "input-required", timestamp: nowIso(), message: suspendMessage(rec, event) };
+          clearTtl(rec);
+          armPermissionTimer(rec);
           releaseSlot(rec);
           persist(rec);
           return;
@@ -316,6 +370,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     const id = newTaskId();
     const contextId = input.message.contextId ?? id;
     const createdAt = nowIso();
+    const ttlS = Number(input.metadata?.["pod"] && (input.metadata["pod"] as { task_ttl_s?: number }).task_ttl_s) || defaultTtlS;
     const rec: Running = {
       view: {
         kind: "task",
@@ -332,6 +387,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       abort: new AbortController(),
       iterator: null,
       ttl: null,
+      ttl_s: ttlS,
+      permission_timer: null,
       pending_permission: null,
       relay: null,
       pending_escalation: null,
@@ -339,14 +396,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     activeTaskId = id;
     tasks.set(id, rec);
     persist(rec);
-    const ttlS = Number(input.metadata?.["pod"] && (input.metadata["pod"] as { task_ttl_s?: number }).task_ttl_s) || defaultTtlS;
-    rec.ttl = setTimeout(() => {
-      if (!isTerminal(rec.view.status.state)) {
-        rec.abort.abort();
-        finish(rec, "failed", textMessage("task ttl exceeded"), "timeout");
-      }
-    }, ttlS * 1000);
-    rec.ttl.unref?.();
+    armTtl(rec);
     void pump(rec);
     return cloneView(rec.view);
   }
@@ -408,6 +458,9 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         escalation = parked;
       }
     }
+    // The wait is over: stop the approval alarm and let the task TTL run again.
+    clearPermissionTimer(rec);
+    armTtl(rec);
     if (escalation !== null && grant !== undefined) {
       // The parked task's executor never stopped, so re-acquire the slot and
       // hand the derived child grant to the child without touching the iterator.
@@ -467,7 +520,9 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
       upstream: [relay.request.requested_by],
-      expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString(),
+      ...(permissionTtlS === undefined
+        ? {}
+        : { expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString() }),
     };
     rec.pending_permission = request;
     rec.pending_escalation = { peer: relay.peer, task_id: relay.task_id, request: relay.request };
@@ -476,6 +531,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       timestamp: nowIso(),
       message: { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] },
     };
+    clearTtl(rec);
+    armPermissionTimer(rec);
     releaseSlot(rec);
     persist(rec);
     return cloneView(rec.view);

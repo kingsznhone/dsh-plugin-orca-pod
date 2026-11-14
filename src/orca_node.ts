@@ -209,6 +209,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     workgroupId: config.workgroup_id,
     key,
     maxHop: config.delegation?.max_hop ?? 0,
+    ...(config.approval_timeout_s !== undefined ? { permissionTtlS: config.approval_timeout_s } : {}),
     sendTaskMessage: async (peerUrl, _taskId, message) => {
       await postA2a<TaskView>(peerUrl, "message/send", { message });
     },

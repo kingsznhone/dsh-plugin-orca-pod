@@ -242,7 +242,7 @@ describe("Phase 3 approval round trip", () => {
     expect(request?.task_id).toBe(submitted.id);
     expect(request?.tool).toBe("write_file");
     expect(request?.requested).toEqual({ path: "note.txt", bytes: 12 });
-    expect(request?.expires_at).toBeTruthy();
+    expect(request?.expires_at).toBeUndefined();
 
     const resumed = await origin.approveTask(targetUrl, suspended);
     expect(resumed.status.state).not.toBe("failed");
@@ -326,5 +326,35 @@ describe("Phase 3 approval round trip", () => {
 
     expect(response.status).toBe(400);
     expect(response.code).toBe("bad_request");
+  });
+
+  it("keeps waiting past the task TTL while parked for approval", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    const submitted = await origin.sendTask(targetUrl, {
+      message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
+      metadata: { echo: permissionEcho, pod: { task_ttl_s: 1 } },
+    });
+    await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    // The task TTL is paused while the task waits for a human (§7.12).
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const still = await origin.getTask(targetUrl, submitted.id);
+    expect(still.status.state).toBe("input-required");
+
+    await origin.approveTask(targetUrl, still);
+    const done = await waitForState(origin, targetUrl, submitted.id, "completed");
+    expect(textOf(done)).toBe("written");
+  });
+
+  it("auto-rejects a parked request when approval_timeout_s is configured", async () => {
+    mesh = await createMesh({ orcaNodes: 2, workgroupId: WORKGROUP, password: PASSWORD, approvalTimeoutS: 1 });
+    const [origin, target] = mesh.orcaNodes;
+    if (!origin || !target) throw new Error("mesh did not create two orca nodes");
+    const submitted = await submit(origin, target.endpoint);
+    await waitForState(origin, target.endpoint, submitted.id, "input-required");
+
+    const failed = await waitForState(origin, target.endpoint, submitted.id, "failed", 4000);
+    expect(failed.status.reason).toBe("permission_timeout");
+    expect(textOf(failed)).toContain("permission request timed out");
   });
 });

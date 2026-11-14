@@ -118,10 +118,10 @@ function validateRelay(raw: unknown, where: string): EchoRelay | undefined {
     typeof childTaskId !== "string" ||
     typeof tool !== "string" ||
     typeof requestedBy !== "string" ||
-    typeof expiresAt !== "string"
+    (expiresAt !== undefined && typeof expiresAt !== "string")
   ) {
     throw new EchoScriptError(
-      `${where}.request needs string request_id, task_id, tool, requested_by and expires_at`,
+      `${where}.request needs string request_id, task_id, tool, requested_by and an optional expires_at`,
     );
   }
   if (!isRecord(requested)) throw new EchoScriptError(`${where}.request.requested must be an object`);
@@ -138,7 +138,7 @@ function validateRelay(raw: unknown, where: string): EchoRelay | undefined {
       requested,
       requested_by: requestedBy,
       via: via as string[],
-      expires_at: expiresAt,
+      ...(typeof expiresAt === "string" ? { expires_at: expiresAt } : {}),
     },
   };
 }

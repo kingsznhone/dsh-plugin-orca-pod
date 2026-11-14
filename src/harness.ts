@@ -14,6 +14,8 @@ export type MeshOptions = {
   displayNamePrefix?: string;
   dataRoot?: string;
   timings?: Partial<MembershipTimings>;
+  /** Per-orca-node approval timeout; unset means parked requests wait forever (§7.12). */
+  approvalTimeoutS?: number;
   /** Per-orca-node outbound HTTP override, used to simulate jitter and partitions. */
   fetch?: (index: number) => FetchLike | undefined;
 };
@@ -44,6 +46,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         dataRoot: join(dataRoot, `orca-node-${index}`),
         port: options.basePort ? options.basePort + index : 0,
         displayName: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
+        ...(options.approvalTimeoutS !== undefined ? { approvalTimeoutS: options.approvalTimeoutS } : {}),
       });
       orcaNodes.push(createOrcaNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
     }
