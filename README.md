@@ -5,7 +5,7 @@
 - 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
 - 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、内容寻址 blob 通道。
 - 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，所有自研模块都在 `src/`，安装时不需要本仓库的 `node_modules`。
-- 状态：Phase 0 可运行——`/health`、join 与心跳登记、`/a2a`（`message/send`/`tasks/get`/`tasks/cancel`、Echo 脚本机、单槽）、`/blobs` 上传/下载/直链、`pod_*` 四个插件工具；Windows ↔ Hyper-V Ubuntu 跨机 join 与任务往返已验证。
+- 状态：Phase 0–3 可运行——`/health`、join/心跳/成员、`/a2a`（`message/send`/`tasks/get`/`tasks/cancel`、单槽、grant 与 permission 升级）、`/blobs`、三种执行器（Echo/Headless/ACP）、SQLite task store + fs blob + group 工作区、审批卡片与链式 relay、`orca-node` CLI 与插件后台 tracker；Windows ↔ Hyper-V Ubuntu 跨机 join、A2A 往返、blob 双向与真实 `dsh` 任务均已验证。
 
 ## 布局
 
@@ -33,7 +33,7 @@ orca-pod/
 │   ├── tasks.ts          # 单槽任务运行器
 │   ├── orca_node.ts      # createOrcaNode：装配 gateway、tasks、membership
 │   ├── harness.ts        # 测试用进程内多 orca node
-│   ├── cli.ts            # `orca-node serve --config <path>`
+│   ├── cli.ts            # `orca-node` CLI：serve / send / status / wait / members
 │   └── plugin/           # DSH bundle：Config、apply(ctx, config)、tools
 └── test/                 # vitest 套件
 ```
@@ -78,7 +78,7 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 
 ## 工具
 
-四个工具都返回 JSON 文本，且从不阻塞等待远端任务；任务在远端 orca node 异步执行。
+五个工具都返回 JSON 文本，且从不阻塞等待远端任务；任务在远端 orca node 异步执行。
 
 | Tool          | Arguments                | Result                                                         |
 | ------------- | ------------------------ | -------------------------------------------------------------- |
@@ -86,8 +86,26 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 | `pod_status`  | `peer`, `task_id`        | Remote `TaskView` plus a `terminal` flag                        |
 | `pod_cancel`  | `peer`, `task_id`        | Task view observed at cancel time plus `terminal`               |
 | `pod_members` | —                        | `{self, members, members_digest}` with id/name/endpoint/state   |
+| `pod_approve` | `peer`, `task_id`, `decision`, `reason?` | Answers a suspended `permission_request`: opens the DSH approval card in the current turn and sends a grant or denial |
 
 `peer` 接受 `http(s)://host:port` 或裸 `host:port`；可选 `echo` 会作为 `metadata.echo` 转发确定性脚本（测试用；默认任务本身就会回显）。
+
+## CLI
+
+无头/ACP 会话里没有 orca-pod 的插件工具，agent 用自带 shell 调 `orca-node` 子命令（`AcpExecutor` 会在 prompt 前注入 CLI 绝对路径与用法）：
+
+```bash
+# 派任务，文本从 stdin 读，输出 JSON
+echo "compile and run the tests" | orca-node send --peer 192.168.86.252:11811 --text - --json
+
+# 等结果：0 completed / 1 failed|canceled / 2 仍在跑 / 3 需要权限
+orca-node wait --peer 192.168.86.252:11811 --task <id> --timeout 60 --json
+
+orca-node status --peer 192.168.86.252:11811 --task <id> --json
+orca-node members --json
+```
+
+CLI 读本机 `config.json`（`--config` 或 `--data-root`），用本 orca node 的身份做请求签名；它不是节点，不监听端口。`wait` 返回 3 时，agent 应通过宿主（ACP 的 `session/request_permission` 或插件 tracker）请求人工批准，而不是自己批准。
 
 ## 开发
 

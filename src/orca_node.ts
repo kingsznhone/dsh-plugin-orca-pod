@@ -191,7 +191,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     (config.executor === "headless"
       ? createHeadlessExecutor(config.headless ?? {})
       : config.executor === "acp"
-        ? createAcpExecutor(config.acp ?? {})
+        ? createAcpExecutor({ ...(config.acp ?? {}), data_root: config.data_root })
         : new EchoExecutor());
   const tasks = createTaskRunner({
     executor,

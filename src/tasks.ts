@@ -229,6 +229,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           contextId: rec.view.contextId,
           prompt: rec.prompt,
           originOrcaNode: rec.origin_orca_node,
+          ...(deps.selfOrcaNodeId ? { selfOrcaNodeId: deps.selfOrcaNodeId } : {}),
           ...(deps.workspace ? { workspaceDir: deps.workspace.work, podDir: deps.workspace.pod } : {}),
           metadata: rec.metadata,
         },

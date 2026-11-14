@@ -115,7 +115,11 @@ describe("AcpExecutor", () => {
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test", "work"))).toBe(true);
     expect(created?.mcpServers).toBe(1);
-    expect(entries.find((entry) => entry.method === "session/prompt")?.text).toBe("say hi");
+    const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
+    expect(promptText).toContain("say hi");
+    // The preamble tells the ACP agent how to reach the CLI for delegation.
+    expect(promptText).toContain("--data-root");
+    expect(promptText).toContain("send --data-root");
   }, 15_000);
 
   it("suspends for a permission request and continues after the origin approves", async () => {

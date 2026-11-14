@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { createOrcaNode, createOrcaNodeConfig, createPersistentStorage } from "orca-pod";
 
 const TERMINAL = new Set(["completed", "failed", "canceled"]);
+const prompt = process.argv[2] ?? "Reply with exactly the word pong";
 const root = await mkdtemp(join(tmpdir(), "orca-e2e-acp-"));
 const config = createOrcaNodeConfig({
   workgroupId: "e2e-acp",
@@ -27,7 +28,7 @@ const startedAt = Date.now();
 const submitted = await node.sendTask(node.endpoint, {
   message: {
     role: "user",
-    parts: [{ kind: "text", text: "Reply with exactly the word pong" }],
+    parts: [{ kind: "text", text: prompt }],
     contextId: "ctx-e2e-acp",
   },
 });

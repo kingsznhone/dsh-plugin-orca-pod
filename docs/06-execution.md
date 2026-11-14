@@ -327,7 +327,7 @@ cwd = group workspace 的 `work/`；每次任务一条 in-flight prompt（ACP �
 
 **会话复用**：`.pod/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
 
-**给 ACP 会话装工具**：配置 `acp.mcp_servers` 会原样传给 `session/new` 的 `mcpServers` 参数（`[{ "name", "command", "args"?, "env"? }]`）。这是把额外工具（包括 orca node 的 `pod_*`）接进 ACP agent 的正式入口；当前只做透传，orca-pod 自带的 MCP bridge 尚未提供——所以 ACP 会话里还没有 `pod_send`，链式 relay 的自动上升仍靠 Echo 原型或宿主侧下发。
+**给 ACP 会话加工具：CLI 优先（Phase 3）**：ACP agent 自带 shell（实测可执行命令），所以不需要把工具 schema 常驻进上下文。`AcpExecutor` 在每条 prompt 前加一段 preamble——`[orca-pod] You are executing task <id> as orca node <id>`、`orca-node` CLI 的绝对路径、`send`/`wait` 用法与退出码——agent 用 shell 调 CLI 即可派任务、查状态、等结果。CLI 读本机 `config.json` 派生密钥，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；CLI 不是节点，没有独立身份。MCP（`acp.mcp_servers`）保留为可选透传：需要结构化 schema 的第三方工具仍可挂，但 orca-pod 自己的 `pod_*` 不再依赖它。
 
 **不做**：把 `message/stream` 的进度透传到 A2A 流（结论仍走 `tasks/get` 轮询）、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、多 in-flight prompt。
 

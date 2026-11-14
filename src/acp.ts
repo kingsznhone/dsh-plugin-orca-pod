@@ -7,13 +7,39 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type { AcpExecutorConfig } from "./config.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import { KILL_GRACE_MS, abortError, isCmdShim, killTree, quoteForCmd, resolveCommand } from "./process.ts";
 import { readSessions, writeSessions } from "./session-store.ts";
 
 const STDERR_TAIL = 4096;
+
+/** Extra executor-local options not part of the DSH-facing config. */
+export type AcpExecutorOptions = AcpExecutorConfig & { data_root?: string };
 const PROTOCOL_VERSION = 1;
+
+/** Absolute path of the `orca-node` CLI entry, handed to the agent in the preamble. */
+const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+/**
+ * Prepend a short operator note to every prompt: the ACP agent has a shell but
+ * no cluster tools, so delegation goes through the CLI (§6.15, §9.4).
+ */
+function promptWithPreamble(input: ExecuteInput, dataRoot: string | undefined, text: string): string {
+  const who = input.selfOrcaNodeId ? ` as orca node ${input.selfOrcaNodeId}` : "";
+  const cli = `node "${CLI_PATH}"`;
+  const rootFlag = dataRoot === undefined ? "" : ` --data-root "${dataRoot}"`;
+  return [
+    `[orca-pod] You are executing task ${input.taskId}${who}.`,
+    `To delegate to another orca node, use the CLI instead of raw HTTP:`,
+    `  ${cli} send${rootFlag} --peer <host:port> --text - --json`,
+    `Check it with: ${cli} wait${rootFlag} --peer <host:port> --task <id> --json`,
+    `  (exit 0 completed, 1 failed/canceled, 2 still running, 3 needs permission)`,
+    "",
+    text,
+  ].join("\n");
+}
 
 type JsonRpcId = number;
 
@@ -206,7 +232,7 @@ function textOf(update: SessionUpdate): string {
   return content.type === "text" && typeof content.text === "string" ? content.text : "";
 }
 
-export function createAcpExecutor(options: AcpExecutorConfig = {}): LocalExecutor {
+export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecutor {
   const command = options.command ?? "dsh";
   const profile = options.profile ?? "acp";
   const extraArgs = options.extra_args ?? [];
@@ -337,7 +363,7 @@ export function createAcpExecutor(options: AcpExecutorConfig = {}): LocalExecuto
 
       const prompt = conn.request("session/prompt", {
         sessionId,
-        prompt: [{ type: "text", text: input.prompt }],
+        prompt: [{ type: "text", text: promptWithPreamble(input, options.data_root, input.prompt) }],
       });
       void prompt.then(
         (result) => events.push({ kind: "prompt-done", result: result as PromptResult }),

@@ -49,6 +49,8 @@ export type ExecuteInput = {
   prompt?: string;
   /** Origin orca node; part of the session binding key (§6.10). */
   originOrcaNode?: string;
+  /** This orca node (the executor's host), useful for prompt preambles. */
+  selfOrcaNodeId?: string;
   /** Group workspace `work/` dir; the executor's cwd when present (§6.7). */
   workspaceDir?: string;
   /** Group workspace `.pod/` dir; executors keep their own state here. */
