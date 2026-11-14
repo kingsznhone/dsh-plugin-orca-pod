@@ -82,9 +82,20 @@ const OVERRIDE_KEYS = [
   "port",
   "endpoints",
   "peers",
+  "task_timeout_s",
+  "approval_timeout_s",
+  "result_max_bytes",
+  "max_input_files",
+  "max_input_bytes",
+  "allow_public_peers",
+  "allow_loopback_peers",
+  "permission_mode",
 ] as const
 
-type Override = Partial<Pick<Config, (typeof OVERRIDE_KEYS)[number]>> & { setup_complete?: boolean }
+/** `null` explicitly clears a stored override so the base config applies again. */
+type Override = Partial<{ [K in (typeof OVERRIDE_KEYS)[number]]: Config[K] | null }> & {
+  setup_complete?: boolean
+}
 
 function createRuntime(): PodRuntime {
   return { orcaNode: null, url: null, port: null, started_at: null, error: null }
@@ -155,6 +166,33 @@ function needsSetup(config: Config): boolean {
   return config.workgroup_id.length === 0 || config.workgroup_password.length === 0
 }
 
+/** Optional config fields that may also come from the bundle config. */
+const BASE_FIELDS = [
+  "display_name",
+  "endpoints",
+  "data_root",
+  "task_timeout_s",
+  "approval_timeout_s",
+  "result_max_bytes",
+  "max_input_files",
+  "max_input_bytes",
+  "allow_public_peers",
+  "allow_loopback_peers",
+  "permission_mode",
+] as const
+
+/** Advanced controls whose absence means "use the default", not "keep stored". */
+const ADVANCED_KEYS = [
+  "task_timeout_s",
+  "approval_timeout_s",
+  "result_max_bytes",
+  "max_input_files",
+  "max_input_bytes",
+  "allow_public_peers",
+  "allow_loopback_peers",
+  "permission_mode",
+] as const
+
 function mergeOverride(base: Config, override: Override): Config {
   const merged: Record<string, unknown> = {
     workgroup_id: base.workgroup_id,
@@ -163,11 +201,13 @@ function mergeOverride(base: Config, override: Override): Config {
     skill_injection: base.skill_injection,
     peers: base.peers,
   }
-  if (base.display_name !== undefined) merged["display_name"] = base.display_name
-  if (base.endpoints !== undefined) merged["endpoints"] = base.endpoints
-  if (base.data_root !== undefined) merged["data_root"] = base.data_root
+  for (const key of BASE_FIELDS) {
+    if (base[key] !== undefined) merged[key] = base[key]
+  }
   for (const key of OVERRIDE_KEYS) {
-    if (override[key] !== undefined) merged[key] = override[key]
+    const value = override[key]
+    // A null override is "not set": leave the base value in place.
+    if (value !== undefined && value !== null) merged[key] = value
   }
   return validateConfigInput(merged)
 }
@@ -195,6 +235,19 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       ? [...config.endpoints]
       : []
 
+  // Advanced local controls: only fields the panel/bundle configured are
+  // written; the stored config keeps everything else from the previous run.
+  const advanced = {
+    ...(config.task_timeout_s === undefined ? {} : { task_timeout_s: config.task_timeout_s }),
+    ...(config.approval_timeout_s === undefined ? {} : { approval_timeout_s: config.approval_timeout_s }),
+    ...(config.result_max_bytes === undefined ? {} : { result_max_bytes: config.result_max_bytes }),
+    ...(config.max_input_files === undefined ? {} : { max_input_files: config.max_input_files }),
+    ...(config.max_input_bytes === undefined ? {} : { max_input_bytes: config.max_input_bytes }),
+    ...(config.allow_public_peers === undefined ? {} : { allow_public_peers: config.allow_public_peers }),
+    ...(config.allow_loopback_peers === undefined ? {} : { allow_loopback_peers: config.allow_loopback_peers }),
+    ...(config.permission_mode === undefined ? {} : { permission_mode: config.permission_mode }),
+  }
+
   let next: OrcaNodeConfig
   if (stored !== null && stored.workgroup_id === config.workgroup_id) {
     next = {
@@ -207,6 +260,7 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       data_root: dataRoot,
       bind: { host: bindHost, port: config.port },
       key_base64: keyBase64,
+      ...advanced,
     }
   } else {
     next = createOrcaNodeConfig({
@@ -218,7 +272,21 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       port: config.port,
       ...(config.display_name === undefined ? {} : { displayName: config.display_name }),
       ...(advertised.length === 0 ? {} : { endpoints: advertised }),
+      ...(config.task_timeout_s === undefined ? {} : { taskTimeoutS: config.task_timeout_s }),
+      ...(config.approval_timeout_s === undefined ? {} : { approvalTimeoutS: config.approval_timeout_s }),
+      ...(config.result_max_bytes === undefined ? {} : { resultMaxBytes: config.result_max_bytes }),
+      ...(config.max_input_files === undefined ? {} : { maxInputFiles: config.max_input_files }),
+      ...(config.max_input_bytes === undefined ? {} : { maxInputBytes: config.max_input_bytes }),
+      ...(config.allow_public_peers === undefined ? {} : { allowPublicPeers: config.allow_public_peers }),
+      ...(config.allow_loopback_peers === undefined ? {} : { allowLoopbackPeers: config.allow_loopback_peers }),
+      ...(config.permission_mode === undefined ? {} : { permissionMode: config.permission_mode }),
     })
+  }
+
+  // A panel-cleared field must not survive in the persisted orca node config.
+  const mutable = next as unknown as Record<string, unknown>
+  for (const key of ADVANCED_KEYS) {
+    if (config[key] === undefined) delete mutable[key]
   }
 
   if (stored === null || !sameConfig(stored, next)) {
@@ -427,7 +495,8 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
 function pickOverride(patch: Record<string, unknown>): Override {
   const picked: Override = {}
   for (const key of OVERRIDE_KEYS) {
-    if (patch[key] !== undefined) (picked as Record<string, unknown>)[key] = patch[key]
+    const value = patch[key]
+    if (value !== undefined) (picked as Record<string, unknown>)[key] = value ?? null
   }
   return picked
 }

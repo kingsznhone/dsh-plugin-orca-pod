@@ -13,7 +13,8 @@
  * file, so it never lands in `cordis.patch.yml` or logs.
  */
 
-import { DEFAULT_PORT, isHttpEndpoint, isWorkgroupId } from "../protocol.ts"
+import { DEFAULT_PORT, isHttpEndpoint, isPermissionMode, isWorkgroupId } from "../protocol.ts"
+import type { PermissionMode } from "../protocol.ts"
 
 import type { StandardIssue, StandardSchemaV1 } from "./dsh.ts"
 
@@ -47,6 +48,22 @@ export interface Config {
   bind_host?: string
   /** Initial peers to `join` on startup; failures are logged, not fatal. */
   peers: string[]
+  /** Local hard cap on a task's lifetime in seconds; peers see it as max_task_ttl_s (§6.9). */
+  task_timeout_s?: number
+  /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
+  approval_timeout_s?: number
+  /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). */
+  result_max_bytes?: number
+  /** Max number of task inputs one origin may attach (§6.7). */
+  max_input_files?: number
+  /** Max total bytes of task inputs materialized per task (§6.7). */
+  max_input_bytes?: number
+  /** Allow candidate endpoints on public IPs (§7.7). */
+  allow_public_peers?: boolean
+  /** Reject loopback candidate endpoints (§7.7). */
+  allow_loopback_peers?: boolean
+  /** Local ceiling for tasks this orca node runs (§7.10). */
+  permission_mode?: PermissionMode
 }
 
 /** Thrown when a config object does not satisfy the bundle's schema. */
@@ -80,6 +97,7 @@ export function validateConfigInput(value: unknown): Config {
   if (!isRecord(value)) {
     throw new ConfigValidationError([{ message: "expected an object" }])
   }
+  const source: Record<string, unknown> = value
   const issues: StandardIssue[] = []
 
   const workgroupIdRaw = value["workgroup_id"]
@@ -180,6 +198,47 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
+  // Advanced local controls: `null` clears a panel override so the bundle
+  // default (or the previous persisted value) applies again.
+  function optionalPositiveNumber(key: string, integer: boolean): number | undefined {
+    const raw = source[key]
+    if (raw === undefined || raw === null) return undefined
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0 || (integer && !Number.isInteger(raw))) {
+      issues.push({ path: [key], message: integer ? "must be a positive integer" : "must be a positive number" })
+      return undefined
+    }
+    return raw
+  }
+  function optionalBoolean(key: string): boolean | undefined {
+    const raw = source[key]
+    if (raw === undefined || raw === null) return undefined
+    if (typeof raw !== "boolean") {
+      issues.push({ path: [key], message: "must be a boolean when present" })
+      return undefined
+    }
+    return raw
+  }
+
+  const task_timeout_s = optionalPositiveNumber("task_timeout_s", false)
+  const approval_timeout_s = optionalPositiveNumber("approval_timeout_s", false)
+  const result_max_bytes = optionalPositiveNumber("result_max_bytes", true)
+  const max_input_files = optionalPositiveNumber("max_input_files", true)
+  const max_input_bytes = optionalPositiveNumber("max_input_bytes", true)
+  const allow_public_peers = optionalBoolean("allow_public_peers")
+  const allow_loopback_peers = optionalBoolean("allow_loopback_peers")
+  let permission_mode: PermissionMode | undefined
+  const permissionModeRaw = value["permission_mode"]
+  if (permissionModeRaw !== undefined && permissionModeRaw !== null) {
+    if (typeof permissionModeRaw !== "string" || !isPermissionMode(permissionModeRaw)) {
+      issues.push({
+        path: ["permission_mode"],
+        message: 'must be "read-only", "workspace-write", or "danger-full-access"',
+      })
+    } else {
+      permission_mode = permissionModeRaw
+    }
+  }
+
   if (issues.length > 0) throw new ConfigValidationError(issues)
 
   const config: Config = { workgroup_id, workgroup_password, port, skill_injection, peers }
@@ -187,6 +246,14 @@ export function validateConfigInput(value: unknown): Config {
   if (bind_host !== undefined) config.bind_host = bind_host
   if (endpoints !== undefined) config.endpoints = endpoints
   if (data_root !== undefined) config.data_root = data_root
+  if (task_timeout_s !== undefined) config.task_timeout_s = task_timeout_s
+  if (approval_timeout_s !== undefined) config.approval_timeout_s = approval_timeout_s
+  if (result_max_bytes !== undefined) config.result_max_bytes = result_max_bytes
+  if (max_input_files !== undefined) config.max_input_files = max_input_files
+  if (max_input_bytes !== undefined) config.max_input_bytes = max_input_bytes
+  if (allow_public_peers !== undefined) config.allow_public_peers = allow_public_peers
+  if (allow_loopback_peers !== undefined) config.allow_loopback_peers = allow_loopback_peers
+  if (permission_mode !== undefined) config.permission_mode = permission_mode
   return config
 }
 

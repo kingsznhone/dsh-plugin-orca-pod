@@ -14,7 +14,7 @@ import { defaultDataRoot } from "../config.ts"
 import { detectLocalEndpoints } from "../net.ts"
 import { permissionRequestOf } from "../protocol.ts"
 import type { DispatchEntry } from "../dispatches.ts"
-import type { PeerView, SelfRecord, TaskView } from "../protocol.ts"
+import type { PeerView, PermissionMode, SelfRecord, TaskView } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 import type { PodHandle } from "./lifecycle.ts"
 import type { TrackedTask, Tracker } from "./tracker.ts"
@@ -41,6 +41,18 @@ export interface WorkspaceView {
   inputs_dirs: Array<{ task_id: string; files: string[] }>
 }
 
+/** Advanced local controls the panel may edit; null means "not overridden". */
+export interface PodAdvancedConfig {
+  task_timeout_s: number | null
+  approval_timeout_s: number | null
+  result_max_bytes: number | null
+  max_input_files: number | null
+  max_input_bytes: number | null
+  allow_public_peers: boolean | null
+  allow_loopback_peers: boolean | null
+  permission_mode: PermissionMode | null
+}
+
 /** Effective pod configuration as the panel may see it (never the password). */
 export interface PodConfigView {
   /** True once the panel finished setup (an override file exists). */
@@ -56,6 +68,8 @@ export interface PodConfigView {
   detected_endpoints: string[]
   peers: string[]
   data_root: string
+  /** Local connection/timeout controls; null means the bundle default applies. */
+  advanced: PodAdvancedConfig
   password_set: boolean
   running: boolean
   error: string | null
@@ -146,6 +160,16 @@ export function createPodAdmin(
       detected_endpoints: detectLocalEndpoints(port),
       peers: [...config.peers],
       data_root: config.data_root ?? defaultDataRoot(),
+      advanced: {
+        task_timeout_s: config.task_timeout_s ?? null,
+        approval_timeout_s: config.approval_timeout_s ?? null,
+        result_max_bytes: config.result_max_bytes ?? null,
+        max_input_files: config.max_input_files ?? null,
+        max_input_bytes: config.max_input_bytes ?? null,
+        allow_public_peers: config.allow_public_peers ?? null,
+        allow_loopback_peers: config.allow_loopback_peers ?? null,
+        permission_mode: config.permission_mode ?? null,
+      },
       password_set: config.workgroup_password.length > 0,
       running: current !== null,
       error: handle.runtime.error === null ? null : handle.runtime.error.message,

@@ -130,7 +130,23 @@ window.__ModuleLoader__.load({
         cfgDisplayName: "display name",
         cfgDisplayNamePlaceholder: "blank = node id",
         cfgListenPort: "listen port",
-        cfgAdvertised: "advertised endpoints",
+        cfgAdvertised: "local node addresses",
+        cfgAdvanced: "advanced settings",
+        cfgAdvancedHint: "Local connection and timeout controls. Blank means \"use the default\"; saving restarts this orca node.",
+        cfgTaskTimeout: "task timeout (s)",
+        cfgTaskTimeoutHint: "Hard cap on how long one task may run on this node.",
+        cfgApprovalTimeout: "approval timeout (s)",
+        cfgApprovalTimeoutHint: "Auto-reject parked approvals after this long; blank waits forever.",
+        cfgResultMaxBytes: "result summary cap (bytes)",
+        cfgMaxInputFiles: "max input files per task",
+        cfgMaxInputMiB: "max input size (MiB)",
+        cfgAllowPublicPeers: "public candidate peers",
+        cfgAllowLoopbackPeers: "loopback candidates",
+        cfgPermissionMode: "local permission ceiling",
+        cfgAdvancedInvalid: "must be a positive number",
+        cfgDefaultOption: "default",
+        cfgAllowOption: "allow",
+        cfgDenyOption: "deny",
         cfgRemove: "Remove",
         cfgAddEndpoint: "Add address",
         cfgEndpointHint: "Detected this machine's IPv4/IPv6 addresses (avoid 127.0.0.1 — other machines cannot dial it). Add, remove or replace with a public hostname; leave empty to derive from the listen address.",
@@ -217,7 +233,23 @@ window.__ModuleLoader__.load({
         cfgDisplayName: "显示名称",
         cfgDisplayNamePlaceholder: "留空则使用节点 id",
         cfgListenPort: "监听端口",
-        cfgAdvertised: "对外广播地址",
+        cfgAdvertised: "本地节点地址",
+        cfgAdvanced: "高级设置",
+        cfgAdvancedHint: "本地连接与超时控制。留空表示使用默认值；保存会重启本节点。",
+        cfgTaskTimeout: "任务超时上限（秒）",
+        cfgTaskTimeoutHint: "单个任务在本机最多运行多久。",
+        cfgApprovalTimeout: "审批等待超时（秒）",
+        cfgApprovalTimeoutHint: "超时后自动拒绝；留空表示永久等待。",
+        cfgResultMaxBytes: "结果简报上限（字节）",
+        cfgMaxInputFiles: "单任务输入文件数上限",
+        cfgMaxInputMiB: "单任务输入总大小（MiB）",
+        cfgAllowPublicPeers: "公网候选节点",
+        cfgAllowLoopbackPeers: "回环候选节点",
+        cfgPermissionMode: "本机权限上限",
+        cfgAdvancedInvalid: "必须是正数",
+        cfgDefaultOption: "默认",
+        cfgAllowOption: "允许",
+        cfgDenyOption: "拒绝",
         cfgRemove: "移除",
         cfgAddEndpoint: "添加地址",
         cfgEndpointHint: "已自动识别本机 IPv4/IPv6 地址（默认不填 127.0.0.1，否则别的机器拨不到）；可增删或改成公网域名，全部清空则按监听地址自动识别。",
@@ -751,6 +783,23 @@ window.__ModuleLoader__.load({
       const [displayName, setDisplayName] = React.useState(wizard ? config.node_id || "" : config.display_name || "");
       const [port, setPort] = React.useState(String(config.port === undefined ? 11811 : config.port));
       const [endpoints, setEndpoints] = React.useState(suggested.length > 0 ? suggested : [""]);
+      const advanced = config.advanced || {};
+      const [advancedOpen, setAdvancedOpen] = React.useState(false);
+      const textOf = (value) => (value === null || value === undefined ? "" : String(value));
+      const [taskTimeout, setTaskTimeout] = React.useState(textOf(advanced.task_timeout_s));
+      const [approvalTimeout, setApprovalTimeout] = React.useState(textOf(advanced.approval_timeout_s));
+      const [resultMaxBytes, setResultMaxBytes] = React.useState(textOf(advanced.result_max_bytes));
+      const [maxInputFiles, setMaxInputFiles] = React.useState(textOf(advanced.max_input_files));
+      const [maxInputMiB, setMaxInputMiB] = React.useState(
+        typeof advanced.max_input_bytes === "number" && advanced.max_input_bytes > 0 ? String(Math.round(advanced.max_input_bytes / 1048576)) : "",
+      );
+      const [publicPeers, setPublicPeers] = React.useState(
+        advanced.allow_public_peers === true ? "allow" : advanced.allow_public_peers === false ? "deny" : "",
+      );
+      const [loopbackPeers, setLoopbackPeers] = React.useState(
+        advanced.allow_loopback_peers === true ? "allow" : advanced.allow_loopback_peers === false ? "deny" : "",
+      );
+      const [permissionMode, setPermissionMode] = React.useState(advanced.permission_mode || "");
       const [error, setError] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [resetArmed, setResetArmed] = React.useState(false);
@@ -786,6 +835,24 @@ window.__ModuleLoader__.load({
           const addresses = endpoints.map((row) => row.trim()).filter((row) => row.length > 0);
           if (addresses.length > 0) patch.endpoints = addresses;
           if (wizard || password.length > 0) patch.workgroup_password = password;
+          const number = (label, raw, integer) => {
+            const trimmed = raw.trim();
+            if (trimmed.length === 0) return null;
+            const parsed = Number(trimmed);
+            if (!Number.isFinite(parsed) || parsed <= 0 || (integer && !Number.isInteger(parsed))) {
+              throw new Error(label + " " + t("cfgAdvancedInvalid"));
+            }
+            return parsed;
+          };
+          patch.task_timeout_s = number(t("cfgTaskTimeout"), taskTimeout, false);
+          patch.approval_timeout_s = number(t("cfgApprovalTimeout"), approvalTimeout, false);
+          patch.result_max_bytes = number(t("cfgResultMaxBytes"), resultMaxBytes, true);
+          patch.max_input_files = number(t("cfgMaxInputFiles"), maxInputFiles, true);
+          const mib = number(t("cfgMaxInputMiB"), maxInputMiB, false);
+          patch.max_input_bytes = mib === null ? null : Math.round(mib * 1048576);
+          patch.allow_public_peers = publicPeers.length === 0 ? null : publicPeers === "allow";
+          patch.allow_loopback_peers = loopbackPeers.length === 0 ? null : loopbackPeers === "allow";
+          patch.permission_mode = permissionMode.length === 0 ? null : permissionMode;
           const next = await api("/orca-api/config", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -833,6 +900,34 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false);
         }
+      }
+
+      function advancedField(label, value, onChange, hint) {
+        return h(
+          "div",
+          { style: FIELD },
+          h("label", { style: LABEL }, label),
+          h("input", {
+            style: INPUT,
+            value: value,
+            inputMode: "numeric",
+            onChange: (event) => onChange(event.target.value),
+          }),
+          hint ? h("div", { style: HINT }, hint) : null,
+        );
+      }
+
+      function advancedSelect(label, value, onChange, options) {
+        return h(
+          "div",
+          { style: FIELD },
+          h("label", { style: LABEL }, label),
+          h(
+            "select",
+            { style: INPUT, value: value, onChange: (event) => onChange(event.target.value) },
+            options.map((option) => h("option", { key: option.value, value: option.value }, option.label)),
+          ),
+        );
       }
 
       const passwordPlaceholder = wizard
@@ -896,6 +991,52 @@ window.__ModuleLoader__.load({
           ),
           h("button", { type: "button", style: BUTTON, disabled: busy, onClick: addEndpoint }, t("cfgAddEndpoint")),
           h("div", { style: HINT }, t("cfgEndpointHint")),
+        ),
+        h(
+          "details",
+          {
+            style: { marginTop: 6, marginBottom: 14 },
+            open: advancedOpen,
+            onToggle: (event) => setAdvancedOpen(event.currentTarget.open),
+          },
+          h(
+            "summary",
+            {
+              style: {
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--dsw-alias-label-primary)",
+              },
+            },
+            t("cfgAdvanced"),
+          ),
+          h("div", { style: { ...HINT, marginBottom: 10 } }, t("cfgAdvancedHint")),
+          h(
+            "div",
+            { style: { display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 12 } },
+            advancedField(t("cfgTaskTimeout"), taskTimeout, setTaskTimeout, t("cfgTaskTimeoutHint")),
+            advancedField(t("cfgApprovalTimeout"), approvalTimeout, setApprovalTimeout, t("cfgApprovalTimeoutHint")),
+            advancedField(t("cfgResultMaxBytes"), resultMaxBytes, setResultMaxBytes, null),
+            advancedField(t("cfgMaxInputFiles"), maxInputFiles, setMaxInputFiles, null),
+            advancedField(t("cfgMaxInputMiB"), maxInputMiB, setMaxInputMiB, null),
+            advancedSelect(t("cfgPermissionMode"), permissionMode, setPermissionMode, [
+              { value: "", label: t("cfgDefaultOption") },
+              { value: "read-only", label: "read-only" },
+              { value: "workspace-write", label: "workspace-write" },
+              { value: "danger-full-access", label: "danger-full-access" },
+            ]),
+            advancedSelect(t("cfgAllowPublicPeers"), publicPeers, setPublicPeers, [
+              { value: "", label: t("cfgDefaultOption") },
+              { value: "allow", label: t("cfgAllowOption") },
+              { value: "deny", label: t("cfgDenyOption") },
+            ]),
+            advancedSelect(t("cfgAllowLoopbackPeers"), loopbackPeers, setLoopbackPeers, [
+              { value: "", label: t("cfgDefaultOption") },
+              { value: "allow", label: t("cfgAllowOption") },
+              { value: "deny", label: t("cfgDenyOption") },
+            ]),
+          ),
         ),
         error ? h("div", { style: { fontSize: 12, color: "var(--dsw-alias-state-error-primary)", marginBottom: 8 } }, error) : null,
         h(

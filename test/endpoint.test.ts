@@ -1,13 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig, endpointWriteback, validateConfig } from "../src/config.ts";
+
+// A scratch data root per test file: the identity file must never land in the
+// repository (it used to leave an untracked `endpoint-test-root/` behind).
+const dataRoot = mkdtempSync(join(tmpdir(), "orca-endpoint-"));
+afterAll(() => rmSync(dataRoot, { recursive: true, force: true }));
 
 describe("serve endpoint writeback", () => {
   it("keeps explicitly configured public endpoints", () => {
     const config = createOrcaNodeConfig({
       workgroupId: "endpoint-test",
       password: "correct horse",
-      dataRoot: "endpoint-test-root",
+      dataRoot,
       port: 0,
       endpoints: ["https://a.example.com", "http://192.168.1.10:11811"],
     });
@@ -22,7 +30,7 @@ describe("serve endpoint writeback", () => {
     const config = createOrcaNodeConfig({
       workgroupId: "endpoint-test",
       password: "correct horse",
-      dataRoot: "endpoint-test-root",
+      dataRoot,
       port: 0,
     });
 
@@ -36,7 +44,7 @@ describe("serve endpoint writeback", () => {
     const config = createOrcaNodeConfig({
       workgroupId: "endpoint-test",
       password: "correct horse",
-      dataRoot: "endpoint-test-root",
+      dataRoot,
       port: 11811,
       endpoints: ["https://a.example.com"],
     });
@@ -50,7 +58,7 @@ describe("config endpoint validation", () => {
     const config = createOrcaNodeConfig({
       workgroupId: "endpoint-test",
       password: "correct horse",
-      dataRoot: "endpoint-test-root",
+      dataRoot,
       port: 11811,
     });
     expect(validateConfig({ ...config, endpoints: [] }).endpoints).toEqual([]);
@@ -58,7 +66,7 @@ describe("config endpoint validation", () => {
     expect(() => createOrcaNodeConfig({
       workgroupId: "endpoint-test",
       password: "correct horse",
-      dataRoot: "endpoint-test-root",
+      dataRoot,
       port: 11811,
       endpoints: ["ftp://example.com"],
     })).toThrow(/endpoints/);

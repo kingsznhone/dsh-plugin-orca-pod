@@ -76,6 +76,53 @@ describe("panel override lifecycle", () => {
     }
   });
 
+  it("applies advanced connection and timeout controls from the panel", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod(baseConfig(root), logger);
+    await handle.ready;
+    try {
+      const admin = adminFor(handle);
+      const view = await admin.saveConfig({
+        task_timeout_s: 120,
+        approval_timeout_s: 45,
+        result_max_bytes: 4096,
+        max_input_files: 4,
+        max_input_bytes: 1048576,
+        allow_public_peers: true,
+        allow_loopback_peers: false,
+        permission_mode: "workspace-write",
+      });
+
+      expect(view.advanced).toEqual({
+        task_timeout_s: 120,
+        approval_timeout_s: 45,
+        result_max_bytes: 4096,
+        max_input_files: 4,
+        max_input_bytes: 1048576,
+        allow_public_peers: true,
+        allow_loopback_peers: false,
+        permission_mode: "workspace-write",
+      });
+      expect(handle.runtime.error).toBeNull();
+
+      const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
+      expect(stored["task_timeout_s"]).toBe(120);
+      const nodeConfig = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
+      expect(nodeConfig["task_timeout_s"]).toBe(120);
+      expect(nodeConfig["max_input_bytes"]).toBe(1048576);
+      expect(nodeConfig["permission_mode"]).toBe("workspace-write");
+
+      // Clearing a field removes it from the override and the persisted config,
+      // so the local default applies again instead of a stale stored value.
+      const cleared = await admin.saveConfig({ task_timeout_s: null });
+      expect(cleared.advanced.task_timeout_s).toBeNull();
+      const clearedConfig = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
+      expect(clearedConfig["task_timeout_s"]).toBeUndefined();
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
   it("full reset deletes both configs and returns to the wizard", async () => {
     const root = await tempRoot("orca-panel-");
     const handle = startPod(baseConfig(root), logger);
