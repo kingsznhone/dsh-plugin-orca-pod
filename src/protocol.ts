@@ -381,6 +381,11 @@ export interface TaskRunner {
   originOf(taskId: string): OrcaNodeId | null;
   /** Currently running task (single-slot, §6.9); null when idle. */
   busy(): BusyState | null;
+  /**
+   * Local (inbound) tasks, newest first, for the UI task panel (§9.2). In-memory
+   * records come first, then the persisted store fills the remaining budget.
+   */
+  list(limit?: number): TaskView[];
   /** Fail tasks that were interrupted by a restart (§8.3); returns how many. */
   recover(): number;
 }

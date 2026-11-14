@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { deriveChildGrant } from "./chain.ts";
 import { createFileBlobRegistry, type FileBlobStore } from "./blob-files.ts";
-import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
+import { buildAuthHeader, blobLinkSignature, NonceCache, signGrant } from "./crypto.ts";
 import {
   createMemoryDispatchStore,
   TERMINAL_TASK_STATES,
@@ -13,6 +13,7 @@ import {
   type DispatchStore,
 } from "./dispatches.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
+import { createPodEventBus, type PodEventListener } from "./events.ts";
 import { createHeadlessExecutor } from "./headless.ts";
 import { candidateEndpointAllowed } from "./net.ts";
 import { createAcpExecutor } from "./acp.ts";
@@ -179,6 +180,17 @@ export interface OrcaNode {
   linkChildTask(parentTaskId: string, peerUrl: string, childTaskId: string): void;
   /** Origin-side dispatch log, oldest first (§13.4). */
   listDispatches(): DispatchEntry[];
+  /** Local (inbound) tasks, newest first, for the UI task panel (§9.2). */
+  listTasks(limit?: number): TaskView[];
+  /**
+   * Subscribe to in-process state changes (task/member/dispatch). Returns an
+   * unsubscribe function; a throwing listener never reaches the node.
+   */
+  subscribe(listener: PodEventListener): () => void;
+  /** Short-lived download URL for one blob, or null when no endpoint is known yet. */
+  blobLink(blobId: string, ttlS?: number): string | null;
+  /** Workspace directories for UI browsing; null when this node is memory-only. */
+  workspacePaths(): { root: string; notes: string; inputs: string; state: string } | null;
 }
 
 /**
@@ -241,6 +253,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const fileBlobs = createFileBlobRegistry(options.storage?.fileBlobStore);
   /** §13.4: what this node dispatched to peers, so a restart does not lose track. */
   const dispatches = options.storage?.dispatchStore ?? createMemoryDispatchStore();
+  /** In-process change notifications for the UI panel (§9.2). */
+  const events = createPodEventBus();
   /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
   const maxTaskTtlS = config.task_timeout_s ?? 3600;
   const workspaceManager = options.storage?.workspace ?? null;
@@ -269,6 +283,11 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     dataRoot: config.data_root,
     sendTaskMessage: async (peerUrl, _taskId, message) => {
       await postA2a<TaskView>(peerUrl, "message/send", { message });
+    },
+    onEvent: (view) => {
+      events.emit({ type: "task", view });
+      // The busy holder is part of every member record; re-render it too.
+      emitMembersIfChanged();
     },
   });
 
@@ -324,6 +343,24 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return computeMembersDigest(roster());
   }
 
+  /** Roster/state/busy holder projection used only to suppress duplicate events. */
+  let membersSignature = "";
+  function membersSignatureOf(peers: PeerView[]): string {
+    return peers
+      .map((peer) => `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}`)
+      .sort()
+      .join("|");
+  }
+
+  /** Emit a members event only when something a UI panel would render changed (§9.2). */
+  function emitMembersIfChanged(): void {
+    const current = roster();
+    const signature = membersSignatureOf(current);
+    if (signature === membersSignature) return;
+    membersSignature = signature;
+    events.emit({ type: "members", members: current, digest: computeMembersDigest(current) });
+  }
+
   async function postSigned<T>(
     peerUrl: string,
     path: string,
@@ -366,6 +403,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     peers.upsert(response.self);
     membership.observeInbound(response.self.orca_node_id);
     membership.mergeRemote(response.members);
+    emitMembersIfChanged();
     return response;
   }
 
@@ -394,6 +432,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       membership.observeInbound(response.from);
       membership.observeOutboundOk(response.from);
       if (response.members) membership.mergeRemote(response.members);
+      emitMembersIfChanged();
       return response;
     } catch (error) {
       if (observeFailure && peer) membership.observeOutboundFail(peer.orca_node_id);
@@ -431,7 +470,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   function rememberDispatch(peerUrl: string, view: TaskView): void {
     const now = new Date().toISOString();
     const previous = dispatches.get(view.id);
-    dispatches.save({
+    const entry: DispatchEntry = {
       task_id: view.id,
       peer: peerUrl,
       ...(view.contextId !== undefined ? { context_id: view.contextId } : {}),
@@ -442,7 +481,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         : {}),
       created_at: previous?.created_at ?? now,
       updated_at: now,
-    });
+    };
+    dispatches.save(entry);
+    events.emit({ type: "dispatch", entry });
   }
 
   async function tracked<T extends TaskView>(peerUrl: string, call: Promise<T>): Promise<T> {
@@ -603,6 +644,31 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let heartbeatStopped = false;
 
+  /** Local tasks for the UI task panel (§9.2). */
+  function listTasks(limit = 200): TaskView[] {
+    return tasks.list(limit);
+  }
+
+  /** Subscribe to in-process state changes; the returned function unsubscribes. */
+  function subscribe(listener: PodEventListener): () => void {
+    return events.subscribe(listener);
+  }
+
+  /** Same URL shape the gateway's `/blobs/:id/link` mints (§5.6). */
+  function blobLink(blobId: string, ttlS = 300): string | null {
+    const primary = actualEndpoints[0];
+    if (primary === undefined) return null;
+    const exp = String(Math.floor(Date.now() / 1000) + ttlS);
+    const sig = blobLinkSignature(key, blobId, exp);
+    return `${primary}/blobs/${blobId}?exp=${exp}&sig=${sig}`;
+  }
+
+  /** Workspace directories for UI browsing; null when this node is memory-only. */
+  function workspacePaths(): { root: string; notes: string; inputs: string; state: string } | null {
+    if (workspace === null) return null;
+    return { root: workspace.root, notes: workspace.notes, inputs: workspace.inputs, state: workspace.state };
+  }
+
   function scheduleHeartbeat(): void {
     if (heartbeatStopped) return;
     const { intervalMs } = membership.timings;
@@ -675,6 +741,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       .list()
       .filter((peer) => peer.endpoints.length > 0 && membership.needsProbe(peer.orca_node_id, now));
     await Promise.allSettled(targets.map((peer) => heartbeatPeer(peer)));
+    emitMembersIfChanged();
     scheduleHeartbeat();
   }
 
@@ -692,6 +759,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     gatewayOrcaNode.endpoints = actualEndpoints;
     heartbeatStopped = false;
     void heartbeatTick();
+    emitMembersIfChanged();
     return { url: actualEndpoints[0] ?? address, port: boundPort };
   }
 
@@ -743,5 +811,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     escalateTask,
     linkChildTask,
     listDispatches: () => dispatches.list(),
+    listTasks,
+    subscribe,
+    blobLink,
+    workspacePaths,
   };
 }

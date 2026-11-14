@@ -184,7 +184,9 @@ function membership(deps: GatewayDeps): {
 }
 
 export function createGateway(deps: GatewayDeps): FastifyInstance {
-  const app = Fastify({ logger: false, bodyLimit: MAX_BLOB_BYTES });
+  // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
+  // shutdown must not wait for it.
+  const app = Fastify({ logger: false, bodyLimit: MAX_BLOB_BYTES, forceCloseConnections: true });
   const fileBlobs = deps.fileBlobs ?? createFileBlobRegistry();
 
   app.addContentTypeParser<Buffer>(

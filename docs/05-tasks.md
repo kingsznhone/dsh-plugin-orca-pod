@@ -66,7 +66,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 - 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
 - agent 只看到薄工具，没有一个会阻塞：`pod_send`（建完 task 立刻返回 `task_id`）、`pod_status(task_id)`（读缓存/任务存储，立即返回）、`pod_cancel(task_id)`、`pod_members()`。**没有 `pod_wait`**——等待不是 agent 的职责。
 
-**Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`pod_send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。`pod_wait` 明确不做；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
+**Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`pod_send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。`pod_wait` 明确不做；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
 
 派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会由 tracker 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
 
@@ -91,7 +91,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`pod_status` 随时可重放，插件内存只是缓存。
 
-CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.4](09-implementation.md#94-组合入口库根在-orca_nodets安装根是整个包) 里 harness 入口的一部分；`orca-node log [--json]` 直接读 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），用于重启后对账。
+CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包) 里 harness 入口的一部分；`orca-node log [--json]` 直接读 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），用于重启后对账。
 
 #### 完成唤醒
 

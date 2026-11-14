@@ -18,9 +18,12 @@ export * from "./executor.ts";
 export * from "./headless.ts";
 export * from "./acp.ts";
 export * from "./tasks.ts";
+export * from "./dispatches.ts";
+export * from "./events.ts";
 export * from "./preamble.ts";
 export * from "./orca_node.ts";
 export * from "./harness.ts";
+export * from "./plugin/admin.ts";
 
 /** DSH host bundle entry points (consumed by `cordis.patch.yml`). */
 export { Config, apply, inject } from "./plugin/index.ts";

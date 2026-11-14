@@ -172,6 +172,8 @@ export type TaskRunnerDeps = {
   maxInputBytes?: number;
   /** Sends a control message to a child task (grant/denial downward, §7.12). */
   sendTaskMessage?: (peerUrl: string, taskId: string, message: A2AMessage) => Promise<void>;
+  /** Called after every observable task change, for the UI event bus (§9.2). */
+  onEvent?: (view: TaskView) => void;
 };
 
 /**
@@ -190,6 +192,11 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const maxInputFiles = deps.maxInputFiles ?? DEFAULT_MAX_INPUT_FILES;
   const maxInputBytes = deps.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES;
   let activeTaskId: string | null = null;
+
+  /** Notify UI listeners after a state change; the bus catches listener errors. */
+  function emit(rec: Running): void {
+    deps.onEvent?.(cloneView(rec.view));
+  }
 
   function copyBlobTo(blobId: string, destination: string): boolean {
     if (deps.blobs.copyTo !== undefined) return deps.blobs.copyTo(blobId, destination);
@@ -446,6 +453,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       rmSync(rec.inputs_dir, { recursive: true, force: true });
       rec.inputs_dir = null;
     }
+    emit(rec);
   }
 
   async function pump(rec: Running, resume?: A2AMessage): Promise<void> {
@@ -475,6 +483,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     rec.iterator = iterator;
     rec.view.status = { state: "working", timestamp: nowIso() };
     persist(rec);
+    emit(rec);
     try {
       let step = resume === undefined ? await iterator.next() : await iterator.next(resume);
       while (!step.done) {
@@ -485,6 +494,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           armPermissionTimer(rec);
           releaseSlot(rec);
           persist(rec);
+          emit(rec);
           return;
         }
         if (event.type === "artifact") {
@@ -494,6 +504,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
             { artifactId: blob.blob_id, name: event.name, mediaType: "text/plain", bytes: blob.size },
           ];
           persist(rec);
+          emit(rec);
         } else if (event.type === "completed") {
           if (event.usage) rec.view.usage = event.usage;
           finish(rec, "completed", textMessage(event.text));
@@ -565,6 +576,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     tasks.set(id, rec);
     persist(rec);
     armTtl(rec);
+    emit(rec);
     void pump(rec);
     return cloneView(rec.view);
   }
@@ -580,6 +592,31 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     const rec = tasks.get(taskId);
     if (rec) return rec.origin_orca_node;
     return store.load(taskId)?.origin_orca_node ?? null;
+  }
+
+  /**
+   * Local tasks for the UI task panel (§9.2): newest live records first, then
+   * the persisted store fills the remaining budget. Terminal tasks stay in the
+   * store until it is pruned, so history survives a restart.
+   */
+  function list(limit = 200): TaskView[] {
+    const views: TaskView[] = [];
+    const seen = new Set<string>();
+    const live = [...tasks.values()].sort((left, right) => right.view.id.localeCompare(left.view.id));
+    for (const rec of live) {
+      if (views.length >= limit) break;
+      views.push(cloneView(rec.view));
+      seen.add(rec.view.id);
+    }
+    if (views.length < limit) {
+      const stored = store.list().sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+      for (const persisted of stored) {
+        if (views.length >= limit) break;
+        if (seen.has(persisted.view.id)) continue;
+        views.push(cloneView(persisted.view));
+      }
+    }
+    return views;
   }
 
   function resume(taskId: string, message: A2AMessage, callerOrcaNode?: string): TaskView {
@@ -645,6 +682,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       activeTaskId = taskId;
       rec.view.status = { state: "working", timestamp: nowIso() };
       persist(rec);
+      emit(rec);
       void escalationThenContinue(rec, escalation, grant);
       return cloneView(rec.view);
     }
@@ -654,6 +692,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     if (relay !== null && grant !== undefined) {
       rec.view.status = { state: "working", timestamp: nowIso() };
       persist(rec);
+      emit(rec);
       void relayThenPump(rec, relay, grant, message);
     } else {
       void pump(rec, message);
@@ -709,6 +748,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     armPermissionTimer(rec);
     releaseSlot(rec);
     persist(rec);
+    emit(rec);
     return cloneView(rec.view);
   }
 
@@ -762,5 +802,5 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return count;
   }
 
-  return { submit, get, originOf, resume, escalate, cancel, busy, recover };
+  return { submit, get, list, originOf, resume, escalate, cancel, busy, recover };
 }

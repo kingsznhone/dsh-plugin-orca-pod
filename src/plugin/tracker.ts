@@ -43,6 +43,16 @@ export interface TrackerOptions {
   logger?: HostLogger
 }
 
+/** One tracked dispatch, as the UI approval inbox sees it (§9.2). */
+export interface TrackedTask {
+  peer: string
+  taskId: string
+  /** Latest observed view; null before the first successful poll. */
+  view: TaskView | null
+  /** Permission request the remote task is blocked on, if any. */
+  request: PermissionRequest | null
+}
+
 /** Tracker handle returned to the plugin. */
 export interface Tracker {
   /** Start watching a task dispatched by the given agent. */
@@ -51,6 +61,10 @@ export interface Tracker {
   stop(): void
   /** Number of tasks still being watched (tests and diagnostics). */
   size(): number
+  /** Snapshot of watched tasks, for the UI task/approval panels (§9.2). */
+  list(): TrackedTask[]
+  /** Called when a watched task or its pending approval changed. */
+  subscribe(listener: () => void): () => void
 }
 
 interface PendingTask {
@@ -59,6 +73,8 @@ interface PendingTask {
   taskId: string
   /** Last permission request already surfaced to the agent. */
   seenRequest: string | null
+  /** Latest view observed during polling; null until the first successful poll. */
+  view: TaskView | null
 }
 
 interface FinishedTask extends PendingTask {
@@ -122,6 +138,18 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   const maxConsecutiveWakes = options.maxConsecutiveWakes ?? DEFAULT_MAX_CONSECUTIVE_WAKES
   const logger = options.logger
 
+  const listeners = new Set<() => void>()
+  /** UI panels re-read the snapshot; a throwing listener must not break polling. */
+  function notify(): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener()
+      } catch {
+        // ignore: the snapshot is still available through list()
+      }
+    }
+  }
+
   const pending = new Map<string, PendingTask>()
   const finished: FinishedTask[] = []
   const awake = new Map<string, number>()
@@ -140,9 +168,12 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   async function poll(): Promise<void> {
     const node = getNode()
     if (node === null) return
+    let changed = false
     for (const [key, entry] of [...pending]) {
       try {
         const view = await node.getTask(entry.peer, entry.taskId)
+        entry.view = view
+        changed = true
         const request = permissionRequestOf(view)
         if (request !== null) {
           // A suspended permission request is surfaced once; the task stays
@@ -162,9 +193,11 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         // A vanished task (404) or a transient network failure must not wedge the
         // tracker; drop it and let the agent discover the state through pod_status.
         pending.delete(key)
+        changed = true
         logger?.warn(`orca-pod: stopped tracking ${entry.taskId} on ${entry.peer}: ${errorMessage(error)}`)
       }
     }
+    if (changed) notify()
     if (pending.size === 0 && pollTimer !== undefined) {
       clearInterval(pollTimer)
       pollTimer = undefined
@@ -234,7 +267,8 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   return {
     track(agent, peer, taskId) {
       if (stopped) return
-      pending.set(`${peer}|${taskId}`, { agent, peer, taskId, seenRequest: null })
+      pending.set(`${peer}|${taskId}`, { agent, peer, taskId, seenRequest: null, view: null })
+      notify()
       ensurePolling()
     },
     stop() {
@@ -245,9 +279,24 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
       coalesceTimer = undefined
       pending.clear()
       finished.length = 0
+      listeners.clear()
     },
     size() {
       return pending.size + finished.length
+    },
+    list() {
+      return [...pending.values()].map((entry) => ({
+        peer: entry.peer,
+        taskId: entry.taskId,
+        view: entry.view,
+        request: entry.view === null ? null : permissionRequestOf(entry.view),
+      }))
+    },
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
     },
   }
 }

@@ -95,6 +95,10 @@ function peerSummary(peer: PeerView): Record<string, unknown> {
     display_name: peer.display_name,
     endpoints: peer.endpoints,
     state: peer.state,
+    busy: peer.busy,
+    runtime: peer.runtime,
+    last_recv_at: peer.last_recv_at,
+    max_task_ttl_s: peer.max_task_ttl_s,
   }
 }
 
