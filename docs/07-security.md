@@ -125,9 +125,9 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 | 情形 | 谁批 | 行为 |
 | --- | --- | --- |
-| `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 弹审批卡片（`pod_approve` → DSH `approval.request`） |
+| `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 交 Orca Pod UI：当前会话聊天卡、后台会话弹窗、或面板列表（`pod_approve` park 到人回答，无超时） |
 | `origin == self`，且会话本身在执行某个 inbound task（headless/ACP 执行器派出的子任务） | 链上更上游的人 | 本机不批：请求沿这条 inbound task 继续上升（CLI `wait --local-task <那个 task>` 自动 `tasks/escalate`），一直走到有人的会话为止 |
-| `origin == self`，且是本机真实根（没有 inbound task，人在这台机器前） | 本机的人 | 弹审批卡片；默认无限等待，可配置 `approval_timeout_s` 到点自动 `failed(permission_timeout)`；预授权命中则自动放行并记 `decided_by: policy` |
+| `origin == self`，且是本机真实根（没有 inbound task，人在这台机器前） | 本机的人 | 同样交 Orca Pod UI；默认无限等待，可配置 `approval_timeout_s` 到点自动 `failed(permission_timeout)`；预授权命中则自动放行并记 `decided_by: policy` |
 | `origin != self` | 链上更上游的人 | 本机不批，只逐跳上升：`permission_request` 交给 origin（CLI 的 `wait --local-task` 自动调 `tasks/escalate`），批准后下发 child grant |
 
 不存在“节点级 attended 标志”：同一台机器通常同时跑桌面 DSH 和 headless/ACP 执行器，有没有人取决于**是哪个会话发起了这个 task**；ACP 执行器会话只有 CLI、没有审批面，所以它派出的子任务一律 escalate。链上唯一的人坐在根会话前。
@@ -203,10 +203,11 @@ target: 工具调用超出继承的 mode
     }
 
 origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
-  → 用 DSH 现有审批卡片弹（复用 Host 的 approval 机制，人点）
+  → tracker 唤醒派发它的 agent，agent 调 pod_approve 把决定交给 UI
+  → UI 三通道：正在看的会话里贴聊天卡；后台会话弹窗；面板 Pending approvals 列表
   → 批准：生成新 grant（新 nonce、同 task、窄于等于请求范围），发一条 A2A 后续 message
   → 拒绝：发 message 明确 deny，target 把 task 置 failed(reason=permission_denied)
-  → 超时无人应答：origin 自动 deny + tasks/cancel，target 清理任务临时物
+  → 默认不超时（人可能不在），只有显式配置 approval_timeout_s 才自动 deny
 ```
 
 要点：
@@ -218,7 +219,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 - 补发的授权是**同一 task 的后续 message**（带 `taskId` + 新 grant），不是第二个任务，也不是独立的 grant 端点。
 - **origin 是唯一能产生“用户同意”的地方**；`decided_by` 必须来自 UI 的人类动作，不能由模型自批。
 - 审批卡片要显示：来源 orca node（display_name + id）、目标路径、命令/工具原文、请求理由、将提升到什么权限。不要把 target 传来的长文本渲染成 HTML（注入）。
-- 审批 UI 直接复用 DSH 的 approval 卡片（Host 既有机制），不另做插件面板。
+- 审批呈现只有一条通道，三个落点：**当前正在看的会话**里贴一张聊天卡（`conversation.input.dock`）；**后台会话**的请求在框内弹窗（`shell.overlay`）；**面板** Pending approvals 列表可随时签发。三者共用同一份 `prompts` 与同一条决议通道，没有“无 UI 时回退原生卡”这种分支。
 - 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用 orca node 反复索权。
 - origin 侧支持**预授权**（避免每次都弹）：按 `(workgroup, target, tool)` 记一条本地策略，如“允许 N7K3QM 在 P2W8XA 上跑 shell，单次 ≤15 分钟”。预授权记录进审计。
 
@@ -234,6 +235,8 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 **实现状态（Phase 3 第五版，默认无限等待）**：审批不再默认 120 秒过期。`permission_request.expires_at` 变成可选字段，只有配置了 `approval_timeout_s` 的 orca node 才会填；没配就是无限等待——人可能正在吃饭，任务不该因此失败。对应地，`input-required` 期间 task TTL（`task_ttl_s`）暂停，`resume` 后才重新计时，否则“等人”会被 TTL 当成“超时”。配置 `approval_timeout_s` 后，到点自动拒绝对应的挂起请求：先向下游（`pending_escalation`/`relay`）发 `permission_denied`，再让本 task `failed(permission_timeout)`。CLI 的 `wait`/`escalate` 的 `--timeout` 也变成可选：不给就一直等到 origin 决策。grant 范围内按工具/路径自动放行（预授权的自动化）仍未实现。
 
+**实现状态（Phase 3 第七版，会话内审批呈现）**：`pod_approve` 不再直接弹 DSH 原生卡，而是把请求 park 在插件的 `prompts` 注册表里（`src/plugin/prompts.ts`），**不设超时**——desktop 主控会话一直阻塞到人出现；headless/CLI/ACP 永远有上游，由上游的 origin 决定，所以不需要“无 UI 兜底”。目标节点收到权限请求即挂起 task，上游批准后 grant 下发、任务继续。client 侧三个落点共用同一决议通道：会话正在看时在 `conversation.input.dock` 贴聊天卡（按 `prompt.agent_id === sessionId` 过滤）；后台会话的请求由 `shell.overlay` 弹窗展示；面板 Pending approvals 列表照旧、点允许/拒绝即 `prompts.resolve` 唤醒被 park 的工具调用（`admin.approve/deny` 先 resolve prompt，再轮询到任务离开 `input-required`）。
+
 #### 链式调用：授权向下收窄，升级向上回传
 
 链 A→B→C 里，如果让 B 直接批准 C 的越界请求，A 的授权就被一个 agent 转授放大了。规则只有一条：**每个 task 的 origin 只能在自己拿到的 grant 范围内放行；超出一律上升，直到有人的那个 orca node，通常是根 A。**
@@ -242,7 +245,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 - A 给 B 的 grant 表达的是 A 的意图（比如“B 可以在工作区写”），B 批准 C 写 `/etc` 不在这个意图里——B 的“同意”不是人的同意；
 - B 也没有能力替 A 扩大授权：它没有 A 的 UI、没有人类动作，自批等于把授权链悄悄放宽；
-- 唯一例外：A 明确给了 B `danger-full-access`（用户已接受该风险），或 B 本地预授权策略命中。此时 B 可自行放行，但任务记录里记 `decided_by: "orca_node:<B>:policy"y"`，A 的 task 里也能看到一条“B 自动批准了 C 的请求”事件。
+- 唯一例外：A 明确给了 B `danger-full-access`（用户已接受该风险），或 B 本地预授权策略命中。此时 B 可自行放行，但任务记录里记 `decided_by: "orca_node:<B>:policy"`，A 的 task 里也能看到一条“B 自动批准了 C 的请求”事件。
 
 回路仍然没有反向调用，只是把同一份状态沿链上升：
 

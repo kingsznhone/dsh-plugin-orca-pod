@@ -87,6 +87,8 @@ export function podState(admin: PodAdmin): Record<string, unknown> {
       task_id: tracked.taskId,
       request: tracked.request,
     })),
+    // Parked `pod_approve` calls: the chat card, popup and panel all answer these.
+    prompts: admin.prompts(),
     artifacts,
     workspace: admin.workspace(),
     now: new Date().toISOString(),

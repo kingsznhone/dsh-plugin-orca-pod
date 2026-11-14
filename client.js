@@ -46,6 +46,12 @@ window.__ModuleLoader__.load({
       return panelOpen;
     }
 
+    /* Permission prompts parked by `pod_approve`. The dock lives inside the
+     * session the agent ran in, so it renders prompts for that session; every
+     * other prompt (background session) shows as a frame-wide popup instead.
+     * There is no timeout: the human answers whenever they show up (§7.12). */
+    let activeSessionId = null;
+
     /* ----- i18n ----------------------------------------------------------- */
 
     /** Locale face from the DSH client (`ctx.get("locale")`), set in apply(). */
@@ -82,6 +88,13 @@ window.__ModuleLoader__.load({
         updatedSuffix: " ago",
         approve: "approve",
         deny: "deny",
+        apTitle: "Permission needed",
+        apBackground: "A background task needs permission",
+        apWants: "wants to run",
+        apTask: "task",
+        apAllow: "Allow once",
+        apDeny: "Deny",
+        apInPanel: "In the panel",
         from: "from ",
         tool: "tool",
         colNode: "node",
@@ -161,6 +174,13 @@ window.__ModuleLoader__.load({
         updatedSuffix: " 前",
         approve: "允许",
         deny: "拒绝",
+        apTitle: "需要权限决策",
+        apBackground: "后台任务请求权限",
+        apWants: "请求执行",
+        apTask: "任务",
+        apAllow: "允许一次",
+        apDeny: "拒绝",
+        apInPanel: "在面板中处理",
         from: "来自 ",
         tool: "工具",
         colNode: "节点",
@@ -356,6 +376,30 @@ window.__ModuleLoader__.load({
       fontSize: 16,
       lineHeight: 1,
     };
+    const APPROVAL_CARD = {
+      pointerEvents: "auto",
+      boxSizing: "border-box",
+      width: "min(560px, calc(100vw - 32px))",
+      padding: "14px 16px",
+      borderRadius: "var(--dsw-radius-md, 12px)",
+      border: "1px solid var(--dsw-alias-border-l1)",
+      background: "var(--dsw-alias-bg-layer-1)",
+      boxShadow: "0 12px 32px rgba(0, 0, 0, 0.28)",
+      color: "var(--dsw-alias-label-primary)",
+    };
+    const APPROVAL_ROW = { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" };
+    const DOCK_WRAP = { display: "flex", flexDirection: "column", gap: 8, padding: "8px 0" };
+    const POPUP_WRAP = {
+      position: "fixed",
+      right: 16,
+      bottom: 56,
+      zIndex: 1001,
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      pointerEvents: "none",
+    };
+
     const FOOTER_ACTION = {
       cursor: "pointer",
       display: "flex",
@@ -931,6 +975,101 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Short JSON preview of the tool arguments a remote node wants to run. */
+    function describeRequested(value) {
+      if (value === null || value === undefined) return "";
+      let text;
+      try {
+        text = typeof value === "string" ? value : JSON.stringify(value);
+      } catch {
+        text = String(value);
+      }
+      if (typeof text !== "string") return "";
+      return text.length > 160 ? text.slice(0, 157) + "…" : text;
+    }
+
+    /** One parked `pod_approve` prompt; the dock and the popup share it. */
+    function PromptCard(props) {
+      const prompt = props.prompt;
+      const request = prompt.request || {};
+      const tool = request.tool || prompt.tool || "";
+      const requested = describeRequested(request.requested);
+      const meta = prompt.peer + " · " + t("apTask") + " " + prompt.task_id;
+      return h(
+        "div",
+        { style: APPROVAL_CARD },
+        h(
+          "div",
+          { style: { fontFamily: FONT_FAMILY, fontSize: 14, fontWeight: 600, lineHeight: "22px" } },
+          props.background ? t("apBackground") : t("apTitle"),
+        ),
+        h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, meta),
+        h(
+          "div",
+          { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "20px", marginTop: 4, whiteSpace: "normal" } },
+          tool ? t("apWants") + " " + t("tool") + " " + tool : t("apWants"),
+          requested ? h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal", fontFamily: MONO_FONT, fontSize: 12, lineHeight: "18px" } }, requested) : null,
+        ),
+        h(
+          "div",
+          { style: APPROVAL_ROW },
+          h(
+            "button",
+            {
+              type: "button",
+              style: PRIMARY,
+              disabled: props.busy,
+              onClick: () => props.onAct("approve", { peer: prompt.peer, task_id: prompt.task_id }),
+            },
+            t("apAllow"),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              style: DANGER,
+              disabled: props.busy,
+              onClick: () => props.onAct("deny", { peer: prompt.peer, task_id: prompt.task_id, reason: "denied in the Orca Pod UI" }),
+            },
+            t("apDeny"),
+          ),
+          h("button", { type: "button", style: BUTTON, onClick: () => setPanelOpen(true) }, t("apInPanel")),
+        ),
+      );
+    }
+
+    /** Chat card: prompts parked by a `pod_approve` call in this session. */
+    function ApprovalDock(props) {
+      useLocaleTick();
+      const sessionId = props && typeof props.sessionId === "string" ? props.sessionId : null;
+      React.useEffect(() => {
+        if (!sessionId) return undefined;
+        activeSessionId = sessionId;
+        return () => {
+          if (activeSessionId === sessionId) activeSessionId = null;
+        };
+      }, [sessionId]);
+      const { state, busy, act } = usePodState();
+      const prompts = (state && state.prompts) || [];
+      const mine = sessionId ? prompts.filter((prompt) => prompt.agent_id === sessionId) : [];
+      if (mine.length === 0) return null;
+      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, busy, onAct: act })));
+    }
+
+    /** Frame-wide popup: prompts parked by sessions that are not on screen. */
+    function ApprovalPopup() {
+      useLocaleTick();
+      const { state, busy, act } = usePodState();
+      const prompts = (state && state.prompts) || [];
+      const background = prompts.filter((prompt) => !activeSessionId || prompt.agent_id !== activeSessionId);
+      if (background.length === 0) return null;
+      return h(
+        "div",
+        { style: POPUP_WRAP },
+        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, busy, onAct: act, background: true })),
+      );
+    }
+
     function Panel() {
       useLocaleTick();
       const { state, error, busy, act, reload } = usePodState();
@@ -1033,6 +1172,14 @@ window.__ModuleLoader__.load({
       );
       ctx.slots.inject("shell.overlay", () =>
         ctx.slots.register({ name: "shell.overlay", id: NS + ".panel", order: 60 }, OverlayPanel),
+      );
+      // Permission prompts: a chat card inside the session that dispatched the
+      // task, plus a frame-wide popup for sessions that are not on screen.
+      ctx.slots.inject("conversation.input.dock", () =>
+        ctx.slots.register({ name: "conversation.input.dock", id: NS + ".approval-dock", order: 60 }, ApprovalDock),
+      );
+      ctx.slots.inject("shell.overlay", () =>
+        ctx.slots.register({ name: "shell.overlay", id: NS + ".approval-popup", order: 61 }, ApprovalPopup),
       );
     }
 

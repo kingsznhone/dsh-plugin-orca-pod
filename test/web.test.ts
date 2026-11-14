@@ -40,6 +40,18 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       taskView("TASK02", "input-required"),
     ],
     dispatches: () => [{ task_id: "TASK01", peer: "http://127.0.0.1:11812", state: "completed" } as DispatchEntry],
+    prompts: () => [
+      {
+        id: "p-1",
+        peer: "http://127.0.0.1:11812",
+        task_id: "TASK02",
+        request_id: "req-1",
+        tool: "write_file",
+        requested: { path: "report.md" },
+        agent_id: "session-1",
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+    ],
     config: () => ({
       configured: true,
       workgroup_id: "wg",
@@ -235,6 +247,13 @@ describe("panel HTTP bridge", () => {
     expect(result.status).toBe(200);
     expect(result.body.config.workgroup_id).toBe("wg");
     expect(result.body.config.password_set).toBe(true);
+  });
+
+  it("includes parked approval prompts for the chat card and popup", async () => {
+    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/state` });
+    expect(result.status).toBe(200);
+    expect(result.body.prompts).toHaveLength(1);
+    expect(result.body.prompts[0]).toMatchObject({ task_id: "TASK02", agent_id: "session-1" });
   });
 
   it("saves a config patch from the panel", async () => {

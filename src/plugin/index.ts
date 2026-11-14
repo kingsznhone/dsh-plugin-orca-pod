@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url"
 
 import { defaultDataRoot } from "../config.ts"
 import { createPodAdmin } from "./admin.ts"
+import { createApprovalPrompts } from "./prompts.ts"
 import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
 import type { HostContext, HostLogger, StandardSchemaV1 } from "./dsh.ts"
@@ -75,6 +76,9 @@ export function apply(ctx: HostContext, config: Config): void {
   // their terminal state to the dispatching agent.
   const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
 
+  // Parked `pod_approve` calls: the panel, chat card and popup answer them.
+  const prompts = createApprovalPrompts()
+
   // Headless and ACP executors run in their own `dsh` subprocesses and cannot
   // see this host's tools, so the CLI is handed to them as a user skill.
   // Installation is idempotent: the file is rewritten only when stale.
@@ -93,6 +97,7 @@ export function apply(ctx: HostContext, config: Config): void {
   // reload, or the bundle being disabled). It awaits the orca node shutdown.
   ctx.effect(
     () => async () => {
+      prompts.cancelAll()
       tracker.stop()
       await stopPod(handle, logger)
     },
@@ -101,10 +106,13 @@ export function apply(ctx: HostContext, config: Config): void {
 
   // Settings-page panel: members, local tasks, approvals and workspace browsing.
   // The route is same-origin and loopback-gated; hosts without a web UI skip it.
-  const admin = createPodAdmin(handle, tracker)
+  const admin = createPodAdmin(handle, tracker, { prompts })
   registerPodWeb(ctx, admin, logger)
 
-  for (const tool of createPodTools(handle, tracker, { approval: optionalService(ctx, "approval") })) {
+  for (const tool of createPodTools(handle, tracker, {
+    approval: optionalService(ctx, "approval"),
+    prompts,
+  })) {
     try {
       ctx.tools.register(tool)
     } catch (error) {

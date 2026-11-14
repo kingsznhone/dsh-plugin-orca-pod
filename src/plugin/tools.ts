@@ -14,6 +14,7 @@ import type { OrcaNode } from "../orca_node.ts"
 import type { ApprovalService, ContentBlock, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts"
 import type { PodHandle } from "./lifecycle.ts"
 import { permissionOriginNote, type Tracker } from "./tracker.ts"
+import type { ApprovalPrompts } from "./prompts.ts"
 import { describeError } from "./util.ts"
 
 const ASYNC_NOTE =
@@ -105,6 +106,12 @@ function peerSummary(peer: PeerView): Record<string, unknown> {
 /** Host services the approval tool needs; omitted in tests without one. */
 export interface PodToolOptions {
   approval?: ApprovalService
+  /**
+   * UI answer channel for `pod_approve` (§9.2). When present the tool parks
+   * until the chat card, popup or panel answers it, with no timeout; the native
+   * DSH approval card is only used when no UI channel is attached.
+   */
+  prompts?: ApprovalPrompts
 }
 
 /** Build the `pod_*` tool definitions bound to one running pod handle. */
@@ -235,8 +242,8 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
     name: "pod_approve",
     description:
       "Answer a remote Orca task's permission request. " +
-      "Call this after a notice says a task needs permission. decision \"allow\" asks the human through the DSH approval card and sends the signed grant; decision \"deny\" fails the remote task with permission_denied. " +
-      "Only the task's origin can answer; other members can still read the task.",
+      "Call this after a notice says a task needs permission. decision \"allow\" asks the human in the Orca Pod UI (chat card when the session is on screen, otherwise the popup or the panel) and sends the signed grant once answered; decision \"deny\" fails the remote task with permission_denied. " +
+      "The ask blocks until the human answers. Only the task's origin can answer; other members can still read the task.",
     parameters: {
       type: "object",
       properties: {
@@ -275,6 +282,27 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
         if (decision === "deny") {
           const task = await orcaNode.denyTask(peer, view, reason ?? "denied by origin")
           return { decision: "denied", task_id: task.id, state: task.status.state, reason: task.status.reason }
+        }
+        if (options.prompts !== undefined && exec?.agent !== undefined) {
+          // Park the call until the Orca Pod UI answers; there is deliberately
+          // no timeout, so the window can stay open for as long as it takes.
+          const pending = options.prompts.request({
+            peer,
+            task_id: taskId,
+            request,
+            agent_id: exec.agent.id,
+          })
+          const answer = await pending.wait()
+          if (answer !== "allow") {
+            const task = await orcaNode.denyTask(
+              peer,
+              view,
+              answer === "deny" ? "denied in the Orca Pod UI" : "approval cancelled",
+            )
+            return { decision: "denied", approval: answer ?? "cancelled", task_id: task.id, state: task.status.state }
+          }
+          const task = await orcaNode.approveTask(peer, view)
+          return { decision: "approved", approval: "allowed-once", task_id: task.id, state: task.status.state }
         }
         const approval = options.approval
         if (approval === undefined || exec?.agent === undefined) {

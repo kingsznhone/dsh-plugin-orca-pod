@@ -18,6 +18,7 @@ import type { PeerView, SelfRecord, TaskView } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 import type { PodHandle } from "./lifecycle.ts"
 import type { TrackedTask, Tracker } from "./tracker.ts"
+import type { ApprovalPrompt, ApprovalPrompts } from "./prompts.ts"
 
 /** One artifact attached to a task, with a directly usable download URL. */
 export interface PodArtifact {
@@ -70,6 +71,8 @@ export interface PodAdmin {
   task(peer: string, taskId: string): Promise<TaskView>
   /** Watched remote tasks currently blocked on a permission request. */
   approvals(): TrackedTask[]
+  /** `pod_approve` calls currently parked on a human answer. */
+  prompts(): ApprovalPrompt[]
   approve(peer: string, taskId: string): Promise<TaskView>
   deny(peer: string, taskId: string, reason?: string): Promise<TaskView>
   cancel(peer: string, taskId: string): Promise<TaskView>
@@ -100,8 +103,23 @@ function entries(dir: string): Array<{ name: string; is_dir: boolean }> {
   }
 }
 
+/** Poll until a parked `pod_approve` has resumed the task (or it settles). */
+async function waitForResume(node: OrcaNode, peer: string, taskId: string): Promise<TaskView> {
+  const deadline = Date.now() + 10_000
+  let view = await node.getTask(peer, taskId)
+  while (view.status.state === "input-required" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    view = await node.getTask(peer, taskId)
+  }
+  return view
+}
+
 /** Build the admin surface over one running orca node. */
-export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
+export function createPodAdmin(
+  handle: PodHandle,
+  tracker: Tracker,
+  options: { prompts?: ApprovalPrompts } = {},
+): PodAdmin {
   /** The node, or null while startup failed / has not completed yet. */
   function node(): OrcaNode | null {
     return handle.runtime.orcaNode
@@ -153,14 +171,27 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
     approvals() {
       return tracker.list().filter((tracked) => tracked.request !== null)
     },
+    prompts() {
+      return options.prompts?.list() ?? []
+    },
     async approve(peer, taskId) {
+      // A pending `pod_approve` call may be parked on this task; answering here
+      // is the same decision the chat card / popup sends.
+      const resolved = options.prompts?.resolve(peer, taskId, "allow") ?? false
       const current = requireNode()
+      if (resolved) {
+        return waitForResume(current, peer, taskId)
+      }
       const view = await current.getTask(peer, taskId)
       if (permissionRequestOf(view) === null) throw new Error("task has no pending permission request")
       return current.approveTask(peer, view)
     },
     async deny(peer, taskId, reason = "denied from the UI") {
+      const resolved = options.prompts?.resolve(peer, taskId, "deny") ?? false
       const current = requireNode()
+      if (resolved) {
+        return waitForResume(current, peer, taskId)
+      }
       const view = await current.getTask(peer, taskId)
       if (permissionRequestOf(view) === null) throw new Error("task has no pending permission request")
       return current.denyTask(peer, view, reason)

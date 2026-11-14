@@ -77,7 +77,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 | 事件 | 手段 | 效果 |
 |---|---|---|
 | 任务完成 / 失败（普通） | 由 tracker 投递：running → `agent.inject()`；idle → `agent.followup()` | 2s 窗口内多个终态合并成一条 notice；`inject` 落 `agent/inbox/spliced` 等下一步，`followup` 叫醒新一轮 |
-| `input-required` 的 `permission_request`、祖先禁调的 `blocked`、需要人立刻决定 | `agent.followup()` | 唤醒 agent 开新一轮，走审批卡片/回报流程（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
+| `input-required` 的 `permission_request`、祖先禁调的 `blocked`、需要人立刻决定 | `agent.followup()` | 唤醒 agent 开新一轮，走 Orca Pod UI 审批/回报流程（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
 | 任何时刻用户主动问 | `pod_status` | 从任务存储/缓存读，与会话历史无关 |
 
 普通完成由 tracker 投递：同一轮还没结束时 `inject()`（不打断），idle 时 `followup()`（开新一轮）；`input-required` 里的 `permission_request`、祖先禁调的 `blocked` 这类“必须现在处理”的事件无条件走 `followup()`。唤醒是有代价的（新一轮模型调用、可能打断用户），所以用预算和 idle 判定兜住。
