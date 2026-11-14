@@ -14,7 +14,7 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 236 个测试通过（34 个文件；workspace、inputs、blobs 流式、origin 派发日志、自动上升、CLI `send --file`、多端点拨号、面板数据面均已覆盖），`npm run typecheck` 通过；真实进程 smoke `npm run harness` 通过。
+- core 已跑通：`npm test` 243 个测试通过（35 个文件；workspace、inputs、blobs 流式、origin 派发日志、自动上升、CLI `send --file`、多端点拨号、面板数据面与 `/orca-api` 桥均已覆盖），`npm run typecheck` 通过；真实进程 smoke `npm run harness` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（5 个非阻塞工具 + 后台 tracker/inject/followup）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push；权限、工作区与 session 已在 Phase 2/3 落地。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
@@ -67,7 +67,7 @@
 - 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/cluster/child-link`（该接口故意只认传输层回环）。
 - 10 个 orca node full mesh 压测：45 链路、45 心跳/s、任务延迟、内存/CPU。
 - 可选：SSE、`tasks/resubscribe`、push notification。
-- 可选：UI 面板——Host 侧数据面已实现（`events.ts` + `plugin/admin.ts`：任务列表、变更事件、审批直通、工作区/产物浏览，见 [§9.2](09-implementation.md#92-面板数据面eventsts--pluginadmints)）；剩余是 client entry + slot + Host↔client 桥。
+- 可选：独立前端——设置页面板已实现（`client.js` 注册 `settings.section`，经同源 `/orca-api` 轮询；Host 数据面见 [§9.2](09-implementation.md#92-面板数据面--同源桥--设置页)）；若要做独立窗口/路由，再补 client 入口与布局容器。
 - 可选：orca node 内建 mTLS（per-node 身份，解决“同组共享密钥、身份可伪造”，见 [§7.1](07-security.md#71-workgroup-与密码)）。
 - 验收：10 个 orca node 24h 稳定；单 orca node 故障不影响其他 orca node 任务。
 

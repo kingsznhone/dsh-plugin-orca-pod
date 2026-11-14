@@ -36,7 +36,8 @@ orca-pod/（仓库根目录）
     harness.ts        进程内多 orca node + `waitFor` 断言 helper，测试用
     harness-run.ts    真实进程 smoke test（`npm run harness`：两个 serve、join、任务往返）
     cli.ts            `orca-node` CLI：serve / send / status / wait / members / escalate / publish / log
-    plugin/           DSH bundle：Config、apply、pod_* 工具、后台 tracker、admin.ts（面板数据面）、skill.ts（安装期技能注入）
+    plugin/           DSH bundle：Config、apply、pod_* 工具、后台 tracker、admin.ts（面板数据面）、web.ts（面板同源路由）、skill.ts（安装期技能注入）
+  client.js           DSH 客户端 bundle：Settings → Orca Pod 面板（轮询 /orca-api）
   test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/tracker/skill/approval/watchdog）
 ```
 
@@ -64,8 +65,8 @@ orca-pod/（仓库根目录）
 | `orca_node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器；origin 日志 upsert 与 child-link 轮询（自动上升）；`listTasks`/`subscribe`/`blobLink`/`workspacePaths` 供面板读 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）、`waitFor`；mesh/A2A/discovery/formation/transport 测试 |
 | `harness-run.ts` | 已实现 | 真实进程 smoke：两个 `orca-node serve`、`--peer` 引导 join、CLI members 收敛、Echo 任务到终态、清理临时目录 |
-| `plugin/` | 部分实现 | `apply` 启动 orca node、注册 5 个 `pod_*` 工具（含 `pod_approve`）；后台 tracker 轮询终态并 `inject`/`followup`，权限请求强制唤醒；审批卡片已接线（reason 显示来源链）；`admin.ts` 提供面板数据面（成员/任务/审批/工作区/产物直链，审批不经模型）；安装期幂等写 user skill `orca-node/SKILL.md`；client bundle、credentials 读取未做 |
-| `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
+| `plugin/` | 部分实现 | `apply` 启动 orca node、注册 5 个 `pod_*` 工具（含 `pod_approve`）；后台 tracker 轮询终态并 `inject`/`followup`，权限请求强制唤醒；审批卡片已接线（reason 显示来源链）；`admin.ts` 提供面板数据面（成员/任务/审批/工作区/产物直链，审批不经模型）；`web.ts` 在 DSH web 同源注册 `/orca-api`（仅回环），`client.js` 是注册 `settings.section` 的客户端 bundle；安装期幂等写 user skill `orca-node/SKILL.md`；credentials 读取未做 |
+| `ui`（独立前端） | 未开始 | 目前面板是 DSH Settings 里的一页；将来若要独立窗口/路由，仍放在同一包内（`src/ui/` 或独立 client 入口），发布物不增加依赖 |
 
 “已实现”指当前可运行、有测试或用例覆盖；未列出的目标能力属于后续里程碑。
 
@@ -95,7 +96,7 @@ orca_node ← harness, plugin
 
 HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`、错误处理都用它现成的，不手写 http server。
 
-### 9.2 面板数据面（`events.ts` + `plugin/admin.ts`）
+### 9.2 面板（数据面 + 同源桥 + 设置页）
 
 将来 UI 面板需要的每个数字都应该从 Host 侧同步取到，而不是先让模型调一次工具再转述。为此库根暴露四个只读入口，插件再把它们打包成 `PodAdmin`：
 
@@ -108,7 +109,25 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 
 `createPodAdmin(handle, tracker)` 组合出面板 API：`members()`（完整 `PeerView`，含 busy/runtime/last_recv_at/max_task_ttl_s）、`tasks()`、`dispatches()`、`task(peer, id)`、`approvals()`（tracker 里正挂权限请求的任务）、`approve(peer, id)` / `deny(peer, id, reason?)`（直接走 `OrcaNode.approveTask`，不经过模型与工具轮次）、`artifacts(view)`（附 `blobLink` URL）、`workspace()`、`subscribe()`（合并节点事件与 tracker 更新）。
 
-面板用轮询兜底即可，事件只是降低延迟：`pod_members` 工具现在也返回 busy/runtime/last_recv_at/max_task_ttl_s，不再裁剪成四个字段。审批仍以 DSH 审批卡片为第一入口；`PodAdmin.approve` 是给将来面板的直通路径，两者共用同一套 grant 校验。
+面板用轮询兜底即可，事件只是降低延迟：`pod_members` 工具现在也返回 busy/runtime/last_recv_at/max_task_ttl_s，不再裁剪成四个字段。审批仍以 DSH 审批卡片为第一入口；`PodAdmin.approve` 是给面板的直通路径，两者共用同一套 grant 校验。
+
+#### 9.2.1 同源桥（`plugin/web.ts`）
+
+第三方 bundle 不能 import Host 包，也没有 Typert Remote 的生成流程，所以面板不声明 RPC，而是在已经运行的 DSH web 服务上注册一条同源前缀路由（与 `billion-context` 的做法一致）：
+
+| 路由 | 方法 | 内容 |
+|---|---|---|
+| `/orca-api/state` | GET | 一次轮询拿全量：`self`、`members`、`tasks`（最近 50）、`dispatches`、`approvals`、`artifacts`（按任务）、`workspace`、`now` |
+| `/orca-api/task?peer=&task=` | GET | 单任务详情 + 该任务的产物直链 |
+| `/orca-api/approve` / `deny` / `cancel` | POST | `{peer, task_id, reason?}` → 直接调 `PodAdmin` 对应方法，不经模型 |
+
+注册走 `ctx.inject(['webServer'], sub => sub.effect(() => sub.webServer.register({kind:'prefix', path:'/orca-api', handler})))`；没有 web 服务的宿主（headless/ACP/CLI）直接跳过，不影响启动。路由只接受回环连接（`socket.remoteAddress` 必须是 `127.0.0.1`/`::1`/`::ffff:127.0.0.1`）且拒绝带 `x-forwarded-for`/`forwarded`/`x-real-ip` 的请求，因此面板不会因为反向代理或多网卡把审批面暴露出去——和 `/cluster/child-link` 同一原则：本地能力信传输层，不信任签名身份。
+
+#### 9.2.2 客户端 bundle（`client.js`）
+
+包根 `client.js` 是 DSH 客户端 lazy-CJS 工厂：`window.__ModuleLoader__.load({id:"orca-pod", factory(require){…}})`，factory 内只 `require('react')`，返回 `{inject:['slots'], apply}`；`apply` 里 `ctx.slots.inject('settings.section', () => ctx.slots.register({name:'settings.section', id:'orca-pod', order:60, label:'Orca Pod'}, Panel))`。面板每 2s `fetch('/orca-api/state')`，渲染成员（state/busy/endpoints/OS）、待审批（approve/deny 按钮）、最近任务（状态、来源、产物直链、cancel）、工作区（`notes/` 文件、`inputs/` 目录）。样式只用内联对象与 `--dsw-alias-*` 主题 token，不写 `document.body`，卸载时清理定时器。
+
+清单接线：`package.json` 的 `exports["./client"] = "./client.js"`、`dsh.client = {platform:"web", immediately:true}`、`files` 含 `client.js`；Host 侧 `apply` 把 `createPodAdmin(handle, tracker)` 传给 `registerPodWeb`。
 
 ### 9.3 每个模块怎么测
 
@@ -128,8 +147,9 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `tasks.ts` | 假 executor + 注入时钟 | 单槽、TTL、取消 |
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
+| `plugin/web.ts` / `client.js` | 假 `PodAdmin` + 假 req/res | 状态快照、回环与转发头拒绝、approve/deny/cancel 直通、路由注册与 `effect` 清理 |
 
-实际跑通的测试：protocol 33 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 7 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个、dispatches 4 个、relay-auto 2 个、endpoint 4 个、multi-endpoint 2 个、heartbeat-adaptive 5 个、ui-surface 4 个，共 236 个、34 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 33 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 7 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个、dispatches 4 个、relay-auto 2 个、endpoint 4 个、multi-endpoint 2 个、heartbeat-adaptive 5 个、ui-surface 4 个、web 7 个，共 243 个、35 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.4 进程内多 orca node
 
@@ -253,6 +273,6 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 个 orca node 压测复用 harness。
 
-**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）、executor（Echo + Headless + ACP）已实现；面板数据面已实现（`events.ts` + `plugin/admin.ts`：任务列表、事件、审批直通、工作区/产物浏览，`test/ui-surface.test.ts`）；InProcess executor、`src/ui` 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、workgroup 根（agent cwd）与 `state/` 分离、任务 inputs 物化、流式 blob、重启恢复）已实现；HeadlessExecutor 已用假 `dsh` 验证协议映射，并在 Windows 本机用真实 `dsh` + 模型凭据跑通端到端（`scripts/e2e-headless.ts`：两个任务 `completed`、第二个复用 session）；AcpExecutor 已用假 ACP server 验证协议映射、权限挂起→grant→继续、取消与 session 复用/重启 `session/resume`，并在 Windows 本机用真实 `dsh --profile acp` + 模型凭据跑通端到端（`scripts/e2e-acp.mjs`：一个任务 `completed`、文本 `pong`）；`orca-node` CLI 的 send/status/wait/members/escalate/publish/log 与 ACP/headless 共享 preamble 已实现（`test/cli.test.ts` 10 条，`publish` 直写本机 SQLite、无 HTTP 登记路由，`send --file` 上传附件，`send --local-task` 登记自动上升）；跨进程 harness 已实现（`npm run harness`：两个真实进程、join、任务往返）；origin 侧任务日志已实现（`dispatches` 表、重启标 `unknown`、CLI `log`）。Phase 3 的审批回路第一版（grant 用 workgroup key 做 HMAC 签发/校验、`permission_request` 载荷、`pod_approve` 在 open turn 内调 DSH approval、批准/拒绝/篡改/过期/非 origin 测试）已实现；链式逐跳升级、收窄与自动上升已实现（`chain.ts` + `tasks.escalate` + origin 侧 child-link 轮询，`test/chain.test.ts`、`test/escalation.test.ts`、`test/relay-auto.test.ts`），`permission_mode`/`limits` 收窄仍未开始。
+**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）、executor（Echo + Headless + ACP）已实现；面板已实现（数据面 `events.ts` + `plugin/admin.ts`、同源桥 `plugin/web.ts` 的 `/orca-api`、客户端 `client.js` 的 Settings 页；`test/ui-surface.test.ts`、`test/web.test.ts`）；InProcess executor、独立风格的前端（`src/ui/`）未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、workgroup 根（agent cwd）与 `state/` 分离、任务 inputs 物化、流式 blob、重启恢复）已实现；HeadlessExecutor 已用假 `dsh` 验证协议映射，并在 Windows 本机用真实 `dsh` + 模型凭据跑通端到端（`scripts/e2e-headless.ts`：两个任务 `completed`、第二个复用 session）；AcpExecutor 已用假 ACP server 验证协议映射、权限挂起→grant→继续、取消与 session 复用/重启 `session/resume`，并在 Windows 本机用真实 `dsh --profile acp` + 模型凭据跑通端到端（`scripts/e2e-acp.mjs`：一个任务 `completed`、文本 `pong`）；`orca-node` CLI 的 send/status/wait/members/escalate/publish/log 与 ACP/headless 共享 preamble 已实现（`test/cli.test.ts` 10 条，`publish` 直写本机 SQLite、无 HTTP 登记路由，`send --file` 上传附件，`send --local-task` 登记自动上升）；跨进程 harness 已实现（`npm run harness`：两个真实进程、join、任务往返）；origin 侧任务日志已实现（`dispatches` 表、重启标 `unknown`、CLI `log`）。Phase 3 的审批回路第一版（grant 用 workgroup key 做 HMAC 签发/校验、`permission_request` 载荷、`pod_approve` 在 open turn 内调 DSH approval、批准/拒绝/篡改/过期/非 origin 测试）已实现；链式逐跳升级、收窄与自动上升已实现（`chain.ts` + `tasks.escalate` + origin 侧 child-link 轮询，`test/chain.test.ts`、`test/escalation.test.ts`、`test/relay-auto.test.ts`），`permission_mode`/`limits` 收窄仍未开始。
 
 ---

@@ -11,6 +11,23 @@
 /** Cleanup returned from `ctx.effect`; Cordis awaits promise-returning disposers. */
 export type Cleanup = () => void | Promise<void>
 
+/** One HTTP route served by the host web server on the DSH origin. */
+export interface WebServerRoute {
+  kind: "exact" | "prefix"
+  path: string
+  handler(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): void | Promise<void>
+}
+
+/** Host web server service (`ctx.webServer`): same-origin routes for the UI. */
+export interface WebServerLike {
+  register(route: WebServerRoute): Cleanup
+}
+
+/** Services visible before and after an `ctx.inject` fence. */
+export interface HostWebContext {
+  webServer?: WebServerLike
+}
+
 /** Subset of the Cordis logger service used for lifecycle messages. */
 export interface HostLogger {
   info(...args: unknown[]): void
@@ -107,6 +124,10 @@ export interface HostContext {
   logger?: HostLogger
   /** Approval service; present when the host exposes human approvals. */
   approval?: ApprovalService
+  /** Same-origin web server, present when the host serves a web UI. */
+  webServer?: WebServerLike
+  /** Cordis dependency fence; runs `callback` once the services appear. */
+  inject?(dependencies: string[], callback: (sub: HostWebContext) => void): void
 }
 
 /** One Standard Schema validation issue. */

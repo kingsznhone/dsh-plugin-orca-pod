@@ -12,7 +12,7 @@ import { join } from "node:path"
 
 import { permissionRequestOf } from "../protocol.ts"
 import type { DispatchEntry } from "../dispatches.ts"
-import type { PeerView, TaskView } from "../protocol.ts"
+import type { PeerView, SelfRecord, TaskView } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 import type { PodHandle } from "./lifecycle.ts"
 import type { TrackedTask, Tracker } from "./tracker.ts"
@@ -40,6 +40,8 @@ export interface WorkspaceView {
 
 /** Read-only data surface plus approval actions. */
 export interface PodAdmin {
+  /** This node's own advertised record, or null while it is not running. */
+  self(): SelfRecord | null
   members(): PeerView[]
   tasks(limit?: number): TaskView[]
   dispatches(): DispatchEntry[]
@@ -48,6 +50,7 @@ export interface PodAdmin {
   approvals(): TrackedTask[]
   approve(peer: string, taskId: string): Promise<TaskView>
   deny(peer: string, taskId: string, reason?: string): Promise<TaskView>
+  cancel(peer: string, taskId: string): Promise<TaskView>
   artifacts(view: TaskView): PodArtifact[]
   workspace(): WorkspaceView | null
   /** Change notification; subscribes to both node events and tracker updates. */
@@ -79,6 +82,9 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
   }
 
   return {
+    self() {
+      return node()?.self() ?? null
+    },
     members() {
       return node()?.members() ?? []
     },
@@ -105,6 +111,9 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
       const view = await current.getTask(peer, taskId)
       if (permissionRequestOf(view) === null) throw new Error("task has no pending permission request")
       return current.denyTask(peer, view, reason)
+    },
+    async cancel(peer, taskId) {
+      return requireNode().cancelTask(peer, taskId)
     },
     artifacts(view) {
       const current = node()

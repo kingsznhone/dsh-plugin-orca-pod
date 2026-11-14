@@ -10,6 +10,7 @@
 import { fileURLToPath } from "node:url"
 
 import { defaultDataRoot } from "../config.ts"
+import { createPodAdmin } from "./admin.ts"
 import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
 import type { HostContext, HostLogger, StandardSchemaV1 } from "./dsh.ts"
@@ -18,6 +19,7 @@ import { installSkill } from "./skill.ts"
 import { createPodTools } from "./tools.ts"
 import { createTracker } from "./tracker.ts"
 import { errorMessage } from "./util.ts"
+import { registerPodWeb } from "./web.ts"
 
 /** Validated plugin configuration. */
 export type Config = PodConfig
@@ -73,6 +75,11 @@ export function apply(ctx: HostContext, config: Config): void {
     },
     "orca-pod.orca-node",
   )
+
+  // Settings-page panel: members, local tasks, approvals and workspace browsing.
+  // The route is same-origin and loopback-gated; hosts without a web UI skip it.
+  const admin = createPodAdmin(handle, tracker)
+  registerPodWeb(ctx, admin, logger)
 
   for (const tool of createPodTools(handle, tracker, { approval: ctx.approval })) {
     try {
