@@ -58,6 +58,8 @@ export type ExecuteInput = {
 
 export interface LocalExecutor {
   run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, unknown>;
+  /** Optional teardown for executors that keep a long-lived child process. */
+  close?(): void;
 }
 
 export const ECHO_LIMITS = {

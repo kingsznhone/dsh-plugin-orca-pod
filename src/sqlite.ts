@@ -34,18 +34,27 @@ export function createSqliteTaskStore(path: string): SqliteTaskStore {
     return JSON.parse((row as { payload: string }).payload) as PersistedTask;
   }
 
+  // stop() can run twice (teardown + explicit stop); an in-flight pump may still
+  // try to persist after close, so late saves become no-ops.
+  let closed = false;
+
   return {
     save(task: PersistedTask): void {
+      if (closed) return;
       upsert.run(task.view.id, JSON.stringify(task), task.updated_at);
     },
     load(taskId: string): PersistedTask | undefined {
+      if (closed) return undefined;
       const row = selectOne.get(taskId);
       return row === undefined ? undefined : parse(row);
     },
     list(): PersistedTask[] {
+      if (closed) return [];
       return selectAll.all().map(parse);
     },
     close(): void {
+      if (closed) return;
+      closed = true;
       db.close();
     },
   };

@@ -1,0 +1,157 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/config.ts";
+import { permissionRequestOf, type TaskView } from "../src/protocol.ts";
+import { createAcpExecutor } from "../src/acp.ts";
+import type { ExecuteInput, ExecutorEvent } from "../src/executor.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
+
+const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
+const LIVE: OrcaNode[] = [];
+
+afterEach(async () => {
+  for (const node of LIVE.splice(0)) await node.stop();
+});
+
+function configFor(root: string, mode: string): OrcaNodeConfig {
+  return createOrcaNodeConfig({
+    workgroupId: "acp-test",
+    password: "correct horse",
+    dataRoot: root,
+    port: 0,
+    executor: "acp",
+    acp: { command: process.execPath, extra_args: [FAKE_ACP, mode, join(root, "acp.log")] },
+  });
+}
+
+async function startNode(config: OrcaNodeConfig): Promise<OrcaNode> {
+  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+  await node.start();
+  LIVE.push(node);
+  return node;
+}
+
+async function send(node: OrcaNode, text: string, contextId = "ctx-1"): Promise<TaskView> {
+  return node.sendTask(node.endpoint, {
+    message: { role: "user", parts: [{ kind: "text", text }], contextId },
+  });
+}
+
+async function waitForState(node: OrcaNode, taskId: string, wanted: readonly string[], timeoutMs = 10_000): Promise<TaskView> {
+  const deadline = Date.now() + timeoutMs;
+  let view = await node.getTask(node.endpoint, taskId);
+  while (!wanted.includes(view.status.state) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    view = await node.getTask(node.endpoint, taskId);
+  }
+  expect(wanted).toContain(view.status.state);
+  return view;
+}
+
+async function logEntries(path: string): Promise<Array<{ method?: string; text?: string; cwd?: string }>> {
+  const text = await readFile(path, "utf8").catch(() => "");
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { method?: string; text?: string; cwd?: string });
+}
+
+async function waitForLog(
+  path: string,
+  predicate: (entry: { method?: string }) => boolean,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await logEntries(path)).some(predicate)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
+function taskText(view: TaskView): string {
+  const part = view.status.message?.parts[0];
+  return part !== undefined && part.kind === "text" ? part.text : "";
+}
+
+describe("AcpExecutor", () => {
+  it("completes a task with the accumulated assistant text and runs in the workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok"));
+    const submitted = await send(node, "say hi");
+    const view = await waitForState(node, submitted.id, ["completed"]);
+    expect(taskText(view)).toBe("acp done");
+    const entries = await logEntries(join(root, "acp.log"));
+    const created = entries.find((entry) => entry.method === "session/new");
+    expect(created?.cwd?.endsWith(join("workgroups", "acp-test", "work"))).toBe(true);
+    expect(entries.find((entry) => entry.method === "session/prompt")?.text).toBe("say hi");
+  }, 15_000);
+
+  it("suspends for a permission request and continues after the origin approves", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "permission"));
+    const submitted = await send(node, "write a file");
+    const suspended = await waitForState(node, submitted.id, ["input-required"]);
+    const request = permissionRequestOf(suspended);
+    expect(request?.tool).toBe("write file");
+    expect(request?.requested_by).toBe(node.orcaNodeId);
+
+    await node.approveTask(node.endpoint, suspended);
+    const done = await waitForState(node, submitted.id, ["completed"]);
+    expect(taskText(done)).toContain("allowed");
+  }, 15_000);
+
+  it("cancels the ACP prompt when the task is cancelled", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "hang"));
+    const submitted = await send(node, "never finish");
+    await waitForState(node, submitted.id, ["working"]);
+    await node.cancelTask(node.endpoint, submitted.id);
+    const view = await waitForState(node, submitted.id, ["canceled"]);
+    expect(view.status.state).toBe("canceled");
+    const cancelled = await waitForLog(join(root, "acp.log"), (entry) => entry.method === "session/cancel");
+    expect(cancelled).toBe(true);
+  }, 15_000);
+
+  it("reuses one ACP session for the same origin + context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok"));
+    await waitForState(node, (await send(node, "first")).id, ["completed"]);
+    await waitForState(node, (await send(node, "second")).id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    expect(entries.filter((entry) => entry.method === "session/new")).toHaveLength(1);
+    expect(entries.filter((entry) => entry.method === "session/prompt")).toHaveLength(2);
+  }, 15_000);
+
+  it("resumes the stored ACP session after the orca node restarts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const config = configFor(root, "ok");
+    const first = await startNode(config);
+    await waitForState(first, (await send(first, "before restart")).id, ["completed"]);
+    await first.stop();
+
+    const second = await startNode(config);
+    await waitForState(second, (await send(second, "after restart")).id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    expect(entries.some((entry) => entry.method === "session/resume")).toBe(true);
+  }, 20_000);
+
+  it("reports a spawn failure instead of hanging", async () => {
+    const pod = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const executor = createAcpExecutor({ command: join(pod, "missing-acp"), profile: "acp" });
+    const events: ExecutorEvent[] = [];
+    const input: ExecuteInput = {
+      taskId: "t1",
+      contextId: "c1",
+      prompt: "hi",
+      originOrcaNode: "ORIGIN",
+      workspaceDir: pod,
+    };
+    for await (const event of executor.run(input, new AbortController().signal)) events.push(event);
+    expect(events[0]).toMatchObject({ type: "failed" });
+  }, 15_000);
+});

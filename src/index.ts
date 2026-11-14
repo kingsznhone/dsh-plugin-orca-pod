@@ -15,6 +15,7 @@ export * from "./gateway.ts";
 export * from "./membership.ts";
 export * from "./executor.ts";
 export * from "./headless.ts";
+export * from "./acp.ts";
 export * from "./tasks.ts";
 export * from "./orca_node.ts";
 export * from "./harness.ts";

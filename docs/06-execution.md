@@ -42,10 +42,10 @@ interface LocalExecutor {
 |---|---|---|---|---|
 | `EchoExecutor` | Phase 0 协议验证 | 无 DSH 依赖、确定性 | 不执行真实任务 | 已实现 |
 | `HeadlessExecutor` | 一次性任务 | 最简单，`dsh headless "..."` | 无流式、无协作取消、无多轮 | 已实现（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)） |
-| `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent | 未实现 |
+| `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent | 已实现（[§6.15](06-execution.md#615-acpexecutorphase-23-长任务执行器)） |
 | `InProcessExecutor` | 深度集成 | 无子进程协议、性能好 | 与 DSH 内部 API 耦合，升级易碎 | 未实现 |
 
-推荐顺序：Echo → Headless → ACP。不要一开始就耦合 ACP。
+推荐顺序：Echo → Headless → ACP，三者现已齐。
 
 **谁选执行器**：由**被调用 orca node 自己的配置**决定（将来 `node.executor: "echo" | "headless" | "acp"`），origin 不参与，也不能在任务里指定。executor 是本机实现细节，A2A 线协议完全相同；任务 manifest 里回报的 `executor` 字段只是“这台机器实际用了哪个”的观测事实，不是调用方可以要求的东西。要区分“能不能干这个活”，看 Agent Card / runtime 能力，而不是看执行器类型。
 
@@ -294,5 +294,41 @@ DEEPSEEK_API_KEY=... node scripts/e2e-headless.ts
 ```
 
 本机实测（2026-11-14，Windows）：两个任务各约 10s；任务 1 `completed` 且 `final.text` 为 `stored`，任务 2 在同一个 context 里复用 session 答出 `pong`；`sessions.json` 只留一条 `<origin_orca_node>|ctx-e2e-headless` 绑定。
+
+### 6.15 AcpExecutor（Phase 2/3 长任务执行器）
+
+Phase 2 的第二个真实执行器，也是唯一能承接**权限挂起**的那种：任务交给 `dsh --profile acp`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
+
+配置：
+
+```
+"executor": "acp",
+"acp": { "command": "dsh", "profile": "acp", "extra_args": [] }
+```
+
+cwd = group workspace 的 `work/`；每次任务一条 in-flight prompt（ACP 服务端本身也限制一条）。
+
+| ACP | executor |
+|---|---|
+| `initialize` → `{protocolVersion: 1, ...}` | 连接就绪；`clientCapabilities` 只声明空 fs/terminal 能力 |
+| `session/new {cwd, mcpServers: []}` | 开工前建会话；`sessionId` 写 `<workspace>/.pod/sessions.json` |
+| `session/resume {sessionId, cwd}` | 重启或第二次任务优先复用；失败回落 `session/new` |
+| `session/prompt {sessionId, prompt: [{type:"text", text}]}` | 发送任务文本 |
+| `session/update` → `agent_message_chunk` | 累积结论文本 |
+| `session/update` → `agent_thought_chunk` / `tool_call` / `usage_update` | 忽略（不映射成事件） |
+| `session/request_permission` | `yield suspend {kind:"permission", tool: toolCall.title, requested: options}` |
+| resume 带 grant | 回 `{outcome:{outcome:"selected", optionId:"allow-once"}}` |
+| resume 为拒绝/取消 | 回 `{outcome:{outcome:"cancelled"}}`（服务端按 rejected 处理） |
+| `stopReason: "end_turn"` | `completed(累积文本)` |
+| `stopReason: "max_tokens"` / `"refusal"` | `failed(原因文本)` |
+| 取消 | 发 `session/cancel`，`KILL_GRACE_MS`（2s）后关连接/杀进程树 |
+
+**grant 与 ACP 的对齐**：[§7.11](07-security.md#711-grant) 的 grant 第一版就是 `allow_once`，与 ACP 的 `session/request_permission`（one-shot allow/reject）语义一一对应；target 侧不需要理解 grant 的具体工具参数，只把“允许/拒绝”翻译成 optionId。
+
+**会话复用**：`.pod/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
+
+**不做**：把 `message/stream` 的进度透传到 A2A 流（结论仍走 `tasks/get` 轮询）、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、多 in-flight prompt。真实 `dsh` 的 ACP 端到端还需模型凭据，暂未纳入 `npm test`。
+
+**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`。
 
 ---

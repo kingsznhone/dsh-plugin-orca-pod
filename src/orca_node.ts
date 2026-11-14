@@ -7,6 +7,7 @@ import { deriveChildGrant } from "./chain.ts";
 import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
+import { createAcpExecutor } from "./acp.ts";
 import { createGateway } from "./gateway.ts";
 import { createMembership, type MembershipClock, type MembershipTimings } from "./membership.ts";
 import {
@@ -185,10 +186,15 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const blobs = options.storage?.blobStore ?? createMemoryBlobStore();
   const workspaceManager = options.storage?.workspace ?? null;
   const workspace: Workspace | null = workspaceManager?.get() ?? null;
+  const executor: LocalExecutor =
+    options.executor ??
+    (config.executor === "headless"
+      ? createHeadlessExecutor(config.headless ?? {})
+      : config.executor === "acp"
+        ? createAcpExecutor(config.acp ?? {})
+        : new EchoExecutor());
   const tasks = createTaskRunner({
-    executor:
-      options.executor ??
-      (config.executor === "headless" ? createHeadlessExecutor(config.headless ?? {}) : new EchoExecutor()),
+    executor,
     blobs,
     ...(options.storage?.taskStore ? { store: options.storage.taskStore } : {}),
     ...(workspace ? { workspace } : {}),
@@ -448,6 +454,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       heartbeatTimer = null;
     }
     await app.close();
+    executor.close?.();
     options.storage?.taskStore?.close?.();
   }
 
