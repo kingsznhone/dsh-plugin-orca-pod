@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { ConfigValidationError, validateConfigInput } from "../src/plugin/config.ts"
-import type { PodHandle } from "../src/plugin/node.ts"
+import type { PodHandle } from "../src/plugin/lifecycle.ts"
 import { createPodTools } from "../src/plugin/tools.ts"
 import * as plugin from "../src/plugin/index.ts"
 

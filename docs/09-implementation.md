@@ -131,7 +131,7 @@ orca-pod/（仓库根目录）
   cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod' }  # Host 行
   src/index.ts       export { Config, apply, inject } from './plugin/index.ts'
                      + 全部库导出（createNode 等），DSH 与库共用一个入口
-  src/plugin/        apply / config / node 生命周期 / tools / 最小 DSH 类型
+  src/plugin/        apply / config / lifecycle（节点生命周期）/ tools / 最小 DSH 类型
 ```
 
 `apply` 只做四件事，其余都靠注入（实际实现见 `src/plugin/index.ts`）：

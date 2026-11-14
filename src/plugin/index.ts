@@ -10,7 +10,7 @@
 import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
 import type { HostContext, HostLogger, StandardSchemaV1 } from "./dsh.ts"
-import { startPod, stopPod } from "./node.ts"
+import { startPod, stopPod } from "./lifecycle.ts"
 import { createPodTools } from "./tools.ts"
 import { errorMessage } from "./util.ts"
 

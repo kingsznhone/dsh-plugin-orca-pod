@@ -11,7 +11,7 @@ import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
 import type { OrcaNode } from "../node.ts"
 
 import type { ContentBlock, RawJsonSchema, ToolDefinition } from "./dsh.ts"
-import type { PodHandle } from "./node.ts"
+import type { PodHandle } from "./lifecycle.ts"
 import { describeError } from "./util.ts"
 
 const ASYNC_NOTE =

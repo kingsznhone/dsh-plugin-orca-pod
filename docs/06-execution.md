@@ -47,6 +47,8 @@ interface LocalExecutor {
 
 推荐顺序：Echo → Headless → ACP。不要一开始就耦合 ACP。
 
+**谁选执行器**：由**被调用节点自己的配置**决定（将来 `node.executor: "echo" | "headless" | "acp"`），origin 不参与，也不能在任务里指定。executor 是本机实现细节，A2A 线协议完全相同；任务 manifest 里回报的 `executor` 字段只是“这台机器实际用了哪个”的观测事实，不是调用方可以要求的东西。要区分“能不能干这个活”，看 Agent Card / runtime 能力，而不是看执行器类型。
+
 ### 6.3 EchoExecutor：用脚本模拟任务
 
 Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗时、何时挂起、要什么权限、最终返回什么”写清楚，executor 照着演。它验证的是网络、状态机、审批回路和 blob 回传，不是模型能力。
