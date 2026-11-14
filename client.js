@@ -54,7 +54,7 @@ window.__ModuleLoader__.load({
 
     /* ----- i18n ----------------------------------------------------------- */
 
-    /** Locale face from the DSH client (`ctx.get("locale")`), set in apply(). */
+    /** Locale face from the DSH client (`ctx.locale`), set in apply(). */
     let localeFace = null;
 
     const TEXT = {
@@ -235,10 +235,21 @@ window.__ModuleLoader__.load({
     function activeLocaleId() {
       try {
         const snapshot = localeFace && typeof localeFace.getLocale === "function" ? localeFace.getLocale() : null;
-        return snapshot && typeof snapshot.active === "string" ? snapshot.active : "en";
+        if (snapshot && typeof snapshot.active === "string") return snapshot.active;
       } catch {
-        return "en";
+        /* fall through to the browser hint */
       }
+      // No locale service (or it has not resolved yet): follow the page/browser.
+      try {
+        const documentLang = typeof document !== "undefined" && document.documentElement ? document.documentElement.lang : "";
+        if (typeof documentLang === "string" && documentLang.length > 0) return documentLang;
+        if (typeof navigator !== "undefined" && typeof navigator.language === "string" && navigator.language.length > 0) {
+          return navigator.language;
+        }
+      } catch {
+        /* no document/navigator (tests) */
+      }
+      return "en";
     }
 
     /** Translate a key; Chinese for zh-* UI languages, English otherwise. */
@@ -885,8 +896,10 @@ window.__ModuleLoader__.load({
       const [host, setHost] = React.useState("");
       const [peerPort, setPeerPort] = React.useState("11811");
       const [connectError, setConnectError] = React.useState(null);
-      const peers = Array.isArray(config.peers) ? config.peers : [];
-      const joined = peers.length > 0;
+      const members = Array.isArray(state.members) ? state.members : [];
+      // The header button reflects the live mesh, not the remembered peer list:
+      // saved peers that stop answering must read as "Connect", not "Disconnect".
+      const joined = members.length > 0;
 
       function peerUrl() {
         const raw = host.trim();
@@ -1148,8 +1161,13 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** Locale face used for Chinese/English selection (optional service). */
+    /** Locale face used for Chinese/English selection (hard `locale` dependency). */
     function resolveLocaleFace(ctx) {
+      try {
+        if (ctx && ctx.locale) return ctx.locale;
+      } catch {
+        /* injected locale is unavailable */
+      }
       try {
         if (ctx && typeof ctx.get === "function") {
           const value = ctx.get("locale");
@@ -1183,7 +1201,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    module.exports = { inject: ["slots"], apply };
+    module.exports = { inject: ["slots", "locale"], apply };
     return module.exports;
   },
 });
