@@ -18,6 +18,7 @@ packages/orca-pod/
     config.ts         配置校验、默认值、密钥派生、JSON 读写
     storage.ts        PeerStore（+ 重导出 blobs）
     blobs.ts          内容寻址 blob store
+    membership.ts     成员记录、心跳看门狗、墓碑与修剪
     gateway.ts        HTTP：/health、Agent Card、/cluster/*、/a2a、/blobs
     executor.ts       LocalExecutor 接口 + EchoExecutor（ACP 后续）
     tasks.ts          单槽任务运行器
@@ -25,7 +26,7 @@ packages/orca-pod/
     harness.ts        进程内多节点，测试用
     cli.ts            `orca-node serve --config <path>`
     plugin/           DSH bundle：Config、apply、pod_* 工具
-  test/               vitest 套件（protocol/crypto/mesh/a2a/blobs/plugin）
+  test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/watchdog）
 ```
 
 当前代码状态（Phase 0）：
@@ -35,11 +36,12 @@ packages/orca-pod/
 | `protocol.ts` | 已实现 | 类型、错误码、任务视图、node_id、digest、签名规范化 |
 | `crypto.ts` | 已实现 | HKDF、请求签名、nonce cache |
 | `config.ts` | 已实现 | 配置校验、密钥派生、JSON 读写 |
-| `storage.ts` / `blobs.ts` | 部分实现 | 内存 `PeerStore` / `BlobStore`；fs、SQLite、GC 未实现 |
+| `storage.ts` / `blobs.ts` | 部分实现 | 内存 PeerStore / BlobStore；fs、SQLite、GC 未实现 |
+| `membership.ts` | 已实现 | 双向看门狗、单调时钟、suspect(unreachable)、墓碑与 record_ttl 修剪 |
 | `gateway.ts` | 已实现 | `/health`、Agent Card、`/a2a`、`/cluster/*`、`/blobs`（上传/下载/直链） |
 | `executor.ts` | 部分实现 | EchoExecutor；ACP、Headless、InProcess 未实现 |
 | `tasks.ts` | 已实现 | 单槽状态机；task store 为进程内内存 |
-| `node.ts` | 已实现 | 组合根；无后台心跳与看门狗 |
+| `node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
 | `harness.ts` | 已实现 | `createMesh` + mesh/A2A 测试；场景 DSL 未实现 |
 | `plugin/` | 部分实现 | `apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
 | `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
@@ -52,6 +54,7 @@ packages/orca-pod/
 protocol  ← crypto, config, storage, gateway, executor, tasks, node
 crypto    ← config, gateway, node
 storage   ← gateway, node
+membership ← node   （gateway 只见 PeerStore 门面）
 gateway   ← node   （gateway 只依赖 protocol + storage 接口，不 import executor/tasks 实现）
 executor  ← tasks
 tasks     ← node
@@ -78,7 +81,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 场景 DSL | 成员收敛、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个，共 73 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
+Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个，共 80 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
@@ -197,6 +200,6 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 节点压测复用 harness。
 
-**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、ACP 均未开始。Phase 1 的心跳/看门狗与故障注入也尚未实现。
+**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、ACP 均未开始。Phase 1 的心跳循环、双向看门狗、单调时钟与墓碑修剪已实现；hints/候选端点与故障注入场景 DSL 尚未实现。
 
 ---

@@ -9,6 +9,7 @@ export * from "./crypto.ts";
 export * from "./config.ts";
 export * from "./storage.ts";
 export * from "./gateway.ts";
+export * from "./membership.ts";
 export * from "./executor.ts";
 export * from "./tasks.ts";
 export * from "./node.ts";

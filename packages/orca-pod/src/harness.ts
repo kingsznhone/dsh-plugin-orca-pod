@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createNodeConfig } from "./config.ts";
+import type { MembershipTimings } from "./membership.ts";
 import { createNode, type OrcaNode } from "./node.ts";
 import { isHttpEndpoint } from "./protocol.ts";
 
@@ -13,6 +14,7 @@ export type MeshOptions = {
   basePort?: number;
   displayNamePrefix?: string;
   dataRoot?: string;
+  timings?: Partial<MembershipTimings>;
 };
 
 export type Mesh = {
@@ -42,7 +44,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         port: options.basePort ? options.basePort + index : 0,
         displayName: `${options.displayNamePrefix ?? "node"}-${index}`,
       });
-      nodes.push(createNode({ config }));
+      nodes.push(createNode({ config, timings: options.timings }));
     }
 
     for (const node of nodes) {

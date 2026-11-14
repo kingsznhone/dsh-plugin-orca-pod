@@ -5,6 +5,7 @@ import { workgroupKey, type NodeConfig } from "./config.ts";
 import { buildAuthHeader, NonceCache } from "./crypto.ts";
 import { EchoExecutor } from "./executor.ts";
 import { createGateway } from "./gateway.ts";
+import { createMembership, type MembershipClock, type MembershipTimings } from "./membership.ts";
 import {
   membersDigest as computeMembersDigest,
   PROTOCOL_VERSION,
@@ -18,7 +19,7 @@ import {
   type SubmitTaskInput,
   type TaskView,
 } from "./protocol.ts";
-import { createMemoryBlobStore, createMemoryPeerStore, type PeerStore } from "./storage.ts";
+import { createMemoryBlobStore, type PeerStore } from "./storage.ts";
 import { createTaskRunner } from "./tasks.ts";
 
 /**
@@ -57,6 +58,8 @@ export function collectRuntime(): RuntimeInfo {
 export type CreateNodeOptions = {
   config: NodeConfig;
   runtime?: RuntimeInfo;
+  timings?: Partial<MembershipTimings>;
+  clock?: MembershipClock;
 };
 
 export interface OrcaNode {
@@ -86,7 +89,12 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   const { config } = options;
   const nodeId = config.node_id;
   const key = workgroupKey(config);
-  const peers: PeerStore = createMemoryPeerStore();
+  const membership = createMembership({
+    selfNodeId: nodeId,
+    timings: options.timings,
+    clock: options.clock,
+  });
+  const peers: PeerStore = membership.peers;
   const nonceCache = new NonceCache();
   const runtime = options.runtime ?? collectRuntime();
   const blobs = createMemoryBlobStore();
@@ -111,13 +119,13 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
       runtime,
       runtime_digest: runtimeDigest(runtime),
       state: "online",
-      busy: null,
+      busy: tasks.busy(),
       last_recv_at: new Date().toISOString(),
     };
   }
 
   function roster(): PeerView[] {
-    return [...peers.list(), selfPeer()];
+    return [...membership.list(), selfPeer()];
   }
 
   function self(): SelfRecord {
@@ -125,22 +133,19 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   }
 
   function members(): PeerView[] {
-    return peers.list();
+    return membership.list();
   }
 
   function currentDigest(): string {
     return computeMembersDigest(roster());
   }
 
-  function rememberMembers(list: PeerView[] | null): void {
-    if (!list) return;
-    for (const member of list) {
-      if (member.node_id === nodeId) continue;
-      peers.upsert(member);
-    }
-  }
-
-  async function postSigned<T>(peerUrl: string, path: string, payload: unknown): Promise<T> {
+  async function postSigned<T>(
+    peerUrl: string,
+    path: string,
+    payload: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const url = new URL(path, peerUrl);
     const body = JSON.stringify(payload);
     const response = await fetch(url, {
@@ -150,6 +155,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
         authorization: buildAuthHeader({ key, nodeId, method: "POST", path: url.pathname, body }),
       },
       body,
+      signal,
     });
     if (!response.ok) {
       const { code } = (await response.json()) as { code: string };
@@ -166,18 +172,29 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
       endpoint: actualEndpoint,
       runtime,
     });
-    rememberMembers([response.self, ...response.members]);
+    peers.upsert(response.self);
+    membership.observeInbound(response.self.node_id);
+    membership.mergeRemote(response.members);
     return response;
   }
 
   async function heartbeat(peerUrl: string): Promise<HeartbeatResponse> {
-    const response = await postSigned<HeartbeatResponse>(peerUrl, "/cluster/heartbeat", {
-      node_id: nodeId,
-      busy: null,
-      digest: currentDigest(),
-    });
-    rememberMembers(response.members);
-    return response;
+    const peer = membership.findByEndpoint(peerUrl);
+    try {
+      const response = await postSigned<HeartbeatResponse>(
+        peerUrl,
+        "/cluster/heartbeat",
+        { node_id: nodeId, busy: tasks.busy(), digest: currentDigest() },
+        AbortSignal.timeout(membership.timings.heartbeatTimeoutMs),
+      );
+      membership.observeInbound(response.from);
+      membership.observeOutboundOk(response.from);
+      membership.mergeRemote(response.members);
+      return response;
+    } catch (error) {
+      if (peer) membership.observeOutboundFail(peer.node_id);
+      throw error;
+    }
   }
 
   /** Signed JSON-RPC call to a peer's /a2a endpoint (§4.7). */
@@ -207,6 +224,12 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   }
 
   function sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView> {
+    const peer = membership.findByEndpoint(peerUrl);
+    if (peer && peer.state !== "online") {
+      const error = new Error(`peer ${peer.node_id} is ${peer.state}`) as Error & { code: string };
+      error.code = "peer_not_online";
+      throw error;
+    }
     return postA2a<TaskView>(peerUrl, "message/send", input);
   }
 
@@ -218,15 +241,44 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
     return postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId });
   }
 
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let heartbeatStopped = false;
+
+  function scheduleHeartbeat(): void {
+    if (heartbeatStopped) return;
+    const { intervalMs } = membership.timings;
+    const delay = intervalMs * (0.8 + Math.random() * 0.4);
+    heartbeatTimer = setTimeout(() => void heartbeatTick(), delay);
+    heartbeatTimer.unref();
+  }
+
+  async function heartbeatTick(): Promise<void> {
+    if (heartbeatStopped) return;
+    membership.evaluate();
+    const now = membership.now();
+    const targets = membership
+      .list()
+      .filter((peer) => peer.endpoint && membership.needsProbe(peer.node_id, now));
+    await Promise.allSettled(targets.map((peer) => heartbeat(peer.endpoint)));
+    scheduleHeartbeat();
+  }
+
   async function start(): Promise<{ url: string; port: number }> {
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });
     boundPort = Number(new URL(address).port);
     actualEndpoint = endpointFrom(config, boundPort);
     gatewayNode.endpoint = actualEndpoint;
+    heartbeatStopped = false;
+    void heartbeatTick();
     return { url: actualEndpoint, port: boundPort };
   }
 
   async function stop(): Promise<void> {
+    heartbeatStopped = true;
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+    }
     await app.close();
   }
 

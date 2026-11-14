@@ -137,7 +137,7 @@ function membership(deps: GatewayDeps): {
     runtime: deps.runtime,
     runtime_digest: runtimeDigest(deps.runtime),
     state: "online",
-    busy: null,
+    busy: deps.tasks.busy(),
     last_recv_at: nowIso(),
   };
   const roster: PeerView[] = [...deps.peers.list(), self];

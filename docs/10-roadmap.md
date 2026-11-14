@@ -14,10 +14,10 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 61 个测试通过（protocol 30、crypto 15、harness mesh 1、harness a2a 7、gateway blobs 8），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 80 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、plugin 12、watchdog 2），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）；task store 与 blob store 为进程内内存。
-- 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、后台心跳循环与 12s 看门狗、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
+- 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三节点 full mesh 与惰性收敛
 
@@ -27,6 +27,12 @@
 - `runtime` 采集与展示；`members_digest` 比对。
 - id 冲突 409；leave；记录修剪。
 - 验收：C 加入 A 后 2s 内 A/B/C 互相可见；kill B 后 6s suspect、12s offline；拔掉 B 的网线后 A/C 不会把 B 互相刷回在线；B 重启并重新发心跳后 15s 内恢复。
+
+**Phase 1 进展**
+
+- 已实现：2s 心跳循环（±20% 抖动）、双向看门狗（3 次 ≈6s suspect、6 次 ≈12s offline）、单调时钟、`suspect(unreachable)`、offline 探测退避（15s→30s）、墓碑与 `record_ttl` 修剪、`members_digest` 差异拉全量；只有 `online` 接受新任务（`peer_not_online`）。
+- 测试：`membership.test.ts`（注入时钟 5 条）与 `watchdog.test.ts`（三节点收敛、停节点→offline→修剪，2 条）。
+- 未实现：hints/候选端点、故障注入场景 DSL、真实进程 `npm run harness`。
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
@@ -64,7 +70,7 @@
 - [x] `/health` 无鉴权可达；Agent Card 公开可读且不含 runtime/路径/拓扑；`/cluster/members` 无签名被 401
 - [ ] 错误 workgroup / 错误密码被 401（同一文案，不区分）
 - [x] 正确密码 + 签名可 join、心跳、拉目录
-- [ ] 两节点双向心跳；kill 一方 12s 内从在线集消失
+- [x] 两节点双向心跳；kill 一方 12s 内从在线集消失（测试用缩短间隔的等价看门狗）
 - [ ] 节点重启后 task store 与工作区仍在
 
 #### Echo 脚本（Phase 0/1）
@@ -79,10 +85,11 @@
 
 #### 三台节点
 
-- [ ] C join A 后 2s 内三向可见（C 按目录自行补全到 B 的边）
+- [x] C join A 后 2s 内三向可见（C 按目录自行补全到 B 的边）
 - [ ] 拔掉 B 的网线：A 与 C 都判 offline，且不会通过 hints 互相把 B 刷回 online
 - [ ] B 恢复后仅凭自己的心跳回到 online（无人手动清缓存）
-- [ ] B 离线 7 天后记录被修剪
+- [x] B 离线 7 天后记录被修剪（测试用缩短 `record_ttl` 的等价修剪）
+- [x] 目标非 online 时拒绝派发（`peer_not_online`）
 - [x] 不出现任何 epoch/incarnation 字段
 
 #### 权限与工作区
