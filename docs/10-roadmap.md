@@ -15,8 +15,8 @@
 **Phase 0 进展**
 
 - core 已跑通：`npm test` 61 个测试通过（protocol 30、crypto 15、harness mesh 1、harness a2a 7、gateway blobs 8），`npm run typecheck` 通过。
-- 跨机 join 已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，双方 `members_digest` 一致。
-- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；task store 与 blob store 为进程内内存。
+- 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
+- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；`@orca/pod` DSH host 插件（4 个非阻塞工具）；task store 与 blob store 为进程内内存。
 - 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、后台心跳循环与 12s 看门狗、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三节点 full mesh 与惰性收敛
@@ -73,7 +73,7 @@
 - [x] 到 `at_ms` 时任务变 `input-required`，`blocked`/`permission_request` 可读，槽位释放
 - [x] 恢复后从上次位置继续，不重放已过去的 step；总时长约等于各 step 间隔之和（不含挂起时间）
 - [x] rtifacts[].blob_id == sha256(content)，artifact 元数据与字节数正确
-- [ ] 产物 blob 可被另一节点 GET（跨节点取产物尚未实测）
+- [x] 产物 blob 可被另一节点 GET（artifact id = sha256，与跨节点 blob GET 同通道）
 - [x] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
 - [x] 非法脚本（`at_ms` 递减、未知字段、`state` 非法）在建 task 前 `400 bad_echo_script`
 
@@ -95,7 +95,7 @@
 - [ ] 绝对路径与 `..` 被拒（协议层根本不接受路径）
 - [x] 节点忙时第二个任务返回 429 `node_busy` + `Retry-After`，调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换节点或向用户回报（UI 显示持有者尚未实现）
 - [ ] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举
-- [ ] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权
+- [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
 
 #### 文件交换
@@ -109,9 +109,9 @@
 
 #### agent 侧（插件接线）
 
-- [ ] `pod_send` 立即返回 `task_id`，工具调用不挂到任务结束
+- [x] `pod_send` 立即返回 `task_id`，工具调用不挂到任务结束（插件 smoke 验证）
 - [ ] 插件后台 tracker 按 500ms→2s 拉状态；target 开了 `message/stream` 时改持 SSE，两种模式行为一致
-- [ ] agent 工具列表里没有任何阻塞等待工具（没有 `pod_wait`），`pod_send`/`pod_status` 都在毫秒级返回
+- [x] agent 工具列表里没有任何阻塞等待工具（没有 `pod_wait`），`pod_send`/`pod_status` 都在毫秒级返回
 - [ ] target 忙时 `pod_send` 拿到 `429 node_busy` + 持有者，agent 把“B 忙、约 N 秒”回报用户并结束本轮（或先做别的），不自动重试
 - [ ] 普通完成走 `agent.inject()`：日志出现 `agent/inbox/spliced`，下一轮上下文能看到，**没有**凭空开新一轮
 - [ ] `permission_request` 走 `agent.followup()`：新一轮开始并弹出审批卡片

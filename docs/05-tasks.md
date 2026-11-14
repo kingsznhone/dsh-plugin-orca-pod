@@ -66,7 +66,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 - 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
 - agent 只看到薄工具，没有一个会阻塞：`pod_send`（建完 task 立刻返回 `task_id`）、`pod_status(task_id)`（读缓存/任务存储，立即返回）、`pod_cancel(task_id)`、`pod_members()`。**没有 `pod_wait`**——等待不是 agent 的职责。
 
-**Phase 0 现状**：dsh-plugin 仍是占位包，上述工具与 tracker 均未实现；当前直接入口是 `scripts/cross.ts` 与 HTTP API。
+**Phase 0 现状**：`@orca/pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_node安装根在-dsh-plugin)），但**后台 tracker、`inject`/`followup` 唤醒、`pod_wait`（已明确不做）都未实现**；当前完成通知要靠 agent 自己 `pod_status` 轮询，`scripts/cross.ts` 是联调入口。
 
 派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)），不由协议层排队。
 

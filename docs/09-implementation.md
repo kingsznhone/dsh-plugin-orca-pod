@@ -33,7 +33,7 @@ packages/
 | `orca_node` | 已实现 | 组合根；task store 为进程内内存，无后台心跳与看门狗 |
 | `harness` | 已实现 | `createMesh` + mesh/A2A 测试；场景 DSL 未实现 |
 | `ui` | 未实现 | 占位包 |
-| `dsh-plugin` | 未实现 | 占位包；无 bundle patch、工具注册、审批卡片 |
+| `dsh-plugin` | 部分实现 | `@orca/pod` host bundle：`apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
 
 “已实现”指当前可运行、有测试或用例覆盖；未列出的目标能力属于后续里程碑。
 
@@ -69,7 +69,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | ui | view-model 纯函数 | 忙闲、任务列表的渲染数据 |
 | dsh-plugin | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、harness mesh 1 个、harness a2a 7 个、gateway blobs 8 个，共 61 个（`npm test`）。storage、executor、ui、dsh-plugin 还没有独立夹具；gateway 与 executor 的行为由 `packages/harness/test/a2a.test.ts` 经真实 HTTP 覆盖。
+Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、harness mesh 1 个、harness a2a 7 个、gateway blobs 8 个、dsh-plugin 12 个，共 73 个（`npm test`）。storage、executor、ui 还没有独立夹具；gateway 与 executor 的行为由 `packages/harness/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/dsh-plugin/test/plugin.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
@@ -142,7 +142,7 @@ harness / CLI 是第三个入口：`packages/orca_node` 提供 bin `orca-node`�
 
 一句话：**装进 DSH desktop 的东西 = `dsh-plugin` 这个 bundle；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createNode()`。**
 
-**Phase 0 现状**：库根 `createNode` 已可用；安装根 `dsh-plugin` 与 `ui` 仍是占位包（只有导出声明），bundle patch、client、工具注册、审批卡片、credentials 读取都未实现。
+**Phase 0 现状**：库根 `createNode` 与安装根 `dsh-plugin` 都已可用。`@orca/pod` bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动节点、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两节点 smoke（join、send、status、cancel、重启后 node_id 不变）。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
 
 ### 9.5 工程约定
 
