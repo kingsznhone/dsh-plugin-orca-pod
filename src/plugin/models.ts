@@ -1,5 +1,5 @@
 /**
- * Build the node's model catalog (§6.16).
+ * Build the node's model catalog (§6.15).
  *
  * The catalog lives in the DSH host, not in the orca node: `llm` knows which
  * providers and models the running harness can actually serve, and

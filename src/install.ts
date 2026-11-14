@@ -1,14 +1,14 @@
 /**
  * `orca-pod install` — register a long-lived host node as a systemd service.
  *
- * Two launch shapes are supported (see `docs/10-roadmap.md` §10.5):
- *  - `host`: run `orca-node serve` directly (recommended: no browser UI needed,
- *    tasks are dispatched over A2A and executed by the local `dsh` CLI).
- *  - `web`: run `dsh web` with the orca-pod plugin installed (the panel is the
- *    only management surface).
+ * The install target is always the orca-pod host listener (`orca-node serve`):
+ * it needs no browser UI, and tasks are dispatched over A2A and executed by the
+ * local `dsh` CLI. Users who want the web panel install DeepSeek Harness and add
+ * the plugin from its web UI instead; that path is not this command's job.
  *
- * Planning and unit rendering are pure so the tests never need systemd; the
- * CLI wrapper (`src/orca-pod.ts`) performs the actual writes.
+ * Planning, prompting and unit rendering are pure so the tests never need
+ * systemd or a terminal; the CLI wrapper (`src/orca-pod.ts`) performs the writes
+ * and owns the interactive readline session.
  */
 
 import { spawnSync } from "node:child_process";
@@ -19,16 +19,15 @@ import { dirname, join } from "node:path";
 
 import { configPath, createOrcaNodeConfig, saveConfig } from "./config.ts";
 
-export type InstallMode = "host" | "web";
-
 export interface InstallOptions {
-  mode: InstallMode;
   /** Install a system-wide unit instead of a user unit. */
   system?: boolean;
-  /** Defaults to `orca-pod-host` / `orca-pod-web`. */
+  /** Defaults to `orca-pod`. */
   serviceName?: string;
   dataRoot?: string;
   port?: number;
+  /** Listen address written into a new node config (default `::`). */
+  bindHost?: string;
   workgroupId?: string;
   password?: string;
   endpoints?: string[];
@@ -53,7 +52,6 @@ export interface InstallEnvironment {
 }
 
 export interface InstallPlan {
-  mode: InstallMode;
   system: boolean;
   serviceName: string;
   unitPath: string;
@@ -73,6 +71,16 @@ export interface CommandResult {
 
 export type CommandRunner = (command: string, args: string[]) => CommandResult;
 
+/** One question an interactive install can ask for a value it cannot infer. */
+export interface PromptQuestion {
+  option: "workgroup" | "password" | "bind-host" | "port";
+  message: string;
+  default?: string;
+  secret?: boolean;
+}
+
+export type PromptFn = (question: PromptQuestion) => Promise<string>;
+
 export function resolveEnvironment(overrides: Partial<InstallEnvironment> = {}): InstallEnvironment {
   return {
     home: overrides.home ?? process.env["HOME"] ?? homedir(),
@@ -84,23 +92,19 @@ export function resolveEnvironment(overrides: Partial<InstallEnvironment> = {}):
 
 export function planInstall(options: InstallOptions, env: InstallEnvironment): InstallPlan {
   const system = options.system === true;
-  const serviceName = options.serviceName ?? (options.mode === "host" ? "orca-pod-host" : "orca-pod-web");
+  const serviceName = options.serviceName ?? "orca-pod";
   const dataRoot = options.dataRoot ?? join(env.home, ".orca-pod");
   const unitDir = system ? "/etc/systemd/system" : join(env.home, ".config", "systemd", "user");
   const unitPath = join(unitDir, `${serviceName}.service`);
-  const execStart =
-    options.mode === "host"
-      ? [env.nodeBin, env.packageEntry, "serve", "--config", configPath(dataRoot)]
-      : [env.dshBin, "web", "--host", "127.0.0.1", "--port", String(options.port ?? 7775), "--no-open"];
+  const config = configPath(dataRoot);
   const systemctl = system ? ["systemctl"] : ["systemctl", "--user"];
   return {
-    mode: options.mode,
     system,
     serviceName,
     unitPath,
     dataRoot,
-    configPath: configPath(dataRoot),
-    execStart,
+    configPath: config,
+    execStart: [env.nodeBin, env.packageEntry, "serve", "--config", config],
     commands: [
       [...systemctl, "daemon-reload"],
       [...systemctl, "enable", "--now", serviceName],
@@ -124,13 +128,16 @@ export function renderUnit(plan: InstallPlan, description = "orca-pod host node"
     "Type=simple",
     `WorkingDirectory=${plan.dataRoot}`,
     `ExecStart=${plan.execStart.map(systemdQuote).join(" ")}`,
+    "Environment=NODE_ENV=production",
     "Restart=on-failure",
     "RestartSec=5",
     "KillSignal=SIGTERM",
     "TimeoutStopSec=20",
+    "",
+    "[Install]",
+    `WantedBy=${plan.system ? "multi-user.target" : "default.target"}`,
+    "",
   ];
-  if (plan.mode === "host") lines.push("Environment=NODE_ENV=production");
-  lines.push("", "[Install]", `WantedBy=${plan.system ? "multi-user.target" : "default.target"}`, "");
   return `${lines.join("\n")}\n`;
 }
 
@@ -163,6 +170,78 @@ export interface ConfigDeps {
   chmod?: (path: string, mode: number) => Promise<void>;
 }
 
+/** True when the install would write a fresh node config (or overwrite one). */
+export function needsNodeConfig(
+  plan: InstallPlan,
+  options: InstallOptions,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  return options.force === true || !exists(plan.configPath);
+}
+
+/**
+ * Questions that must have an answer before a fresh config can be written.
+ * Optional values (listen address, port) are only asked in interactive mode; a
+ * non-interactive install simply keeps their defaults.
+ */
+export function installQuestions(
+  plan: InstallPlan,
+  options: InstallOptions,
+  exists: (path: string) => boolean = existsSync,
+): PromptQuestion[] {
+  if (!needsNodeConfig(plan, options, exists)) return [];
+  const questions: PromptQuestion[] = [];
+  if (options.workgroupId === undefined || options.workgroupId === "") {
+    questions.push({ option: "workgroup", message: "Workgroup id" });
+  }
+  if (options.password === undefined || options.password === "") {
+    questions.push({ option: "password", message: "Workgroup password", secret: true });
+  }
+  return questions;
+}
+
+/** Extra prompts shown only in the interactive setup; answers have defaults. */
+export function optionalInstallQuestions(options: InstallOptions): PromptQuestion[] {
+  return [
+    { option: "bind-host", message: "Listen address", default: options.bindHost ?? "::" },
+    { option: "port", message: "Listen port", default: String(options.port ?? 11811) },
+  ];
+}
+
+/** Fill the answers from the interactive prompts into a fresh options object. */
+export async function promptForInstall(
+  plan: InstallPlan,
+  options: InstallOptions,
+  prompt: PromptFn,
+  exists: (path: string) => boolean = existsSync,
+): Promise<InstallOptions> {
+  const next: InstallOptions = { ...options };
+  const questions = [...installQuestions(plan, options, exists), ...optionalInstallQuestions(options)];
+  for (const question of questions) {
+    const raw = (await prompt(question)).trim();
+    const value = raw === "" ? (question.default ?? "") : raw;
+    if (value === "") throw new Error(`${question.message} is required`);
+    switch (question.option) {
+      case "workgroup":
+        next.workgroupId = value;
+        break;
+      case "password":
+        next.password = value;
+        break;
+      case "bind-host":
+        next.bindHost = value;
+        break;
+      case "port": {
+        const port = Number(value);
+        if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Listen port must be an integer between 0 and 65535");
+        next.port = port;
+        break;
+      }
+    }
+  }
+  return next;
+}
+
 /**
  * Create `<data_root>/config.json` on first install. The Ed25519 identity is
  * created once per data root, so re-running install keeps the orca node id.
@@ -174,17 +253,16 @@ export async function ensureNodeConfig(
 ): Promise<{ created: boolean }> {
   const exists = deps.exists ?? existsSync;
   if (exists(plan.configPath) && options.force !== true) return { created: false };
-  if (plan.mode === "web") return { created: false };
   if (!options.workgroupId || !options.password) {
     throw new Error(
-      "host mode needs --workgroup and --password to create the node config (or an existing config.json)",
+      "install needs a workgroup id and password to create the node config (pass --workgroup and --password, or answer the interactive prompts)",
     );
   }
   const config = createOrcaNodeConfig({
     workgroupId: options.workgroupId,
     password: options.password,
     dataRoot: plan.dataRoot,
-    host: "0.0.0.0",
+    host: options.bindHost ?? "::",
     port: options.port ?? 11811,
     ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
     ...(options.displayName === undefined ? {} : { displayName: options.displayName }),

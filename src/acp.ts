@@ -365,7 +365,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
         return;
       }
 
-      // ACP selects the model per session (§6.16). The option value is the
+      // ACP selects the model per session (§6.15). The option value is the
       // catalog's opaque choice value; the ACP server rejects unknown values.
       if (input.model !== undefined) {
         try {

@@ -57,7 +57,7 @@ export type GatewayOrcaNode = {
   max_task_ttl_s?: number;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
   linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
-  /** Live ambient fields owned by the node: model catalog, display name (§6.16). */
+  /** Live ambient fields owned by the node: model catalog, display name (§6.15). */
   self?: () => SelfRecord;
 };
 

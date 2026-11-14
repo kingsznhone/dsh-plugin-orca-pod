@@ -74,7 +74,7 @@ type GatewayOrcaNodeInfo = {
   max_task_ttl_s?: number;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
   linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
-  /** Live ambient fields owned by the node: model catalog, display name (§6.16). */
+  /** Live ambient fields owned by the node: model catalog, display name (§6.15). */
   self?: () => SelfRecord;
 };
 
@@ -169,7 +169,7 @@ export interface OrcaNode {
   membersDigest(): string;
   /**
    * Advertise the model routes an ACP session can be switched to, plus the
-   * default route (§6.16). Host integrations call this after the DSH model
+   * default route (§6.15). Host integrations call this after the DSH model
    * catalog is available; peers see it on the next roster exchange.
    */
   setModelCatalog(models: ModelOffer[], defaultModel: ModelSelection | null): void;
@@ -349,7 +349,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   let defaultModel: ModelSelection | null = config.default_model ?? null;
 
   /**
-   * Publish the model routes an ACP session can be switched to (§6.16). The
+   * Publish the model routes an ACP session can be switched to (§6.15). The
    * Host computes them from the DSH catalog after the node starts; peers learn
    * the new list from the next roster exchange.
    */

@@ -58,20 +58,25 @@ the config afterwards.
 
 ## 后台安装（systemd）
 
-在没有桌面的 Linux 机器上，可以把节点装成 systemd 服务；两种形态：host（推荐，常驻 `orca-node serve`，不需要 dsh web）与 web（常驻 `dsh web` 并加载本插件，适合要用面板的场景）。`npx orca-pod install` 会检查 `dsh --version`、生成 `<data_root>/config.json`（0600、默认 `executor: "acp"`）、写 unit 并启用服务；`--dry-run` 只打印计划，`--user` 装到用户级 systemd，`--skip-dsh-check` 跳过 dsh 检查。
+在没有桌面的 Linux 机器上，`npx orca-pod install` 会把本机的 orca-pod 主机节点注册成 systemd 服务，常驻 `orca-node serve`（不需要浏览器或 dsh web）。它不做“模式选择”：要面板的用户自己装 DeepSeek Harness，再从它的 Web UI 里安装本插件；`install` 只负责 headless 宿主。
+
+直接运行 `orca-pod install` 会进入交互式设置，询问 workgroup id、密码（隐藏输入）、监听地址与端口；也可以把答案全部作为参数传入，适合让 agent 通过 SSH 安装（`--non-interactive` 下缺答案会直接失败而不是等待输入）。密码建议用 `--password-stdin` 传入，避免出现在 shell 历史和进程参数里。
+
+`install` 会检查 `dsh --version`、生成 `<data_root>/config.json`（0600、默认 `executor: "acp"`）、写 unit 并 `enable --now`；`--dry-run` 只打印计划，`--system` 装到系统级、默认装到用户级 systemd，`--skip-dsh-check` 跳过 dsh 检查。
 
 ```bash
-# 推荐：host 模式，若服务不需要 sudo 则加 --user
-npx orca-pod install --mode host --workgroup orca-demo --password '...' --data-root ~/.orca-pod
+# 交互式（终端里运行）
+npx orca-pod install
+
+# 全部参数化（agent 在 SSH 上安装时推荐）
+npx orca-pod install --workgroup orca-demo --password-stdin < secret.txt --non-interactive
 
 # 先看会写什么、执行什么
-npx orca-pod install --mode host --workgroup orca-demo --password '...' --dry-run
-
-# 备选：web 模式（之后按提示安装插件）
-npx orca-pod install --mode web --user
+npx orca-pod install --dry-run --workgroup orca-demo --password-stdin < secret.txt
 ```
 
-host 模式只监听节点端口（默认 11811）；web 模式的 UI 与节点端口都在本机回环上，需要时应通过反向代理访问。不要通过代理暴露 `/cluster/child-link` 与 `/cluster/task`（它们只接受回环请求）。
+节点只监听节点端口（默认 11811）；不要通过代理暴露 `/cluster/child-link` 与 `/cluster/task`（它们只接受回环请求）。
+
 
 ## 配置
 

@@ -72,7 +72,7 @@ function optionalService<T>(ctx: HostContext, name: string): T | undefined {
 export function apply(ctx: HostContext, config: Config): void {
   const logger = ctx.logger ?? consoleLogger
 
-  // Model catalog (§6.16): the host owns the real catalog, the node only
+  // Model catalog (§6.15): the host owns the real catalog, the node only
   // advertises it. Kept in a mutable holder so a panel reconfigure restarts the
   // node with the same catalog before the first join.
   const catalog: ModelCatalog = { models: [], defaultModel: null }

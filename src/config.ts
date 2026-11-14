@@ -68,9 +68,9 @@ export type OrcaNodeConfig = {
   allow_public_peers?: boolean;
   /** Reject loopback candidate endpoints; defaults to allowing them for same-host meshes (§7.7). */
   allow_loopback_peers?: boolean;
-  /** Model routes an ACP executor may switch to; origins pick one per task (§6.16). */
+  /** Model routes an ACP executor may switch to; origins pick one per task (§6.15). */
   models?: ModelOffer[];
-  /** Default ACP session model when a task names none; usually the DSH default (§6.16). */
+  /** Default ACP session model when a task names none; usually the DSH default (§6.15). */
   default_model?: ModelSelection;
 };
 
@@ -95,15 +95,15 @@ export type CreateOrcaNodeConfigOptions = {
   maxInputBytes?: number;
   allowPublicPeers?: boolean;
   allowLoopbackPeers?: boolean;
-  /** Model routes the ACP executor advertises; each entry needs provider and model (§6.16). */
+  /** Model routes the ACP executor advertises; each entry needs provider and model (§6.15). */
   models?: ModelOffer[];
-  /** Default ACP session model advertised to peers (§6.16). */
+  /** Default ACP session model advertised to peers (§6.15). */
   defaultModel?: ModelSelection;
 };
 
 const MAX_MODEL_OFFERS = 128;
 
-/** Validate the advertised model catalog (§6.16); throws with the offending field. */
+/** Validate the advertised model catalog (§6.15); throws with the offending field. */
 export function validateModelOffers(value: unknown): ModelOffer[] {
   if (!Array.isArray(value)) throw new Error("models must be an array");
   if (value.length > MAX_MODEL_OFFERS) throw new Error(`models must have at most ${MAX_MODEL_OFFERS} entries`);

@@ -388,7 +388,7 @@ async function stopNode(runtime: PodRuntime, logger: HostLogger): Promise<void> 
  */
 /**
  * Hooks a host plugin uses to attach ambient state to every orca node start
- * (initial start, panel reconfigure, reset). The model catalog (§6.16) is the
+ * (initial start, panel reconfigure, reset). The model catalog (§6.15) is the
  * only user today: it must be installed before the first `join` so the self
  * record peers receive already advertises it.
  */

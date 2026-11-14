@@ -146,7 +146,7 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
         model: {
           type: "string",
           description:
-            "Optional model for the target task as provider/model (§6.16). The target must advertise it and run the ACP executor.",
+            "Optional model for the target task as provider/model (§6.15). The target must advertise it and run the ACP executor.",
         },
         reasoning_effort: {
           type: "string",

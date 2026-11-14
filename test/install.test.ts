@@ -7,14 +7,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   checkDsh,
   ensureNodeConfig,
+  installQuestions,
   installService,
+  needsNodeConfig,
+  optionalInstallQuestions,
   planInstall,
+  promptForInstall,
   renderUnit,
   resolveEnvironment,
   systemdQuote,
   type CommandRunner,
   type InstallEnvironment,
   type InstallOptions,
+  type PromptQuestion,
 } from "../src/install.ts";
 
 const roots: string[] = [];
@@ -41,7 +46,6 @@ function environment(root: string): InstallEnvironment {
 
 function hostOptions(overrides: Partial<InstallOptions> = {}): InstallOptions {
   return {
-    mode: "host",
     workgroupId: "lab",
     password: "lab-secret",
     dataRoot: "/srv/orca-pod",
@@ -54,7 +58,7 @@ describe("install plan", () => {
   it("plans a user service that runs the host node", () => {
     const env = environment("/home/u");
     const plan = planInstall(hostOptions({ dataRoot: "/srv/orca-pod" }), env);
-    expect(plan.unitPath).toBe(join(env.home, ".config", "systemd", "user", "orca-pod-host.service"));
+    expect(plan.unitPath).toBe(join(env.home, ".config", "systemd", "user", "orca-pod.service"));
     expect(plan.configPath).toBe(join("/srv/orca-pod", "config.json"));
     expect(plan.execStart).toEqual([
       "/usr/bin/node",
@@ -65,7 +69,7 @@ describe("install plan", () => {
     ]);
     expect(plan.commands).toEqual([
       ["systemctl", "--user", "daemon-reload"],
-      ["systemctl", "--user", "enable", "--now", "orca-pod-host"],
+      ["systemctl", "--user", "enable", "--now", "orca-pod"],
     ]);
     const unit = renderUnit(plan);
     expect(unit).toContain("WantedBy=default.target");
@@ -82,23 +86,6 @@ describe("install plan", () => {
       ["systemctl", "enable", "--now", "org.example.orca"],
     ]);
     expect(renderUnit(plan)).toContain("WantedBy=multi-user.target");
-  });
-
-  it("plans the web backup shape", () => {
-    const plan = planInstall({ mode: "web" }, environment("/home/u"));
-    expect(plan.serviceName).toBe("orca-pod-web");
-    expect(plan.execStart).toEqual([
-      "/usr/local/bin/dsh",
-      "web",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "7775",
-      "--no-open",
-    ]);
-    const unit = renderUnit(plan);
-    expect(unit).toContain("ExecStart=/usr/local/bin/dsh web");
-    expect(unit).not.toContain("NODE_ENV");
   });
 
   it("quotes argv entries systemd would split", () => {
@@ -143,7 +130,7 @@ describe("host config", () => {
     const config = JSON.parse(await readFile(plan.configPath, "utf8")) as Record<string, unknown>;
     expect(config["workgroup_id"]).toBe("lab");
     expect(config["executor"]).toBe("acp");
-    expect(config["bind"]).toEqual({ host: "0.0.0.0", port: 11811 });
+    expect(config["bind"]).toEqual({ host: "::", port: 11811 });
     expect(typeof config["orca_node_id"]).toBe("string");
     const nodeId = config["orca_node_id"];
 
@@ -159,13 +146,46 @@ describe("host config", () => {
   it("requires a workgroup and password before creating a host config", async () => {
     const root = await tempRoot();
     const plan = planInstall(hostOptions({ dataRoot: root }), environment(root));
-    await expect(ensureNodeConfig(plan, { mode: "host", dataRoot: root })).rejects.toThrow(/workgroup/);
+    await expect(ensureNodeConfig(plan, { dataRoot: root })).rejects.toThrow(/workgroup/);
+  });
+});
+
+describe("interactive setup", () => {
+  it("asks only when a fresh config has to be written", () => {
+    const root = "/srv/orca-pod";
+    const plan = planInstall(hostOptions({ dataRoot: root }), environment("/home/u"));
+    const fresh = installQuestions(plan, { dataRoot: root }, () => false);
+    expect(fresh.map((question) => question.option)).toEqual(["workgroup", "password"]);
+    expect(fresh.find((question) => question.option === "password")?.secret).toBe(true);
+    expect(optionalInstallQuestions({ dataRoot: root }).map((question) => question.option)).toEqual(["bind-host", "port"]);
+    expect(installQuestions(plan, hostOptions({ dataRoot: root }), () => true)).toEqual([]);
+    expect(needsNodeConfig(plan, hostOptions({ dataRoot: root }), () => true)).toBe(false);
+    expect(needsNodeConfig(plan, hostOptions({ dataRoot: root, force: true }), () => true)).toBe(true);
   });
 
-  it("does not create a config in web mode", async () => {
-    const root = await tempRoot();
-    const plan = planInstall({ mode: "web", dataRoot: root }, environment(root));
-    expect(await ensureNodeConfig(plan, { mode: "web", dataRoot: root })).toEqual({ created: false });
+  it("fills the answers into the options object", async () => {
+    const root = "/srv/orca-pod";
+    const plan = planInstall(hostOptions({ dataRoot: root }), environment("/home/u"));
+    const answers: Record<string, string> = {
+      workgroup: "home",
+      password: "home-secret",
+      "bind-host": "127.0.0.1",
+      port: "11900",
+    };
+    const prompt = async (question: PromptQuestion): Promise<string> => answers[question.option] ?? "";
+    const options = await promptForInstall(plan, { dataRoot: root }, prompt, () => false);
+    expect(options.workgroupId).toBe("home");
+    expect(options.password).toBe("home-secret");
+    expect(options.bindHost).toBe("127.0.0.1");
+    expect(options.port).toBe(11900);
+  });
+
+  it("rejects an invalid port answer", async () => {
+    const root = "/srv/orca-pod";
+    const plan = planInstall(hostOptions({ dataRoot: root }), environment("/home/u"));
+    const prompt = async (question: PromptQuestion): Promise<string> =>
+      question.option === "port" ? "not-a-port" : "value";
+    await expect(promptForInstall(plan, { dataRoot: root }, prompt, () => false)).rejects.toThrow(/port/i);
   });
 });
 

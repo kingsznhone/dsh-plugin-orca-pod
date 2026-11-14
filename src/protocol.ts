@@ -46,7 +46,7 @@ export type BusyState = {
   since: string;
 };
 
-/** One model route an orca node advertises for tasks (§6.16). */
+/** One model route an orca node advertises for tasks (§6.15). */
 export type ModelOffer = {
   provider: string;
   model: string;
@@ -74,9 +74,9 @@ export type PeerView = {
   last_recv_at: string | null;
   /** Per-task time budget this orca node enforces; origins size tasks to it (§6.9). */
   max_task_ttl_s?: number;
-  /** Model routes this orca node can switch an ACP session to (§6.16). */
+  /** Model routes this orca node can switch an ACP session to (§6.15). */
   models?: ModelOffer[];
-  /** The model an ACP session uses when a task does not name one (§6.16). */
+  /** The model an ACP session uses when a task does not name one (§6.15). */
   default_model?: ModelSelection | null;
 };
 
@@ -296,7 +296,7 @@ export function isModelSelection(value: unknown): value is ModelSelection {
   return effort === undefined || (typeof effort === "string" && effort.length > 0);
 }
 
-/** Parse a `provider/model` spec, optionally with a reasoning effort (§6.16). */
+/** Parse a `provider/model` spec, optionally with a reasoning effort (§6.15). */
 export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSelection | null {
   const slash = spec.indexOf("/");
   if (slash <= 0 || slash === spec.length - 1) return null;
@@ -311,7 +311,7 @@ export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSel
   };
 }
 
-/** Read `metadata.pod.model` out of a task submission, if valid (§6.16). */
+/** Read `metadata.pod.model` out of a task submission, if valid (§6.15). */
 export function modelSelectionOf(metadata: Record<string, unknown> | undefined): ModelSelection | undefined {
   const pod = metadata?.["pod"];
   if (typeof pod !== "object" || pod === null) return undefined;
@@ -325,7 +325,7 @@ export type PodTaskMetadata = {
   root?: string;
   /** Origin session mode; the target never runs above it (§7.10). */
   permission_mode?: PermissionMode;
-  /** Model route the target's ACP executor should select for this task (§6.16). */
+  /** Model route the target's ACP executor should select for this task (§6.15). */
   model?: ModelSelection;
   idempotency_key?: string;
   task_ttl_s?: number;
