@@ -6,7 +6,7 @@ import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 
 import { createFileBlobRegistry } from "./blob-files.ts";
-import { configPath, defaultDataRoot, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
+import { configPath, defaultDataRoot, endpointWriteback, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
 import { createOrcaNode, createPersistentStorage, joinRoster } from "./index.ts";
 import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
@@ -210,16 +210,8 @@ async function serve(args: string[]): Promise<void> {
   const config = await loadConfig(explicit);
   const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });
   const { url } = await orcaNode.start();
-  // Record the address other orca nodes should dial: `endpoint` is what peers
-  // store, and `port: 0` only learns its real port at listen time.
-  if (config.endpoint !== url) {
-    const port = Number(new URL(url).port);
-    await saveConfig(explicit, {
-      ...config,
-      endpoint: url,
-      bind: { ...config.bind, port: Number.isInteger(port) && port > 0 ? port : config.bind.port },
-    });
-  }
+  const writeback = endpointWriteback(config, url);
+  if (writeback !== null) await saveConfig(explicit, writeback);
   // `--peer` bootstraps a fresh node into an existing mesh at startup; the
   // harness (and `npm run harness`) relies on this to avoid a separate join step.
   const bootstrap = flag(flags, "peer");

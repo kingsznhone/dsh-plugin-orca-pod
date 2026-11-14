@@ -105,6 +105,24 @@ export function configPath(dataRoot: string): string {
   return join(dataRoot, "config.json");
 }
 
+/**
+ * Config to persist after `serve` learns its listen URL, or null when nothing
+ * changes. An explicit `endpoint` (public URL behind a reverse proxy) always
+ * wins over the listen address; only a null endpoint is learned, and a
+ * `port: 0` bind still needs its real port written back.
+ */
+export function endpointWriteback(config: OrcaNodeConfig, listenUrl: string): OrcaNodeConfig | null {
+  const learned = Number(new URL(listenUrl).port);
+  const port = Number.isInteger(learned) && learned > 0 ? learned : config.bind.port;
+  if (config.endpoint === null) {
+    return { ...config, endpoint: listenUrl, bind: { ...config.bind, port } };
+  }
+  if (config.bind.port === 0 && port !== config.bind.port) {
+    return { ...config, bind: { ...config.bind, port } };
+  }
+  return null;
+}
+
 export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): OrcaNodeConfig {
   if (!isWorkgroupId(options.workgroupId)) {
     throw new Error("workgroup id must match [a-z0-9][a-z0-9-]{1,31}");

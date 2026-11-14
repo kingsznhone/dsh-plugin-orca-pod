@@ -47,6 +47,7 @@
 | SSE | 关闭响应缓冲（Caddy 默认 `flush_interval -1`；nginx `proxy_buffering off`、`X-Accel-Buffering: no`）；读超时 ≥ 心跳间隔 × 3 |
 | 心跳路径 | 不要给 `/cluster/heartbeat` 加缓存；代理层保持 keep-alive 到上游 |
 | 转发头 | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`/cluster/child-link` 带任何转发头直接拒绝 |
+| 对端地址 | 节点互通靠 **join 请求体里自报的 `endpoint`**，不靠来源 IP：反代部署必须把 `endpoint` 配成公网 URL（`https://a.example.com`），否则对端会记下 loopback 地址、心跳发不过来；`serve` 不会覆盖显式配置的 `endpoint` |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权 |
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的 |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放 |
