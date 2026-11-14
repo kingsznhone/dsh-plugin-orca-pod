@@ -15,7 +15,12 @@ import {
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createPodEventBus, type PodEventListener } from "./events.ts";
 import { createHeadlessExecutor } from "./headless.ts";
-import { candidateEndpointAllowed, isBlockedFetchPort, pickFreePort } from "./net.ts";
+import {
+  candidateEndpointAllowed,
+  detectLocalEndpoints,
+  isBlockedFetchPort,
+  pickFreePort,
+} from "./net.ts";
 import { createAcpExecutor } from "./acp.ts";
 import { createGateway } from "./gateway.ts";
 import { createMembership, heartbeatIntervalMsFor, type MembershipClock, type MembershipTimings } from "./membership.ts";
@@ -225,8 +230,12 @@ export async function joinRoster(
 /** Addresses a remote orca node should dial: explicit list, else derived from bind. */
 function endpointsFrom(config: OrcaNodeConfig, port: number): string[] {
   if (config.endpoints.length > 0) return config.endpoints;
-  const host = config.bind.host === "0.0.0.0" || config.bind.host === "::" ? "127.0.0.1" : config.bind.host;
-  return [`http://${host}:${port}`];
+  if (config.bind.host === "0.0.0.0" || config.bind.host === "::") {
+    const detected = detectLocalEndpoints(port);
+    if (detected.length > 0) return detected;
+    return [`http://127.0.0.1:${port}`];
+  }
+  return [`http://${config.bind.host}:${port}`];
 }
 
 export function createOrcaNode(options: CreateNodeOptions): OrcaNode {

@@ -62,7 +62,8 @@ the config afterwards.
 | `workgroup_password` | no       | `""`                            | Shared password; the orca node key is derived from it (prototype: plaintext). Empty = open workgroup (§7.8) |
 | `display_name`       | no       | the orca node id                | Human-readable orca node name                                              |
 | `port`               | no       | `11811`                         | Local listen port (`0` = OS-assigned)                                   |
-| `endpoints`          | no       | `[]` = derive `http://<host>:<port>` | Ordered advertise list (1-8 URLs, primary first): IPv6/IPv4 and LAN/public addresses are dialed in order |
+| `bind_host`        | no       | `::` (all interfaces)         | Listen address; `::` accepts IPv4+IPv6 so LAN peers can connect (§4.1). `127.0.0.1` = single-machine / reverse-proxy only |
+| `endpoints`          | no       | `[]` = auto-detect LAN/IPv6 addresses | Ordered advertise list (1-8 URLs, primary first): IPv6/IPv4 and LAN/public addresses are dialed in order; loopback-only lists are ignored |
 | `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (orca node identity)             |
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
 | `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (headless/ACP profiles) find the CLI; set `false` to opt out |

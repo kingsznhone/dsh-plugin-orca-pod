@@ -211,6 +211,16 @@ window.__ModuleLoader__.load({
       return error instanceof Error ? error.message : String(error);
     }
 
+    /** True for URLs that only dial this machine (useless as advertised endpoints). */
+    function isLoopbackUrl(url) {
+      try {
+        const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+        return host === "localhost" || host === "::1" || host.startsWith("127.");
+      } catch {
+        return false;
+      }
+    }
+
     function usePodState() {
       const [state, setState] = React.useState(null);
       const [error, setError] = React.useState(null);
@@ -409,7 +419,8 @@ window.__ModuleLoader__.load({
       const wizard = props.wizard === true;
       const detected = Array.isArray(config.detected_endpoints) ? config.detected_endpoints : [];
       const advertised = Array.isArray(config.endpoints) ? config.endpoints : [];
-      const suggested = advertised.length > 0 ? advertised.slice() : detected.slice();
+      const usable = advertised.filter((url) => !isLoopbackUrl(url));
+      const suggested = usable.length > 0 ? usable.slice() : detected.length > 0 ? detected.slice() : [""];
       const [workgroupId, setWorkgroupId] = React.useState(config.workgroup_id || "workgroup");
       const [password, setPassword] = React.useState("");
       const [displayName, setDisplayName] = React.useState(config.display_name || "");
@@ -549,7 +560,7 @@ window.__ModuleLoader__.load({
             ),
           ),
           h("button", { type: "button", style: BUTTON, disabled: busy, onClick: addEndpoint }, "添加地址"),
-          h("div", { style: HINT }, "已自动识别本机 IPv4/IPv6 地址，可增删或改成公网域名；全部清空则由监听地址推导。"),
+          h("div", { style: HINT }, "已自动识别本机 IPv4/IPv6 地址（默认不填 127.0.0.1，否则别的机器拨不到）；可增删或改成公网域名，全部清空则按监听地址自动识别。"),
         ),
         error ? h("div", { style: { fontSize: 12, color: "var(--dsw-alias-state-error-primary)", marginBottom: 8 } }, error) : null,
         h(

@@ -24,6 +24,7 @@ import {
 } from "../config.ts"
 import type { OrcaNodeConfig } from "../config.ts"
 import { deriveWorkgroupKey } from "../crypto.ts"
+import { isLoopbackEndpoint } from "../net.ts"
 import { createOrcaNode, createPersistentStorage } from "../orca_node.ts"
 import type { OrcaNode } from "../orca_node.ts"
 
@@ -31,6 +32,13 @@ import { validateConfigInput } from "./config.ts"
 import type { Config } from "./config.ts"
 import type { HostLogger } from "./dsh.ts"
 import { errorMessage } from "./util.ts"
+
+/**
+ * Default listen address for the bundle: `::` accepts both IPv4 and IPv6 on
+ * Windows and Linux, which is what a LAN mesh needs. Loopback-only setups can
+ * set `bind_host: "127.0.0.1"`.
+ */
+export const DEFAULT_PLUGIN_BIND_HOST = "::"
 
 /** Observable state of the pod owned by one plugin fiber. */
 export interface PodRuntime {
@@ -166,6 +174,14 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
   const path = configPath(dataRoot)
   const stored = await loadStoredConfig(path, logger)
   const keyBase64 = deriveWorkgroupKey(config.workgroup_id, config.workgroup_password).toString("base64")
+  // Listen on all interfaces by default so LAN peers can reach this node; a
+  // loopback-only advertise list is useless across machines, so treat it as
+  // "derive from bind" and let the node detect the real interface addresses.
+  const bindHost = config.bind_host ?? DEFAULT_PLUGIN_BIND_HOST
+  const advertised =
+    config.endpoints !== undefined && config.endpoints.length > 0 && !config.endpoints.every(isLoopbackEndpoint)
+      ? [...config.endpoints]
+      : []
 
   let next: OrcaNodeConfig
   if (stored !== null && stored.workgroup_id === config.workgroup_id) {
@@ -174,9 +190,9 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       display_name: config.display_name ?? stored.display_name,
       // Advertised endpoints are derived from bind/port unless explicitly
       // configured: reusing stored endpoints could advertise a stale port.
-      endpoints: config.endpoints === undefined ? [] : [...config.endpoints],
+      endpoints: advertised,
       data_root: dataRoot,
-      bind: { host: stored.bind.host, port: config.port },
+      bind: { host: bindHost, port: config.port },
       key_base64: keyBase64,
     }
   } else {
@@ -184,9 +200,10 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       workgroupId: config.workgroup_id,
       password: config.workgroup_password,
       dataRoot,
+      host: bindHost,
       port: config.port,
       ...(config.display_name === undefined ? {} : { displayName: config.display_name }),
-      ...(config.endpoints === undefined ? {} : { endpoints: config.endpoints }),
+      ...(advertised.length === 0 ? {} : { endpoints: advertised }),
     })
   }
 

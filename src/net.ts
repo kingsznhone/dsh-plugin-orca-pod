@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { createServer, isIPv4, isIPv6 } from "node:net";
+import { networkInterfaces } from "node:os";
 
 /**
  * Candidate-endpoint filtering (§7.7). Endpoints an orca node learned from
@@ -119,3 +120,38 @@ export async function pickFreePort(): Promise<number> {
   }
   throw new Error("could not pick a free port that fetch accepts");
 }
+
+/** True for URLs that dial the local machine only. */
+export function isLoopbackEndpoint(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "localhost" || host === "::1" || host.startsWith("127.");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Advertised-URL suggestions for the panel wizard and for nodes that listen on
+ * a wildcard address: every non-internal IPv4/IPv6 address of this machine on
+ * the given port. IPv4 comes first (the reliable LAN path); link-local IPv6
+ * (`fe80::/10`, needs a zone id) is skipped.
+ */
+export function detectLocalEndpoints(port: number): string[] {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return []
+  const ipv4: string[] = []
+  const ipv6: string[] = []
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.internal) continue
+      if (address.family === "IPv6") {
+        if (/^fe80:/i.test(address.address)) continue
+        ipv6.push(`http://[${address.address}]:${port}`)
+      } else {
+        ipv4.push(`http://${address.address}:${port}`)
+      }
+    }
+  }
+  return [...new Set([...ipv4, ...ipv6])]
+}
+

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { createMembership } from "../src/membership.ts";
-import { candidateEndpointAllowed, isBlockedFetchPort, pickFreePort } from "../src/net.ts";
+import {
+  candidateEndpointAllowed,
+  detectLocalEndpoints,
+  isBlockedFetchPort,
+  isLoopbackEndpoint,
+  pickFreePort,
+} from "../src/net.ts";
 import type { PeerView } from "../src/protocol.ts";
 
 function peer(orcaNodeId: string, endpoint: string): PeerView {
@@ -69,6 +75,22 @@ describe("candidate endpoint filtering (§7.7)", () => {
   it("rejects non-http schemes and malformed endpoints", async () => {
     expect(await candidateEndpointAllowed("ftp://10.0.0.1/")).toBe(false);
     expect(await candidateEndpointAllowed("not a url")).toBe(false);
+  });
+
+  it("detects advertised endpoints with IPv4 first and no loopback", () => {
+    const urls = detectLocalEndpoints(11811);
+    for (const url of urls) {
+      expect(url).toMatch(/^http:\/\//);
+      expect(isLoopbackEndpoint(url)).toBe(false);
+    }
+    // Loopback-only advertise lists are useless across machines and are dropped.
+    expect(isLoopbackEndpoint("http://127.0.0.1:11811")).toBe(true);
+    expect(isLoopbackEndpoint("http://[::1]:11811")).toBe(true);
+    expect(isLoopbackEndpoint("http://192.168.1.20:11811")).toBe(false);
+    // IPv4 comes before IPv6 so the primary URL is the reliable LAN path.
+    const firstV6 = urls.findIndex((url) => url.includes("["));
+    if (firstV6 >= 0) expect(urls.slice(firstV6).every((url) => url.includes("["))).toBe(true);
+    expect(detectLocalEndpoints(0)).toEqual([]);
   });
 });
 

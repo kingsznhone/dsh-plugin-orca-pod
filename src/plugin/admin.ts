@@ -8,10 +8,10 @@
  */
 
 import { readdirSync } from "node:fs"
-import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 
 import { defaultDataRoot } from "../config.ts"
+import { detectLocalEndpoints } from "../net.ts"
 import { permissionRequestOf } from "../protocol.ts"
 import type { DispatchEntry } from "../dispatches.ts"
 import type { PeerView, SelfRecord, TaskView } from "../protocol.ts"
@@ -235,21 +235,4 @@ export function normalizePeer(peer: string): string {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
 }
 
-/**
- * Advertised-URL suggestions for the first-run wizard: every non-internal
- * IPv4/IPv6 address of this machine on the node's listen port.
- */
-export function detectLocalEndpoints(port: number): string[] {
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) return []
-  const urls: string[] = []
-  for (const addresses of Object.values(networkInterfaces())) {
-    for (const address of addresses ?? []) {
-      if (address.internal) continue
-      const family = address.family === "IPv6" ? 6 : 4
-      if (family === 6 && /^fe80:/i.test(address.address)) continue
-      const host = family === 6 ? `[${address.address}]` : address.address
-      urls.push(`http://${host}:${port}`)
-    }
-  }
-  return [...new Set(urls)]
-}
+

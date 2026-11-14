@@ -39,6 +39,12 @@ export interface Config {
    * sessions on this machine can drive the CLI; defaults to true.
    */
   skill_injection: boolean
+  /**
+   * Listen address for the orca node HTTP server; defaults to `::` (all
+   * interfaces, IPv4+IPv6) so a LAN peer can reach it. Set `127.0.0.1` for a
+   * single-machine mesh or when a reverse proxy is the only entry point.
+   */
+  bind_host?: string
   /** Initial peers to `join` on startup; failures are logged, not fatal. */
   peers: string[]
 }
@@ -128,6 +134,16 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
+  let bind_host: string | undefined
+  const bindHostRaw = value["bind_host"]
+  if (bindHostRaw !== undefined) {
+    if (typeof bindHostRaw !== "string" || bindHostRaw.trim().length === 0) {
+      issues.push({ path: ["bind_host"], message: "must be a non-empty host when present" })
+    } else {
+      bind_host = bindHostRaw.trim()
+    }
+  }
+
   let data_root: string | undefined
   const dataRootRaw = value["data_root"]
   if (dataRootRaw !== undefined) {
@@ -168,6 +184,7 @@ export function validateConfigInput(value: unknown): Config {
 
   const config: Config = { workgroup_id, workgroup_password, port, skill_injection, peers }
   if (display_name !== undefined) config.display_name = display_name
+  if (bind_host !== undefined) config.bind_host = bind_host
   if (endpoints !== undefined) config.endpoints = endpoints
   if (data_root !== undefined) config.data_root = data_root
   return config
