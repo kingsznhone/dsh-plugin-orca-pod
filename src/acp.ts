@@ -12,6 +12,7 @@ import type { AcpExecutorConfig } from "./config.ts";
 import type { PermissionMode } from "./protocol.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import { KILL_GRACE_MS, abortError, isCmdShim, killTree, quoteForCmd, resolveCommand } from "./process.ts";
+import { orchestrationPreamble, withPreamble } from "./preamble.ts";
 import { readSessions, writeSessions } from "./session-store.ts";
 
 const STDERR_TAIL = 4096;
@@ -28,20 +29,15 @@ const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
  * no cluster tools, so delegation goes through the CLI (§6.15, §9.4).
  */
 function promptWithPreamble(input: ExecuteInput, dataRoot: string | undefined, text: string): string {
-  const who = input.selfOrcaNodeId ? ` as orca node ${input.selfOrcaNodeId}` : "";
-  const cli = `node "${CLI_PATH}"`;
-  const rootFlag = dataRoot === undefined ? "" : ` --data-root "${dataRoot}"`;
-  return [
-    `[orca-pod] You are executing task ${input.taskId}${who}.`,
-    `To delegate to another orca node, use the CLI instead of raw HTTP:`,
-    `  ${cli} send${rootFlag} --peer <host:port> --text - --json`,
-    `Check it with: ${cli} wait${rootFlag} --peer <host:port> --task <id> --local-task ${input.taskId} --json`,
-    `  (exit 0 completed, 1 failed/canceled, 2 still running, 3 needs permission)`,
-    `With --local-task, wait pushes a child permission request up to this task's origin`,
-    `automatically; if you need to retry it by hand: ${cli} escalate${rootFlag} --peer <child:port> --task <child task id> --local-task ${input.taskId} --json`,
-    "",
+  return withPreamble(
     text,
-  ].join("\n");
+    orchestrationPreamble({
+      taskId: input.taskId,
+      ...(input.selfOrcaNodeId ? { selfOrcaNodeId: input.selfOrcaNodeId } : {}),
+      cliPath: CLI_PATH,
+      ...(dataRoot === undefined ? {} : { dataRoot }),
+    }),
+  );
 }
 
 type JsonRpcId = number;

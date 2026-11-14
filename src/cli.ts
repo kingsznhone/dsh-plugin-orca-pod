@@ -16,6 +16,7 @@ Usage:
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
+  orca-node publish <path> [--ttl <seconds>] [--json]  expose a produced file as a blob URL
   orca-node members [--peer <url>] [--json]
   orca-node --help                                      show this help
 
@@ -210,6 +211,28 @@ async function send(args: string[]): Promise<number> {
   return 0;
 }
 
+async function publish(args: string[]): Promise<number> {
+  const [first, ...rest] = args;
+  const positional = first !== undefined && !first.startsWith("--") ? first : undefined;
+  const flags = parseFlags(positional === undefined ? args : rest);
+  const config = await loadNodeConfig(flags);
+  const path = positional ?? requireFlag(flags, "path");
+  const rawTtl = flag(flags, "ttl");
+  const ttlS = rawTtl === undefined ? undefined : Number(rawTtl);
+  if (ttlS !== undefined && (!Number.isFinite(ttlS) || ttlS <= 0)) {
+    throw new Error("--ttl must be a positive number of seconds");
+  }
+  const result = await signedJson<{ blob_id: string; size: number; expires_at: string | null; url: string }>(
+    config,
+    localEndpoint(config),
+    "POST",
+    "/blobs/register",
+    { path, ...(ttlS === undefined ? {} : { ttl_s: ttlS }) },
+  );
+  process.stdout.write(`${wantsJson(flags) ? JSON.stringify(result) : result.url}\n`);
+  return 0;
+}
+
 async function status(args: string[]): Promise<number> {
   const flags = parseFlags(args);
   const config = await loadNodeConfig(flags);
@@ -354,6 +377,7 @@ async function main(): Promise<void> {
   else if (command === "status") process.exitCode = await status(args);
   else if (command === "wait") process.exitCode = await wait(args);
   else if (command === "escalate") process.exitCode = await escalate(args);
+  else if (command === "publish") process.exitCode = await publish(args);
   else if (command === "members") process.exitCode = await members(args);
   else {
     process.stdout.write(USAGE);

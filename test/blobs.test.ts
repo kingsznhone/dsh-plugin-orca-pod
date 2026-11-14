@@ -1,4 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NonceCache, buildAuthHeader } from "../src/crypto.ts";
 import {
@@ -39,6 +42,7 @@ const idleTasks: TaskRunner = {
 type Harness = {
   app: ReturnType<typeof createGateway>;
   key: Buffer;
+  orcaNodeId: string;
   sign(method: string, path: string, body?: Uint8Array | string): string;
 };
 
@@ -63,6 +67,7 @@ function createHarness(tasks: TaskRunner = idleTasks): Harness {
   return {
     app: createGateway(deps),
     key,
+    orcaNodeId,
     sign: (method, path, body) => buildAuthHeader({ key, orcaNodeId, method, path, body }),
   };
 }
@@ -183,6 +188,77 @@ describe("blob channel", () => {
     });
     expect(response.statusCode).toBe(410);
     expect(response.json()).toEqual({ code: "link_expired" });
+  });
+});
+
+describe("local file blobs", () => {
+  async function register(
+    harness: Harness,
+    filePath: string,
+    options: { ttlS?: number; orcaNodeId?: string } = {},
+  ) {
+    const payload = JSON.stringify({
+      path: filePath,
+      ...(options.ttlS === undefined ? {} : { ttl_s: options.ttlS }),
+    });
+    return harness.app.inject({
+      method: "POST",
+      url: "/blobs/register",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        authorization: buildAuthHeader({
+          key: harness.key,
+          orcaNodeId: options.orcaNodeId ?? harness.orcaNodeId,
+          method: "POST",
+          path: "/blobs/register",
+          body: payload,
+        }),
+      },
+    });
+  }
+
+  it("publishes a local file by path and serves it through the returned URL", async () => {
+    const harness = createHarness();
+    const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
+    const filePath = join(dir, "report.md");
+    const content = Buffer.from("# findings\n");
+    await writeFile(filePath, content);
+
+    const published = await register(harness, filePath, { ttlS: 120 });
+    expect(published.statusCode).toBe(201);
+    const body = published.json<{
+      blob_id: string;
+      size: number;
+      expires_at: string | null;
+      url: string;
+    }>();
+    expect(body.blob_id).toBe(sha256Hex(content));
+    expect(body.size).toBe(content.length);
+    expect(body.expires_at).not.toBeNull();
+
+    const url = new URL(body.url);
+    const response = await harness.app.inject({ method: "GET", url: `${url.pathname}${url.search}` });
+    expect(response.statusCode).toBe(200);
+    expect(response.rawPayload.equals(content)).toBe(true);
+  });
+
+  it("rejects a path published by another orca node with 403", async () => {
+    const harness = createHarness();
+    const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
+    const filePath = join(dir, "secret.txt");
+    await writeFile(filePath, "nope");
+    const response = await register(harness, filePath, { orcaNodeId: generateOrcaNodeId() });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ code: "register_local_only" });
+  });
+
+  it("answers 400 file_not_readable for a missing path", async () => {
+    const harness = createHarness();
+    const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
+    const response = await register(harness, join(dir, "absent.txt"));
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ code: string }>().code).toBe("file_not_readable");
   });
 });
 

@@ -1,0 +1,69 @@
+/**
+ * File-backed blob registry (§5.6).
+ *
+ * A task that produced a file on this orca node can publish it instead of
+ * uploading a copy: the registry maps the file's sha256 to its local path and a
+ * TTL. The child then appends the returned blob URL to its summary, and the
+ * origin pulls the bytes only if it wants them.
+ */
+
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { resolve } from "node:path";
+
+export type FileBlob = {
+  /** sha256 of the file contents; doubles as the content address. */
+  blob_id: string;
+  /** Absolute path on this orca node. */
+  path: string;
+  size: number;
+  expires_at: string | null;
+};
+
+export type FileBlobRegistry = {
+  register(path: string, ttlS?: number): Promise<FileBlob>;
+  get(blobId: string): FileBlob | undefined;
+  has(blobId: string): boolean;
+};
+
+export const DEFAULT_FILE_BLOB_TTL_S = 7 * 24 * 3600;
+
+async function hashFile(path: string): Promise<{ sha: string; size: number }> {
+  const hash = createHash("sha256");
+  let size = 0;
+  await new Promise<void>((settle, reject) => {
+    const stream = createReadStream(path);
+    stream.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      hash.update(chunk);
+    });
+    stream.on("error", reject);
+    stream.on("end", () => settle());
+  });
+  return { sha: hash.digest("hex"), size };
+}
+
+export function createFileBlobRegistry(): FileBlobRegistry {
+  const entries = new Map<string, FileBlob>();
+  return {
+    async register(path: string, ttlS: number = DEFAULT_FILE_BLOB_TTL_S): Promise<FileBlob> {
+      const absolute = resolve(path);
+      const { sha, size } = await hashFile(absolute);
+      const blob: FileBlob = {
+        blob_id: sha,
+        path: absolute,
+        size,
+        expires_at: ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null,
+      };
+      entries.set(sha, blob);
+      return { ...blob };
+    },
+    get(blobId: string): FileBlob | undefined {
+      const blob = entries.get(blobId);
+      return blob ? { ...blob } : undefined;
+    },
+    has(blobId: string): boolean {
+      return entries.has(blobId);
+    },
+  };
+}

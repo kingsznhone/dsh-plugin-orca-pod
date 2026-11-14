@@ -137,6 +137,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     record.view.runtime = view.runtime;
     record.view.runtime_digest = view.runtime_digest;
     record.view.busy = view.busy ?? null;
+    if (view.max_task_ttl_s !== undefined) record.view.max_task_ttl_s = view.max_task_ttl_s;
   }
 
   function getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null {

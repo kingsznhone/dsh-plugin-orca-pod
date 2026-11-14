@@ -9,6 +9,7 @@ export * from "./crypto.ts";
 export * from "./chain.ts";
 export * from "./config.ts";
 export * from "./storage.ts";
+export * from "./blob-files.ts";
 export * from "./sqlite.ts";
 export * from "./workspace.ts";
 export * from "./gateway.ts";
@@ -17,6 +18,7 @@ export * from "./executor.ts";
 export * from "./headless.ts";
 export * from "./acp.ts";
 export * from "./tasks.ts";
+export * from "./preamble.ts";
 export * from "./orca_node.ts";
 export * from "./harness.ts";
 

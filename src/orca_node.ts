@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { deriveChildGrant } from "./chain.ts";
+import { createFileBlobRegistry } from "./blob-files.ts";
 import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
@@ -51,6 +52,7 @@ type GatewayOrcaNodeInfo = {
   display_name: string;
   workgroup_id: string;
   endpoint: string | null;
+  max_task_ttl_s?: number;
 };
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
@@ -192,6 +194,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const nonceCache = new NonceCache();
   const runtime = options.runtime ?? collectRuntime();
   const blobs = options.storage?.blobStore ?? createMemoryBlobStore();
+  const fileBlobs = createFileBlobRegistry();
+  /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
+  const maxTaskTtlS = config.task_timeout_s ?? 3600;
   const workspaceManager = options.storage?.workspace ?? null;
   const workspace: Workspace | null = workspaceManager?.get() ?? null;
   const executor: LocalExecutor =
@@ -211,6 +216,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     key,
     ...(config.permission_mode ? { permissionMode: config.permission_mode } : {}),
     ...(config.approval_timeout_s !== undefined ? { permissionTtlS: config.approval_timeout_s } : {}),
+    ...(config.result_max_bytes !== undefined ? { resultMaxBytes: config.result_max_bytes } : {}),
+    taskTimeoutS: maxTaskTtlS,
+    dataRoot: config.data_root,
     sendTaskMessage: async (peerUrl, _taskId, message) => {
       await postA2a<TaskView>(peerUrl, "message/send", { message });
     },
@@ -224,8 +232,18 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     display_name: config.display_name,
     workgroup_id: config.workgroup_id,
     endpoint: actualEndpoint,
+    max_task_ttl_s: maxTaskTtlS,
   };
-  const app = createGateway({ orcaNode: gatewayOrcaNode, key, peers, nonceCache, runtime, tasks, blobs });
+  const app = createGateway({
+    orcaNode: gatewayOrcaNode,
+    key,
+    peers,
+    nonceCache,
+    runtime,
+    tasks,
+    blobs,
+    fileBlobs,
+  });
 
   function selfPeer(): PeerView {
     return {
@@ -237,6 +255,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       state: "online",
       busy: tasks.busy(),
       last_recv_at: new Date().toISOString(),
+      max_task_ttl_s: maxTaskTtlS,
     };
   }
 
@@ -293,6 +312,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       display_name: config.display_name,
       endpoint: actualEndpoint,
       runtime,
+      max_task_ttl_s: maxTaskTtlS,
     });
     peers.upsert(response.self);
     membership.observeInbound(response.self.orca_node_id);

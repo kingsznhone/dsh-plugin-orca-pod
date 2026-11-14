@@ -1,4 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -31,12 +33,15 @@ import {
   type SubmitTaskInput,
 } from "./protocol.ts";
 import { sha256Hex, type BlobStore, type PeerStore } from "./storage.ts";
+import { createFileBlobRegistry, type FileBlobRegistry } from "./blob-files.ts";
 
 export type GatewayOrcaNode = {
   orca_node_id: string;
   display_name: string;
   workgroup_id: string;
   endpoint: string | null;
+  /** Per-task budget advertised to peers; origins size tasks to it (§6.9). */
+  max_task_ttl_s?: number;
 };
 
 export type GatewayDeps = {
@@ -47,6 +52,8 @@ export type GatewayDeps = {
   runtime: RuntimeInfo | null;
   tasks: TaskRunner;
   blobs: BlobStore;
+  /** Files a task published by path with a TTL (§5.6). Optional for direct gateway fixtures. */
+  fileBlobs?: FileBlobRegistry;
 };
 
 type RawBodyRequest = FastifyRequest & { rawBody?: Buffer };
@@ -146,6 +153,7 @@ function membership(deps: GatewayDeps): {
     state: "online",
     busy: deps.tasks.busy(),
     last_recv_at: nowIso(),
+    ...(deps.orcaNode.max_task_ttl_s === undefined ? {} : { max_task_ttl_s: deps.orcaNode.max_task_ttl_s }),
   };
   const roster: PeerView[] = [...deps.peers.list(), self];
   return { self, roster, digest: membersDigest(roster) };
@@ -153,6 +161,7 @@ function membership(deps: GatewayDeps): {
 
 export function createGateway(deps: GatewayDeps): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: MAX_BLOB_BYTES });
+  const fileBlobs = deps.fileBlobs ?? createFileBlobRegistry();
 
   app.addContentTypeParser<Buffer>(
     "application/json",
@@ -173,6 +182,9 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     name: deps.orcaNode.display_name,
     protocol_version: PROTOCOL_VERSION,
     url: deps.orcaNode.endpoint ? `${deps.orcaNode.endpoint}/a2a` : "",
+    ...(deps.orcaNode.max_task_ttl_s === undefined
+      ? {}
+      : { max_task_ttl_s: deps.orcaNode.max_task_ttl_s }),
   }));
 
   app.post("/a2a", async (request, reply) => {
@@ -272,6 +284,42 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     });
   });
 
+  app.post("/blobs/register", async (request, reply) => {
+    const auth = authenticate(request, deps);
+    // Publishing a path is a local capability: another member must not be able
+    // to turn this orca node into a file reader for arbitrary paths.
+    if (auth.orcaNodeId !== deps.orcaNode.orca_node_id) {
+      return reply.code(403).send({ code: "register_local_only" });
+    }
+    const body = asObject(request.body);
+    if (!body) return badRequest(reply, "body must be a JSON object");
+    const path = body["path"];
+    if (typeof path !== "string" || path.length === 0) {
+      return badRequest(reply, "path must be a non-empty string");
+    }
+    const rawTtl = body["ttl_s"];
+    const ttlS = rawTtl === undefined ? undefined : Number(rawTtl);
+    if (ttlS !== undefined && (!Number.isFinite(ttlS) || ttlS <= 0)) {
+      return badRequest(reply, "ttl_s must be a positive number");
+    }
+    let blob;
+    try {
+      blob = await fileBlobs.register(path, ttlS);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(400).send({ code: "file_not_readable", message });
+    }
+    const expiresAtMs = blob.expires_at === null ? Date.now() + 24 * 3600 * 1000 : Date.parse(blob.expires_at);
+    const exp = String(Math.floor(expiresAtMs / 1000));
+    const sig = linkSignature(deps.key, blob.blob_id, exp);
+    return reply.code(201).send({
+      blob_id: blob.blob_id,
+      size: blob.size,
+      expires_at: blob.expires_at,
+      url: `${deps.orcaNode.endpoint ?? ""}/blobs/${blob.blob_id}?exp=${exp}&sig=${sig}`,
+    });
+  });
+
   app.get("/blobs/:blob_id", async (request, reply) => {
     const { blob_id: blobId } = request.params as { blob_id: string };
     const query = request.query as { exp?: unknown; sig?: unknown };
@@ -286,11 +334,22 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       authenticate(request, deps);
     }
     const blob = deps.blobs.get(blobId);
-    if (!blob) return reply.code(404).send({ code: "blob_not_found" });
-    if (blob.expires_at !== null && Date.parse(blob.expires_at) <= Date.now()) {
+    const file = blob ? undefined : fileBlobs.get(blobId);
+    if (!blob && !file) return reply.code(404).send({ code: "blob_not_found" });
+    const expiresAt = blob ? blob.expires_at : file!.expires_at;
+    if (expiresAt !== null && Date.parse(expiresAt) <= Date.now()) {
       return reply.code(410).send({ code: "blob_expired" });
     }
-    return reply.header("content-type", "application/octet-stream").send(blob.bytes);
+    if (blob) return reply.header("content-type", "application/octet-stream").send(blob.bytes);
+    try {
+      await stat(file!.path);
+    } catch {
+      return reply.code(410).send({ code: "blob_file_missing" });
+    }
+    return reply
+      .header("content-type", "application/octet-stream")
+      .header("content-length", String(file!.size))
+      .send(createReadStream(file!.path));
   });
 
   app.post("/blobs/:blob_id/link", async (request, reply) => {
@@ -335,6 +394,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       return badRequest(reply, "runtime must be an object or null");
     }
     const runtime = runtimeValue as RuntimeInfo | null;
+    const peerTtl = body["max_task_ttl_s"];
 
     deps.peers.upsert({
       orca_node_id: orcaNodeId,
@@ -345,6 +405,9 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       state: "online",
       busy: null,
       last_recv_at: nowIso(),
+      ...(typeof peerTtl === "number" && Number.isFinite(peerTtl) && peerTtl > 0
+        ? { max_task_ttl_s: peerTtl }
+        : {}),
     });
 
     const { self, digest } = membership(deps);

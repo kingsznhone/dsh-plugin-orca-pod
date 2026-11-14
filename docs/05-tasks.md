@@ -196,6 +196,17 @@ Authorization: Pod ...
 200 { "url": "https://host.example/blobs/<id>?exp=...&sig=...", "expires_at": "..." }
 ```
 
+```http
+POST /blobs/register
+Authorization: Pod orca_node_id=N7K3QM; ...（只接受本 orca node 自己的签名）
+Content-Type: application/json
+
+{ "path": "D:\\workspace\\...\\work\\report.md", "ttl_s": 86400 }
+
+201 { "blob_id": "<sha256>", "size": 8192, "expires_at": "...",
+      "url": "http://host.example/blobs/<id>?exp=...&sig=..." }
+```
+
 规则：
 
 - `blob_id = sha256(bytes)`，内容寻址 → 天然去重；同内容重复上传返回 `200` 且不占新空间，首次返回 `201`。
@@ -204,15 +215,16 @@ Authorization: Pod ...
 - 文件名只作提示（`name`），不参与寻址；存储路径由 blob_id 决定，元数据里出现 `../`、绝对路径、驱动器号一律拒绝。
 - 生命周期：默认 7 天未被任务引用即 GC；被任务引用则延长到任务终态 + 24h。GC 是本地行为，不传播；下载方拿不到就是被清了，按 `410 blob_expired` 处理。**GC 全自动，不依赖用户到子 orca node 手动清理**——没人会去 B 的机器上清 blob；要保住某个产物，就在 7 天内下载它，或让它继续被任务引用。
 - 下载支持短期直链：任意同组 orca node 调 `POST /blobs/{id}/link` 拿 TTL 5 分钟的 URL，方便 `curl` / 浏览器 / 前端直链，不必把长期密钥给第三方。直链只是省掉签名头，不改变可读范围。
+- **本地文件按路径登记（不让文件离开工作区也能给 URL）**：子节点在结论文本里要引用一个已生成的文件时，用 `POST /blobs/register {path, ttl_s?}` 登记本机路径：网关算 `sha256`、在内存映射里记 `blob_id → {绝对路径, size, expires_at}`，返回一个带 `?exp&sig` 的直链。字节不复制，`GET` 时按映射从磁盘流式读出；TTL 到期或文件被删 → `410`。**只有本 orca node 自己能登记**（另一个成员签名会得到 `403 register_local_only`），否则网关就成了任意路径读取器。默认 TTL 7 天；映射是进程内的，网关重启后旧 URL 失效（Origin 会拿到 `410`，重新登记即可）。CLI 入口：`orca-node publish <path> [--ttl <seconds>]`。
 - **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道 `blob_id` 就能 `GET`。跨 orca node 直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。跨 orca node 交接产物就是传一个 id；id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新 blob。
 
-**实现状态**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现；存储默认 fs（内容寻址目录 + sidecar 元数据 + 临时文件 rename），`gc()` 在 orca node 启动时跑一次，默认 7 天过期；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。**未实现**：每 workgroup 5 GiB 配额、引用延期（目前只看 ttl 不看任务引用）、`Content-Disposition` 文件名恢复、断点续传。
+**实现状态**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link`、`POST /blobs/register` 已实现；存储默认 fs（内容寻址目录 + sidecar 元数据 + 临时文件 rename），`gc()` 在 orca node 启动时跑一次，默认 7 天过期；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。本地文件登记：仅 self 可调（`403 register_local_only`）、不可读路径 `400 file_not_readable`、`GET` 走文件流、文件消失 `410 blob_file_missing`；CLI 为 `orca-node publish`。**未实现**：每 workgroup 5 GiB 配额、引用延期（目前只看 ttl 不看任务引用）、`Content-Disposition` 文件名恢复、断点续传、文件映射落盘。
 
 **输入**：origin 先把素材 `POST /blobs` 到 target，任务消息里带 `inputs: [{blob_id, name, media_type}]`；target 直接读本地已落盘的 blob（上传即到达），不需要回源。小于 64 KiB 的可以直接内联 `bytes`（A2A file part），省一次往返。
 
-**输出**：任务终态时 manifest 给 `artifacts: [{blob_id, name, media_type, bytes}]`；origin 按需 `GET /blobs/{id}`。**不自动全量回传**：大产物由人或 agent 显式取，避免把网络当同步盘。
+**输出**：任务终态时 manifest 给 `artifacts: [{blob_id, name, media_type, bytes}]`；origin 按需 `GET /blobs/{id}`。**不自动全量回传**：大产物由人或 agent 显式取，避免把网络当同步盘。已实现的路径是更简的一版：子节点完成时自己决定交不交、交哪个文件，`publish` 出 URL 贴在结论文本附录里；manifest 全量 `artifacts` 尚未实现。
 
 方向始终是 origin → target 的请求（上传素材、下载产物），target 从不反向连 origin。NAT 下只需要 target 可达，与 [§3.2](03-membership.md#32-引导与加入) 的单向出站原则一致。
 

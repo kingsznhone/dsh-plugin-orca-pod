@@ -55,6 +55,8 @@ export type PeerView = {
   state: PeerState;
   busy: BusyState | null;
   last_recv_at: string | null;
+  /** Per-task time budget this orca node enforces; origins size tasks to it (§6.9). */
+  max_task_ttl_s?: number;
 };
 
 export type SelfRecord = PeerView & {
@@ -204,12 +206,20 @@ export type TaskArtifact = {
   bytes: number;
 };
 
+/** Token spend reported by the executor, when it reports one (§6.14). */
+export type TaskUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+};
+
 export type TaskView = {
   kind: "task";
   id: string;
   contextId: string;
   status: TaskStatus;
   artifacts?: TaskArtifact[];
+  usage?: TaskUsage;
   metadata?: Record<string, unknown>;
 };
 

@@ -29,6 +29,18 @@ if (mode === "error") {
   send({ type: "final", sessionId: sid, reason: { kind: "error", error: { message: "boom" } }, text: "" });
   process.exit(0);
 }
+if (mode === "error-code") {
+  const reason = { kind: "error", error: { message: "boom", code: "AUTH_MISSING" } };
+  send({ type: "status", phase: "turn_end", turn: 1, reason });
+  send({ type: "final", sessionId: sid, reason, text: "" });
+  process.exit(0);
+}
+if (mode === "usage") {
+  send({ type: "status", phase: "step_end", turn: 1, usage: { inputTokens: 11, outputTokens: 22, cacheReadTokens: 3 } });
+  send({ type: "status", phase: "turn_end", turn: 1, reason: { kind: "completed" } });
+  send({ type: "final", sessionId: sid, reason: { kind: "completed" }, text: "fake done" });
+  process.exit(0);
+}
 if (mode === "nofinal") process.exit(0);
 if (mode === "hang") {
   setInterval(() => {}, 1_000);

@@ -62,6 +62,20 @@ function textMessage(text: string): A2AMessage {
   return { role: "agent", parts: [{ kind: "text", text }] };
 }
 
+/** Keep the inline summary under the local cap; longer text is cut with a marker (§6.11). */
+function truncateMessage(message: A2AMessage, maxBytes: number): A2AMessage {
+  const text = messageText(message);
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return message;
+  const marker = `\n…[summary truncated at ${maxBytes} bytes]`;
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(marker, "utf8"));
+  let cut = "";
+  for (const char of text) {
+    if (Buffer.byteLength(cut + char, "utf8") > budget) break;
+    cut += char;
+  }
+  return { role: message.role, parts: [{ kind: "text", text: cut + marker }] };
+}
+
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
   blobs: BlobStore;
@@ -78,6 +92,12 @@ export type TaskRunnerDeps = {
   permissionTtlS?: number;
   /** Local ceiling for inherited origin modes; undefined means no local cap (§7.10). */
   permissionMode?: PermissionMode;
+  /** Hard cap on task lifetime; peers see it as max_task_ttl_s (§6.9). Default 3600s. */
+  taskTimeoutS?: number;
+  /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). Default 32 KiB. */
+  resultMaxBytes?: number;
+  /** Data root, used by executors that need to point an agent at the local CLI (§6.14). */
+  dataRoot?: string;
   /** Sends a control message to a child task (grant/denial downward, §7.12). */
   sendTaskMessage?: (peerUrl: string, taskId: string, message: A2AMessage) => Promise<void>;
 };
@@ -90,6 +110,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const tasks = new Map<string, Running>();
   const store = deps.store ?? createMemoryTaskStore();
   const defaultTtlS = deps.defaultTtlS ?? 3600;
+  const taskTimeoutS = deps.taskTimeoutS ?? defaultTtlS;
+  const resultMaxBytes = deps.resultMaxBytes ?? 32 * 1024;
   const permissionTtlS = deps.permissionTtlS;
   const selfOrcaNodeId = deps.selfOrcaNodeId ?? "unknown";
   let activeTaskId: string | null = null;
@@ -264,8 +286,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     clearTtl(rec);
     rec.ttl = setTimeout(() => {
       if (!isTerminal(rec.view.status.state)) {
-        rec.abort.abort();
+        // Terminal state first: the abort that follows rejects the executor's
+        // iterator, and pump() must not overwrite this reason with "canceled".
         finish(rec, "failed", textMessage("task ttl exceeded"), "timeout");
+        rec.abort.abort();
       }
     }, rec.ttl_s * 1000);
     rec.ttl.unref?.();
@@ -297,7 +321,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   }
 
   function finish(rec: Running, state: TaskState, message?: A2AMessage, reason?: string): void {
-    rec.view.status = { state, timestamp: nowIso(), ...(message ? { message } : {}), ...(reason ? { reason } : {}) };
+    const summary = message === undefined ? undefined : truncateMessage(message, resultMaxBytes);
+    rec.view.status = { state, timestamp: nowIso(), ...(summary ? { message: summary } : {}), ...(reason ? { reason } : {}) };
     clearTtl(rec);
     clearPermissionTimer(rec);
     releaseSlot(rec);
@@ -322,6 +347,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           originOrcaNode: rec.origin_orca_node,
           ...(deps.selfOrcaNodeId ? { selfOrcaNodeId: deps.selfOrcaNodeId } : {}),
           ...(deps.workspace ? { workspaceDir: deps.workspace.work, podDir: deps.workspace.pod } : {}),
+          ...(deps.dataRoot ? { dataRootDir: deps.dataRoot } : {}),
           ...(permissionMode ? { permissionMode } : {}),
           metadata: rec.metadata,
         },
@@ -350,16 +376,21 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           ];
           persist(rec);
         } else if (event.type === "completed") {
+          if (event.usage) rec.view.usage = event.usage;
           finish(rec, "completed", textMessage(event.text));
           return;
         } else if (event.type === "failed") {
-          finish(rec, "failed", textMessage(event.text));
+          if (event.usage) rec.view.usage = event.usage;
+          finish(rec, "failed", textMessage(event.text), event.reason ?? "executor_error");
           return;
         }
         step = await iterator.next();
       }
       finish(rec, "failed", textMessage("executor exited without a terminal event"), "executor_exited");
     } catch (error) {
+      // A watchdog (hard TTL, cancel) may have finished the task already;
+      // its reason wins over the executor's abort error.
+      if (isTerminal(rec.view.status.state)) return;
       if (rec.abort.signal.aborted) {
         finish(rec, "canceled", undefined, rec.view.status.reason ?? "canceled");
         return;
@@ -381,7 +412,11 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     const id = newTaskId();
     const contextId = input.message.contextId ?? id;
     const createdAt = nowIso();
-    const ttlS = Number(input.metadata?.["pod"] && (input.metadata["pod"] as { task_ttl_s?: number }).task_ttl_s) || defaultTtlS;
+    const requestedTtl = Number(
+      input.metadata?.["pod"] && (input.metadata["pod"] as { task_ttl_s?: number }).task_ttl_s,
+    );
+    const ttlS =
+      Number.isFinite(requestedTtl) && requestedTtl > 0 ? Math.min(requestedTtl, taskTimeoutS) : taskTimeoutS;
     const rec: Running = {
       view: {
         kind: "task",

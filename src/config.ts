@@ -59,6 +59,10 @@ export type OrcaNodeConfig = {
   acp?: AcpExecutorConfig;
   /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
   permission_mode?: PermissionMode;
+  /** Hard cap on a task's lifetime; peers see it as max_task_ttl_s and size work to it (§6.9). */
+  task_timeout_s?: number;
+  /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). */
+  result_max_bytes?: number;
   /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
   approval_timeout_s?: number;
   /** Allow candidate endpoints on public IPs (§7.7). Default: private ranges only. */
@@ -81,6 +85,8 @@ export type CreateOrcaNodeConfigOptions = {
   acp?: AcpExecutorConfig;
   permissionMode?: PermissionMode;
   approvalTimeoutS?: number;
+  taskTimeoutS?: number;
+  resultMaxBytes?: number;
   allowPublicPeers?: boolean;
   allowLoopbackPeers?: boolean;
 };
@@ -109,6 +115,14 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
   if (options.permissionMode !== undefined && !isPermissionMode(options.permissionMode)) {
     throw new Error('permissionMode must be "read-only", "workspace-write", or "danger-full-access"');
   }
+  for (const [name, value] of [
+    ["taskTimeoutS", options.taskTimeoutS],
+    ["resultMaxBytes", options.resultMaxBytes],
+  ] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+      throw new Error(`${name} must be a positive number`);
+    }
+  }
   const key = deriveWorkgroupKey(options.workgroupId, options.password);
   return {
     orca_node_id: options.orcaNodeId ?? generateOrcaNodeId(),
@@ -124,6 +138,8 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     ...(options.acp ? { acp: options.acp } : {}),
     ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
       ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
+  ...(options.taskTimeoutS !== undefined ? { task_timeout_s: options.taskTimeoutS } : {}),
+  ...(options.resultMaxBytes !== undefined ? { result_max_bytes: options.resultMaxBytes } : {}),
   ...(options.allowPublicPeers !== undefined ? { allow_public_peers: options.allowPublicPeers } : {}),
   ...(options.allowLoopbackPeers !== undefined ? { allow_loopback_peers: options.allowLoopbackPeers } : {}),
   };
@@ -269,6 +285,15 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
       throw new Error("config.approval_timeout_s must be a positive number of seconds");
     }
     config.approval_timeout_s = approvalTimeout;
+  }
+  for (const key of ["task_timeout_s", "result_max_bytes"] as const) {
+    const value = record[key];
+    if (value !== undefined) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`config.${key} must be a positive number`);
+      }
+      config[key] = value;
+    }
   }
   for (const key of ["allow_public_peers", "allow_loopback_peers"] as const) {
     const value = record[key];

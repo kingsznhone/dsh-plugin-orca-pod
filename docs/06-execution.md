@@ -165,6 +165,7 @@ Pod gateway (local)
 
 - 忙时拒绝发生在**建 task 之前**：不产生 task、不消耗幂等键；模型重试就是一次新的 `message/send`。
 - `busy` 写进 self record（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证（Phase 0 未实现，见上）。
+- **本地硬预算**：`task_timeout_s`（默认 3600s）是本机对单个任务的硬上限，实际 TTL 取 `min(pod.task_ttl_s, task_timeout_s)`；到点先置终态、再 abort 执行器，语义是 `failed("task ttl exceeded", reason="timeout")`，不依赖任务自己配合。这个上限随 Agent Card、self record 与成员记录里的 `max_task_ttl_s` 对外公布，origin 据此决定拆多细的任务。
 - **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一 orca node 上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
 - 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。orca node 进程崩溃或重启时，SQLite 里所有非终态 task 在下次启动时标成 `failed(node_restart)`（[§6.10](06-execution.md#610-session-context-workspace-的绑定)、[§8.3](08-reliability.md#83-目标重启)），不自动续跑。
 
@@ -186,7 +187,7 @@ session_id → workspace（本 orca node 唯一的那份）
 
 | 层 | 走哪 | 说明 |
 |---|---|---|
-| 结论文本 | `tasks/get` 的 `status.message`，内联 | agent 最后一轮说的话，截断到 32 KiB；超长部分写 `result.txt` blob，消息里带摘要与引用 |
+| 结论文本 | `tasks/get` 的 `status.message`，内联 | agent 最后一轮说的话，按本地 `result_max_bytes`（默认 32 KiB）截断，末尾带 `…[summary truncated at N bytes]` |
 | 产物文件 | blob 通道（[§5.6](05-tasks.md#56-文件交换blob-通道)） | manifest 给 `{blob_id, name, media_type, bytes}`；origin 按需拉 |
 | 工作区状态 | 本机 `notes/` | **不离开目标机**；要让 origin 知道进展，由 agent 在结论文本里摘要 |
 
@@ -214,7 +215,8 @@ session_id → workspace（本 orca node 唯一的那份）
 - `changed` 一律**相对 `work/`**；出现绝对路径或 `..` 直接判 manifest 非法。
 - `patch` 是可选 artifact（`git diff` 产物）；有 git 时建议给，便于 review 与回滚。
 - artifact **不内联**，只给 blob 引用；origin 取不取、什么时候取，由人决定。
-- 结论文本超过 32 KiB：截断 + 写一个 `result.txt` blob，消息里只留摘要与引用。
+- 结论文本超过 `result_max_bytes`：截断并加标记；不额外写 `result.txt` blob。要传大文件，由子节点在结论文本附录里贴一个 `publish` 出来的 blob URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
+- `usage`（input/output/cache_read tokens）记录在 `tasks/get` 的 `usage` 字段，供 origin 估算成本；没有执行器用量时省略该字段。
 - 凭据类内容按 [§7.15](07-security.md#715-凭据回传与注入防护) 的策略处理，不因为“在 artifact 里”就绕过。
 
 ### 6.12 明确不做
@@ -282,10 +284,13 @@ dsh --profile headless --json \
 - 取消：`AbortSignal` → 先 SIGTERM，2s 后 SIGKILL；Windows 用 `taskkill /pid <pid> /T /F` 杀整棵树（`dsh` 会拉子进程）。
 - 超时：仍由任务层 `task_ttl_s` abort；executor 只负责杀进程。
 - 结果文本：`final.text` 直接作为任务结论（走 [§6.11](06-execution.md#611-任务结果与产物) 的内联/截断规则）。
+- prompt 前置 `[orca-pod]` 编排 preamble（任务 id、本 orca node id、`orca-node` CLI 绝对路径、`publish`/`escalate`/`wait` 用法），与 AcpExecutor 共用 `src/preamble.ts`：headless 子进程也要知道自己是跨节点任务的一部分。
+- usage：`step_end` 里的 `usage.{inputTokens,outputTokens,cacheReadTokens}` 采集成任务 `usage`。
+- 错误码：`turn_end`/`final` 的 `reason.error.code` 透传为任务 `reason`（如 `AUTH_MISSING`），没有 code 时回落 `executor_error`。
 
 **不做**（留给 AcpExecutor）：`message/stream` 流式进度、`session/update` 细粒度事件、`input-required` 的权限升级透传、协作取消。
 
-**测试**：`test/headless.test.ts` 用 `command: process.execPath` + `extra_args: [fake-dsh.mjs]` 起假 dsh。覆盖：正常完成、`turn_end` 错误、没有 `final` 就退出、挂起被 abort（进程被杀）、第二次任务带 `--session-id` 且 sessions.json 的键正确。
+**测试**：`test/headless.test.ts` 用 `command: process.execPath` + `extra_args: [fake-dsh.mjs]` 起假 dsh。覆盖：正常完成、`turn_end` 错误、错误码透传、usage 采集、没有 `final` 就退出、挂起被 abort（进程被杀）、第二次任务带 `--session-id` 且 sessions.json 的键正确、prompt 带 preamble。
 
 **真实环境（Windows）**：`dsh` 装出来是 `.cmd` shim，`spawn("dsh")` 会 `ENOENT`。executor 先按 `PATH` + `PATHEXT` 把 `command` 解析成真实路径；命中 `.cmd`/`.bat` 时经 `cmd.exe /d /s /c` 启动，并把 prompt 改成 `-` 从 stdin 传入，避免 shell 引号问题（其余参数由 config 决定，保持原样）。
 

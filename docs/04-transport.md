@@ -22,12 +22,13 @@
 | POST | `/blobs` | 上传文件（内容寻址） | workgroup 签名 | 已实现（内存存储；见 §5.6） |
 | GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（凭 `blob_id` 即可取）或 `/link` 直链 | 已实现 |
 | POST | `/blobs/{blob_id}/link` | 换一条短期直链（`?exp=&sig=`） | workgroup 签名 | 已实现 |
+| POST | `/blobs/register` | 登记本机文件路径，返回带 TTL 的直链（不复制字节） | 仅本 orca node 自己的签名 | 已实现（见 §5.6） |
 | POST | `/cluster/join` | 引导：返回自述 + 全量目录 | workgroup 签名 | 已实现 |
 | POST | `/cluster/heartbeat` | 心跳 + 摘要；摘要不一致时响应回目录（候选端点）；可带首次 self | workgroup 签名 | 已实现（含周期发送与看门狗） |
 | GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 | 已实现 |
 | POST | `/cluster/leave` | 主动离开（best-effort，不是安全操作） | workgroup 签名 | 已实现 |
 
-`/blobs` 已实现内存版（内容寻址、去重、256 MiB 上限、直链 TTL 300s）；配额、GC、`Content-Disposition` 见 §5.6 的未实现部分。
+`/blobs` 默认 fs 内容寻址存储（内存版仅测试用；去重、256 MiB 上限、直链 TTL 300s）；本地文件登记见 `/blobs/register`；配额、GC、`Content-Disposition` 见 §5.6 的未实现部分。
 
 约定：
 
@@ -85,11 +86,11 @@
 }
 ```
 
-**Phase 0 实现**：当前 `url` 已指向 `<endpoint>/a2a`；网关只返回 `name`、`protocol_version`、`url` 三个字段（实现用 snake_case `protocol_version`，值为 `0.1.0`），其余字段尚未实现。完整 Card 字段与 A2A schema 的对齐是后续里程碑。
+**Phase 0 实现**：当前 `url` 已指向 `<endpoint>/a2a`；网关返回 `name`、`protocol_version`、`url`、`max_task_ttl_s` 四个字段（实现用 snake_case `protocol_version`，值为 `0.1.0`），其余字段尚未实现。完整 Card 字段与 A2A schema 的对齐是后续里程碑。
 
 要求：
 
-- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
+- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。`max_task_ttl_s` 是公开的调度预算，不是敏感信息，放在 Card 里让 origin 在派任务前就能拆解。
 - `skills` 是能力声明，不是实现；执行由 LocalExecutor + 继承的权限模式决定。
 - SDK 与 `protocolVersion` 必须 pin；不匹配 fail closed（半兼容的 SDK 比不兼容更难查），并在日志里写清双方版本。
 

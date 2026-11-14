@@ -71,13 +71,37 @@ describe("HeadlessExecutor", () => {
     const { events } = await withMode("echo-prompt", () =>
       collect(executor().run(input(pod, { prompt: "build the thing" }), new AbortController().signal)),
     );
-    expect(events).toEqual([{ type: "completed", text: "build the thing" }]);
+    const completed = events[0] as { type: string; text: string };
+    expect(completed.type).toBe("completed");
+    expect(completed.text).toContain("[orca-pod]");
+    expect(completed.text).toContain("build the thing");
   });
 
   it("fails the task when dsh reports an error", async () => {
     const pod = await podDir();
     const { events } = await withMode("error", () => collect(executor().run(input(pod), new AbortController().signal)));
-    expect(events).toEqual([{ type: "failed", text: "boom" }]);
+    expect(events[0]).toMatchObject({ type: "failed", text: "boom" });
+    expect((events[0] as { reason?: string }).reason).toBeUndefined();
+  });
+
+  it("carries the dsh error code as the task reason", async () => {
+    const pod = await podDir();
+    const { events } = await withMode("error-code", () =>
+      collect(executor().run(input(pod), new AbortController().signal)),
+    );
+    expect(events).toEqual([{ type: "failed", text: "boom", reason: "AUTH_MISSING" }]);
+  });
+
+  it("carries dsh token usage on the terminal event", async () => {
+    const pod = await podDir();
+    const { events } = await withMode("usage", () => collect(executor().run(input(pod), new AbortController().signal)));
+    expect(events).toEqual([
+      {
+        type: "completed",
+        text: "fake done",
+        usage: { input_tokens: 11, output_tokens: 22, cache_read_tokens: 3 },
+      },
+    ]);
   });
 
   it("fails when dsh exits without a final event", async () => {
@@ -143,7 +167,8 @@ describe("HeadlessExecutor", () => {
       const first = await sendAndWait("run the tests");
       expect(first.status.message?.parts[0]).toEqual({ kind: "text", text: "fake done" });
       const firstArgs = JSON.parse(await readFile(argsFile, "utf8"));
-      expect(firstArgs.prompt).toBe("run the tests");
+      expect(firstArgs.prompt).toContain("[orca-pod]");
+      expect(firstArgs.prompt).toContain("run the tests");
       expect(firstArgs.argv).toContain("--add-dir");
       expect(firstArgs.cwd.endsWith(join("workgroups", "orca-dev", "work"))).toBe(true);
       expect(firstArgs.sessionId).toBeUndefined();

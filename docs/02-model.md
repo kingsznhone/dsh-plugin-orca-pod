@@ -81,6 +81,7 @@ join（一次，凭 workgroup_id + 密码）→ 拿到 target 自述 + 全量目
   "roles": ["exec"],
   "workspace": { "used_bytes": 12345678, "quota_bytes": 5368709120 },
   "busy": null,
+  "max_task_ttl_s": 3600,
   "joined_at": "2026-11-14T04:01:02Z",
   "server_version": "0.1.0"
 }
@@ -97,6 +98,7 @@ Linux orca node 的 `os` 形如：
 - `runtime` 与整个记录只出现在需要签名的接口里，公网匿名不可读。
 - `available_bytes` 是采集瞬间值，会变；它不进 `runtime_digest`（否则心跳每次都要拉全量）。`digest` 只覆盖稳定字段：os/cpu/memory.total/gpus/dsh/plugin/caps。
 - `workspace` 只报**用量与配额**，不含路径；真实目录由目标 orca node 自己解析。忙闲是动态字段：`busy` 为 `null` 或 `{ "task_id", "origin_orca_node", "since" }`，由本人写、心跳刷新；origin 的 UI 据此显示“B 正在跑 X”。
+- `max_task_ttl_s` 是本机单任务硬预算（`task_timeout_s`，默认 3600），随 self record、心跳成员记录与 Agent Card 公布；origin 派任务时据此拆解，超时的任务会被目标机直接杀掉（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
 - `endpoint` 只有一个：多端点会引入选路、切换和指纹不一致，收益不值这个复杂度；跨网段、公网、NAT 穿透都靠代理或 VPN 把这个地址变得可达（[§4.3](04-transport.md#43-反向代理注意事项)）。
 - 采集失败不阻塞启动：缺字段就省略，并在 `runtime.error` 里写原因。
 

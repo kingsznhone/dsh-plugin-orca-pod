@@ -6,16 +6,22 @@
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type { HeadlessExecutorConfig } from "./config.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
+import { orchestrationPreamble, withPreamble } from "./preamble.ts";
 import { KILL_GRACE_MS, abortError, isCmdShim, killTree, quoteForCmd, resolveCommand } from "./process.ts";
+import type { TaskUsage } from "./protocol.ts";
 import { readSessions, writeSessions } from "./session-store.ts";
 
 const STDERR_TAIL = 4096;
 
+/** Absolute path of the `orca-node` CLI entry, handed to the agent in the preamble. */
+const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
 type DshReason = {
   kind?: unknown;
-  error?: { message?: unknown } | null;
+  error?: { message?: unknown; code?: unknown } | null;
 } | null;
 
 type DshEvent = {
@@ -24,16 +30,35 @@ type DshEvent = {
   sessionId?: unknown;
   text?: unknown;
   reason?: DshReason;
+  usage?: { inputTokens?: unknown; outputTokens?: unknown; cacheReadTokens?: unknown };
 };
 
-function failureOf(reason: DshReason | undefined): string | null {
+/** Failure text plus the structured dsh error code, when it reported one (§6.14). */
+type DshFailure = { message: string; code?: string };
+
+function failureOf(reason: DshReason | undefined): DshFailure | null {
   if (!reason) return null;
   if (reason.kind === "error") {
-    return typeof reason.error?.message === "string" ? reason.error.message : "dsh reported an error";
+    const code = typeof reason.error?.code === "string" ? reason.error.code : undefined;
+    const message = typeof reason.error?.message === "string" ? reason.error.message : "dsh reported an error";
+    return { message, ...(code ? { code } : {}) };
   }
-  if (reason.kind === "aborted") return "dsh run aborted";
-  if (reason.kind === "interrupted") return "dsh run interrupted";
+  if (reason.kind === "aborted") return { message: "dsh run aborted" };
+  if (reason.kind === "interrupted") return { message: "dsh run interrupted" };
   return null;
+}
+
+function usageOf(raw: DshEvent["usage"]): TaskUsage | null {
+  if (!raw) return null;
+  const input = raw.inputTokens;
+  const output = raw.outputTokens;
+  const cached = raw.cacheReadTokens;
+  if (typeof input !== "number" || typeof output !== "number") return null;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: typeof cached === "number" ? cached : 0,
+  };
 }
 
 function sessionKey(input: ExecuteInput): string | null {
@@ -58,6 +83,15 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
       const sessions = key && input.podDir ? await readSessions(input.podDir) : {};
       const sessionId = key ? sessions[key] : undefined;
       const permissionMode = input.permissionMode ?? options.permission_mode ?? "read-only";
+      const prompt = withPreamble(
+        input.prompt,
+        orchestrationPreamble({
+          taskId: input.taskId,
+          ...(input.selfOrcaNodeId ? { selfOrcaNodeId: input.selfOrcaNodeId } : {}),
+          cliPath: CLI_PATH,
+          ...(input.dataRootDir === undefined ? {} : { dataRoot: input.dataRootDir }),
+        }),
+      );
 
       const resolved = resolveCommand(command);
       // .cmd/.bat shims only run through cmd.exe; hand the prompt over stdin
@@ -75,7 +109,7 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
         approvalPolicy,
         ...(input.workspaceDir ? ["--add-dir", input.workspaceDir] : []),
         ...(sessionId ? ["--session-id", sessionId] : []),
-        viaCmd ? "-" : input.prompt,
+        viaCmd ? "-" : prompt,
       ];
 
       const child = viaCmd
@@ -96,7 +130,7 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
             ...(process.platform === "win32" ? {} : { detached: true }),
           });
 
-      if (viaCmd) child.stdin?.end(input.prompt);
+      if (viaCmd) child.stdin?.end(prompt);
 
       let stderr = "";
       child.stderr?.setEncoding("utf8");
@@ -119,7 +153,8 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
       else signal.addEventListener("abort", onAbort, { once: true });
 
       let finalText: string | null = null;
-      let failure: string | null = null;
+      let failure: DshFailure | null = null;
+      let usage: TaskUsage | null = null;
       let discoveredSession: string | undefined;
       const lines = createInterface({ input: child.stdout! });
       try {
@@ -138,6 +173,10 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
           if (event.type === "status" && event.phase === "turn_end") {
             const reason = failureOf(event.reason);
             if (reason) failure = reason;
+          }
+          if (event.type === "status" && event.phase === "step_end") {
+            const parsed = usageOf(event.usage);
+            if (parsed) usage = parsed;
           }
           if (event.type === "final") {
             finalText = typeof event.text === "string" ? event.text : "";
@@ -162,7 +201,12 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
       }
 
       if (failure) {
-        yield { type: "failed", text: failure };
+        yield {
+          type: "failed",
+          text: failure.message,
+          ...(failure.code === undefined ? {} : { reason: failure.code }),
+          ...(usage === null ? {} : { usage }),
+        };
         return;
       }
       if (finalText === null) {
@@ -170,7 +214,7 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
         yield { type: "failed", text: `dsh exited without a final event${tail ? `: ${tail}` : ""}` };
         return;
       }
-      yield { type: "completed", text: finalText };
+      yield { type: "completed", text: finalText, ...(usage === null ? {} : { usage }) };
     },
   };
 }

@@ -4,7 +4,7 @@
  * state machine, approval loop, and blob path can be exercised without an agent.
  */
 
-import type { PermissionMode, TaskRelay } from "./protocol.ts";
+import type { PermissionMode, TaskRelay, TaskUsage } from "./protocol.ts";
 
 /**
  * A child task one hop down is waiting for permission. The echo script carries
@@ -32,8 +32,8 @@ export type EchoScript = {
 export type ExecutorEvent =
   | { type: "suspend"; suspend: EchoSuspend }
   | { type: "artifact"; name: string; content: string }
-  | { type: "completed"; text: string }
-  | { type: "failed"; text: string };
+  | { type: "completed"; text: string; usage?: TaskUsage }
+  | { type: "failed"; text: string; reason?: string; usage?: TaskUsage };
 
 export type ExecuteInput = {
   taskId: string;
@@ -48,6 +48,8 @@ export type ExecuteInput = {
   workspaceDir?: string;
   /** Group workspace `.pod/` dir; executors keep their own state here. */
   podDir?: string;
+  /** This orca node's data root; executors that hand an agent a CLI path need it. */
+  dataRootDir?: string;
   /** Effective permission mode after origin inheritance and local ceiling (§7.10). */
   permissionMode?: PermissionMode;
   metadata?: Record<string, unknown>;
