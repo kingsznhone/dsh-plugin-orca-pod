@@ -89,6 +89,7 @@ window.__ModuleLoader__.load({
         approve: "approve",
         deny: "deny",
         apTitle: "Permission needed",
+      apTitleNamed: "Node {name} requests permission",
         apBackground: "A background task needs permission",
         apWants: "wants to run",
         apTask: "task",
@@ -175,6 +176,7 @@ window.__ModuleLoader__.load({
         approve: "允许",
         deny: "拒绝",
         apTitle: "需要权限决策",
+      apTitleNamed: "节点 {name} 请求授权",
         apBackground: "后台任务请求权限",
         apWants: "请求执行",
         apTask: "任务",
@@ -258,6 +260,13 @@ window.__ModuleLoader__.load({
       const dict = lang.indexOf("zh") === 0 ? TEXT.zh : TEXT.en;
       if (Object.prototype.hasOwnProperty.call(dict, key)) return dict[key];
       return Object.prototype.hasOwnProperty.call(TEXT.en, key) ? TEXT.en[key] : key;
+    }
+
+    /** Translate a key and substitute `{name}` placeholders. */
+    function tFormat(key, vars) {
+      let text = t(key);
+      for (const [name, value] of Object.entries(vars)) text = text.split("{" + name + "}").join(String(value));
+      return text;
     }
 
     /** Re-render on locale switches (Chinese <-> English) while mounted. */
@@ -392,7 +401,7 @@ window.__ModuleLoader__.load({
       boxSizing: "border-box",
       width: "min(560px, calc(100vw - 32px))",
       padding: "14px 16px",
-      borderRadius: "var(--dsw-radius-md, 12px)",
+      borderRadius: "var(--dsw-radius-panel, 16px)",
       border: "1px solid var(--dsw-alias-border-l1)",
       background: "var(--dsw-alias-bg-layer-1)",
       boxShadow: "0 12px 32px rgba(0, 0, 0, 0.28)",
@@ -490,6 +499,25 @@ window.__ModuleLoader__.load({
 
     function short(id) {
       return typeof id === "string" && id.length > 10 ? id.slice(0, 4) + "…" + id.slice(-4) : id;
+    }
+
+    /** Display name of a peer, looked up by orca node id or advertised endpoint. */
+    function memberName(members, key) {
+      if (typeof key !== "string" || key.length === 0) return null;
+      const list = Array.isArray(members) ? members : [];
+      const found = list.find(
+        (member) => member.orca_node_id === key || (Array.isArray(member.endpoints) && member.endpoints.includes(key)),
+      );
+      if (found === undefined) return null;
+      return found.display_name || found.orca_node_id;
+    }
+
+    /** Panel approval row: display name when known, else a stable short id. */
+    function approvalsName(members, key) {
+      const name = memberName(members, key);
+      if (name !== null) return name;
+      if (typeof key !== "string" || key.length === 0) return "-";
+      return short(key);
     }
 
     function age(iso) {
@@ -631,7 +659,7 @@ window.__ModuleLoader__.load({
             { key: item.task_id, style: { display: "flex", gap: 8, alignItems: "center", margin: "4px 0" } },
             h("span", { style: CELL }, short(item.task_id)),
             h("span", { style: MUTED }, item.request && item.request.tool ? item.request.tool : t("tool")),
-            h("span", { style: MUTED }, t("from") + (item.request && item.request.requested_by ? short(item.request.requested_by) : "-")),
+            h("span", { style: MUTED }, t("from") + approvalsName(props.members, item.request && item.request.requested_by)),
             h("button", { style: BUTTON, disabled: props.busy, onClick: () => props.onAct("approve", { peer: item.peer, task_id: item.task_id }) }, t("approve")),
             h("button", { style: DANGER, disabled: props.busy, onClick: () => props.onAct("deny", { peer: item.peer, task_id: item.task_id }) }, t("deny")),
           ),
@@ -998,7 +1026,7 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, busy: props.busy, onAct: props.onAct })),
+        h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, busy: props.busy, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("members")), h(Members, { members: state.members })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("workspace")), h(Workspace, { workspace: state.workspace })),
@@ -1026,13 +1054,15 @@ window.__ModuleLoader__.load({
       const tool = request.tool || prompt.tool || "";
       const requested = describeRequested(request.requested);
       const meta = prompt.peer + " · " + t("apTask") + " " + prompt.task_id;
+      const nodeName = memberName(props.members, prompt.peer);
+      const title = props.background ? t("apBackground") : nodeName === null ? t("apTitle") : tFormat("apTitleNamed", { name: nodeName });
       return h(
         "div",
         { style: props.background ? APPROVAL_POPUP_CARD : APPROVAL_DOCK_CARD },
         h(
           "div",
           { style: { fontFamily: FONT_FAMILY, fontSize: 14, fontWeight: 600, lineHeight: "22px" } },
-          props.background ? t("apBackground") : t("apTitle"),
+          title,
         ),
         h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, meta),
         h(
@@ -1084,7 +1114,7 @@ window.__ModuleLoader__.load({
       const prompts = (state && state.prompts) || [];
       const mine = sessionId ? prompts.filter((prompt) => prompt.agent_id === sessionId) : [];
       if (mine.length === 0) return null;
-      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, busy, onAct: act })));
+      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, busy, onAct: act })));
     }
 
     /** Frame-wide popup: prompts parked by sessions that are not on screen. */
@@ -1097,7 +1127,7 @@ window.__ModuleLoader__.load({
       return h(
         "div",
         { style: POPUP_WRAP },
-        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, busy, onAct: act, background: true })),
+        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, busy, onAct: act, background: true })),
       );
     }
 
