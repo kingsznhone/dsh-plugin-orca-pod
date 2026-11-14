@@ -78,6 +78,28 @@ export interface OrcaNode {
   cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
 }
 
+/**
+ * Join every peer in a directory response, best-effort: one unreachable peer
+ * must not stop a node from joining the rest of the mesh (§3.2).
+ */
+export async function joinRoster(
+  node: OrcaNode,
+  members: readonly PeerView[],
+): Promise<{ joined: string[]; failed: string[] }> {
+  const joined: string[] = [];
+  const failed: string[] = [];
+  for (const member of members) {
+    if (member.node_id === node.nodeId || !member.endpoint) continue;
+    try {
+      await node.join(member.endpoint);
+      joined.push(member.node_id);
+    } catch {
+      failed.push(member.node_id);
+    }
+  }
+  return { joined, failed };
+}
+
 /** Address a remote node should dial: wildcard binds are reachable on loopback. */
 function endpointFrom(config: NodeConfig, port: number): string {
   if (config.endpoint) return config.endpoint;

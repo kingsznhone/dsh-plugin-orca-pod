@@ -4,8 +4,7 @@ import { join } from "node:path";
 
 import { createNodeConfig } from "./config.ts";
 import type { MembershipTimings } from "./membership.ts";
-import { createNode, type OrcaNode } from "./node.ts";
-import { isHttpEndpoint } from "./protocol.ts";
+import { createNode, joinRoster, type OrcaNode } from "./node.ts";
 
 export type MeshOptions = {
   nodes?: number;
@@ -57,10 +56,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
 
     for (const node of nodes.slice(1)) {
       const response = await node.join(bootstrapUrl);
-      for (const member of response.members) {
-        if (member.node_id === node.nodeId || !isHttpEndpoint(member.endpoint)) continue;
-        await node.join(member.endpoint);
-      }
+      await joinRoster(node, response.members);
     }
 
     for (const node of nodes) {
