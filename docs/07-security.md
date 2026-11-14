@@ -7,7 +7,7 @@
 ### 7.1 workgroup 与密码
 
 - `workgroup_id`：`[a-z0-9][a-z0-9-]{1,31}`，创建时指定，之后不可改（改名 = 新建 workgroup）。
-- 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`HKDF(ikm = "")` 是公开常量，等于没有准入控制。**密码只用于组网准入**（`/cluster/join` 的 HMAC 证明），请求签名与 grant 都用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
+- 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`HKDF(ikm = "")` 是公开常量，等于没有准入控制。**密码只用于组网准入**（`/cluster/join` 与每拍心跳的 HMAC 证明），请求签名与 grant 都用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
 - 密码不入库明文：首选系统钥匙串引用；退而求其次才在插件配置里存 `HKDF` 派生密钥（文件权限 0600）。存派生密钥的代价是：配置文件泄露 = 直接获得签名能力，所以推荐前者。面板覆盖层 `<data_root>/ui-config.json` 目前以明文保存 `workgroup_password`（只由回环闸门写入，生产应换成 credentials 引用）。
 - DSH 插件默认 `bind_host: "::"`（整机网卡监听），并用识别到的 LAN/IPv6 地址做 advertised endpoints：否则局域网 peer 拨不到。代价是**同网段任何人都能打到 `/health`、`/a2a` 与 `/blobs`**——认证仍靠 workgroup 签名，密码为空（开放 mesh）时就等于没有认证，只适合受信 LAN；需要更严格时设 `bind_host: "127.0.0.1"` 并让流量只走代理。
 - 日志、配置文件、错误信息里都不出现密码或派生密钥。
@@ -17,7 +17,7 @@
 k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32)
 ```
 
-- 换密码：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，准入证明对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
+- 换密码：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，下一拍心跳的准入证明对不上，双方互相 401 丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)），每个请求由本节点私钥签名，接收方用目录里的公钥验签——签名现在能证明“谁在调用”，伪造不了的。密码不再参与请求签名。
 - **local-only 能力仍用传输层判定（纵深防御）**：签名身份虽然不可伪造，但“只有本机可以做”的操作仍只看 socket 与转发头，不靠 `auth.orca_node_id`——代理可能改写来源地址，传输层事实更难伪造。已落实的例子是文件 blob 登记（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`publish` 由 CLI 直写本机 SQLite，根本不提供 HTTP 路由。
 - **授权按记录归属，不按签名身份**：签名能证明“谁”，但写操作仍按记录归属校验：普通读接口允许同组成员读，但写操作必须在**记录归属**上校验——`tasks/cancel` 只接受 task 的 origin（或执行它的本机节点），其他成员 `403 not_task_origin`（[§5.3](05-tasks.md#53-取消)）；`tasks/resume`、`tasks/escalate` 同理只接受 origin / 本机（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。`/cluster/child-link` 则同时要求传输层回环——它登记的是“本机任务在等某个子任务的权限”，不能让别的节点替你登记。
@@ -45,13 +45,13 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 
 - **无状态**：服务端不存 token，不需要清理、不需要刷新、不需要 TTL；
 - **密码即准入凭证**：密码泄露 = 对方可以加入组（能发现成员、发任务），但**不能伪造已有节点的请求**（每个节点用自己的私钥）。密码强度与分发仍是入组的安全边界；
-- **撤销**：签名的不可撤销性只到节点私钥为止——私钥在本机，删掉它就从 mesh 消失；把某节点踢出组则要换密码重建 group（[§7.3](07-security.md#73-密钥与密码的分发)），旧组里的签名自然失效。
+- **撤销**：签名的不可撤销性只到节点私钥为止——私钥在本机，删掉它就从 mesh 消失；把某节点踢出组则要换密码重建 group：旧节点的请求签名本身仍有效（Ed25519 与密码无关），但心跳准入证明过不了，双方在下一拍互相丢弃（[§7.3](07-security.md#73-密钥与密码的分发)）。
 - **重放窗口**：60s + nonce 去重；跨 orca node 时钟必须大致同步（NTP）；
 - **代理友好**：签名覆盖 method/path/body，代理改写 body 会验签失败（这是特性）。
 - **大 body 的签名**：带 body 的请求加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘后再自校验，不一致即 `400 body_digest_mismatch`。
 - **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = Ed25519(identity.private_key, "blob-link-v1|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
 
-`/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = HMAC-SHA256(HKDF(password), "pod-join-v1|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce)`——密码只出现在这一步。`/health` 不签。
+`/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = HMAC-SHA256(HKDF(password), "pod-join-v1|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce)`——密码只出现在这一步。`/cluster/heartbeat` 同样带 `ts`/`nonce`/`proof`（域分离 `pod-hb-v1`），验不过回 `401 bad_proof`，双方据此在下一拍互相丢弃。`/health` 不签。
 
 ### 7.3 密钥与密码的分发
 
@@ -59,9 +59,9 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 - 插件配置里只存 `workgroup_id` 与钥匙串引用；导出的配置不含密码；
 - 二维码/复制按钮只用于本机设备间传递，UI 明确写“这是明文，别发群里”；
 - 轮换（“解散再重建”，是特性不是缺陷）：
-  1. A 改密码并重启监听 → 旧签名全部失效，A 对旧成员表现为 401，旧成员对 A 表现为 offline；
+  1. A 改密码并重启监听 → A 的心跳准入证明换成新密码，旧成员在下一拍收到 401 并把 A 丢弃，A 也把旧成员丢弃；
   2. B 也改成同一新密码、重启、重新 join A → 新 group 成立（此刻 A、B 互见）；
-  3. 没改密码的 C 留在旧状态：它能拨 A，但签名验不过，**进不来**；A 也不会把 C 当成员；
+  3. 没改密码的 C 留在旧状态：它能拨 A，但心跳准入证明验不过，401 后被 A 丢弃且 A 也把 C 丢弃——既进不来也不再显示在线；
   4. 想恢复 C，就把它的密码改成新的、重新 join 任意一个新成员。
 - 结论：整个过程不需要“踢人接口”，也不需要维护黑名单——**密码就是成员资格**。
 

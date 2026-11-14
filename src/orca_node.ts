@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { childPodMetadata, deriveChildGrant } from "./chain.ts";
 import { createFileBlobRegistry, type FileBlobStore } from "./blob-files.ts";
-import { buildAuthHeader, blobLinkSignature, buildJoinProof, NonceCache, signGrant } from "./crypto.ts";
+import { buildAuthHeader, blobLinkSignature, buildHeartbeatProof, buildJoinProof, NonceCache, signGrant } from "./crypto.ts";
 import {
   createMemoryDispatchStore,
   TERMINAL_TASK_STATES,
@@ -446,10 +446,26 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   }
 
   function sendHeartbeat(peerUrl: string): Promise<HeartbeatResponse> {
+    const ts = Date.now();
+    const nonce = randomUUID();
+    const proof = buildHeartbeatProof(key, {
+      workgroupId: config.workgroup_id,
+      orcaNodeId,
+      ts,
+      nonce,
+    });
     return postSigned<HeartbeatResponse>(
       peerUrl,
       "/cluster/heartbeat",
-      { orca_node_id: orcaNodeId, busy: tasks.busy(), digest: currentDigest() },
+      {
+        workgroup_id: config.workgroup_id,
+        orca_node_id: orcaNodeId,
+        ts,
+        nonce,
+        proof,
+        busy: tasks.busy(),
+        digest: currentDigest(),
+      },
       AbortSignal.timeout(membership.timings.heartbeatTimeoutMs),
     );
   }
@@ -473,6 +489,13 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       emitMembersIfChanged();
       return response;
     } catch (error) {
+      if (isAdmissionRejection(error)) {
+        // This peer still uses another password: stop answering it and forget the
+        // record (§7.1). Its own heartbeats to us fail identically, so the whole
+        // old mesh drops the changed node instead of keeping it "online" forever.
+        if (peer) dropPeer(peer.orca_node_id, "workgroup admission rejected");
+        throw error;
+      }
       if (observeFailure && peer) membership.observeOutboundFail(peer.orca_node_id);
       throw error;
     }
@@ -777,6 +800,25 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   /** Last endpoint that worked per peer, tried first on the next round. */
   const preferredEndpoints = new Map<string, string>();
 
+  /** A 401-shaped failure proves the peer no longer shares this password (§7.1). */
+  function isAdmissionRejection(error: unknown): boolean {
+    const failure = error as { status?: number; code?: string };
+    return failure.status === 401
+      || failure.code === "bad_proof"
+      || failure.code === "clock_skew"
+      || failure.code === "nonce_replay";
+  }
+
+  /** Drop a node that failed admission: it is not part of this mesh anymore. */
+  function dropPeer(orcaNodeIdToDrop: string, reason: string): void {
+    const known = membership.list().some((peer) => peer.orca_node_id === orcaNodeIdToDrop);
+    if (known) console.warn(`orca-pod: dropping node ${orcaNodeIdToDrop} (${reason}, §7.1)`);
+    membership.remove(orcaNodeIdToDrop);
+    peers.remove(orcaNodeIdToDrop);
+    preferredEndpoints.delete(orcaNodeIdToDrop);
+    emitMembersIfChanged();
+  }
+
   /** DNS lookups are not free, so each endpoint is judged once per process. */
   async function endpointAllowed(peer: PeerView, endpoint: string): Promise<boolean> {
     const cached = candidateVerdicts.get(endpoint);
@@ -813,8 +855,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         await heartbeat(endpoint, false);
         preferredEndpoints.set(peer.orca_node_id, endpoint);
         return;
-      } catch {
-        // Try the peer's next advertised URL.
+      } catch (error) {
+        // Every URL belongs to the same node, so a credential mismatch is final.
+        if (isAdmissionRejection(error)) return;
       }
     }
     membership.observeOutboundFail(peer.orca_node_id);

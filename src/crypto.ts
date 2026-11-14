@@ -256,6 +256,35 @@ export function verifyJoinProof(key: Buffer, fields: JoinProofFields, proof: str
 }
 
 // ---------------------------------------------------------------------------
+// Heartbeat admission (§7.1): membership is proven on every heartbeat, not only
+// at join. A node whose password changed carries a proof the old mesh cannot
+// verify, so both sides stop answering and drop each other within a few ticks —
+// rotating the password removes old members instead of only blocking new ones.
+// ---------------------------------------------------------------------------
+
+export const HEARTBEAT_PROOF_VERSION = "pod-hb-v1";
+
+export function heartbeatProofInput(fields: JoinProofFields): string {
+  return [
+    HEARTBEAT_PROOF_VERSION,
+    fields.workgroupId,
+    fields.orcaNodeId,
+    String(fields.ts),
+    fields.nonce,
+  ].join("|");
+}
+
+export function buildHeartbeatProof(key: Buffer, fields: JoinProofFields): string {
+  return createHmac("sha256", key).update(heartbeatProofInput(fields)).digest("base64url");
+}
+
+export function verifyHeartbeatProof(key: Buffer, fields: JoinProofFields, proof: string): boolean {
+  const expected = Buffer.from(buildHeartbeatProof(key, fields), "base64url");
+  const actual = Buffer.from(proof, "base64url");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+// ---------------------------------------------------------------------------
 // Grants (§7.11): the origin node signs its human decision with its own key;
 // deriving a child grant keeps the origin signature verifiable at every hop.
 // ---------------------------------------------------------------------------

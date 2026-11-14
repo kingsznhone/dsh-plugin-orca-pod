@@ -80,7 +80,12 @@ export type JoinResponse = {
 };
 
 export type HeartbeatRequest = {
+  workgroup_id: string;
   orca_node_id: OrcaNodeId;
+  /** Admission proof derived from the workgroup password (§7.1); heartbeats carry it too. */
+  ts: number;
+  nonce: string;
+  proof: string;
   busy: BusyState | null;
   /** 本 orca node 当前成员视图的摘要；与对端不一致时对端会回目录（候选端点）。 */
   digest: string | null;

@@ -124,7 +124,7 @@ runtime 的用途只有一个：让 origin 在派任务前判断“那台机器�
 
 ### 2.7 刷新与一致性
 
-- 心跳只带 `runtime_digest` 与 `members_digest`。
+- 心跳只带 `runtime_digest`、`members_digest` 与准入证明（`pod-hb-v1`，[§7.1](07-security.md#71-workgroup-与密码)）。
 - 收到 digest 与本地缓存不一致 → `GET /cluster/members` 拉全量（缓存 30s，避免风暴）。
 - 目录里每条记录的“新鲜度”由本地的 `last_recv_at`/`last_ok_at` 体现，不由记录内的字段体现。
 - 记录只有本人能写：**其他 orca node 绝不改写某条记录的内容**，也不替它声明在线。这条规则是不需要版本号的基石（[§3.1](03-membership.md#31-成员状态的判定)）。

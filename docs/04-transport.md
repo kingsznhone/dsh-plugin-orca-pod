@@ -25,7 +25,7 @@
 | GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（凭 `blob_id` 即可取）或 `/link` 直链 | 已实现 |
 | POST | `/blobs/{blob_id}/link` | 换一条短期直链（`?exp=&sig=`） | workgroup 签名 | 已实现 |
 | POST | `/cluster/join` | 引导：返回自述 + 全量目录 | workgroup 签名 | 已实现 |
-| POST | `/cluster/heartbeat` | 心跳 + 摘要；摘要不一致时响应回目录（候选端点）；可带首次 self | workgroup 签名 | 已实现（含周期发送与看门狗） |
+| POST | `/cluster/heartbeat` | 心跳 + 摘要 + 准入证明（`pod-hb-v1`）；摘要不一致时响应回目录（候选端点）；可带首次 self | workgroup 签名 + 密码证明 | 已实现（含周期发送与看门狗；准入失败双方在下一拍互相丢弃） |
 | GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 | 已实现 |
 | POST | `/cluster/leave` | 主动离开（best-effort，不是安全操作） | workgroup 签名 | 已实现 |
 | POST | `/cluster/child-link` | 本机 task 登记子任务，供自动上升轮询（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） | workgroup 签名 + 传输层限制（仅回环、无转发头） | 已实现 |

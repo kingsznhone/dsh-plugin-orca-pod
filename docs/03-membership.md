@@ -75,15 +75,21 @@ D（新）                                            A（已在 mesh）
 
 ```http
 POST /cluster/heartbeat
-{ "from": "P2W8XA", "busy": null,
-  "members_digest": "sha256:...",
+{ "workgroup_id": "orca-demo",
+  "orca_node_id": "<43-char base64url public key>",
+  "ts": 1763100000, "nonce": "9f2c1a",
+  "proof": "<HMAC-SHA256(HKDF(password), \"pod-hb-v1|...\")>",
+  "busy": null,
+  "digest": "sha256:...",
   "self": { ... } }                                  // 仅首次，或记录变更时
 
-200 { "from": "N7K3QM", "busy": null,
+200 { "from": "<public key>", "busy": null,
       "members_digest": "sha256:...",
-      "members": [{ "orca_node_id": "Z3M4AQ", "endpoints": ["http://192.168.1.13:11811"] }] }  // 仅摘要不一致时
+      "members": [{ "orca_node_id": "<public key>", "endpoints": ["http://192.168.1.13:11811"] }] }  // 仅摘要不一致时
 ```
 
+- 心跳和 join 一样带**准入证明**（域分离 `pod-hb-v1` 的密码派生 HMAC）；收方验签后再验证明，失败回 `401 bad_proof`（时钟偏差 `clock_skew`、nonce 重放 `nonce_replay`）。
+- 证明对不上意味着“它不再属于这个 group”：发方收到 401 立即把对方从成员表移除（不等 offline 计时），收方同样不登记它；双方在下一拍心跳就互相消失。
 - 摘要不一致 → 对端顺势回一次目录（≤32 条）。接收方按 [§3.5](03-membership.md#35-候选端点与墓碑) 处理：只进候选，不声明在线。
 - 心跳同时是 keep-alive 与“我还活着”的证明；没有单独 ping。
 - 心跳超时（客户端侧）取当前 `interval` 的一半，别用 30s 默认值。
@@ -171,8 +177,8 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 - 合并原则：**按 `orca_node_id` 去重，字段以本人记录为准**；本地只保留 `last_recv_at`/`last_ok_at`/`state`/`fails`。
 - 冲突（同 id 不同端点）：以最近一次成功心跳的端点为当前端点，旧端点直接丢弃（真要换 IP，join 一次即可）。
 - 删除：只删本地记录，不通知别人；别人会在 `record_ttl` 后自己修剪。
-- **踢人（安全语义）**：没有共识，所以“移除 orca node”不是可广播的操作。真正把它踢出去只能**换密码**：换完所有旧签名立即失效，其余 orca node 用新密码重新加入。UI 必须这么写，别让用户以为点一下 forget 就安全了。
-- 换密码的代价：所有 orca node 要同步新密码；这是**唯一**的吊销手段，也是它简单的原因。
+- **踢人（安全语义）**：没有共识，所以“移除 orca node”不是可广播的操作。真正把它踢出去只能**换密码**：改过密码的节点与旧 mesh 的每拍心跳都过不了准入证明（[§3.3](03-membership.md#33-心跳与双向看门狗)），双方在下一拍就互相丢弃，等于被移出。UI 必须这么写，别让用户以为点一下 forget 就安全了。
+- 换密码的代价：所有要保留的 orca node 要同步新密码；这是**唯一**的吊销手段，也是它简单的原因。
 
 ### 3.7 故障、恢复、休眠
 

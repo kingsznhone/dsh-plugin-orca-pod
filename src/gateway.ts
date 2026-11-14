@@ -13,6 +13,7 @@ import {
   PodAuthError,
   verifyAuth,
   verifyBlobLinkSignature,
+  verifyHeartbeatProof,
   verifyJoinProof,
   type NonceCache,
   type VerifiedAuth,
@@ -501,6 +502,34 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const orcaNodeId = normalizeOrcaNodeId(String(body["orca_node_id"] ?? ""));
     if (orcaNodeId !== auth.orcaNodeId) {
       return badRequest(reply, "orca_node_id does not match the authenticated orca node");
+    }
+
+    if (body["workgroup_id"] !== deps.orcaNode.workgroup_id) {
+      return reply.code(400).send({ code: "workgroup_mismatch", message: "workgroup_id does not match this orca node" });
+    }
+
+    // Admission on every heartbeat (§7.1): the signature proves which node is
+    // calling, the password-derived proof proves it is still the same mesh. A node
+    // whose password changed fails here, so both sides stop answering each other
+    // and drop the record within a few ticks instead of staying "online" forever.
+    const heartbeatProof = body["proof"];
+    const heartbeatNonce = body["nonce"];
+    const heartbeatTs = Number(body["ts"]);
+    if (typeof heartbeatProof !== "string" || typeof heartbeatNonce !== "string" || !Number.isSafeInteger(heartbeatTs)) {
+      return badRequest(reply, "heartbeat requires admission fields ts, nonce and proof");
+    }
+    if (Math.abs(Date.now() - heartbeatTs) > DEFAULT_CLOCK_SKEW_MS) {
+      return reply.code(401).send({ code: "clock_skew", message: "admission proof timestamp outside the skew window" });
+    }
+    if (!verifyHeartbeatProof(
+      deps.workgroupKey,
+      { workgroupId: deps.orcaNode.workgroup_id, orcaNodeId, ts: heartbeatTs, nonce: heartbeatNonce },
+      heartbeatProof,
+    )) {
+      return reply.code(401).send({ code: "bad_proof", message: "workgroup admission proof does not verify" });
+    }
+    if (!deps.nonceCache.remember(`hb:${orcaNodeId}:${heartbeatNonce}`)) {
+      return reply.code(401).send({ code: "nonce_replay", message: "admission nonce already used" });
     }
 
     const isSelf = auth.orcaNodeId === deps.orcaNode.orca_node_id;

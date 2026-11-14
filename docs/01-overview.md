@@ -14,7 +14,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - **默认单跳**：origin → target，不转发、不回调、不广播；多跳与扇出是可选能力，默认关闭（[§8.6](08-reliability.md#86-放大扇出与唤醒)）。orca node 只被任务请求唤醒，忙时 429 而不是排队。
 - **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
 - orca node 身份 = 首次启动生成的 **Ed25519 公钥**（`<data_root>/identity.json`，43 字符 base64url；面板显示缩略 `psB9…3Zlw`，悬停可看完整值）。节点用自己的私钥签每个请求，别人用公钥验签——id 就是公钥，可验证、不可伪造。
-- 入组 = `workgroup_id` + 非空密码：密码只派生 `/cluster/join` 的准入证明（HMAC），能进组才能交换目录；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。
+- 入组 = `workgroup_id` + 非空密码：密码只派生 `/cluster/join` 与每拍心跳的准入证明（HMAC），能进组才能交换目录；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。
 - 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询，SSE 可选。
 - 文件交换走**内容寻址 blob 通道**：素材先传后引用，产物按需拉取；结论文本内联返回，`notes/` 不出本机。
