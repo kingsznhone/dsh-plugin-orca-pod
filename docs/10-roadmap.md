@@ -54,6 +54,7 @@
 
 - grant 签发/校验/吊销（[§7.11](07-security.md#711-grant)）；默认 `delegated`。
 - `input-required` 升级回路（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询/SSE 看到 → **用 DSH 审批卡片弹** → 批准生成新 grant 并作为同一 task 的后续 message 补发 / 拒绝置 `failed(permission_denied)`。
+- 链式升级（[§7.12](07-security.md#712-升级回路任务状态不是反向调用) 的「链式调用」）：中间节点只能在自己 grant 内放行，越界请求沿 task 状态逐跳上升，grant 逐跳收窄下发；中间节点不自批（除非 A 给了 `danger-full-access` 或本地预授权命中，记审计）。Phase 3 只做“逐跳上升 + 逐跳收窄”，不做中间节点自动放行开关。
 - 预授权策略（按 target + 工具 + 时长）与本机总开关。
 - `credential_readback` 三档 + 审计。
 - 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§6.13](06-execution.md#613-配额清理跨平台)）。
@@ -119,6 +120,7 @@
 - [ ] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
+- [ ] 链式升级：A→B→C 时 C 的越界请求经 B 上升为 A 的 `input-required`（`via` 带来源、`expires_in_s` 逐跳递减、等待期间 B/C 槽位都释放），A 批准后 grant 逐跳收窄下发、C 继续；任一跳超时则整链失败且不挂住节点
 
 #### 文件交换
 

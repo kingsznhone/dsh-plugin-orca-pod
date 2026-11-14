@@ -114,6 +114,8 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 这条前提排除了两种设计：target 本地审批（无人应答、任务挂死）和 target 自由裁量（origin 无法预期远端能做什么）。
 
+链式调用（A→B→C）时，“origin”是相对的：每个 task 的 origin 负责把请求往上传，直到有人的那个 orca node——规则见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用) 的「链式调用」小节。
+
 ### 7.10 权限模式继承
 
 origin 发起任务时携带会话的 permission mode，target 原样执行：
@@ -145,6 +147,7 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
   "workspace": { "kind": "group" },
   "limits": { "max_runtime_s": 3600, "max_write_bytes": 536870912 },
   "nonce": "9f2c...",
+  "chain": [],
   "issued_at": "2026-11-14T04:40:00Z",
   "expires_at": "2026-11-14T05:40:00Z"
 }
@@ -153,7 +156,7 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 校验：
 
 - 绑定 `(workgroup_id, origin_orca_node, target_node, task_id, nonce)`，五者任一不符即拒；
-- 只能**收窄**：target 拿到的 mode 不能高于 origin 会话当时的 mode；
+- 只能**收窄**：target 拿到的 mode 不能高于 origin 会话当时的 mode；链式转授时，sub-grant 的 mode/limits 不能宽于父 grant、`expires_at` 不能晚于父 grant，`chain` 追加当前跳（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；
 - `expires_at` 到点即失效；任务 cancel / 完成即吊销（target 本地删记录，不需要广播）；
 - 无 grant 的请求直接 `deny(missing_grant)`，不接受“老客户端”兼容。
 
@@ -194,6 +197,49 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 - 审批 UI 直接复用 DSH 的 approval 卡片（Host 既有机制），不另做插件面板。
 - 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用 orca node 反复索权。
 - origin 侧支持**预授权**（避免每次都弹）：按 `(workgroup, target, tool)` 记一条本地策略，如“允许 N7K3QM 在 P2W8XA 上跑 shell，单次 ≤15 分钟”。预授权记录进审计。
+
+#### 链式调用：授权向下收窄，升级向上回传
+
+链 A→B→C 里，如果让 B 直接批准 C 的越界请求，A 的授权就被一个 agent 转授放大了。规则只有一条：**每个 task 的 origin 只能在自己拿到的 grant 范围内放行；超出一律上升，直到有人的那个 orca node，通常是根 A。**
+
+为什么不是 B 自主决策：
+
+- A 给 B 的 grant 表达的是 A 的意图（比如“B 可以在工作区写”），B 批准 C 写 `/etc` 不在这个意图里——B 的“同意”不是人的同意；
+- B 也没有能力替 A 扩大授权：它没有 A 的 UI、没有人类动作，自批等于把授权链悄悄放宽；
+- 唯一例外：A 明确给了 B `danger-full-access`（用户已接受该风险），或 B 本地预授权策略命中。此时 B 可自行放行，但审计记 `decided_by: "orca_node:<B>:policy"`，A 的 task 里也能看到一条“B 自动批准了 C 的请求”事件。
+
+回路仍然没有反向调用，只是把同一份状态沿链上升：
+
+```text
+C：工具越界 → C 的 task 变 input-required，permission_request 落在 C 的 task 上
+B（C 的 origin）：agent 通过 pod_status/tracker 看到 → B 的 task 也变 input-required
+   status.message 里放一条 permission_request，带来源链：
+   {
+     "request_id": "pr_01J",
+     "task_id": "t_B",                 // B 自己的 task
+     "requested_by": "P2W8XA",         // 真正要权限的 orca node（C）
+     "via": [{ "orca_node": "P2W8XA", "task_id": "t_C" }],
+     "tool": "write_file",
+     "target": "/etc/nginx.conf",
+     "reason": "...",
+     "requested": { "permission_mode": "danger-full-access" },
+     "expires_in_s": 60                 // 逐跳递减
+   }
+A（B 的 origin，也是人的位置）：tasks/get 看到 → 审批卡片显示“C 经 B 请求写 /etc…” → 人批
+   → A 给 B 发新 grant（t_B 的后续 message）
+   → B 恢复，把等价但更窄的 grant 作为 t_C 的后续 message 发给 C
+   → C 恢复执行
+```
+
+规则：
+
+- **grant 逐跳收窄**：sub-grant 的 `permission_mode` 不高于父 grant、`limits` 不宽于父 grant、`expires_at` 不晚于父 grant，`chain` 追加当前跳；审计能回答“谁批给谁、绕过几跳”。
+- **请求逐跳上升**：`via` 只追加、不改写；每跳把自己的 `expires_in_s` 减一档，避免“最后一秒批下来、下游已超时”。任一跳超时 → 该跳 deny，逐跳向下传 `failed(permission_denied)` 或 `failed(permission_timeout)`。
+- **等待不占槽**：C 与 B 都停在 `input-required`（槽位释放）；A 长期无人 → 链上各级超时失败，不会挂住 B 或 C。
+- **链深有界**：`max_hop` 默认 0（链式默认不开）；打开后 `via` 长度 ≤ `max_hop`，超过即 deny（[§5.1](05-tasks.md#51-任务标识与元数据)）。
+- **根 A 的卡片必须显示来源链**：否则人只看到“C 要写 /etc”，不知道是 B 代“B 转述的 C”在问。
+
+Phase 3 先只做“逐跳上升 + 逐跳收窄”，不做 B 的自动放行；等链式任务实际跑过，再决定要不要给中间节点 `auto_approve_within_grant` 开关。
 
 ### 7.13 目标侧硬拒绝清单
 
