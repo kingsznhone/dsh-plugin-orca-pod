@@ -17,7 +17,7 @@
 | [02-model.md](02-model.md) | 2 | 两个平面、orca node 职责与部署、短 id、SelfRecord、runtime |
 | [03-membership.md](03-membership.md) | 3 | 成员状态判定、加入、心跳与看门狗、收敛、候选端点与墓碑 |
 | [04-transport.md](04-transport.md) | 4 | 监听与路由、反向代理、A2A 面、任务状态机 |
-| [05-tasks.md](05-tasks.md) | 5 | 任务元数据、回报与唤醒、取消、存储、blob 通道、接续 |
+| [05-tasks.md](05-tasks.md) | 5 | 任务元数据、回报与唤醒、取消、存储、blob 通道、交接 |
 | [06-execution.md](06-execution.md) | 6 | LocalExecutor、EchoExecutor、ACP、工作区、单槽、结果与产物 |
 | [07-security.md](07-security.md) | 7 | workgroup 与签名、TLS、不可信输入、授权矩阵、grant、审批回路 |
 | [08-reliability.md](08-reliability.md) | 8 | 失联与重启、幂等、背压、放大与唤醒、可观测性 |
@@ -58,7 +58,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询，SSE 可选。
 - 文件交换走**内容寻址 blob 通道**：素材先传后引用，产物按需拉取；结论文本内联返回，`notes/` 不出本机。
 - **任务与产物凭 id 交接**：同 workgroup 任意 orca node 知道 `task_id` / `blob_id` 就能读；没有列表接口，也没有 per-task ACL——id 就是句柄。
-- **任务可以接续**：C 拿 A 的 `task_id`，用 `continuation_of` 在同一 context 与工作区开新任务接着干；旧 task 不可变。
+- **交接靠工作区**：同一 workgroup 的任务共享 `work/` 与 `notes/`；后到的 agent 读现场决定接着干什么，协议不定义“续跑”。
 - **权限跟着发起 orca node 的会话走**：origin 的会话是只读，target 就只能读；是 workspace-write，target 就只能写工作区；超出的操作回到 origin 弹审批卡片，target 永不本地弹窗。
 - 目标侧执行目录 = **workgroup 工作区**：加入 workgroup 时自动分配、跨任务持久、跨 session 保留上下文。**orca node 是单槽的**：同一时间只跑一个任务，忙时明确拒绝（不排队），忙闲状态对其他 orca node 可见；**遇到忙时由调用方模型决定**重试、换 orca node 还是回报用户。
 - 任务状态落**单机 SQLite**；orca node 失联即任务失败，不重发、不猜、不复活。

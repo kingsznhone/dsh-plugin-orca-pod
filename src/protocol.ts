@@ -250,7 +250,6 @@ export type PodTaskMetadata = {
   root?: string;
   /** Origin session mode; the target never runs above it (§7.10). */
   permission_mode?: PermissionMode;
-  continuation_of?: string | null;
   idempotency_key?: string;
   task_ttl_s?: number;
   grant_id?: string;

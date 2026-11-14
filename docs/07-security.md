@@ -89,7 +89,6 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 | 权限上限 | 继承 origin 会话 mode | 本机可再降一档 |
 | group workspace 可见性 | 同 workgroup | 仅本机 |
 | 任务/产物读取 | 同 workgroup 凭 id | —（无 per-task / per-blob ACL） |
-| 任务接续 | 同 workgroup，且来源 task 已终态 | — |
 | 硬拒绝 | [§7.13](07-security.md#713-目标侧硬拒绝清单) | 仅本机人类解除 |
 
 ### 7.7 SSRF / 候选端点防护

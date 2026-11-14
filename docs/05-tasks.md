@@ -1,6 +1,6 @@
 # 05 任务
 
-> 本章描述任务的数据模型与生命周期：如何标识、如何回报、如何取消、结果放在哪里、任务如何接续。
+> 本章描述任务的数据模型与生命周期：如何标识、如何回报、如何取消、结果放在哪里、任务之间如何交接。
 
 ## 5. 任务
 
@@ -16,7 +16,6 @@
   "task_ttl_s": 3600,
   "grant_id": "g_01JABC",
   "workspace": { "kind": "group" },
-  "continuation_of": null,
   "pod": { "hop": 0, "chain": ["N7K3QM"], "root": "t_01JABD", "permission_mode": "workspace-write" }
 }
 ```
@@ -37,7 +36,6 @@
 - 这些字段都进签名；target 只读不写。
 - `grant_id` 指向 origin 签发的 grant；目标 orca node 校验其绑定关系（[§7.11](07-security.md#711-grant)）。
 - `workspace.kind` 当前只有 `"group"` 一个合法值，显式声明“在本 orca node 工作区执行”；没有发布式目录（[§6.12](06-execution.md#612-明确不做)）。
-- `continuation_of`：接续的来源 task id。非空时表示“这是 C 接着 A 的活”，target 校验来源 task 已终态且同 workgroup（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。旧 task 本身不改。
 
 **实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数，超过本 orca node 的 `delegation.max_hop`（`config.json` 的可选项，0–3，默认 0）→ `400 hop_limit`；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；`pod.permission_mode` 必须是合法权限模式（非法 → `400 bad_request`），且本机 `config.permission_mode` 作为上限与继承值取窄；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task、继承 `permission_mode`），插件侧的多跳派发尚未接线——目前只有测试与直接调用 API 能构造 `pod` 元数据。
 
@@ -218,28 +216,23 @@ Authorization: Pod ...
 
 方向始终是 origin → target 的请求（上传素材、下载产物），target 从不反向连 origin。NAT 下只需要 target 可达，与 [§3.2](03-membership.md#32-引导与加入) 的单向出站原则一致。
 
-### 5.7 任务接续（C 接着在 B 上干）
+### 5.7 交接（工作区即态势）
 
-A 在 B 上跑完一段，想把后续交给 C（另一台机器、另一个模型，或者只是 A 要关机）。协议不复活旧 task，而是**在同一 context 上开一个新 task**：
+A 在 B 上跑完一段，想把后续交给 C（另一台机器、另一个模型，或者只是 A 要关机）。**协议里没有“接续”这个概念**：没有 `continuation_of` 字段，没有来源 task 校验，也没有等待/接管的状态机。
 
-```json
-// C → B: message/send
-{
-  "context_id": "<A 用过的 context_id>",
-  "message": { "parts": [{ "kind": "text", "text": "接着 A 的进度继续" }] },
-  "metadata": { "pod": { "continuation_of": "t_01JABD" } }
-}
-```
+交接靠工作区本身：
 
-规则：
+- 同一 workgroup 的任务共用一份持久工作区（[§6.7](06-execution.md#67-工作区一份持久)）：`work/` 是执行现场，`notes/` 是跨 session 的状态备忘。
+- 后到的 C 发起一个**普通新任务**；B 的 agent 打开 `work/` 看代码、看 diff、看 `notes/` 里上一次的结论，自己判断该接着干什么、从哪一步开始。
+- 这就是“态势感知”：它需要读文件、看测试结果、判断语义，只有 LLM 做得好；协议层只能表达“我声明要接续某个 task”，既保证不了正确性，还把判断从 agent 手里拿走了。
 
-- `continuation_of` 指向的 task 必须**已终态**且同 workgroup；还在跑就 `409 task_not_terminal`——先等它结束或 `tasks/cancel`，不允许两个 orca node 同时写一个工作区（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事) 单槽）。
-- 工作区原地复用：C 的新任务和 A 的旧任务落在同一个 `<data_root>/workgroups/<id>/`，文件、`notes/`、产物都在，不需要拷贝。
-- 上下文恢复尽力而为：target 优先 `session/resume(context_id)`；失败则以新 session 启动，把 `notes/` 与旧 task 结论注入首条 prompt，并在结果里记 `resume=degraded`。降级不是错误，但必须可见。
-- 旧 task 不变：状态、artifact、`updated_at` 都不动；新 task 元数据里记 `continuation_of`，审计能还原“A 干的前半段、C 干的后半段”。
-- C 先要拿到 `task_id`（A 告诉它，或 `tasks/get` 里看到 `context_id`）；没有列表接口，所以接续也是“凭 id 交接”。
-- 不推送、不回调：B 不会通知 C“A 停了”，C 必须自己发起（单向出站）。
+协议只保证两件与交接有关的事：
 
-一句话：**接续 = 新任务 + 旧上下文 + 原地工作区**；task 的不可变性不破，工作区的连续性也不破。
+- 工作区跨任务、跨 session、跨重启持久（[§6.7](06-execution.md#67-工作区一份持久)）；
+- 同一 orca node 单槽串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），所以不会有两个任务同时写同一份 `work/`。
+
+旧 task 天然不可变：C 的新任务和 A 的旧 task 是两个独立记录，各自的 artifacts、`updated_at` 互不影响；审计靠时间戳与 task id 还原，不需要一个指向“前一个 task”的字段。
+
+一句话：**交接 = 共享工作区里的现场 + 一个新任务**；协议不解释“接着干”，agent 自己看现场决定。
 
 ---

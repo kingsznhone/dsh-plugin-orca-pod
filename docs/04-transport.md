@@ -103,7 +103,7 @@
 
 设计与尚未实现的方法：
 
-- 接续（C 接着在 B 上干）不单独设方法：就是一次带 `continuation_of` 的 `message/send`（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。当前实现未处理 `continuation_of` 元数据。
+- 交接（C 接着在 B 上干）不单独设方法：就是一次普通的 `message/send`；C 从共享工作区里读现场，自己决定接着干什么（[§5.7](05-tasks.md#57-交接工作区即态势)）。
 - `message/stream`：SSE 流式接收状态/artifact 事件（可选，**未实现**）。
 - `tasks/resubscribe`：断线后重连到已有流（可选，**未实现**）。
 - push notification：后置，需要 webhook 鉴权、重试、SSRF 防护（**未实现**）。
@@ -134,7 +134,7 @@ submitted ──► working ──► input-required ──► working
 - `working`：LocalExecutor 正在执行。
 - `input-required`：需要发起 orca node 补输入或**补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷在 task 的 `status.message` 里，不依赖推送。载荷有两种：`permission_request`（补授权）和 `blocked`（要决策：`{reason, question, options?}`）。
 - `input-required` **不占用执行槽**：网关把槽释放；A 的后续 message 到达时重新竞争槽位，不预留、不排队。槽被别人占了就回 `429 orca_node_busy`，由 A 决定重试还是放弃。
-- 恢复执行时优先 `session/resume(context_id)` 续上原 session；session 已随进程退出而丢失时新开一个，并在 task 上记 `resume=degraded`（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。
+- 恢复执行时优先 `session/resume(context_id)` 续上原 session；session 已随进程退出而丢失时新开一个，并在 task 上记 `resume=degraded`（[§5.7](05-tasks.md#57-交接工作区即态势)）。
 - 远程 agent 卡住时**不允许反向调用**祖先 orca node（[§5.1](05-tasks.md#51-任务标识与元数据)），只能把问题写进 `blocked` 并结束本轮；这既是防环，也是“异步任务”的正确表达。
 - `completed` / `failed` / `canceled`：终态。
 - 终态不可逆；重试要产生新的 task（带 `retry_of`），不复活旧 task。
