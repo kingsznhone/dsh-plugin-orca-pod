@@ -269,8 +269,47 @@ export function createPodAdmin(
 
 /** Accept `host:port` shorthand and strip one trailing slash. */
 export function normalizePeer(peer: string): string {
-  const trimmed = peer.trim().replace(/\/+$/, "")
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+  const trimmed = peer.trim()
+  if (trimmed.length === 0) throw new Error("peer address is required")
+  const schemeMatch = /^(https?):\/\//i.exec(trimmed)
+  const scheme = schemeMatch === null ? "http" : schemeMatch[1]!.toLowerCase()
+  let rest = schemeMatch === null ? trimmed : trimmed.slice(schemeMatch[0].length)
+  rest = rest.replace(/\/+$/, "")
+  if (rest.length === 0) throw new Error(`peer address must include a host: ${trimmed}`)
+  if (rest.includes("/") || rest.includes("?") || rest.includes("#")) {
+    throw new Error(`peer address must be host[:port], without a path: ${trimmed}`)
+  }
+  let hostPart: string
+  let portText: string | undefined
+  if (rest.startsWith("[")) {
+    const close = rest.indexOf("]")
+    if (close === -1) throw new Error(`invalid IPv6 peer address: ${trimmed}`)
+    hostPart = rest.slice(1, close)
+    const after = rest.slice(close + 1)
+    if (after.length > 0) {
+      if (!after.startsWith(":")) throw new Error(`invalid IPv6 peer address: ${trimmed}`)
+      portText = after.slice(1)
+    }
+  } else {
+    const parts = rest.split(":")
+    if (parts.length > 2) {
+      // A bare IPv6 literal has more than one colon and no explicit port.
+      hostPart = rest
+    } else if (parts.length === 2) {
+      hostPart = parts[0]!
+      portText = parts[1]
+    } else {
+      hostPart = rest
+    }
+  }
+  if (hostPart.length === 0) throw new Error(`peer address must include a host: ${trimmed}`)
+  const fallbackPort = schemeMatch === null ? 11811 : scheme === "https" ? 443 : 80
+  const port = portText === undefined || portText.length === 0 ? fallbackPort : Number(portText)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`invalid peer port: ${portText ?? ""}`)
+  }
+  const host = hostPart.includes(":") ? `[${hostPart}]` : hostPart
+  return `${scheme}://${host}:${port}`
 }
 
 

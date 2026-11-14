@@ -210,8 +210,23 @@ describe("panel admin configuration", () => {
     const admin = adminFor(handle);
     await admin.connect("192.168.1.20:11811");
     await admin.connect("http://desk.example.com/");
-    expect(seen).toEqual(["http://192.168.1.20:11811", "http://desk.example.com"]);
+    expect(seen).toEqual(["http://192.168.1.20:11811", "http://desk.example.com:80"]);
+    expect(normalizePeer("10.0.0.2")).toBe("http://10.0.0.2:11811");
     expect(normalizePeer("10.0.0.2:11811")).toBe("http://10.0.0.2:11811");
+    expect(normalizePeer("http://10.0.0.2:11811/")).toBe("http://10.0.0.2:11811");
+    expect(normalizePeer("https://desk.example.com")).toBe("https://desk.example.com:443");
+    expect(normalizePeer("http://desk.example.com")).toBe("http://desk.example.com:80");
+    expect(normalizePeer("[fd00::12]")).toBe("http://[fd00::12]:11811");
+    expect(normalizePeer("[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
+    expect(normalizePeer("fd00::12")).toBe("http://[fd00::12]:11811");
+    expect(normalizePeer("http://[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
+    expect(() => normalizePeer("")).toThrow(/peer address is required/);
+    expect(() => normalizePeer("http://")).toThrow(/must include a host/);
+    expect(() => normalizePeer("http://desk.example.com/a2a")).toThrow(/without a path/);
+    expect(() => normalizePeer("http://desk.example.com?x=1")).toThrow(/without a path/);
+    expect(() => normalizePeer("10.0.0.2:0")).toThrow(/invalid peer port/);
+    expect(() => normalizePeer("10.0.0.2:99999")).toThrow(/invalid peer port/);
+    expect(() => normalizePeer("10.0.0.2:abc")).toThrow(/invalid peer port/);
   });
 
   it("defaults the display name to the orca node id and suggests local endpoints", async () => {

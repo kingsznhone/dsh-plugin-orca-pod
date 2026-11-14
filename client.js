@@ -909,20 +909,18 @@ window.__ModuleLoader__.load({
       const config = state.config || {};
       const [connectOpen, setConnectOpen] = React.useState(false);
       const [host, setHost] = React.useState("");
-      const [peerPort, setPeerPort] = React.useState("11811");
       const [connectError, setConnectError] = React.useState(null);
       const members = Array.isArray(state.members) ? state.members : [];
       // The header button reflects the live mesh, not the remembered peer list:
       // saved peers that stop answering must read as "Connect", not "Disconnect".
       const joined = members.length > 0;
 
+      // Accepts a bare host/IP, host:port, or a full http(s) URL.
+      // The Host half normalizes the address and applies the default port.
       function peerUrl() {
         const raw = host.trim();
         if (raw.length === 0) throw new Error(t("peerHostRequired"));
-        if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
-        const portText = peerPort.trim().length === 0 ? "11811" : peerPort.trim();
-        const hostname = raw.includes(":") && raw[0] !== "[" ? "[" + raw + "]" : raw;
-        return "http://" + hostname + ":" + portText;
+        return raw;
       }
 
       async function connect() {
@@ -979,14 +977,9 @@ window.__ModuleLoader__.load({
                 "div",
                 { style: { ...FIELD, marginTop: 10 } },
                 h("label", { style: LABEL }, t("host")),
-                h("input", { style: INPUT, value: host, onChange: (event) => setHost(event.target.value), placeholder: "192.168.1.12 / peer.example.com / [fd00::12]" }),
+                h("input", { style: INPUT, value: host, onChange: (event) => setHost(event.target.value), placeholder: "192.168.1.12 / peer.example.com / http://host:11811" }),
               ),
-              h(
-                "div",
-                { style: FIELD },
-                h("label", { style: LABEL }, t("port")),
-                h("input", { style: INPUT, value: peerPort, onChange: (event) => setPeerPort(event.target.value), inputMode: "numeric" }),
-              ),
+
               h(
                 "div",
                 { style: { display: "flex", gap: 8 } },
