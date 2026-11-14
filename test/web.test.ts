@@ -46,6 +46,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       display_name: "node one",
       port: 11811,
       endpoints: ["http://127.0.0.1:11811"],
+      detected_endpoints: ["http://192.168.1.5:11811"],
       peers: [],
       data_root: "/data",
       password_set: true,
@@ -58,6 +59,10 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
     },
     connect: async (peer) => {
       calls.push("connect:" + peer);
+      return admin.config();
+    },
+    disconnect: async () => {
+      calls.push("disconnect");
       return admin.config();
     },
     task: async (_peer, taskId) => {
@@ -262,6 +267,14 @@ describe("panel HTTP bridge", () => {
     const missing = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/connect`, body: {} });
     expect(missing.status).toBe(400);
     expect(missing.body.error).toMatch(/peer/);
+  });
+
+  it("disconnects from the panel", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const handler = createPodApiHandler(admin);
+    const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/disconnect`, body: {} });
+    expect(result.status).toBe(200);
+    expect(admin.calls).toEqual(["disconnect"]);
   });
 
   it("registers one prefix route through ctx.inject and cleans it up", () => {

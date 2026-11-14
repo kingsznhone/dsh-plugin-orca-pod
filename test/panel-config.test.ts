@@ -178,11 +178,90 @@ describe("panel admin configuration", () => {
       addPeer: async (peer) => {
         seen.push(peer);
       },
+      disconnect: async () => {},
     };
     const admin = adminFor(handle);
     await admin.connect("192.168.1.20:11811");
     await admin.connect("http://desk.example.com/");
     expect(seen).toEqual(["http://192.168.1.20:11811", "http://desk.example.com"]);
     expect(normalizePeer("10.0.0.2:11811")).toBe("http://10.0.0.2:11811");
+  });
+
+  it("defaults the display name to the orca node id and suggests local endpoints", async () => {
+    const root = await tempRoot("orca-panel-");
+    const config: Config = {
+      workgroup_id: "wg-id",
+      workgroup_password: "pw",
+      port: 0,
+      skill_injection: false,
+      peers: [],
+      data_root: root,
+    };
+    const handle = startPod(config, logger);
+    await handle.ready;
+    try {
+      const admin = adminFor(handle);
+      const self = admin.self()!;
+      expect(self.display_name).toBe(self.orca_node_id);
+      expect(admin.config().display_name).toBe(self.orca_node_id);
+      const detected = admin.config().detected_endpoints;
+      expect(Array.isArray(detected)).toBe(true);
+      for (const url of detected) expect(url.startsWith("http://")).toBe(true);
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("stays idle until the first-run wizard supplies a workgroup", async () => {
+    const root = await tempRoot("orca-panel-");
+    const config: Config = {
+      workgroup_id: "",
+      workgroup_password: "",
+      port: 0,
+      skill_injection: false,
+      peers: [],
+      data_root: root,
+    };
+    const handle = startPod(config, logger);
+    await handle.ready;
+    try {
+      const admin = adminFor(handle);
+      expect(handle.runtime.orcaNode).toBeNull();
+      expect(handle.runtime.error).toBeNull();
+      expect(admin.config().configured).toBe(false);
+      expect(admin.config().running).toBe(false);
+
+      await admin.saveConfig({ workgroup_id: "wg-fresh", workgroup_password: "pw-fresh" });
+
+      expect(handle.runtime.orcaNode).not.toBeNull();
+      expect(handle.runtime.error).toBeNull();
+      expect(handle.uiConfigured).toBe(true);
+      expect(admin.config()).toMatchObject({ configured: true, running: true, workgroup_id: "wg-fresh" });
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("disconnects: leaves known peers and forgets them", async () => {
+    const rootA = await tempRoot("orca-panel-a-");
+    const rootB = await tempRoot("orca-panel-b-");
+    const a = startPod(baseConfig(rootA, "wg-leave"), logger);
+    await a.ready;
+    const b = startPod(baseConfig(rootB, "wg-leave"), logger);
+    await b.ready;
+    try {
+      await a.addPeer(b.runtime.url!);
+      expect(a.config.peers).toHaveLength(1);
+      const admin = adminFor(a);
+      await admin.disconnect();
+      expect(a.config.peers).toEqual([]);
+      const stored = JSON.parse(await readFile(overridePath(rootA), "utf8")) as Record<string, unknown>;
+      expect(stored["peers"]).toEqual([]);
+      const remaining = admin.members().map((member) => member.orca_node_id);
+      expect(remaining).toEqual([]);
+    } finally {
+      await stopPod(a, logger);
+      await stopPod(b, logger);
+    }
   });
 });

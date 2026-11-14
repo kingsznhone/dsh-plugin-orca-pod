@@ -35,8 +35,14 @@ describe("plugin config", () => {
     expect(config.peers).toEqual(["http://127.0.0.1:11811"])
   })
 
-  it("rejects missing workgroup fields", () => {
-    expect(() => validateConfigInput({})).toThrow(ConfigValidationError)
+  it("allows starting without a workgroup so the panel can run its wizard", () => {
+    expect(validateConfigInput({})).toEqual({
+      workgroup_id: "",
+      workgroup_password: "",
+      port: 11811,
+      skill_injection: true,
+      peers: [],
+    })
   })
 
   it("rejects an invalid workgroup id", () => {
@@ -60,7 +66,7 @@ describe("plugin config", () => {
     expect(schema.version).toBe(1)
     const ok = schema.validate({ workgroup_id: "wg-a", workgroup_password: "pw" })
     expect("value" in ok).toBe(true)
-    const bad = schema.validate({ workgroup_id: "wg-a" })
+    const bad = schema.validate({ workgroup_id: "Bad ID" })
     expect("issues" in bad && bad.issues.length > 0).toBe(true)
   })
 
@@ -77,6 +83,7 @@ describe("pod tools", () => {
     uiConfigured: true,
     reconfigure: async () => {},
     addPeer: async () => {},
+    disconnect: async () => {},
   }
   const tracker = createTracker(() => null, { intervalMs: 60_000 })
   const tools = createPodTools(handle, tracker)

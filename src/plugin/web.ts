@@ -146,6 +146,10 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
           sendJson(response, 200, await admin.connect(stringField(body, "peer")))
           return
         }
+        if (action === "disconnect") {
+          sendJson(response, 200, await admin.disconnect())
+          return
+        }
         if (action !== "approve" && action !== "deny" && action !== "cancel") {
           sendJson(response, 404, { error: "not_found" })
           return

@@ -159,6 +159,8 @@ export interface OrcaNode {
   membersDigest(): string;
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
+  /** Leave the workgroup: tell every known peer, then clear the local roster. */
+  leave(): Promise<{ left: string[] }>;
   sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView>;
   getTask(peerUrl: string, taskId: string): Promise<TaskView>;
   cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
@@ -316,7 +318,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   function selfPeer(): PeerView {
     return {
       orca_node_id: orcaNodeId,
-      display_name: config.display_name,
+      // A fresh node with no display name shows its generated id (§9.2 wizard default).
+      display_name: config.display_name.length > 0 ? config.display_name : orcaNodeId,
       endpoints: actualEndpoints,
       runtime,
       runtime_digest: runtimeDigest(runtime),
@@ -395,7 +398,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const response = await postSigned<JoinResponse>(peerUrl, "/cluster/join", {
       workgroup_id: config.workgroup_id,
       orca_node_id: orcaNodeId,
-      display_name: config.display_name,
+      display_name: selfPeer().display_name,
       endpoints: actualEndpoints,
       runtime,
       max_task_ttl_s: maxTaskTtlS,
@@ -440,8 +443,31 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     }
   }
 
-  /** Signed JSON-RPC call to a peer's /a2a endpoint (§4.7). */
-  async function postA2a<T>(peerUrl: string, method: string, params: unknown): Promise<T> {
+  /**
+   * Leave the workgroup (§9.2 disconnect): each known peer is told so it can drop
+   * this record immediately, then the local roster is cleared. Best effort — a peer
+   * that is already gone must not keep us from leaving.
+   */
+  async function leave(): Promise<{ left: string[] }> {
+    const left: string[] = [];
+    for (const peer of membership.list()) {
+      const [endpoint] = peer.endpoints;
+      if (endpoint !== undefined) {
+        try {
+          await postSigned(endpoint, "/cluster/leave", { orca_node_id: orcaNodeId });
+          left.push(peer.orca_node_id);
+        } catch {
+          // Best effort: peers that are unreachable are cleared locally below.
+        }
+      }
+      membership.remove(peer.orca_node_id);
+      preferredEndpoints.delete(peer.orca_node_id);
+    }
+    emitMembersIfChanged();
+    return { left };
+  }
+
+  /** Signed JSON-RPC call to a peer's /a2a endpoint (§4.7). */  async function postA2a<T>(peerUrl: string, method: string, params: unknown): Promise<T> {
     const url = new URL("/a2a", peerUrl);
     const body = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
     const response = await httpFetch(url, {
@@ -822,6 +848,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     membersDigest: currentDigest,
     join,
     heartbeat,
+    leave,
     sendTask,
     getTask,
     cancelTask,

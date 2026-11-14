@@ -8,6 +8,7 @@
  */
 
 import { readdirSync } from "node:fs"
+import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 
 import { defaultDataRoot } from "../config.ts"
@@ -46,7 +47,10 @@ export interface PodConfigView {
   workgroup_id: string
   display_name: string | null
   port: number
+  /** Currently advertised dial URLs (the node's own list when it is running). */
   endpoints: string[]
+  /** Host addresses the panel offers as first-run endpoint suggestions. */
+  detected_endpoints: string[]
   peers: string[]
   data_root: string
   password_set: boolean
@@ -75,6 +79,8 @@ export interface PodAdmin {
   saveConfig(patch: Record<string, unknown>): Promise<PodConfigView>
   /** `join` one peer now and remember it for later starts. */
   connect(peer: string): Promise<PodConfigView>
+  /** Leave the workgroup: tell known peers and forget them locally. */
+  disconnect(): Promise<PodConfigView>
   /** Change notification; subscribes to both node events and tracker updates. */
   subscribe(listener: () => void): () => void
 }
@@ -106,12 +112,15 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
   function configView(): PodConfigView {
     const config = handle.config
     const current = node()
+    const self = current?.self() ?? null
+    const port = handle.runtime.port ?? config.port
     return {
       configured: handle.uiConfigured,
       workgroup_id: config.workgroup_id,
-      display_name: config.display_name ?? null,
-      port: handle.runtime.port ?? config.port,
+      display_name: self?.display_name ?? config.display_name ?? null,
+      port,
       endpoints: current?.endpoints ?? [...(config.endpoints ?? [])],
+      detected_endpoints: detectLocalEndpoints(port),
       peers: [...config.peers],
       data_root: config.data_root ?? defaultDataRoot(),
       password_set: config.workgroup_password.length > 0,
@@ -181,12 +190,15 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
       return configView()
     },
     async saveConfig(patch) {
-      const nextWorkgroup = typeof patch["workgroup_id"] === "string" ? patch["workgroup_id"].trim() : null
+      const nextWorkgroup =
+        typeof patch["workgroup_id"] === "string" ? patch["workgroup_id"].trim().toLowerCase() : null
       if (
         nextWorkgroup !== null &&
         nextWorkgroup !== handle.config.workgroup_id &&
-        (typeof patch["workgroup_password"] !== "string" || patch["workgroup_password"].length === 0)
+        patch["workgroup_password"] === undefined
       ) {
+        // An explicitly empty password opens the workgroup; an omitted one is a
+        // mistake when switching groups.
         throw new Error("changing the workgroup requires its password")
       }
       await handle.reconfigure(patch)
@@ -194,6 +206,10 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
     },
     async connect(peer) {
       await handle.addPeer(normalizePeer(peer))
+      return configView()
+    },
+    async disconnect() {
+      await handle.disconnect()
       return configView()
     },
     subscribe(listener) {
@@ -211,4 +227,23 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
 export function normalizePeer(peer: string): string {
   const trimmed = peer.trim().replace(/\/+$/, "")
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+}
+
+/**
+ * Advertised-URL suggestions for the first-run wizard: every non-internal
+ * IPv4/IPv6 address of this machine on the node's listen port.
+ */
+export function detectLocalEndpoints(port: number): string[] {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return []
+  const urls: string[] = []
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.internal) continue
+      const family = address.family === "IPv6" ? 6 : 4
+      if (family === 6 && /^fe80:/i.test(address.address)) continue
+      const host = family === 6 ? `[${address.address}]` : address.address
+      urls.push(`http://${host}:${port}`)
+    }
+  }
+  return [...new Set(urls)]
 }

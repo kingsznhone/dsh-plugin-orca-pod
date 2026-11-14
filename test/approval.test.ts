@@ -148,6 +148,7 @@ describe("pod_approve tool", () => {
       uiConfigured: true,
       reconfigure: async () => {},
       addPeer: async () => {},
+      disconnect: async () => {},
     };
     const tracker = createTracker(() => null, { intervalMs: 60_000 });
     const tools = createPodTools(handle, tracker, approval === undefined ? {} : { approval: approval as never });

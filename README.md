@@ -58,9 +58,9 @@ the config afterwards.
 
 | Field                | Required | Default                         | Meaning                                                                 |
 | -------------------- | -------- | ------------------------------- | ----------------------------------------------------------------------- |
-| `workgroup_id`       | yes      | —                               | Workgroup to join; `[a-z0-9][a-z0-9-]{1,31}`                            |
-| `workgroup_password` | yes      | —                               | Shared password; the orca node key is derived from it (prototype: plaintext) |
-| `display_name`       | no       | `orca-<orca_node_id>` from node config | Human-readable orca node name                                              |
+| `workgroup_id`       | no       | `""` (first-run wizard)         | Workgroup to join; `[a-z0-9][a-z0-9-]{1,31}`. Empty keeps the node idle until the panel wizard supplies it |
+| `workgroup_password` | no       | `""`                            | Shared password; the orca node key is derived from it (prototype: plaintext). Empty = open workgroup (§7.8) |
+| `display_name`       | no       | the orca node id                | Human-readable orca node name                                              |
 | `port`               | no       | `11811`                         | Local listen port (`0` = OS-assigned)                                   |
 | `endpoints`          | no       | `[]` = derive `http://<host>:<port>` | Ordered advertise list (1-8 URLs, primary first): IPv6/IPv4 and LAN/public addresses are dialed in order |
 | `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (orca node identity)             |

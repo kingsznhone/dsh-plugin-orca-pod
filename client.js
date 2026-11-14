@@ -407,15 +407,28 @@ window.__ModuleLoader__.load({
     function ConfigForm(props) {
       const config = props.config || {};
       const wizard = props.wizard === true;
-      const [workgroupId, setWorkgroupId] = React.useState(config.workgroup_id || "");
+      const detected = Array.isArray(config.detected_endpoints) ? config.detected_endpoints : [];
+      const advertised = Array.isArray(config.endpoints) ? config.endpoints : [];
+      const suggested = advertised.length > 0 ? advertised.slice() : detected.slice();
+      const [workgroupId, setWorkgroupId] = React.useState(config.workgroup_id || "workgroup");
       const [password, setPassword] = React.useState("");
       const [displayName, setDisplayName] = React.useState(config.display_name || "");
       const [port, setPort] = React.useState(String(config.port === undefined ? 11811 : config.port));
-      const [endpoints, setEndpoints] = React.useState((config.endpoints || []).join("\n"));
-      const [peers, setPeers] = React.useState((config.peers || []).join("\n"));
-      const [peerInput, setPeerInput] = React.useState("");
+      const [endpoints, setEndpoints] = React.useState(suggested.length > 0 ? suggested : [""]);
       const [error, setError] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+
+      function updateEndpoint(index, value) {
+        setEndpoints((rows) => rows.map((row, i) => (i === index ? value : row)));
+      }
+
+      function addEndpoint() {
+        setEndpoints((rows) => rows.concat([""]));
+      }
+
+      function removeEndpoint(index) {
+        setEndpoints((rows) => (rows.length === 1 ? [""] : rows.filter((_, i) => i !== index)));
+      }
 
       async function save(event) {
         if (event) event.preventDefault();
@@ -424,12 +437,13 @@ window.__ModuleLoader__.load({
         try {
           const patch = {
             workgroup_id: workgroupId.trim(),
-            display_name: displayName.trim() === "" ? "" : displayName.trim(),
             port: Number(port),
-            endpoints: splitLines(endpoints),
-            peers: splitLines(peers),
           };
-          if (password.length > 0) patch.workgroup_password = password;
+          const name = displayName.trim();
+          if (name.length > 0) patch.display_name = name;
+          const addresses = endpoints.map((row) => row.trim()).filter((row) => row.length > 0);
+          if (addresses.length > 0) patch.endpoints = addresses;
+          if (wizard || password.length > 0) patch.workgroup_password = password;
           const next = await api("/orca-api/config", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -461,27 +475,6 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function connect() {
-        const peer = peerInput.trim();
-        if (peer.length === 0) return;
-        setBusy(true);
-        setError(null);
-        try {
-          const next = await api("/orca-api/connect", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ peer }),
-          });
-          setPeerInput("");
-          if (next && Array.isArray(next.peers)) setPeers(next.peers.join("\n"));
-          if (props.onSaved) props.onSaved(next);
-        } catch (err) {
-          setError(messageOf(err));
-        } finally {
-          setBusy(false);
-        }
-      }
-
       return h(
         "form",
         { onSubmit: save, style: { paddingRight: 32 } },
@@ -492,7 +485,7 @@ window.__ModuleLoader__.load({
           "div",
           { style: FIELD },
           h("label", { style: LABEL }, "workgroup id"),
-          h("input", { style: INPUT, value: workgroupId, onChange: (event) => setWorkgroupId(event.target.value), placeholder: "lowercase-with-dashes" }),
+          h("input", { style: INPUT, value: workgroupId, onChange: (event) => setWorkgroupId(event.target.value), placeholder: "workgroup" }),
         ),
         h(
           "div",
@@ -503,15 +496,15 @@ window.__ModuleLoader__.load({
             type: "password",
             value: password,
             onChange: (event) => setPassword(event.target.value),
-            placeholder: config.password_set ? "unchanged" : "required",
+            placeholder: wizard ? "留空 = 开放 mesh（无密码）" : config.password_set ? "unchanged" : "留空 = 开放 mesh（无密码）",
           }),
-          h("div", { style: HINT }, config.password_set ? "留空表示保持原密码；换 workgroup 时必须填写。" : "组内所有节点必须使用同一个密码。"),
+          h("div", { style: HINT }, wizard ? "留空表示不设密码：同网段任何人都能加入。组内所有节点必须使用同一密码。" : config.password_set ? "留空表示保持原密码；换 workgroup 时必须填写（填留空即改为开放 mesh）。" : "留空表示不设密码（开放 mesh）。"),
         ),
         h(
           "div",
           { style: FIELD },
           h("label", { style: LABEL }, "display name"),
-          h("input", { style: INPUT, value: displayName, onChange: (event) => setDisplayName(event.target.value), placeholder: "optional" }),
+          h("input", { style: INPUT, value: displayName, onChange: (event) => setDisplayName(event.target.value), placeholder: "留空则使用节点 id" }),
         ),
         h(
           "div",
@@ -522,27 +515,22 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { style: FIELD },
-          h("label", { style: LABEL }, "advertised endpoints (one per line, best first)"),
-          h("textarea", {
-            style: { ...INPUT, minHeight: 48, fontFamily: MONO_FONT },
-            value: endpoints,
-            onChange: (event) => setEndpoints(event.target.value),
-            placeholder: "http://192.168.1.11:11811\nhttps://desk.example.com",
-          }),
-          h("div", { style: HINT }, "留空则用监听地址自动推导；公网需填写反代后的地址。"),
-        ),
-        h(
-          "div",
-          { style: FIELD },
-          h("label", { style: LABEL }, "peers (one per line)"),
-          h("textarea", { style: { ...INPUT, minHeight: 48, fontFamily: MONO_FONT }, value: peers, onChange: (event) => setPeers(event.target.value) }),
-          h(
-            "div",
-            { style: { display: "flex", gap: 6, marginTop: 6 } },
-            h("input", { style: { ...INPUT, flex: 1 }, value: peerInput, onChange: (event) => setPeerInput(event.target.value), placeholder: "http://192.168.1.12:11811" }),
-            h("button", { type: "button", style: BUTTON, disabled: busy, onClick: connect }, "连接"),
+          h("label", { style: LABEL }, "advertised endpoints"),
+          endpoints.map((row, index) =>
+            h(
+              "div",
+              { key: "endpoint-" + index, style: { display: "flex", gap: 6, marginBottom: 6 } },
+              h("input", {
+                style: { ...INPUT, flex: 1, fontFamily: MONO_FONT },
+                value: row,
+                onChange: (event) => updateEndpoint(index, event.target.value),
+                placeholder: "http://192.168.1.11:11811",
+              }),
+              h("button", { type: "button", style: BUTTON, disabled: busy, onClick: () => removeEndpoint(index) }, "移除"),
+            ),
           ),
-          h("div", { style: HINT }, "连接会立即 join 一次并记入 peers，后续启动自动重连。"),
+          h("button", { type: "button", style: BUTTON, disabled: busy, onClick: addEndpoint }, "添加地址"),
+          h("div", { style: HINT }, "已自动识别本机 IPv4/IPv6 地址，可增删或改成公网域名；全部清空则由监听地址推导。"),
         ),
         error ? h("div", { style: { fontSize: 12, color: "var(--dsw-alias-state-error-primary)", marginBottom: 8 } }, error) : null,
         h(
@@ -565,6 +553,50 @@ window.__ModuleLoader__.load({
       const state = props.state;
       const self = state.self;
       const config = state.config || {};
+      const [connectOpen, setConnectOpen] = React.useState(false);
+      const [host, setHost] = React.useState("");
+      const [peerPort, setPeerPort] = React.useState("11811");
+      const [connectError, setConnectError] = React.useState(null);
+      const peers = Array.isArray(config.peers) ? config.peers : [];
+      const joined = peers.length > 0;
+
+      function peerUrl() {
+        const raw = host.trim();
+        if (raw.length === 0) throw new Error("peer host is required");
+        if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+        const portText = peerPort.trim().length === 0 ? "11811" : peerPort.trim();
+        const hostname = raw.includes(":") && raw[0] !== "[" ? "[" + raw + "]" : raw;
+        return "http://" + hostname + ":" + portText;
+      }
+
+      async function connect() {
+        setConnectError(null);
+        try {
+          await props.onAct("connect", { peer: peerUrl() });
+          setConnectOpen(false);
+          setHost("");
+        } catch (err) {
+          setConnectError(messageOf(err));
+        }
+      }
+
+      async function disconnect() {
+        setConnectError(null);
+        try {
+          await props.onAct("disconnect", {});
+        } catch (err) {
+          setConnectError(messageOf(err));
+        }
+      }
+
+      const connectionControl = joined
+        ? h("button", { type: "button", style: BUTTON, disabled: props.busy, onClick: disconnect }, "断开")
+        : h(
+            "button",
+            { type: "button", style: PRIMARY, disabled: props.busy, onClick: () => setConnectOpen(!connectOpen) },
+            connectOpen ? "取消" : "连接",
+          );
+
       return h(
         "div",
         null,
@@ -575,10 +607,40 @@ window.__ModuleLoader__.load({
           h("div", { style: { ...MUTED, fontFamily: MONO_FONT } }, self ? self.orca_node_id : "node not running"),
           self ? stateBadge(self.state) : null,
           h("div", { style: { flex: 1 } }),
+          connectionControl,
           h("button", { type: "button", style: ICON_BUTTON, title: "设置", onClick: props.onOpenSettings }, "⚙"),
         ),
         h("div", { style: { ...MUTED, marginTop: 2 } }, "workgroup " + (config.workgroup_id || (self ? self.workgroup_id : "-"))),
         props.error ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, props.error) : null,
+        connectError ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, connectError) : null,
+        !joined
+          ? h("div", { style: { ...MUTED, marginTop: 6 } }, "尚未连接 peer：点“连接”填写对端 host 与 port 加入 mesh。")
+          : null,
+        !joined && connectOpen
+          ? h(
+              "div",
+              { style: SECTION },
+              h("div", { style: H2 }, "连接 peer"),
+              h(
+                "div",
+                { style: { ...FIELD, marginTop: 10 } },
+                h("label", { style: LABEL }, "host"),
+                h("input", { style: INPUT, value: host, onChange: (event) => setHost(event.target.value), placeholder: "192.168.1.12 / peer.example.com / [fd00::12]" }),
+              ),
+              h(
+                "div",
+                { style: FIELD },
+                h("label", { style: LABEL }, "port"),
+                h("input", { style: INPUT, value: peerPort, onChange: (event) => setPeerPort(event.target.value), inputMode: "numeric" }),
+              ),
+              h(
+                "div",
+                { style: { display: "flex", gap: 8 } },
+                h("button", { type: "button", style: PRIMARY, disabled: props.busy, onClick: connect }, "连接"),
+                h("button", { type: "button", style: BUTTON, disabled: props.busy, onClick: () => setConnectOpen(false) }, "取消"),
+              ),
+            )
+          : null,
         h("div", { style: SECTION }, h("div", { style: H2 }, "Pending approvals"), h(Approvals, { approvals: state.approvals, busy: props.busy, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, "Recent tasks"), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, "Members"), h(Members, { members: state.members })),

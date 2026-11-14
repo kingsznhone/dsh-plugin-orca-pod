@@ -159,9 +159,10 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     throw new Error("endpoints must be 1-8 http(s) URLs");
   }
   const endpoints = normalized ?? [];
+  const nodeId = options.orcaNodeId ?? generateOrcaNodeId()
   return {
-    orca_node_id: options.orcaNodeId ?? generateOrcaNodeId(),
-    display_name: options.displayName ?? `orca-${generateOrcaNodeId()}`,
+    orca_node_id: nodeId,
+    display_name: options.displayName ?? nodeId,
     workgroup_id: options.workgroupId,
     endpoints,
     bind: { host: options.host ?? "127.0.0.1", port: options.port ?? DEFAULT_PORT },

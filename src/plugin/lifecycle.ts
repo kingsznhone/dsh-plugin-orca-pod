@@ -59,6 +59,8 @@ export interface PodHandle {
   reconfigure(patch: Record<string, unknown>): Promise<void>
   /** `join` one peer now and remember it in the override. */
   addPeer(peer: string): Promise<void>
+  /** Leave the workgroup: tell known peers and clear the persisted peer list. */
+  disconnect(): Promise<void>
 }
 
 /** Fields the panel may override; the rest stays owned by the bundle config. */
@@ -293,6 +295,10 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
         effective = merged
         handle.config = merged
         await stopNode(runtime, logger)
+        if (merged.workgroup_id.length === 0) {
+          runtime.error = null
+          return
+        }
         try {
           await startNode(merged, runtime, logger)
         } catch (error) {
@@ -311,6 +317,23 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
       const previous = (await loadOverride(dataRoot, logger)) ?? {}
       await saveOverride(dataRoot, { ...previous, peers, setup_complete: true })
     },
+    disconnect: async () => {
+      queue = queue.then(async () => {
+        const orcaNode = runtime.orcaNode
+        if (orcaNode !== null) {
+          try {
+            await orcaNode.leave()
+          } catch (error) {
+            logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`)
+          }
+        }
+        effective = { ...effective, peers: [] }
+        handle.config = effective
+        const previous = (await loadOverride(dataRoot, logger)) ?? {}
+        await saveOverride(dataRoot, { ...previous, peers: [], setup_complete: true })
+      })
+      return queue
+    },
   }
 
   handle.ready = (async () => {
@@ -324,6 +347,12 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
       }
     } catch (error) {
       logger.warn(`orca-pod: ignoring panel config: ${errorMessage(error)}`)
+    }
+    if (effective.workgroup_id.length === 0) {
+      // No workgroup yet: the panel shows its first-run wizard and calls
+      // `reconfigure` once the user has picked an id.
+      logger.info("orca-pod: waiting for workgroup setup from the panel")
+      return
     }
     try {
       await startNode(effective, runtime, logger)

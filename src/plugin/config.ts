@@ -22,11 +22,11 @@ export const DEFAULT_POD_PORT = DEFAULT_PORT
 
 /** Validated configuration accepted by the ORCA pod bundle. */
 export interface Config {
-  /** Workgroup the orca node joins; required. */
+  /** Workgroup the orca node joins; empty means the panel has not been set up yet. */
   workgroup_id: string
-  /** Workgroup password used to derive the shared key; required (prototype). */
+  /** Workgroup password used to derive the shared key; empty opens the workgroup (prototype). */
   workgroup_password: string
-  /** Human-readable orca node name; defaults to `orca-<orca_node_id>` when omitted. */
+  /** Human-readable orca node name; defaults to the orca node id when omitted. */
   display_name?: string
   /** Local listen port; defaults to 11811 (0 picks a free port). */
   port: number
@@ -77,23 +77,19 @@ export function validateConfigInput(value: unknown): Config {
   const issues: StandardIssue[] = []
 
   const workgroupIdRaw = value["workgroup_id"]
-  const workgroup_id = typeof workgroupIdRaw === "string" ? workgroupIdRaw.trim() : ""
-  if (!isWorkgroupId(workgroup_id)) {
+  const workgroup_id =
+    typeof workgroupIdRaw === "string" ? workgroupIdRaw.trim().toLowerCase() : ""
+  if (workgroup_id.length > 0 && !isWorkgroupId(workgroup_id)) {
     issues.push({
       path: ["workgroup_id"],
       message: "must match [a-z0-9][a-z0-9-]{1,31}",
     })
   }
 
+  // An empty password opens the workgroup: the derived key is public, so this
+  // is a LAN/prototype mode. The panel asks for a password before joining.
   const passwordRaw = value["workgroup_password"]
   const workgroup_password = typeof passwordRaw === "string" ? passwordRaw : ""
-  if (workgroup_password.length === 0) {
-    issues.push({
-      path: ["workgroup_password"],
-      message:
-        "must be a non-empty string (prototype accepts plaintext config; production should use the DSH credentials service)",
-    })
-  }
 
   let display_name: string | undefined
   const displayNameRaw = value["display_name"]
