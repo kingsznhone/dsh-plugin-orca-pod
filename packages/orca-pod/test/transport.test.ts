@@ -4,22 +4,28 @@ import { describe, expect, it } from "vitest";
 
 import { createMesh, createNode, createNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
 import type { MembershipTimings } from "../src/membership.ts";
+import type { TaskView } from "../src/protocol.ts";
 
-const FAST: Partial<MembershipTimings> = {
-  intervalMs: 50,
-  suspectAfterMs: 150,
-  offlineAfterMs: 300,
-  recoverProbeMs: 100,
-  maxRecoverProbeMs: 200,
-  recordTtlMs: 5000,
-  tombstoneMs: 5000,
+/**
+ * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，
+ * 最少 5 个间隔，避免测出来的只是“一次心跳还没发出去”。
+ */
+const JITTER: Partial<MembershipTimings> = {
+  intervalMs: 100,
+  suspectAfterMs: 300,
+  offlineAfterMs: 600,
+  recoverProbeMs: 200,
+  maxRecoverProbeMs: 400,
+  recordTtlMs: 10000,
+  tombstoneMs: 10000,
+  heartbeatTimeoutMs: 400,
 };
 
 /** 短暂断链用更长窗口：确认“抖动”只进 suspect，不会掉到 offline。 */
 const SHORT_OUTAGE: Partial<MembershipTimings> = {
-  ...FAST,
-  suspectAfterMs: 200,
-  offlineAfterMs: 500,
+  ...JITTER,
+  suspectAfterMs: 300,
+  offlineAfterMs: 600,
 };
 
 type Jitter = {
@@ -56,10 +62,10 @@ function makeNode(
     displayName: options.display_name,
     port: 0,
   });
-  return createNode({ config, timings: options.timings ?? FAST, fetch: options.fetch });
+  return createNode({ config, timings: options.timings ?? JITTER, fetch: options.fetch });
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -68,36 +74,49 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
   throw new Error("condition was not met before the timeout");
 }
 
+async function waitForTask(client: OrcaNode, peerUrl: string, taskId: string): Promise<TaskView> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const task = await client.getTask(peerUrl, taskId);
+    if (task.status.state === "completed") return task;
+    if (task.status.state === "failed" || task.status.state === "canceled") {
+      throw new Error(`task ended as ${task.status.state}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("task did not finish before the timeout");
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("transport jitter during formation", () => {
-  it("converges while every request carries random latency", async () => {
+  it("converges while every request carries 0.3–2.5 heartbeat intervals of latency", async () => {
     const mesh = await createMesh({
       nodes: 3,
       workgroupId: newWorkgroupId(),
       password: "jitter",
-      timings: FAST,
-      fetch: () => jittered({ delayMs: () => 5 + Math.random() * 35 }),
+      timings: JITTER,
+      fetch: () => jittered({ delayMs: () => 30 + Math.random() * 220 }),
     });
 
     try {
       await waitFor(() => mesh.nodes.every((node) => node.members().length === 2));
-      expect(mesh.nodes.every((node) => node.members().every((peer) => peer.state === "online"))).toBe(true);
+      await waitFor(() => mesh.nodes.every((node) => node.members().every((peer) => peer.state === "online")));
       expect(new Set(mesh.nodes.map((node) => node.membersDigest())).size).toBe(1);
     } finally {
       await mesh.stop();
     }
   });
 
-  it("recovers after a burst of packet loss", async () => {
+  it("recovers after a 30-heartbeat burst of packet loss", async () => {
     const states: Jitter[] = [];
     const mesh = await createMesh({
       nodes: 3,
       workgroupId: newWorkgroupId(),
       password: "jitter",
-      timings: FAST,
+      timings: JITTER,
       fetch: () => {
         const state: Jitter = { dropRate: 0 };
         states.push(state);
@@ -108,8 +127,9 @@ describe("transport jitter during formation", () => {
     try {
       await waitFor(() => mesh.nodes.every((node) => node.members().length === 2));
 
-      for (const state of states) state.dropRate = 0.4;
-      await sleep(700);
+      // 45% 丢包、持续 3s = 30 个心跳间隔：期间状态可能反复 suspect/online。
+      for (const state of states) state.dropRate = 0.45;
+      await sleep(3000);
 
       for (const state of states) state.dropRate = 0;
       await waitFor(() =>
@@ -123,7 +143,7 @@ describe("transport jitter during formation", () => {
     }
   });
 
-  it("keeps a peer online when only local outbound calls fail", async () => {
+  it("keeps a peer online through a 15-heartbeat one-way outbound failure", async () => {
     const workgroupId = newWorkgroupId();
     const a = makeNode(workgroupId, "jitter", { display_name: "a" });
     const b = makeNode(workgroupId, "jitter", { display_name: "b" });
@@ -150,10 +170,10 @@ describe("transport jitter during formation", () => {
       await c.join(bUrl);
       await waitFor(() => [a, b, c].every((node) => node.members().length === 2));
 
-      // c → a 单向断：c 发不出去，但仍收得到 a 的心跳。在线判定是“最近有没有收到它”，
-      // 所以 c 不应该把 a 误判成离线，也不应该报 peer_not_online。
+      // c → a 单向断，持续 1.5s = 15 个心跳间隔。在线判定是“最近有没有收到它”：
+      // a 的心跳仍能到 c，所以 c 不应该把 a 判死，也不应该报 peer_not_online。
       blocked = true;
-      await sleep(300);
+      await sleep(1500);
       expect(c.members().some((peer) => peer.node_id === a.nodeId && peer.state === "online")).toBe(true);
       expect(a.members().some((peer) => peer.node_id === c.nodeId && peer.state === "online")).toBe(true);
 
@@ -166,18 +186,19 @@ describe("transport jitter during formation", () => {
       expect(error).toBeInstanceOf(TypeError);
       expect((error as { code?: string }).code).toBeUndefined();
 
-      // 链路恢复后同一调用应该成功。
+      // 链路恢复后同一调用应该成功并跑完。
       blocked = false;
       const task = await c.sendTask(aUrl, {
         message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
         metadata: { echo: { final: { state: "completed", text: "ok" } } },
       });
-      expect(task.id).toBeTruthy();
+      await waitForTask(c, aUrl, task.id);
     } finally {
       await Promise.all([a.stop(), b.stop(), c.stop()]);
     }
   });
-  it("survives a short full outage without marking the peer offline", async () => {
+
+  it("survives a 5-heartbeat full outage without marking the peer offline", async () => {
     const workgroupId = newWorkgroupId();
     let blocked = false;
     const gate = (): boolean => blocked;
@@ -196,9 +217,9 @@ describe("transport jitter during formation", () => {
           b.members().some((peer) => peer.node_id === a.nodeId && peer.state === "online"),
       );
 
-      // 250ms 全断：超过 suspect 阈值（200ms），但不到 offline 阈值（500ms）。
+      // 500ms 全断 = 5 个心跳间隔：超过 suspect 阈值（3 个间隔），但不到 offline（6 个间隔）。
       blocked = true;
-      await sleep(250);
+      await sleep(500);
       expect(a.members().every((peer) => peer.state !== "offline")).toBe(true);
       expect(b.members().every((peer) => peer.state !== "offline")).toBe(true);
 

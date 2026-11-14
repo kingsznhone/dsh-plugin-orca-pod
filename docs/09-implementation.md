@@ -89,7 +89,7 @@ Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 �
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
 - harness 目前有 `createMesh({ nodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, fetch })`，返回 `{ nodes, urls, stop() }`。它启动节点后让每个节点 join 第一个节点、用 `joinRoster` 按返回目录 best-effort 补 join，再对 bootstrap 发一轮心跳。
-- 已支持：可注入时钟（`createNode({ clock })`）、可注入 transport（`createNode({ fetch })`，模拟丢包、延迟、单向阻断）、节点启停（`start()` / `stop()`）、进程内 mesh、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。
+- 已支持：可注入时钟（`createNode({ clock })`）、可注入 transport（`createNode({ fetch })`，模拟丢包、延迟、单向阻断）、节点启停（`start()` / `stop()`）、进程内 mesh、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。抖动场景的窗口按心跳间隔的倍数给（延迟 0.3–2.5 个间隔、丢包 30 个间隔、单向阻断 15 个间隔、全断 5 个间隔），不按绝对毫秒。
 - 未支持：跨进程 harness；`waitFor` 仍是各测试文件内的本地 helper。
 - 场景用 vitest 的普通 async 函数写：`await waitFor(() => ...)`、`node.stop()`、`sendTask` 组合，不引入第二套场景描述语言。
 
