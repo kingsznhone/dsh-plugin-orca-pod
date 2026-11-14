@@ -40,7 +40,7 @@ async function withNode(node: OrcaNode, keepAlive: boolean): Promise<void> {
   for (;;) {
     await sleep(2000);
     const members = node.members();
-    console.log(`members=${members.length} digest=${node.membersDigest().slice(0, 12)}`);
+    console.log(`members=${members.length} digest=${node.membersDigest().slice(0, 12)} peers=${members.map((member) => `${member.node_id}:${member.state}`).join(",")}`);
   }
 }
 
