@@ -289,7 +289,7 @@ window.__ModuleLoader__.load({
       padding: "6px 10px",
       borderRadius: "var(--dsw-radius-sm, 8px)",
       border: "1px solid var(--dsw-alias-border-l2)",
-      background: "var(--dsw-alias-bg-base)",
+      background: "var(--dsw-specific-input-major, var(--dsw-alias-bg-base))",
       color: "var(--dsw-alias-label-primary)",
       fontFamily: FONT_FAMILY,
       fontSize: 14,
@@ -315,7 +315,7 @@ window.__ModuleLoader__.load({
       padding: "24px 26px 22px",
       borderRadius: "var(--dsw-radius-lg, 16px)",
       border: "1px solid var(--dsw-alias-border-l1)",
-      background: "var(--dsw-alias-bg-overlay)",
+      background: "var(--dsw-alias-bg-layer-1)",
       boxShadow: "0 24px 64px rgba(0, 0, 0, 0.35)",
       color: "var(--dsw-alias-label-primary)",
     };
@@ -327,7 +327,7 @@ window.__ModuleLoader__.load({
       justifyContent: "center",
       padding: 24,
       zIndex: 1000,
-      background: "rgba(0, 0, 0, 0.32)",
+      background: "var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.32))",
     };
     const CLOSE_BUTTON = {
       position: "absolute",
