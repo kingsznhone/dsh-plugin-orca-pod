@@ -1,0 +1,114 @@
+# 09 可靠性与可观测性
+
+> 关注：网络断了、节点重启、任务超时、调用被放大时，系统怎么保持诚实；以及看什么指标、留什么日志。
+>
+> 章节编号沿用全局编号。
+
+## 13. 任务可靠性
+
+### 13.1 语义
+
+- **at-least-once + 幂等**，不是 exactly-once；
+- **失败立即、终止明确**：节点失联 → `failed`，不重发、不自动恢复（[§13.2](09-reliability.md#132-节点失联-任务失败不重发)）；
+- **副作用可见**：`failed` 带 `effects_unknown`，提示“目标侧可能已经改了文件”；
+- **状态诚实**：宁可说“失败/未知”，不假装成功。
+
+### 13.2 节点失联 = 任务失败，不重发
+
+```text
+origin 轮询 tasks/get
+  → 连续连接失败达到 offline_after（≈12s）
+  → task = failed(reason=node_unreachable, effects_unknown=true)
+  → 停止轮询；不再派同一任务
+```
+
+为什么不做重发 / 不做 unknown 挂起：
+
+- 跨节点无法知道“执行到哪一步”：重发可能重复写文件、重复调 API、重复产生副作用；
+- 挂 `unknown` 等于把问题留给用户，而用户没有信息去判断——不如直接失败并标清不确定性；
+- 目标恢复后如果它自己完成了，origin 已经 failed：**不处理、不召回**，也没有 `late_result` 状态。要不要保留现场由人看工作区 diff 决定；没有被引用的 blob 按 7 天 GC。
+
+目标侧的处理：
+
+- 目标节点继续跑（如果还活着），任务结果留在本地 SQLite；origin 已失败时不再回调；
+- 目标重启后 `working` 的任务按 [§13.3](09-reliability.md#133-目标重启) 处理。
+
+### 13.3 目标重启
+
+- `submitted`：未开始，标 `failed(node_restart)`；
+- `working`：标 `failed(node_restart, effects_unknown=true)`，**不尝试 resume**；提示用户检查工作区 diff；
+- `input-required`：标 `failed(node_restart)`（授权请求已失效）；
+- 重启后不允许把旧 task 悄悄“接着跑”——那会让 origin 的状态和实际再次分叉。
+
+### 13.4 幂等键
+
+- 作用域 `(workgroup_id, origin_node, idempotency_key)`，窗口 24h；
+- 重复提交（同键）返回已有 task，不新建；
+- 不承担重试语义：重试必须显式，且产生新 task（带 `retry_of`），由人决定。
+
+### 13.5 超时与背压
+
+- `task_ttl_s` 默认 3600；超时 → `failed(timeout)` + 尽力 `tasks/cancel`；
+- 节点单槽：同一时间只跑 1 个任务（[§11.4](06-workspace.md#114-单槽执行一个节点同一时间只做一件事)）；忙时 `429 node_busy` + `Retry-After`，不排队；
+- origin 侧轮询退避到 2s 后不再增长（避免“等太久以为挂了”）。
+
+### 13.6 放大与唤醒（为什么不会风暴）
+
+一句话：**默认单跳，所以没有环**；多跳与扇出是可选能力，默认关闭，打开后由 `hop`/`chain`/`fanout` 和单槽封顶。节点不会因为心跳互相唤醒——唤醒只来自任务请求。
+
+默认（`delegation` 关）构造上就没有环：
+
+1. **任务不转发**：节点只执行 origin 给它的任务，不把任务转给第三个节点；executor 默认没有 pod 远程工具（[§8.3](05-executor.md#83-acp-的位置)），且 `hop > 0` 被拒（[§7.5](04-tasks.md#75-任务标识与元数据)）。
+2. **没有回调**：target 从不反连 origin（[§9.4](07-permissions.md#94-升级回路任务状态不是反向调用)）；完成靠 origin 轮询/SSE。不存在“B 做完叫醒 A、A 又叫醒 B”。
+3. **没有广播**：心跳固定 2s、单向；成员变化靠 digest 拉取（[§10.1](02-architecture.md#101-成员状态的三个问题)）；没有 gossip、没有事件订阅、没有 completion webhook。
+
+打开 `delegation` 之后（多跳/扇出），约束换成：
+
+- **注入而非自填**：网关把 `hop+1`、`chain+[self]`、`root` 写进子任务；agent 改不了。目标节点已在 `chain` 中 → `403 ancestor_call_forbidden`。
+- **预算**：`max_hop` 默认 0、可配 1–3；`max_fanout` 默认 0、可配（按 `root` 计）。超限直接拒，不排队。
+- **单槽仍在**：每个 target 同一时间只跑 1 个任务；多余的请求在**建 task 之前**就 429，不创建进程——唤醒成本 = 一个 429 响应。
+- **祖先禁调（硬限制）**：子任务不能指向 `chain` 里的任何节点或自身；网关直接 `403 ancestor_call_forbidden`。A→B→A 在第一跳就断，不依赖 `max_hop` 的深度。
+- **兄弟互调不会僵死**：单槽下先占槽的一方还在跑自己的任务，另一方调它时直接 `429 node_busy`——不会出现“两边都等着对方把活干完”。拿到 429 的一方把这个事实写进 `blocked` 回报 A，由 A 协调（换顺序、拆任务，或回报用户）。TTL 只兜底极端情况（两边恰好都在 `input-required` 被同时唤醒），到期 `failed(timeout)`。
+- **重试**：服务端从不自动重试；模型重试必须退避 + 抖动。幂等键只防重复建 task，不制造重试。
+- **熔断**：连续失败 → peer 进 suspect/unreachable，发送停止并退避（[§10.3](02-architecture.md#103-心跳与双向看门狗)）；不会“越连不上越猛试”。
+- **总闸**：本机总开关一次性取消所有远程任务（[§9.5](07-permissions.md#95-目标侧硬拒绝清单)），不依赖网络。
+
+数量级：
+
+| 场景 | 10 节点时的量 |
+|---|---|
+| 空闲 | 心跳 45 req/s，~200 B/req ≈ 9 KB/s，与任务数无关 |
+| 全部在跑 | 最多 10 个 agent 进程（每节点 1 个槽），不是 10² |
+| 被打爆 | 每个 target 1 个任务 + 其余 429；429 < 1 KB 且不创建进程 |
+| 链式（默认关） | `max_hop=3`，每跳最多 `max_fanout` 个子任务，超预算即拒 |
+| 扇出（默认关） | 一个 root task 最多 `max_fanout` 个活跃子任务 |
+
+真正会失控的只有一种情况：**允许 target 上的 agent 再调其他节点**。那是指数扇出的来源，所以默认关闭；要开就必须同时接受 hop/chain/fanout 三重限制。这是刻意的保守选择：宁可少一种编排能力，也不要一个会自己跑起来的集群——但能力本身保留，需要时显式打开。
+
+---
+
+## 14. 可观测性
+
+指标：
+
+- `pod_peer_state{peer,state}` gauge（online/suspect/unreachable/offline/unknown）
+- `pod_peer_last_recv_age_seconds{peer}`、`pod_peer_last_ok_age_seconds{peer}`
+- `pod_members_known`、`pod_members_digest_changes_total`
+- `pod_hint_accepted_total`、`pod_hint_rejected_total{reason}`、`pod_tombstones_active`
+- `pod_join_total{result}`、`pod_join_failures_total{reason}`
+- `pod_auth_failures_total{reason}`
+- `pod_tasks_submitted_total{target,workspace_kind}`
+- `pod_tasks_terminal_total{state,reason}`
+- `pod_task_duration_seconds{skill}`
+- `pod_grants_issued_total{mode}`、`pod_grants_denied_total{reason}`
+- `pod_approvals_total{result}`、`pod_approval_latency_seconds`
+- `pod_workspace_bytes{workgroup}`、`pod_node_busy`、`pod_node_busy_seconds_total`、`pod_node_busy_rejected_total{reason}`
+- `pod_blob_uploads_total{result}`、`pod_blob_downloads_total`、`pod_blob_bytes{workgroup}`、`pod_blob_gc_total{reason}`
+- `pod_heartbeat_rtt_seconds{peer}`
+- `pod_executor_errors_total{type}`
+
+日志：JSON；必带 `trace_id`、`task_id`、`origin_node`、`target_node`、`grant_id`；不记录密码、签名、密钥；错误带类型与可重试标记。
+
+UI（节点卡片）至少展示：`display_name (node_id)`、OS 与版本、CPU/内存、DSH 版本、在线状态与延迟、group workspace 用量与配额、忙闲（正在跑哪个任务、已跑多久）、最近一次任务、当前会话权限模式。
+
+---
