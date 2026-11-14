@@ -285,4 +285,14 @@ dsh --profile headless --json \
 
 **测试**：`test/headless.test.ts` 用 `command: process.execPath` + `extra_args: [fake-dsh.mjs]` 起假 dsh。覆盖：正常完成、`turn_end` 错误、没有 `final` 就退出、挂起被 abort（进程被杀）、第二次任务带 `--session-id` 且 sessions.json 的键正确。
 
+**真实环境（Windows）**：`dsh` 装出来是 `.cmd` shim，`spawn("dsh")` 会 `ENOENT`。executor 先按 `PATH` + `PATHEXT` 把 `command` 解析成真实路径；命中 `.cmd`/`.bat` 时经 `cmd.exe /d /s /c` 启动，并把 prompt 改成 `-` 从 stdin 传入，避免 shell 引号问题（其余参数由 config 决定，保持原样）。
+
+**真实冒烟**（需要模型凭据，不进 `npm test`）：
+
+```
+DEEPSEEK_API_KEY=... node scripts/e2e-headless.ts
+```
+
+本机实测（2026-11-14，Windows）：两个任务各约 10s；任务 1 `completed` 且 `final.text` 为 `stored`，任务 2 在同一个 context 里复用 session 答出 `pong`；`sessions.json` 只留一条 `<origin_orca_node>|ctx-e2e-headless` 绑定。
+
 ---

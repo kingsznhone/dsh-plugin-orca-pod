@@ -15,7 +15,7 @@ orca-pod/
 ├── cordis.patch.yml      # DSH 行：id orca-pod、name 'orca-pod'
 ├── README.md
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # 跨进程联调脚本（cross.ts）
+├── scripts/              # 跨进程联调（cross.ts）、真实 dsh 冒烟（e2e-headless.ts）
 ├── src/
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── protocol.ts       # id、成员 digest、任务/peer 类型

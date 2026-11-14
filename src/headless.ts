@@ -5,14 +5,37 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, extname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { HeadlessExecutorConfig } from "./config.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 
 const STDERR_TAIL = 4096;
 const KILL_GRACE_MS = 2_000;
+
+/**
+ * On Windows `dsh` is a `.cmd` shim, which `spawn` cannot execute directly.
+ * Resolve it through PATH+PATHEXT so we can go through cmd.exe deliberately.
+ */
+function resolveCommand(command: string): string {
+  if (process.platform !== "win32" || extname(command)) return command;
+  const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = join(dir, `${command}${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return command;
+}
+
+function quoteForCmd(arg: string): string {
+  return /[\s"&|<>^]/.test(arg) ? `"${arg.replaceAll('"', '""')}"` : arg;
+}
+
 
 type DshReason = {
   kind?: unknown;
@@ -103,6 +126,11 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
       const sessions = key && input.podDir ? await readSessions(input.podDir) : {};
       const sessionId = key ? sessions[key] : undefined;
 
+      const resolved = resolveCommand(command);
+      // .cmd/.bat shims only run through cmd.exe; hand the prompt over stdin
+      // ("-" positional) so the command line never needs shell quoting.
+      const viaCmd = process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved);
+
       const args = [
         ...extraArgs,
         "--profile",
@@ -114,15 +142,28 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
         approvalPolicy,
         ...(input.workspaceDir ? ["--add-dir", input.workspaceDir] : []),
         ...(sessionId ? ["--session-id", sessionId] : []),
-        input.prompt,
+        viaCmd ? "-" : input.prompt,
       ];
 
-      const child = spawn(command, args, {
-        cwd: input.workspaceDir,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        ...(process.platform === "win32" ? {} : { detached: true }),
-      });
+      const child = viaCmd
+        ? spawn(
+            process.env.ComSpec ?? "cmd.exe",
+            ["/d", "/s", "/c", `"${[quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ")}"`],
+            {
+              cwd: input.workspaceDir,
+              windowsHide: true,
+              windowsVerbatimArguments: true,
+              stdio: ["pipe", "pipe", "pipe"],
+            },
+          )
+        : spawn(resolved, args, {
+            cwd: input.workspaceDir,
+            windowsHide: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            ...(process.platform === "win32" ? {} : { detached: true }),
+          });
+
+      if (viaCmd) child.stdin?.end(input.prompt);
 
       let stderr = "";
       child.stderr?.setEncoding("utf8");
