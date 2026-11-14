@@ -402,7 +402,16 @@ window.__ModuleLoader__.load({
     // The dock card sits inline above the composer, so it spans the column and
     // drops the floating shadow; the popup keeps the floating treatment for
     // sessions that are not on screen.
-    const APPROVAL_DOCK_CARD = { ...APPROVAL_CARD, width: "100%", padding: "12px 14px", boxShadow: "none" };
+    const APPROVAL_DOCK_CARD = {
+      ...APPROVAL_CARD,
+      width: "100%",
+      padding: "12px 16px",
+      boxShadow: "none",
+      // The composer column is the reference width; the card shares its edges and
+      // keeps a visible border so the approval boundary is unambiguous.
+      border: "1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l1))",
+      margin: 0,
+    };
     const APPROVAL_POPUP_CARD = { ...APPROVAL_CARD, width: "min(380px, calc(100vw - 32px))" };
     const DOCK_WRAP = {
       display: "flex",
@@ -410,10 +419,8 @@ window.__ModuleLoader__.load({
       gap: 8,
       boxSizing: "border-box",
       width: "100%",
-      // Match the conversation column so the card never spills past the chat area.
-      maxWidth: 760,
-      margin: "0 auto",
-      padding: "6px 16px 10px",
+      // Fill the dock and let its parent column (the composer width) decide.
+      padding: "4px 0 8px",
     };
     const POPUP_WRAP = {
       position: "fixed",
