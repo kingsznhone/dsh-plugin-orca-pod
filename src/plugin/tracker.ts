@@ -16,8 +16,8 @@
 
 import { randomUUID } from "node:crypto"
 
-import { isTerminal } from "../protocol.ts"
-import type { TaskView } from "../protocol.ts"
+import { isTerminal, permissionRequestOf } from "../protocol.ts"
+import type { PermissionRequest, TaskView } from "../protocol.ts"
 import type { AgentNotice, HostLogger, ToolAgent } from "./dsh.ts"
 import { errorMessage } from "./util.ts"
 
@@ -57,16 +57,26 @@ interface PendingTask {
   agent: TrackerAgent
   peer: string
   taskId: string
+  /** Last permission request already surfaced to the agent. */
+  seenRequest: string | null
 }
 
 interface FinishedTask extends PendingTask {
+  kind: "terminal" | "permission"
   view: TaskView
+  request?: PermissionRequest
 }
 
 const DEFAULT_INTERVAL_MS = 1000
 const DEFAULT_COALESCE_MS = 2000
 const DEFAULT_MAX_CONSECUTIVE_WAKES = 3
 const SUMMARY_MAX_CHARS = 120
+
+/** One suspended permission request reduced to the line shown to the agent. */
+export function permissionNoticeLine(request: PermissionRequest, peer: string): string {
+  const details = JSON.stringify(request.requested)
+  return `task ${request.task_id} on ${peer} needs permission for "${request.tool}" (${details}); call pod_approve with peer, task_id and decision to answer`
+}
 
 /** One terminal task reduced to the line shown to the agent. */
 export function taskNoticeLine(view: TaskView, peer: string): string {
@@ -121,9 +131,20 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
     for (const [key, entry] of [...pending]) {
       try {
         const view = await node.getTask(entry.peer, entry.taskId)
+        const request = permissionRequestOf(view)
+        if (request !== null) {
+          // A suspended permission request is surfaced once; the task stays
+          // tracked until it finishes or the request changes.
+          if (request.request_id !== entry.seenRequest) {
+            entry.seenRequest = request.request_id
+            finished.push({ ...entry, kind: "permission", view, request })
+            scheduleFlush()
+          }
+          continue
+        }
         if (!isTerminal(view.status.state)) continue
         pending.delete(key)
-        finished.push({ ...entry, view })
+        finished.push({ ...entry, kind: "terminal", view })
         scheduleFlush()
       } catch (error) {
         // A vanished task (404) or a transient network failure must not wedge the
@@ -148,18 +169,23 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   }
 
   function flush(): void {
-    const batches = new Map<string, { agent: TrackerAgent; lines: string[] }>()
+    const batches = new Map<string, { agent: TrackerAgent; lines: string[]; force: boolean }>()
     for (const task of finished.splice(0)) {
-      const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [] }
-      batch.lines.push(taskNoticeLine(task.view, task.peer))
+      const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [], force: false }
+      if (task.kind === "permission" && task.request !== undefined) {
+        batch.lines.push(permissionNoticeLine(task.request, task.peer))
+        batch.force = true
+      } else {
+        batch.lines.push(taskNoticeLine(task.view, task.peer))
+      }
       batches.set(task.agent.id, batch)
     }
-    for (const { agent, lines } of batches.values()) deliver(agent, lines)
+    for (const { agent, lines, force } of batches.values()) deliver(agent, lines, force)
   }
 
-  function deliver(agent: TrackerAgent, lines: string[]): void {
+  function deliver(agent: TrackerAgent, lines: string[], force = false): void {
     const text = lines.map((line) => `[orca-pod] ${line}`).join("\n")
-    const summary = lines.length === 1 ? lines[0]! : `${lines.length} background tasks finished`
+    const summary = lines.length === 1 ? lines[0]! : `${lines.length} background tasks need attention`
     const message: TrackerMessage = {
       id: randomUUID(),
       role: "user",
@@ -167,6 +193,13 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
       source: { kind: "orca-pod", form: "notice", summary: clampSummary(summary) },
     }
     try {
+      // A permission request blocks the remote task, so it always wakes the
+      // dispatching agent regardless of the wake budget (§7.12).
+      if (force) {
+        agent.followup(message)
+        awake.set(agent.id, 0)
+        return
+      }
       if (agent.status === "running") {
         agent.inject(message)
         awake.set(agent.id, 0)
@@ -189,7 +222,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   return {
     track(agent, peer, taskId) {
       if (stopped) return
-      pending.set(`${peer}|${taskId}`, { agent, peer, taskId })
+      pending.set(`${peer}|${taskId}`, { agent, peer, taskId, seenRequest: null })
       ensurePolling()
     },
     stop() {

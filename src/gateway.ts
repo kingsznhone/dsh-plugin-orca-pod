@@ -59,6 +59,10 @@ const TASK_ERROR_STATUS: Record<string, number> = {
   task_not_found: 404,
   bad_request: 400,
   unsupported: 400,
+  not_task_origin: 403,
+  permission_denied: 409,
+  grant_invalid: 409,
+  grant_expired: 409,
 };
 
 function nowIso(): string {
@@ -184,7 +188,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
           return badRequest(reply, "params.message with parts is required");
         }
         if (typeof message.taskId === "string" && message.taskId.length > 0) {
-          result = deps.tasks.resume(message.taskId, message);
+          result = deps.tasks.resume(message.taskId, message, auth.orcaNodeId);
         } else {
           result = deps.tasks.submit({
             message,

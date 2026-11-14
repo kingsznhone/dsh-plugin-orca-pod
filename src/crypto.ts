@@ -1,5 +1,5 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { normalizeOrcaNodeId, type OrcaNodeId } from "./protocol.ts";
+import { normalizeOrcaNodeId, type Grant, type OrcaNodeId, type SignedGrant } from "./protocol.ts";
 
 export const AUTH_SCHEME = "Pod";
 export const PROOF_VERSION = "pod-v1";
@@ -204,4 +204,38 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
     throw new PodAuthError("nonce_replay", "nonce already used");
   }
   return { orcaNodeId, ts: parsed.ts, nonce: parsed.nonce };
+}
+
+// ---------------------------------------------------------------------------
+// Grants (§7.11): a human decision travels as a signed, task-scoped record.
+// ---------------------------------------------------------------------------
+
+export const GRANT_VERSION = "pod-grant-v1";
+
+export function grantSignatureInput(grant: Grant): string {
+  return [
+    GRANT_VERSION,
+    grant.grant_id,
+    grant.workgroup_id,
+    grant.task_id,
+    grant.target_orca_node,
+    grant.tool,
+    grant.mode,
+    grant.chain.join(","),
+    grant.issued_at,
+    grant.expires_at,
+  ].join("|");
+}
+
+export function signGrant(key: Buffer, grant: Grant): SignedGrant {
+  const sig = createHmac("sha256", key).update(grantSignatureInput(grant)).digest("base64url");
+  return { ...grant, sig };
+}
+
+export function verifyGrant(key: Buffer, grant: SignedGrant): boolean {
+  if (typeof grant.sig !== "string" || grant.sig.length === 0) return false;
+  const expected = createHmac("sha256", key).update(grantSignatureInput(grant)).digest("base64url");
+  const actualBytes = Buffer.from(grant.sig, "base64url");
+  const expectedBytes = Buffer.from(expected, "base64url");
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }

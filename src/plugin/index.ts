@@ -56,7 +56,7 @@ export function apply(ctx: HostContext, config: Config): void {
     "orca-pod.orca-node",
   )
 
-  for (const tool of createPodTools(handle, tracker)) {
+  for (const tool of createPodTools(handle, tracker, { approval: ctx.approval })) {
     try {
       ctx.tools.register(tool)
     } catch (error) {

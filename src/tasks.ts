@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { verifyGrant } from "./crypto.ts";
 import { echoScriptFrom, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
 import {
   isTerminal,
@@ -5,6 +7,8 @@ import {
   TaskError,
   type A2AMessage,
   type BusyState,
+  type PermissionRequest,
+  type SignedGrant,
   type SubmitTaskInput,
   type TaskRunner,
   type TaskState,
@@ -23,6 +27,8 @@ type Running = {
   abort: AbortController;
   iterator: AsyncGenerator<ExecutorEvent, void, unknown> | null;
   ttl: ReturnType<typeof setTimeout> | null;
+  /** Set while the task waits for a human decision on one tool (§7.11). */
+  pending_permission: PermissionRequest | null;
 };
 
 function nowIso(): string {
@@ -44,25 +50,6 @@ function textMessage(text: string): A2AMessage {
   return { role: "agent", parts: [{ kind: "text", text }] };
 }
 
-function suspendMessage(suspend: ExecutorEvent & { type: "suspend" }): A2AMessage {
-  const data =
-    suspend.suspend.kind === "blocked"
-      ? {
-          blocked: {
-            reason: suspend.suspend.reason,
-            question: suspend.suspend.question,
-            ...(suspend.suspend.options ? { options: suspend.suspend.options } : {}),
-          },
-        }
-      : {
-          permission_request: {
-            tool: suspend.suspend.tool,
-            requested: suspend.suspend.requested,
-          },
-        };
-  return { role: "agent", parts: [{ kind: "data", data }] };
-}
-
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
   blobs: BlobStore;
@@ -71,6 +58,12 @@ export type TaskRunnerDeps = {
   /** Group workspace; becomes the executor cwd when present (§6.7). */
   workspace?: Workspace;
   defaultTtlS?: number;
+  /** Identity and key needed to build permission requests and check grants (§7.11). */
+  selfOrcaNodeId?: string;
+  workgroupId?: string;
+  key?: Buffer;
+  /** How long a suspended permission request stays valid, default 120s. */
+  permissionTtlS?: number;
 };
 
 /**
@@ -81,7 +74,74 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const tasks = new Map<string, Running>();
   const store = deps.store ?? createMemoryTaskStore();
   const defaultTtlS = deps.defaultTtlS ?? 3600;
+  const permissionTtlS = deps.permissionTtlS ?? 120;
+  const selfOrcaNodeId = deps.selfOrcaNodeId ?? "unknown";
   let activeTaskId: string | null = null;
+
+  function chainOf(rec: Running): string[] {
+    const pod = rec.metadata?.["pod"] as { chain?: unknown } | undefined;
+    const chain = pod?.chain;
+    return Array.isArray(chain) ? chain.filter((hop): hop is string => typeof hop === "string") : [];
+  }
+
+  function suspendMessage(rec: Running, suspend: ExecutorEvent & { type: "suspend" }): A2AMessage {
+    if (suspend.suspend.kind === "blocked") {
+      return {
+        role: "agent",
+        parts: [
+          {
+            kind: "data",
+            data: {
+              blocked: {
+                reason: suspend.suspend.reason,
+                question: suspend.suspend.question,
+                ...(suspend.suspend.options ? { options: suspend.suspend.options } : {}),
+              },
+            },
+          },
+        ],
+      };
+    }
+    const request: PermissionRequest = {
+      request_id: randomUUID(),
+      task_id: rec.view.id,
+      tool: suspend.suspend.tool,
+      requested: suspend.suspend.requested,
+      requested_by: selfOrcaNodeId,
+      via: chainOf(rec),
+      expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString(),
+    };
+    rec.pending_permission = request;
+    return { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] };
+  }
+
+  /** Returns the failure reason, or null when the grant matches what was asked. */
+  function checkGrant(rec: Running, grant: SignedGrant, pending: PermissionRequest): string | null {
+    if (deps.key === undefined || !verifyGrant(deps.key, grant)) return "grant_invalid";
+    if (grant.task_id !== rec.view.id) return "grant_invalid";
+    if (grant.target_orca_node !== selfOrcaNodeId) return "grant_invalid";
+    if (deps.workgroupId !== undefined && grant.workgroup_id !== deps.workgroupId) return "grant_invalid";
+    if (grant.tool !== pending.tool) return "grant_invalid";
+    if (Number.isNaN(Date.parse(grant.expires_at)) || Date.parse(grant.expires_at) <= Date.now()) {
+      return "grant_expired";
+    }
+    return null;
+  }
+
+  /** Data controls a resume may carry; anything else is ordinary task input. */
+  function resumeControl(message: A2AMessage): { grant?: SignedGrant; denied?: string } {
+    for (const part of message.parts) {
+      if (part.kind !== "data") continue;
+      const data = part.data as { grant?: unknown; permission_denied?: unknown; reason?: unknown };
+      if (data.permission_denied === true) {
+        return { denied: typeof data.reason === "string" ? data.reason : "denied by origin" };
+      }
+      if (typeof data.grant === "object" && data.grant !== null) {
+        return { grant: data.grant as SignedGrant };
+      }
+    }
+    return {};
+  }
 
   function persist(rec: Running): void {
     store.save({
@@ -132,7 +192,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       while (!step.done) {
         const event = step.value;
         if (event.type === "suspend") {
-          rec.view.status = { state: "input-required", timestamp: nowIso(), message: suspendMessage(event) };
+          rec.view.status = { state: "input-required", timestamp: nowIso(), message: suspendMessage(rec, event) };
           releaseSlot(rec);
           persist(rec);
           return;
@@ -191,6 +251,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       abort: new AbortController(),
       iterator: null,
       ttl: null,
+      pending_permission: null,
     };
     activeTaskId = id;
     tasks.set(id, rec);
@@ -214,17 +275,38 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return stored ? cloneView(stored.view) : null;
   }
 
-  function resume(taskId: string, message: A2AMessage): TaskView {
+  function resume(taskId: string, message: A2AMessage, callerOrcaNode?: string): TaskView {
     const rec = tasks.get(taskId);
     if (!rec) {
       if (!store.load(taskId)) throw new TaskError("task_not_found", `unknown task ${taskId}`);
       throw new TaskError("bad_request", "task is not input-required");
+    }
+    // Only the task's origin drives it; other workgroup members may read it (§5.2).
+    if (callerOrcaNode !== undefined && callerOrcaNode !== rec.origin_orca_node) {
+      throw new TaskError("not_task_origin", `task ${taskId} belongs to another origin`);
     }
     if (rec.view.status.state !== "input-required") {
       throw new TaskError("bad_request", "task is not input-required");
     }
     if (activeTaskId !== null && activeTaskId !== taskId) {
       throw new TaskError("orca_node_busy", "orca node is busy with another task");
+    }
+    // A permission suspension ends only with a grant or an explicit denial (§7.11).
+    if (rec.pending_permission !== null) {
+      const control = resumeControl(message);
+      if (control.denied !== undefined) {
+        finish(rec, "failed", textMessage(`permission denied: ${control.denied}`), "permission_denied");
+        return cloneView(rec.view);
+      }
+      if (control.grant === undefined) {
+        throw new TaskError("bad_request", "resume of a permission request needs a grant or a denial");
+      }
+      const failure = checkGrant(rec, control.grant, rec.pending_permission);
+      if (failure !== null) {
+        finish(rec, "failed", textMessage(`permission grant rejected: ${failure}`), failure);
+        return cloneView(rec.view);
+      }
+      rec.pending_permission = null;
     }
     activeTaskId = taskId;
     void pump(rec, message);

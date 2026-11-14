@@ -160,6 +160,8 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 - `expires_at` 到点即失效；任务 cancel / 完成即吊销（target 本地删记录，不需要广播）；
 - 无 grant 的请求直接 `deny(missing_grant)`，不接受“老客户端”兼容。
 
+**实现状态（Phase 3 第一版）**：`crypto.ts` 的 `signGrant`/`verifyGrant` 用 workgroup key 做 HMAC，签名覆盖 `grant_id|workgroup_id|task_id|target_orca_node|tool|mode|chain|issued_at|expires_at`；grant 由 origin 批准时签发，target 端校验签名、`task_id`、`target_orca_node`、`workgroup_id`、`tool` 与过期时间，任一不符即 `failed(reason=grant_invalid)` 或 `failed(reason=grant_expired)`。当前只支持 `mode: "allow_once"`；`limits`、`nonce`、`permission_mode` 尚未进签名结构（原型阶段先只做“单次工具放行”），grant 随 resume message 的 data part 下发，不单独持久化。
+
 ### 7.12 升级回路：任务状态，不是反向调用
 
 ```text
@@ -197,6 +199,8 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 - 审批 UI 直接复用 DSH 的 approval 卡片（Host 既有机制），不另做插件面板。
 - 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用 orca node 反复索权。
 - origin 侧支持**预授权**（避免每次都弹）：按 `(workgroup, target, tool)` 记一条本地策略，如“允许 N7K3QM 在 P2W8XA 上跑 shell，单次 ≤15 分钟”。预授权记录进审计。
+
+**实现状态（Phase 3 第一版）**：target 在挂起时生成 `permission_request`（`request_id`、`task_id`、`tool`、`requested`、`requested_by`、`via`、`expires_at`）写进 `status.message`；只有任务 origin 能 `message/send` resume（其他成员 `403 not_task_origin`，但读取不受限）。插件侧由 tracker 看到该请求即强制 `followup` 唤醒派发它的 agent（不受连续唤醒预算限制），模型调用 `pod_approve(peer, task_id, decision, reason?)`；工具在 open turn 内调 DSH `approval.request` 弹卡，只有 `allowed-once` 才签 grant，其余 outcome 与显式 `deny` 都发 `permission_denied`。逐跳上升/收窄（链式）尚未实现，规则见下节。
 
 #### 链式调用：授权向下收窄，升级向上回传
 

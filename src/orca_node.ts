@@ -3,16 +3,19 @@ import { cpus, platform as osPlatform, release as osRelease, totalmem } from "no
 import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { buildAuthHeader, NonceCache } from "./crypto.ts";
+import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
 import { createGateway } from "./gateway.ts";
 import { createMembership, type MembershipClock, type MembershipTimings } from "./membership.ts";
 import {
   membersDigest as computeMembersDigest,
+  permissionRequestOf,
   PROTOCOL_VERSION,
   runtimeDigest,
   type A2AMessage,
+  type Grant,
+  type GrantMode,
   type HeartbeatResponse,
   type JoinResponse,
   type PeerView,
@@ -102,6 +105,13 @@ export type CreateNodeOptions = {
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
 
+export interface ApprovalOptions {
+  mode?: GrantMode;
+  /** How long the signed grant stays valid, default 300s. */
+  ttlS?: number;
+  reason?: string;
+}
+
 export interface OrcaNode {
   readonly orcaNodeId: string;
   readonly config: OrcaNodeConfig;
@@ -116,6 +126,10 @@ export interface OrcaNode {
   sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView>;
   getTask(peerUrl: string, taskId: string): Promise<TaskView>;
   cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
+  /** Approve a suspended permission request: sign a grant and resume the task (§7.11). */
+  approveTask(peerUrl: string, view: TaskView, options?: ApprovalOptions): Promise<TaskView>;
+  /** Deny a suspended permission request: the remote task fails with permission_denied. */
+  denyTask(peerUrl: string, view: TaskView, reason?: string): Promise<TaskView>;
 }
 
 /**
@@ -170,6 +184,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     blobs,
     ...(options.storage?.taskStore ? { store: options.storage.taskStore } : {}),
     ...(workspace ? { workspace } : {}),
+    selfOrcaNodeId: orcaNodeId,
+    workgroupId: config.workgroup_id,
+    key,
   });
 
   let boundPort = config.bind.port;
@@ -331,6 +348,38 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId });
   }
 
+  /** Grant validity is deliberately short: it only has to cover one resume. */
+  const GRANT_TTL_S = 300;
+
+  function resumeMessage(view: TaskView, data: Record<string, unknown>): A2AMessage {
+    return { role: "user", parts: [{ kind: "data", data }], taskId: view.id, messageId: randomUUID() };
+  }
+
+  function approveTask(peerUrl: string, view: TaskView, options: ApprovalOptions = {}): Promise<TaskView> {
+    const request = permissionRequestOf(view);
+    if (request === null) throw new Error("task is not waiting for a permission decision");
+    const issuedAt = new Date();
+    const expiresAt = new Date(issuedAt.getTime() + (options.ttlS ?? GRANT_TTL_S) * 1000);
+    const grant: Grant = {
+      grant_id: randomUUID(),
+      workgroup_id: config.workgroup_id,
+      task_id: view.id,
+      target_orca_node: request.requested_by,
+      tool: request.tool,
+      mode: options.mode ?? "allow_once",
+      chain: request.via,
+      issued_at: issuedAt.toISOString(),
+      expires_at: expiresAt.toISOString(),
+    };
+    const message = resumeMessage(view, { grant: signGrant(key, grant) });
+    return postA2a<TaskView>(peerUrl, "message/send", { message });
+  }
+
+  function denyTask(peerUrl: string, view: TaskView, reason = "denied by origin"): Promise<TaskView> {
+    const message = resumeMessage(view, { permission_denied: true, reason });
+    return postA2a<TaskView>(peerUrl, "message/send", { message });
+  }
+
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let heartbeatStopped = false;
 
@@ -396,5 +445,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     sendTask,
     getTask,
     cancelTask,
+    approveTask,
+    denyTask,
   };
 }

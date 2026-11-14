@@ -1,0 +1,330 @@
+import { randomUUID } from "node:crypto";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { buildAuthHeader, deriveWorkgroupKey, signGrant } from "../src/crypto.ts";
+import { createMesh, type Mesh } from "../src/index.ts";
+import type { OrcaNode } from "../src/orca_node.ts";
+import type { PodHandle } from "../src/plugin/lifecycle.ts";
+import { createPodTools } from "../src/plugin/tools.ts";
+import { createTracker } from "../src/plugin/tracker.ts";
+import type { ApprovalOutcome, ToolAgent, ToolDefinition } from "../src/plugin/dsh.ts";
+import { permissionRequestOf } from "../src/protocol.ts";
+import type { A2AMessage, Grant, SignedGrant, TaskState, TaskView } from "../src/protocol.ts";
+
+const WORKGROUP = "orca-approval";
+const PASSWORD = "approval-secret";
+
+let mesh: Mesh | null = null;
+
+afterEach(async () => {
+  await mesh?.stop();
+  mesh = null;
+});
+
+type ApprovalMesh = {
+  origin: OrcaNode;
+  target: OrcaNode;
+  outsider: OrcaNode;
+  targetUrl: string;
+  key: Buffer;
+};
+
+async function threeNodes(): Promise<ApprovalMesh> {
+  mesh = await createMesh({ orcaNodes: 3, workgroupId: WORKGROUP, password: PASSWORD });
+  const [origin, target, outsider] = mesh.orcaNodes;
+  if (!origin || !target || !outsider) throw new Error("mesh did not create three orca nodes");
+  return { origin, target, outsider, targetUrl: target.endpoint, key: deriveWorkgroupKey(WORKGROUP, PASSWORD) };
+}
+
+const permissionEcho = {
+  steps: [
+    {
+      at_ms: 10,
+      suspend: { kind: "permission", tool: "write_file", requested: { path: "note.txt", bytes: 12 } },
+    },
+  ],
+  final: { state: "completed", text: "written" },
+};
+
+async function submit(origin: OrcaNode, targetUrl: string): Promise<TaskView> {
+  return origin.sendTask(targetUrl, {
+    message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
+    metadata: { echo: permissionEcho },
+  });
+}
+
+async function waitForState(
+  origin: OrcaNode,
+  targetUrl: string,
+  taskId: string,
+  state: TaskState,
+  timeoutMs = 3000,
+): Promise<TaskView> {
+  const deadline = Date.now() + timeoutMs;
+  let last: TaskView | null = null;
+  while (Date.now() < deadline) {
+    last = await origin.getTask(targetUrl, taskId);
+    if (last.status.state === state) return last;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`task ${taskId} did not reach ${state}; last=${last?.status.state}`);
+}
+
+function textOf(view: TaskView): string | null {
+  const part = view.status.message?.parts.find((item) => item.kind === "text");
+  return part && part.kind === "text" ? part.text : null;
+}
+
+/** Signed JSON-RPC with an explicit caller identity, bypassing the client API. */
+async function signedResume(
+  targetUrl: string,
+  callerId: string,
+  key: Buffer,
+  message: A2AMessage,
+): Promise<{ status: number; code: string | null; view: TaskView | null }> {
+  const url = new URL("/a2a", targetUrl);
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: randomUUID(),
+    method: "message/send",
+    params: { message },
+  });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: buildAuthHeader({
+        key,
+        orcaNodeId: callerId,
+        method: "POST",
+        path: url.pathname,
+        body,
+      }),
+    },
+    body,
+  });
+  const payload = (await response.json()) as {
+    result?: TaskView;
+    error?: { message?: string };
+  };
+  return { status: response.status, code: payload.error?.message ?? null, view: payload.result ?? null };
+}
+
+function resumeMessage(taskId: string, data: Record<string, unknown>): A2AMessage {
+  return { role: "user", parts: [{ kind: "data", data }], taskId, messageId: randomUUID() };
+}
+
+function grantFor(view: TaskView, tool = "write_file"): Grant {
+  const request = permissionRequestOf(view);
+  if (request === null) throw new Error("view has no permission request");
+  const issuedAt = new Date();
+  return {
+    grant_id: randomUUID(),
+    workgroup_id: WORKGROUP,
+    task_id: view.id,
+    target_orca_node: request.requested_by,
+    tool,
+    mode: "allow_once",
+    chain: request.via,
+    issued_at: issuedAt.toISOString(),
+    expires_at: new Date(issuedAt.getTime() + 60_000).toISOString(),
+  };
+}
+
+describe("pod_approve tool", () => {
+  function fakeAgent(): ToolAgent {
+    return { id: "session-test", status: "running", inject: () => {}, followup: () => {} };
+  }
+
+  function approveTool(
+    origin: OrcaNode,
+    approval?: { request: (request: unknown) => Promise<ApprovalOutcome> },
+  ): ToolDefinition {
+    const handle: PodHandle = {
+      ready: Promise.resolve(),
+      runtime: { orcaNode: origin, url: origin.endpoint, port: null, started_at: null, error: null },
+    };
+    const tracker = createTracker(() => null, { intervalMs: 60_000 });
+    const tools = createPodTools(handle, tracker, approval === undefined ? {} : { approval: approval as never });
+    const found = tools.find((candidate) => candidate.name === "pod_approve");
+    if (found === undefined) throw new Error("missing pod_approve");
+    return found;
+  }
+
+  it("asks the host approval card and approves the remote task", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    const seen: unknown[] = [];
+    const approve = approveTool(origin, {
+      request: async (request) => {
+        seen.push(request);
+        return "allowed-once";
+      },
+    });
+    const submitted = await submit(origin, targetUrl);
+    await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    const result = (await approve.execute(
+      { peer: targetUrl, task_id: submitted.id, decision: "allow" },
+      { agent: fakeAgent() },
+    )) as Record<string, unknown>;
+
+    expect(result["decision"]).toBe("approved");
+    expect(result["approval"]).toBe("allowed-once");
+    expect(seen).toHaveLength(1);
+    const shown = seen[0] as { reason?: string };
+    expect(shown.reason).toContain("write_file");
+
+    const done = await waitForState(origin, targetUrl, submitted.id, "completed");
+    expect(textOf(done)).toBe("written");
+  });
+
+  it("denies the task when the human rejects the card", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    const approve = approveTool(origin, { request: async () => "rejected" });
+    const submitted = await submit(origin, targetUrl);
+    await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    const result = (await approve.execute(
+      { peer: targetUrl, task_id: submitted.id, decision: "allow" },
+      { agent: fakeAgent() },
+    )) as Record<string, unknown>;
+    expect(result["decision"]).toBe("denied");
+
+    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
+    expect(failed.status.reason).toBe("permission_denied");
+    expect(textOf(failed)).toContain("approval rejected");
+  });
+
+  it("denies without asking the human when decision is deny", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    let asked = false;
+    const approve = approveTool(origin, {
+      request: async () => {
+        asked = true;
+        return "allowed-once";
+      },
+    });
+    const submitted = await submit(origin, targetUrl);
+    await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    await approve.execute(
+      { peer: targetUrl, task_id: submitted.id, decision: "deny", reason: "not this time" },
+      { agent: fakeAgent() },
+    );
+
+    expect(asked).toBe(false);
+    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
+    expect(failed.status.reason).toBe("permission_denied");
+    expect(textOf(failed)).toContain("not this time");
+  });
+
+  it("refuses to approve when the host exposes no approval service", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    const approve = approveTool(origin);
+    const submitted = await submit(origin, targetUrl);
+    await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    await expect(
+      approve.execute({ peer: targetUrl, task_id: submitted.id, decision: "allow" }, { agent: fakeAgent() }),
+    ).rejects.toThrow(/human approval is unavailable/);
+  });
+});
+
+describe("Phase 3 approval round trip", () => {
+  it("surfaces a permission request and completes after the origin approves", async () => {
+    const { origin, targetUrl, key } = await threeNodes();
+    const submitted = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    const request = permissionRequestOf(suspended);
+    expect(request).not.toBeNull();
+    expect(request?.task_id).toBe(submitted.id);
+    expect(request?.tool).toBe("write_file");
+    expect(request?.requested).toEqual({ path: "note.txt", bytes: 12 });
+    expect(request?.expires_at).toBeTruthy();
+
+    const resumed = await origin.approveTask(targetUrl, suspended);
+    expect(resumed.status.state).not.toBe("failed");
+
+    const done = await waitForState(origin, targetUrl, submitted.id, "completed");
+    expect(textOf(done)).toBe("written");
+    expect(permissionRequestOf(done)).toBeNull();
+    // The grant was signed with the workgroup key, same as any other request.
+    expect(key).toHaveLength(32);
+  });
+
+  it("fails the task when the origin denies", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    const submitted = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    await origin.denyTask(targetUrl, suspended, "not allowed on this machine");
+
+    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
+    expect(failed.status.reason).toBe("permission_denied");
+    expect(textOf(failed)).toContain("permission denied");
+    expect(textOf(failed)).toContain("not allowed on this machine");
+  });
+
+  it("rejects a tampered grant", async () => {
+    const { origin, targetUrl, key } = await threeNodes();
+    const submitted = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    const signed = signGrant(key, grantFor(suspended));
+    const tampered: SignedGrant = { ...signed, tool: "delete_everything" };
+    const response = await signedResume(targetUrl, origin.orcaNodeId, key, resumeMessage(submitted.id, { grant: tampered }));
+    expect(response.status).toBe(200);
+
+    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
+    expect(failed.status.reason).toBe("grant_invalid");
+  });
+
+  it("rejects an expired grant", async () => {
+    const { origin, targetUrl } = await threeNodes();
+    const submitted = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    await origin.approveTask(targetUrl, suspended, { ttlS: -1 });
+
+    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
+    expect(failed.status.reason).toBe("grant_expired");
+  });
+
+  it("refuses a resume from a non-origin member", async () => {
+    const { origin, outsider, targetUrl, key } = await threeNodes();
+    const submitted = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    const grant = signGrant(key, grantFor(suspended));
+    const response = await signedResume(
+      targetUrl,
+      outsider.orcaNodeId,
+      key,
+      resumeMessage(submitted.id, { grant }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(response.code).toBe("not_task_origin");
+    // The task is untouched and still waiting for the origin.
+    const still = await origin.getTask(targetUrl, submitted.id);
+    expect(still.status.state).toBe("input-required");
+  });
+
+  it("refuses a plain resume while a permission decision is pending", async () => {
+    const { origin, targetUrl, key } = await threeNodes();
+    const submitted = await submit(origin, targetUrl);
+    await waitForState(origin, targetUrl, submitted.id, "input-required");
+
+    const response = await signedResume(
+      targetUrl,
+      origin.orcaNodeId,
+      key,
+      resumeMessage(submitted.id, { hello: "no grant here" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.code).toBe("bad_request");
+  });
+});

@@ -81,6 +81,22 @@ export interface ToolRegistry {
   register(definition: ToolDefinition, options?: Record<string, unknown>): unknown
 }
 
+/** Closed set of decisions the DSH approval service returns. */
+export type ApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable"
+
+/** One pending human decision; `agent` is the live agent whose turn asks. */
+export interface ApprovalRequest {
+  agent: { readonly id: string }
+  toolName: string
+  reason?: string
+  signal?: AbortSignal
+}
+
+/** DSH approval service: asks the human through the host's approval card. */
+export interface ApprovalService {
+  request(req: ApprovalRequest): Promise<ApprovalOutcome>
+}
+
 /** Cordis plugin context subset available to a host-side bundle. */
 export interface HostContext {
   /** Hard dependency declared through `inject = ['tools']`. */
@@ -89,6 +105,8 @@ export interface HostContext {
   effect(execute: () => Cleanup, label?: string): unknown
   /** Logger service; DSH always provides it, the fallback exists for smoke hosts. */
   logger?: HostLogger
+  /** Approval service; present when the host exposes human approvals. */
+  approval?: ApprovalService
 }
 
 /** One Standard Schema validation issue. */

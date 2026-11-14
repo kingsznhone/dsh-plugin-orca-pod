@@ -77,11 +77,12 @@ describe("pod tools", () => {
   const tracker = createTracker(() => null, { intervalMs: 60_000 })
   const tools = createPodTools(handle, tracker)
 
-  it("registers the four pod tools", () => {
+  it("registers the five pod tools", () => {
     expect(tools.map((candidate) => candidate.name)).toEqual([
       "pod_send",
       "pod_status",
       "pod_cancel",
+      "pod_approve",
       "pod_members",
     ])
   })

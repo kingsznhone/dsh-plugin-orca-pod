@@ -47,7 +47,7 @@
 **Phase 2 进展**
 
 - 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用），并在 Windows 本机用真实 `dsh` + 模型凭据跑通（`scripts/e2e-headless.ts`：两任务 `completed`，第二个复用 session）。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh），全套 119 通过。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh），全套 131 通过。
 - 未实现：`AcpExecutor`、`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
@@ -60,7 +60,7 @@
 - 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - 验收：越界写被拒；权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
 
-**Phase 3 进展（提前落地）**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 6 条，[§5.2](05-tasks.md#52-任务回报)）；grant、审批卡片与 `input-required` 升级回路仍未开始。
+**Phase 3 进展**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 8 条，[§5.2](05-tasks.md#52-任务回报)）。审批回路第一版已实现：grant 用 workgroup key 做 HMAC 签发/校验（§7.11）、`permission_request` 写进 task 状态、只有 origin 能 resume（其他成员 403）、插件 `pod_approve` 在 open turn 内调 DSH approval 卡片、tracker 对权限请求强制唤醒；`test/approval.test.ts` 10 条覆盖批准/拒绝/篡改/过期/非 origin/无 grant 六种情形。链式逐跳上升与收窄、预授权策略、`credential_readback`、配额与 Windows 路径矩阵仍未开始。
 
 ### 10.5 Phase 4：安全与规模化
 
@@ -112,7 +112,7 @@
 
 - [ ] origin 只读会话 → target 写文件被 escalate/deny
 - [ ] origin workspace-write → target 只能在 group workspace 内写
-- [ ] 升级请求只在 origin 弹审批卡片，target 无本地弹窗
+- [x] 升级请求只在 origin 弹审批卡片，target 无本地弹窗（`pod_approve` 在 origin 的 open turn 内调 `approval.request`；target 侧无审批 UI）
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
 - [ ] `credential_readback=ask` 时私钥内容回传需 origin 批准
 - [ ] 绝对路径与 `..` 被拒（协议层根本不接受路径）
@@ -138,7 +138,7 @@
 - [x] agent 工具列表里没有任何阻塞等待工具（没有 `pod_wait`），`pod_send`/`pod_status` 都在毫秒级返回
 - [ ] target 忙时 `pod_send` 拿到 `429 orca_node_busy` + 持有者，agent 把“B 忙、约 N 秒”回报用户并结束本轮（或先做别的），不自动重试
 - [x] 普通完成按 `pod.notify` 投递：running → `agent.inject()`（不打断），idle → `agent.followup()`（开新一轮）
-- [ ] `permission_request` 走 `agent.followup()`：新一轮开始并弹出审批卡片
+- [x] `permission_request` 走 `agent.followup()`：tracker 强制唤醒（不受预算限制），模型调用 `pod_approve` 后弹出审批卡片
 - [ ] 全程没有 `sleep`/长轮询的 bash 命令；agent 工具列表里没有 `orca-node wait`
 - [ ] `notify: auto`：派发后 `turn/end`、任务才完成 → 只唤醒一次，新一轮读到结果并继续
 - [x] 同一轮内完成的任务不触发唤醒（agent 仍在 running，只 `inject`）

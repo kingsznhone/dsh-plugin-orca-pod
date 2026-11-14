@@ -224,6 +224,59 @@ export type PodTaskMetadata = {
   grant_id?: string;
 };
 
+/**
+ * A suspended task's ask for one tool outside the origin's grant (§7.11,
+ * §7.12). It lives in `status.message`, so the origin discovers it by reading
+ * task state; nothing is pushed to it.
+ */
+export type PermissionRequest = {
+  request_id: string;
+  task_id: string;
+  tool: string;
+  requested: Record<string, unknown>;
+  /** Orca node that needs the permission (the one running the task). */
+  requested_by: string;
+  /** Chain from this orca node up to the origin that can decide. */
+  via: string[];
+  expires_at: string;
+};
+
+/**
+ * A human decision travelling from the origin back down to the target (§7.11).
+ * Signed with the workgroup key: the transport is already authenticated, but a
+ * grant is also the durable record of who allowed what for this task.
+ */
+export type GrantMode = "allow_once";
+
+export type Grant = {
+  grant_id: string;
+  workgroup_id: string;
+  task_id: string;
+  target_orca_node: string;
+  tool: string;
+  mode: GrantMode;
+  chain: string[];
+  issued_at: string;
+  expires_at: string;
+};
+
+export type SignedGrant = Grant & { sig: string };
+
+/** Data parts understood by `tasks/resume`; anything else is free-form input. */
+export type ResumeControl =
+  | { grant: SignedGrant }
+  | { permission_denied: true; reason?: string };
+
+/** Read the permission request a suspended task carries, if any (§7.11). */
+export function permissionRequestOf(view: TaskView): PermissionRequest | null {
+  for (const part of view.status.message?.parts ?? []) {
+    if (part.kind !== "data") continue;
+    const request = (part.data as { permission_request?: unknown }).permission_request;
+    if (typeof request === "object" && request !== null) return request as PermissionRequest;
+  }
+  return null;
+}
+
 export type SubmitTaskInput = {
   message: A2AMessage;
   metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
@@ -235,7 +288,7 @@ export type SubmitTaskInput = {
 export interface TaskRunner {
   submit(input: SubmitTaskInput): TaskView;
   get(taskId: string): TaskView | null;
-  resume(taskId: string, message: A2AMessage): TaskView;
+  resume(taskId: string, message: A2AMessage, callerOrcaNode?: OrcaNodeId): TaskView;
   cancel(taskId: string): TaskView;
   /** Currently running task (single-slot, §6.9); null when idle. */
   busy(): BusyState | null;

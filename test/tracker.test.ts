@@ -32,6 +32,37 @@ function taskView(id: string, state: TaskState, text?: string): TaskView {
   }
 }
 
+function permissionView(id: string, requestId: string): TaskView {
+  return {
+    kind: "task",
+    id,
+    contextId: "ctx-1",
+    status: {
+      state: "input-required",
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "agent",
+        parts: [
+          {
+            kind: "data",
+            data: {
+              permission_request: {
+                request_id: requestId,
+                task_id: id,
+                tool: "write_file",
+                requested: { path: "note.txt" },
+                requested_by: "TARGET1",
+                via: ["ORIGIN"],
+                expires_at: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
 function fakeNode(views: Map<string, TaskView>) {
   return {
     async getTask(_peer: string, taskId: string): Promise<TaskView> {
@@ -125,6 +156,43 @@ describe("createTracker", () => {
     tracker.track(agent, "http://peer:11811", "01B")
     await waitFor(() => agent.injected.length === 1)
     expect(agent.followed).toHaveLength(1)
+    tracker.stop()
+  })
+
+  it("forces a wake for a permission request even while the agent is running", async () => {
+    const agent = new FakeAgent()
+    agent.status = "running"
+    const views = new Map([["01TASK", permissionView("01TASK", "req-1")]])
+    const tracker = createTracker(() => fakeNode(views), fast)
+    tracker.track(agent, "http://peer:11811", "01TASK")
+
+    await waitFor(() => agent.followed.length === 1)
+    const notice = agent.followed[0]!.content[0].text
+    expect(notice).toContain("needs permission")
+    expect(notice).toContain("write_file")
+    expect(notice).toContain("pod_approve")
+    // The task stays tracked until it settles.
+    expect(tracker.size()).toBe(1)
+
+    agent.status = "idle"
+    views.set("01TASK", taskView("01TASK", "completed", "written"))
+    await waitFor(() => agent.followed.length === 2)
+    expect(tracker.size()).toBe(0)
+    tracker.stop()
+  })
+
+  it("does not repeat the same permission request", async () => {
+    const agent = new FakeAgent()
+    const views = new Map([["01TASK", permissionView("01TASK", "req-1")]])
+    const tracker = createTracker(() => fakeNode(views), fast)
+    tracker.track(agent, "http://peer:11811", "01TASK")
+
+    await waitFor(() => agent.followed.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(agent.followed).toHaveLength(1)
+
+    views.set("01TASK", permissionView("01TASK", "req-2"))
+    await waitFor(() => agent.followed.length === 2)
     tracker.stop()
   })
 

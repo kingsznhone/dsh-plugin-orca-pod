@@ -6,11 +6,11 @@
  * and callers poll `pod_status` for the result.
  */
 
-import { isHttpEndpoint, isTerminal } from "../protocol.ts"
+import { isHttpEndpoint, isTerminal, permissionRequestOf } from "../protocol.ts"
 import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 
-import type { ContentBlock, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts"
+import type { ApprovalService, ContentBlock, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts"
 import type { PodHandle } from "./lifecycle.ts"
 import type { Tracker } from "./tracker.ts"
 import { describeError } from "./util.ts"
@@ -88,8 +88,13 @@ function peerSummary(peer: PeerView): Record<string, unknown> {
   }
 }
 
-/** Build the four `pod_*` tool definitions bound to one running pod handle. */
-export function createPodTools(handle: PodHandle, tracker: Tracker): ToolDefinition[] {
+/** Host services the approval tool needs; omitted in tests without one. */
+export interface PodToolOptions {
+  approval?: ApprovalService
+}
+
+/** Build the `pod_*` tool definitions bound to one running pod handle. */
+export function createPodTools(handle: PodHandle, tracker: Tracker, options: PodToolOptions = {}): ToolDefinition[] {
   const send: ToolDefinition = {
     name: "pod_send",
     description:
@@ -200,6 +205,72 @@ export function createPodTools(handle: PodHandle, tracker: Tracker): ToolDefinit
     },
   }
 
+  const approve: ToolDefinition = {
+    name: "pod_approve",
+    description:
+      "Answer a remote Orca task's permission request. " +
+      "Call this after a notice says a task needs permission. decision \"allow\" asks the human through the DSH approval card and sends the signed grant; decision \"deny\" fails the remote task with permission_denied. " +
+      "Only the task's origin can answer; other members can still read the task.",
+    parameters: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Peer endpoint URL, e.g. http://127.0.0.1:11811 (bare host:port is accepted).",
+        },
+        task_id: { type: "string", description: "Task id whose permission request is pending." },
+        decision: {
+          type: "string",
+          enum: ["allow", "deny"],
+          description: "allow asks the human and grants once; deny fails the remote task.",
+        },
+        reason: { type: "string", description: "Optional reason recorded on the remote task when denied." },
+      },
+      required: ["peer", "task_id", "decision"],
+      additionalProperties: false,
+    },
+    output: { schema: OUTPUT_SCHEMA, render: renderJson },
+    async execute(args, exec: ToolExecution | undefined) {
+      const record = asRecord(args)
+      const peer = normalizePeer(record["peer"])
+      const taskId = requiredString(record, "task_id")
+      const decision = requiredString(record, "decision")
+      if (decision !== "allow" && decision !== "deny") {
+        throw new Error('decision must be "allow" or "deny"')
+      }
+      const reason = typeof record["reason"] === "string" ? record["reason"] : undefined
+      const orcaNode = await requireNode(handle)
+      try {
+        const view = await orcaNode.getTask(peer, taskId)
+        const request = permissionRequestOf(view)
+        if (request === null) {
+          throw new Error(`task ${taskId} on ${peer} is not waiting for a permission decision`)
+        }
+        if (decision === "deny") {
+          const task = await orcaNode.denyTask(peer, view, reason ?? "denied by origin")
+          return { decision: "denied", task_id: task.id, state: task.status.state, reason: task.status.reason }
+        }
+        const approval = options.approval
+        if (approval === undefined || exec?.agent === undefined) {
+          throw new Error("human approval is unavailable in this session; use decision deny instead")
+        }
+        const outcome = await approval.request({
+          agent: exec.agent,
+          toolName: "pod_approve",
+          reason: `Remote task ${taskId} on ${peer} wants to run "${request.tool}": ${JSON.stringify(request.requested)}`,
+        })
+        if (outcome !== "allowed-once") {
+          const task = await orcaNode.denyTask(peer, view, `approval ${outcome}`)
+          return { decision: "denied", approval: outcome, task_id: task.id, state: task.status.state }
+        }
+        const task = await orcaNode.approveTask(peer, view)
+        return { decision: "approved", approval: outcome, task_id: task.id, state: task.status.state }
+      } catch (error) {
+        throw describeError("pod_approve", error)
+      }
+    },
+  }
+
   const members: ToolDefinition = {
     name: "pod_members",
     description:
@@ -221,5 +292,5 @@ export function createPodTools(handle: PodHandle, tracker: Tracker): ToolDefinit
     },
   }
 
-  return [send, status, cancel, members]
+  return [send, status, cancel, approve, members]
 }
