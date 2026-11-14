@@ -1,6 +1,6 @@
 # 06 执行与工作区
 
-> 本章描述任务在目标节点上如何执行：执行器接口、Echo 脚本、ACP 的位置、单槽调度，以及工作区的目录约定。
+> 本章描述任务在目标 orca node 上如何执行：执行器接口、Echo 脚本、ACP 的位置、单槽调度，以及工作区的目录约定。
 
 ## 6. 执行与工作区
 
@@ -24,7 +24,7 @@ interface LocalExecutor {
 
   subscribe?(taskId: string, onEvent: (e: TaskEvent) => void): () => void;
 
-  // 权限回调：目标节点策略层的唯一入口（§7.14）
+  // 权限回调：目标 orca node 策略层的唯一入口（§7.14）
   onPermissionRequest?(
     taskId: string,
     req: PermissionRequest
@@ -47,7 +47,7 @@ interface LocalExecutor {
 
 推荐顺序：Echo → Headless → ACP。不要一开始就耦合 ACP。
 
-**谁选执行器**：由**被调用节点自己的配置**决定（将来 `node.executor: "echo" | "headless" | "acp"`），origin 不参与，也不能在任务里指定。executor 是本机实现细节，A2A 线协议完全相同；任务 manifest 里回报的 `executor` 字段只是“这台机器实际用了哪个”的观测事实，不是调用方可以要求的东西。要区分“能不能干这个活”，看 Agent Card / runtime 能力，而不是看执行器类型。
+**谁选执行器**：由**被调用 orca node 自己的配置**决定（将来 `node.executor: "echo" | "headless" | "acp"`），origin 不参与，也不能在任务里指定。executor 是本机实现细节，A2A 线协议完全相同；任务 manifest 里回报的 `executor` 字段只是“这台机器实际用了哪个”的观测事实，不是调用方可以要求的东西。要区分“能不能干这个活”，看 Agent Card / runtime 能力，而不是看执行器类型。
 
 ### 6.3 EchoExecutor：用脚本模拟任务
 
@@ -68,7 +68,7 @@ Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗
 }
 ```
 
-**Phase 0 实现**：`EchoExecutor` 已按本节实现；它从 `params.metadata.echo` 取脚本，在建立 task 之前校验，执行结果通过 `AsyncGenerator<ExecutorEvent>` 交给 TaskRunner；artifact 写入 `BlobStore`（节点用 fs 实现，单测用内存实现）。
+**Phase 0 实现**：`EchoExecutor` 已按本节实现；它从 `params.metadata.echo` 取脚本，在建立 task 之前校验，执行结果通过 `AsyncGenerator<ExecutorEvent>` 交给 TaskRunner；artifact 写入 `BlobStore`（orca node 用 fs 实现，单测用内存实现）。
 
 规则（与实现一致）：
 
@@ -77,7 +77,7 @@ Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗
 - `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB（按 UTF-8 字节），**原样返回**，不做模板替换，便于逐字节断言。
 - `final.text` 缺省为空串；`echo` 缺省（或 `null`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
 - `artifacts` ≤ 4 个、每个 `content` ≤ 4 KiB（UTF-8）；`name` 必须是非空纯文件名（不得含 `/`、`\`），只作提示。executor 真的写 blob 存储，返回的 `artifactId` = `sha256(content)` 的 hex（即 `blob_id`）；当前 `media_type` 固定为 `text/plain`。**artifact 事件先于终态事件产出**，因此 `completed`/`failed`/`hang` 都可能带 artifact。
-- 非法脚本（未知字段、`at_ms` 不递增/越界、`suspend` 类型或必填字段错误、`final.state` 非法、`text`/`content` 超限、artifact 超过 4 个、文件名含路径分隔符）在**建 task 之前**返回 `400 bad_echo_script`，不会执行到一半才炸；节点忙时先回 `429 node_busy`，脚本校验在忙检查之后、建 task 之前。
+- 非法脚本（未知字段、`at_ms` 不递增/越界、`suspend` 类型或必填字段错误、`final.state` 非法、`text`/`content` 超限、artifact 超过 4 个、文件名含路径分隔符）在**建 task 之前**返回 `400 bad_echo_script`，不会执行到一半才炸；orca node 忙时先回 `429 node_busy`，脚本校验在忙检查之后、建 task 之前。
 - 真 executor 收到 `echo` 字段直接忽略（当前尚无真 executor），避免脚本泄漏到生产路径。
 
 ### 6.4 ACP 的位置
@@ -85,13 +85,13 @@ Phase 0/1 的联调不需要真实 agent：用一个**声明式脚本**把“耗
 ```text
 Pod gateway (local)
   → AcpExecutor
-    → spawn dsh --profile orca（cwd = 本节点工作区）
+    → spawn dsh --profile orca（cwd = 本 orca node 工作区）
       → stdio JSON-RPC
 ```
 
 禁止：把 ACP 端口暴露给 peer；让 peer 直接发 ACP 请求；把 ACP sessionId 当 A2A taskId；原样转发 thought。
 
-建议为集群任务使用**专属 profile**（如 `orca`），与用户日常 GUI profile 隔离；ACP 子进程的 `cwd` 必须是本节点工作区，不允许是用户家目录或 DSH profile 目录。
+建议为集群任务使用**专属 profile**（如 `orca`），与用户日常 GUI profile 隔离；ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
 
 **默认不启用 pod 远程工具**；多跳与扇出是可选能力，配置 `delegation` 打开后才生效。理由不是“安全”，而是“一个会自己跑起来的集群很难调试”：默认行为应当是可预测的单跳。打开后网关会强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），并按 `max_hop` / `max_fanout` 拒绝超限；agent 不能自己填这些字段。
 
@@ -99,8 +99,8 @@ Pod gateway (local)
 
 | A2A | ACP | 说明 |
 |---|---|---|
-| `context_id` | session | 首次 `session/new`，cwd = 本节点工作区 |
-| 一个 task | 一次 `session/prompt` | 同 context 串行；不同 context 也串行（节点单槽，[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)） |
+| `context_id` | session | 首次 `session/new`，cwd = 本 orca node 工作区 |
+| 一个 task | 一次 `session/prompt` | 同 context 串行；不同 context 也串行（orca node 单槽，[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)） |
 | `session/update` | task status/artifact 事件 | 过滤 thought |
 | prompt 返回 | 终态 | 按 `stopReason` 映射 |
 | `tasks/cancel` | `session/cancel` | 超时后杀进程树 |
@@ -112,8 +112,8 @@ Pod gateway (local)
 | 概念 | 是什么 | 归谁管 | 本文叫法 |
 |---|---|---|---|
 | 命名空间 | 一组互信设备的 scope + 凭证 | 用户/配置 | `workgroup_id` |
-| 执行目录 | agent 在目标机上读写的地方 | 目标节点 | `workspace` |
-| 会话状态 | DSH session / ACP session | 目标节点 | `session` |
+| 执行目录 | agent 在目标机上读写的地方 | 目标 orca node | `workspace` |
+| 会话状态 | DSH session / ACP session | 目标 orca node | `session` |
 
 协议层只允许出现 `workgroup_id`、`workspace.kind`（只有 `"group"`）、`context_id`，**永不出现路径**：绝对路径是跨机器最不可移植、最不可审计的接口。
 
@@ -129,12 +129,12 @@ Pod gateway (local)
        └─ tasks/<task_id>/
 ```
 
-- 加入 workgroup 时创建一次，之后所有任务共用；跨任务、跨 session 持久，任务结束不删，节点重启不删。
+- 加入 workgroup 时创建一次，之后所有任务共用；跨任务、跨 session 持久，任务结束不删，orca node 重启不删。
 - **为什么持久**：长程任务靠上下文。今天改一个模块、明天接着改，每次都给新目录的话 agent 既看不到昨天的改动，也读不到昨天的结论。
-- **多 origin 共享同一份工作区**：允许，但串行（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)）。A 和 C 的交接靠 `notes/`，而不是互相看不见。
+- **多 origin 共享同一份工作区**：允许，但串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。A 和 C 的交接靠 `notes/`，而不是互相看不见。
 - origin 不能指定目录、不能传路径（[§6.12](06-execution.md#612-明确不做)）。
 
-**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；节点 `start()` 时 `ensure()` 一次建齐 `work/notes/inputs/.pod/tasks`，任务执行时把 `work/` 作为 `ExecuteInput.workspaceDir` 交给 executor（`pwd` 的落点）。`inputs/`、`.pod/index.json` 的写入流程尚未接（按 [§5.6](05-tasks.md#56-文件交换blob-通道) 由 origin 上传、executor 拉取）。
+**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐 `work/notes/inputs/.pod/tasks`，任务执行时把 `work/` 作为 `ExecuteInput.workspaceDir` 交给 executor（`pwd` 的落点）。`inputs/`、`.pod/index.json` 的写入流程尚未接（按 [§5.6](05-tasks.md#56-文件交换blob-通道) 由 origin 上传、executor 拉取）。
 
 ### 6.8 目录边界
 
@@ -143,13 +143,13 @@ Pod gateway (local)
 - Windows 长路径：启用 `\\?\` 前缀或 `LongPathsEnabled`；超过 260 字符在创建时即报错，不静默截断。
 - 不跟随 junction/symlink 出工作区；符号链接指向外部时，访问被拒并记审计。
 
-### 6.9 单槽执行：一个节点同一时间只做一件事
+### 6.9 单槽执行：一个 orca node 同一时间只做一件事
 
 - 网关维护一个槽位：`busy = null | { task_id, origin_node, since }`。
 - 槽位被占时，新的 `message/send` 直接回 `429 node_busy`，**不排队、服务端不自动重试**。
 - **决策交给调用方的模型**，网关只报事实：
   1. 重试一次（响应会带 `retry_after_s`，读类任务通常够用）；
-  2. 换另一个能跑这个任务的节点；
+  2. 换另一个能跑这个任务的 orca node；
   3. 直接向用户回报“X 正忙，已跑 N 分钟”——尤其当**整个 mesh 只有这一台能执行该任务**时，这就是正确结局：把决策交还给人。
 
 ```json
@@ -159,24 +159,24 @@ Pod gateway (local)
   "holder": { "task_id": "t_01JABD", "origin_node": "N7K3QM", "since": "2026-11-14T05:10:00Z" } }
 ```
 
-**Phase 0 实现**：忙时返回 HTTP 429 + `Retry-After: 30`，JSON-RPC `error.code=-32000`、`error.message="node_busy"`，`error.data={code:"node_busy",retry_after_s:30,holder:{...}}`。`busy` 状态由 TaskRunner 内部维护；self record 与心跳里的 `busy` 仍固定为 `null`，UI 暂时看不到持有者（[§2.5](02-model.md#25-节点自述记录selfrecord)）。
+**Phase 0 实现**：忙时返回 HTTP 429 + `Retry-After: 30`，JSON-RPC `error.code=-32000`、`error.message="node_busy"`，`error.data={code:"node_busy",retry_after_s:30,holder:{...}}`。`busy` 状态由 TaskRunner 内部维护；self record 与心跳里的 `busy` 仍固定为 `null`，UI 暂时看不到持有者（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
 
 - 忙时拒绝发生在**建 task 之前**：不产生 task、不消耗幂等键；模型重试就是一次新的 `message/send`。
-- `busy` 写进 self record（[§2.5](02-model.md#25-节点自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证（Phase 0 未实现，见上）。
-- **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一节点上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
-- 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。节点进程崩溃或重启时，SQLite 里所有非终态 task 在下次启动时标成 `failed(node_restart)`（[§6.10](06-execution.md#610-session-context-workspace-的绑定)、[§8.3](08-reliability.md#83-目标重启)），不自动续跑。
+- `busy` 写进 self record（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)），随心跳刷新；origin 的 UI 显示“B 正在跑 X，已 3 分钟”，和模型的判断互相印证（Phase 0 未实现，见上）。
+- **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一 orca node 上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
+- 槽位在任务终态/取消/失败时释放；`input-required` 也释放（任务在等 A 回话时不占槽，[§4.8](04-transport.md#48-任务状态机)），恢复时重新竞争，不预留。orca node 进程崩溃或重启时，SQLite 里所有非终态 task 在下次启动时标成 `failed(node_restart)`（[§6.10](06-execution.md#610-session-context-workspace-的绑定)、[§8.3](08-reliability.md#83-目标重启)），不自动续跑。
 
 ### 6.10 session / context / workspace 的绑定
 
 ```text
 (workgroup_id, origin_node, context_id) → session_id
-session_id → workspace（本节点唯一的那份）
+session_id → workspace（本 orca node 唯一的那份）
 ```
 
 - 同一个 context 的后续任务复用同一 session（同 cwd、同对话历史）。
 - 不同 context 各自新 session，但**共用同一份工作区**，所以文件上下文不断。
 - 网关重启 / session 丢失：**不猜旧 session**，直接开新 session、cwd 不变；第一条 prompt 里带一句“先读 `notes/STATUS.md`”。会话可丢，工作区不丢。
-- 目标节点重启后：task 状态保留在 SQLite 里，`tasks/get` 仍可查；`submitted/working/input-required` 一律按 [§8.3](08-reliability.md#83-目标重启) 标 `failed(node_restart)`，`working` 带 `effects_unknown=true`，不尝试 resume。工作区目录不删，cwd 不变。
+- 目标 orca node 重启后：task 状态保留在 SQLite 里，`tasks/get` 仍可查；`submitted/working/input-required` 一律按 [§8.3](08-reliability.md#83-目标重启) 标 `failed(node_restart)`，`working` 带 `effects_unknown=true`，不尝试 resume。工作区目录不删，cwd 不变。
 
 ### 6.11 任务结果与产物
 
@@ -217,13 +217,13 @@ session_id → workspace（本节点唯一的那份）
 
 ### 6.12 明确不做
 
-- **不做发布式目录**：`label`、`fingerprint`、`containment` 检查全部不实现。origin 只能在目标节点自动分配的工作区里跑。单槽 + 自动分配已经够用；发布真实目录会额外引入隔离、配额、清理三层复杂度。
-- **不做多任务并发 / task-subdir 隔离**：节点单槽（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)）。
+- **不做发布式目录**：`label`、`fingerprint`、`containment` 检查全部不实现。origin 只能在目标 orca node 自动分配的工作区里跑。单槽 + 自动分配已经够用；发布真实目录会额外引入隔离、配额、清理三层复杂度。
+- **不做多任务并发 / task-subdir 隔离**：orca node 单槽（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
 - 不做反向挂载 / SMB / NFS / 9p / 分布式 FS：网络文件系统会把锁、延迟、大小写语义带进 agent 的失败模式；
-- 不做跨节点共享同一个 session（session 是本地的）；
+- 不做跨 orca node 共享同一个 session（session 是本地的）；
 - 不做“origin 直接编辑 target 上的文件”（只能通过任务）；
 - 不做自动 git push/pull（网络与凭据是另一个问题域）；
-- 不把工作区同步到其它节点（每个节点各自一份，靠 notes/artifact 交接）。
+- 不把工作区同步到其它 orca node（每个 orca node 各自一份，靠 notes/artifact 交接）。
 
 ### 6.13 配额、清理、跨平台
 

@@ -1,6 +1,6 @@
 # 04 传输与接口
 
-> 本章描述节点对外暴露的唯一 HTTP 入口：监听形态、路由表、反向代理、A2A 方法面与任务状态机。
+> 本章描述 orca node 对外暴露的唯一 HTTP 入口：监听形态、路由表、反向代理、A2A 方法面与任务状态机。
 
 ## 4. 传输与接口
 
@@ -31,7 +31,7 @@
 
 约定：
 
-- `/health` 返回 `{"status":"ok","version":"0.1.0"}` 这类极小 JSON。不暴露节点 id、成员数、工作区、忙闲、错误栈。
+- `/health` 返回 `{"status":"ok","version":"0.1.0"}` 这类极小 JSON。不暴露 orca node id、成员数、工作区、忙闲、错误栈。
 - **Agent Card 公开可读，但不含敏感信息**：目标字段是名字、端点、skills、协议版本；Phase 0 的卡只有名字、端点、协议版本（见 §4.6）。runtime、忙闲、配额、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
 - 不提供 WebSocket：一条连接一种语义，WS 会变成第二套状态机。需要实时性时：
   - 任务进度 → `/a2a` 的 `message/stream`（SSE，同一 endpoint）；
@@ -45,25 +45,25 @@
 |---|---|
 | SSE | 关闭响应缓冲（Caddy 默认 `flush_interval -1`；nginx `proxy_buffering off`、`X-Accel-Buffering: no`）；读超时 ≥ 心跳间隔 × 3 |
 | 心跳路径 | 不要给 `/cluster/heartbeat` 加缓存；代理层保持 keep-alive 到上游 |
-| 转发头 | 只有来自回环代理的 `X-Forwarded-For/Proto` 才可信；节点默认不读这些头做鉴权 |
+| 转发头 | 只有来自回环代理的 `X-Forwarded-For/Proto` 才可信；orca node 默认不读这些头做鉴权 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权 |
-| 请求大小 | 代理与节点两侧都要限；两侧取更小的 |
-| TLS 端口 | 公网只开 443；节点端口只对代理或私网开放 |
+| 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的 |
+| TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放 |
 
 ### 4.4 公网暴露清单
 
-在把节点挂到公网之前，必须逐条确认：
+在把 orca node 挂到公网之前，必须逐条确认：
 
 1. workgroup 密码是生成的强密码（不是 `123456`，不是用户名）；
 2. 监听绑 `127.0.0.1`，公网入口只有代理；
 3. `/health` 不泄漏拓扑、主机名、工作区；
 4. `/cluster/*` 有速率限制与失败计数；
 5. 审计日志已开启；
-6. 已接受“同 workgroup 的任一节点可凭密码向本节点派任务”这一事实（[§7.5](07-security.md#75-远程任务是不可信输入)）。
+6. 已接受“同 workgroup 的任一 orca node 可凭密码向本 orca node 派任务”这一事实（[§7.5](07-security.md#75-远程任务是不可信输入)）。
 
 ### 4.5 A2A 角色
 
-每个节点同时是 A2A server 和 A2A client。“对等”是逻辑对等：双方都能调用对方；不提供持久 socket，每次调用是 HTTP 请求。
+每个 orca node 同时是 A2A server 和 A2A client。“对等”是逻辑对等：双方都能调用对方；不提供持久 socket，每次调用是 HTTP 请求。
 
 ### 4.6 Agent Card
 
@@ -89,7 +89,7 @@
 
 要求：
 
-- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-节点自述记录selfrecord)）。
+- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
 - `skills` 是能力声明，不是实现；执行由 LocalExecutor + 继承的权限模式决定。
 - SDK 与 `protocolVersion` 必须 pin；不匹配 fail closed（半兼容的 SDK 比不兼容更难查），并在日志里写清双方版本。
 
@@ -116,7 +116,7 @@
 
 > A2A 的传输是同步 HTTP，任务语义是异步的。
 
-不要在集群里让 `message/send` 的 HTTP 连接挂到任务结束。跨节点默认“建 task 即返回”，完成靠轮询或 SSE。某些 SDK 的 `blocking` 只用于本机测试。
+不要在集群里让 `message/send` 的 HTTP 连接挂到任务结束。跨 orca node 默认“建 task 即返回”，完成靠轮询或 SSE。某些 SDK 的 `blocking` 只用于本机测试。
 
 > `input-required` 的授权请求是**任务状态**，不是推送消息：origin 停轮询、断 SSE 后恢复，`tasks/get` 仍能拿到同一份 `permission_request`。
 
@@ -132,10 +132,10 @@ submitted ──► working ──► input-required ──► working
 
 - `submitted`：已接收，未开始。
 - `working`：LocalExecutor 正在执行。
-- `input-required`：需要发起节点补输入或**补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷在 task 的 `status.message` 里，不依赖推送。载荷有两种：`permission_request`（补授权）和 `blocked`（要决策：`{reason, question, options?}`）。
+- `input-required`：需要发起 orca node 补输入或**补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷在 task 的 `status.message` 里，不依赖推送。载荷有两种：`permission_request`（补授权）和 `blocked`（要决策：`{reason, question, options?}`）。
 - `input-required` **不占用执行槽**：网关把槽释放；A 的后续 message 到达时重新竞争槽位，不预留、不排队。槽被别人占了就回 `429 node_busy`，由 A 决定重试还是放弃。
 - 恢复执行时优先 `session/resume(context_id)` 续上原 session；session 已随进程退出而丢失时新开一个，并在 task 上记 `resume=degraded`（[§5.7](05-tasks.md#57-任务接续c-接着在-b-上干)）。
-- 远程 agent 卡住时**不允许反向调用**祖先节点（[§5.1](05-tasks.md#51-任务标识与元数据)），只能把问题写进 `blocked` 并结束本轮；这既是防环，也是“异步任务”的正确表达。
+- 远程 agent 卡住时**不允许反向调用**祖先 orca node（[§5.1](05-tasks.md#51-任务标识与元数据)），只能把问题写进 `blocked` 并结束本轮；这既是防环，也是“异步任务”的正确表达。
 - `completed` / `failed` / `canceled`：终态。
 - 终态不可逆；重试要产生新的 task（带 `retry_of`），不复活旧 task。
 

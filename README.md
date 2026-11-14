@@ -17,18 +17,18 @@ orca-pod/
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
 ├── scripts/              # 跨进程联调脚本（cross.ts）
 ├── src/
-│   ├── index.ts          # 公共入口：createNode + apply/Config/inject
+│   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── protocol.ts       # id、成员 digest、任务/peer 类型
 │   ├── crypto.ts         # workgroup key、请求签名、nonce cache
-│   ├── config.ts         # 节点配置持久化
+│   ├── config.ts         # orca node 配置持久化
 │   ├── storage.ts        # peer store（+ 重导出 blob store）
 │   ├── blobs.ts          # 内容寻址 blob store
 │   ├── membership.ts     # 成员记录、心跳看门狗、墓碑与修剪
 │   ├── gateway.ts        # HTTP: /health、agent card、/cluster/*、/a2a、/blobs
 │   ├── executor.ts       # LocalExecutor 契约 + EchoExecutor
 │   ├── tasks.ts          # 单槽任务运行器
-│   ├── node.ts           # createNode：装配 gateway、tasks、membership
-│   ├── harness.ts        # 测试用进程内多节点
+│   ├── orca_node.ts      # createOrcaNode：装配 gateway、tasks、membership
+│   ├── harness.ts        # 测试用进程内多 orca node
 │   ├── cli.ts            # `orca-node serve --config <path>`
 │   └── plugin/           # DSH bundle：Config、apply(ctx, config)、tools
 └── test/                 # vitest 套件
@@ -62,7 +62,7 @@ the config afterwards.
 | `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (node identity)             |
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
 
-节点配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。
+orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。
 
 ### 安全注意（原型）
 
@@ -70,7 +70,7 @@ the config afterwards.
 
 ## 工具
 
-四个工具都返回 JSON 文本，且从不阻塞等待远端任务；任务在远端节点异步执行。
+四个工具都返回 JSON 文本，且从不阻塞等待远端任务；任务在远端 orca node 异步执行。
 
 | Tool          | Arguments                | Result                                                         |
 | ------------- | ------------------------ | -------------------------------------------------------------- |
@@ -92,5 +92,5 @@ npm test            # vitest run
 维护注意：
 
 - 包导出 TypeScript 源码（`"exports": "./src/index.ts"`），依赖 Node ≥22 的类型剥离；若 DSH 构建以保留符号链接的方式解析 linked bundle，则需要提供编译后的 JS 入口（原型阶段不做）。
-- `src/` 的依赖方向靠 review 维持：`gateway.ts` 不得 import `executor.ts` 或 `harness.ts`，只有 `node.ts` 负责装配。
+- `src/` 的依赖方向靠 review 维持：`gateway.ts` 不得 import `executor.ts` 或 `harness.ts`，只有 `orca_node.ts` 负责装配。
 - 抖动/超时类测试的窗口按心跳间隔的倍数给，不按绝对毫秒。

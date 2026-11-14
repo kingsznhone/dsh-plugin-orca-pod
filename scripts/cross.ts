@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { buildAuthHeader, bodySha256 } from "../src/crypto.ts";
 import { createNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "../src/config.ts";
-import { createNode, type OrcaNode } from "../src/node.ts";
+import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 
 type Args = Map<string, string>;
 
@@ -58,7 +58,7 @@ async function serve(args: Args): Promise<void> {
     endpoint: args.get("endpoint") ?? null,
   });
   if (!exists) await saveConfig(configFile, config);
-  const node = createNode({ config });
+  const node = createOrcaNode({ config });
   const { url } = await node.start();
   console.log(`serving on ${url} node=${node.nodeId} config=${configFile}`);
   await withNode(node, true);
@@ -76,7 +76,7 @@ async function join(args: Args): Promise<void> {
     port: Number(args.get("port") ?? 0),
     endpoint: args.get("endpoint") ?? null,
   });
-  const node = createNode({ config });
+  const node = createOrcaNode({ config });
   const { url } = await node.start();
   const response = await node.join(peer);
   console.log(`joined ${peer} as ${node.nodeId} on ${url}`);
@@ -96,7 +96,7 @@ async function task(args: Args): Promise<void> {
   const configFile = required(args, "config");
   const peer = required(args, "peer");
   const config = await loadConfig(configFile);
-  const node = createNode({ config });
+  const node = createOrcaNode({ config });
   const echo = args.get("echo")
     ? (JSON.parse(required(args, "echo")) as Record<string, unknown>)
     : { final: { state: "completed", text: args.get("text") ?? "echo from host" } };

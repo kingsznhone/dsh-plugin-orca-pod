@@ -1,6 +1,6 @@
 # 07 安全与权限
 
-> 本章描述信任边界：workgroup 与密码、请求签名、TLS 部署、不可信输入，以及权限如何跟随发起节点。
+> 本章描述信任边界：workgroup 与密码、请求签名、TLS 部署、不可信输入，以及权限如何跟随发起 orca node。
 
 ## 7. 安全与权限
 
@@ -16,7 +16,7 @@
 k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32)
 ```
 
-- 换密码：**改过的节点用新密码重启，重新 join 组成新 group**；没改的节点留在旧 mesh 里，签名对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
+- 换密码：**改过的 orca node 用新密码重启，重新 join 组成新 group**；没改的 orca node 留在旧 mesh 里，签名对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 
 ### 7.2 请求签名（没有 session token）
 
@@ -33,7 +33,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 校验顺序：
 
 1. `ts` 与本地时间差 ≤ 60s（时钟漂移单独报错，别混进 401）；
-2. `nonce` 未在 5 分钟窗口内出现过（每节点 LRU，容量 10k）；
+2. `nonce` 未在 5 分钟窗口内出现过（每 orca node LRU，容量 10k）；
 3. `proof` 常量时间比较；
 4. 通过后按 `node_id` 找/建 peer 记录（首次即登记，见 [§3.2](03-membership.md#32-引导与加入)）。
 
@@ -41,11 +41,11 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 - **无状态**：服务端不存 token，不需要清理、不需要刷新、不需要 TTL；
 - **密码即凭证**：密码泄露 = 全组沦陷；所以密码强度与分发是唯一的安全边界；
-- **不可撤销单个节点**：密码是全组共享的，想踢人只能换密码并重建 group（[§7.3](07-security.md#73-密钥与密码的分发)）。
-- **重放窗口**：60s + nonce 去重；跨节点时钟必须大致同步（NTP）；
+- **不可撤销单个 orca node**：密码是全组共享的，想踢人只能换密码并重建 group（[§7.3](07-security.md#73-密钥与密码的分发)）。
+- **重放窗口**：60s + nonce 去重；跨 orca node 时钟必须大致同步（NTP）；
 - **代理友好**：签名覆盖 method/path/body，代理改写 body 会验签失败（这是特性）。
 - **大 body 的签名**：带 body 的请求加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘后再自校验，不一致即 `400 body_digest_mismatch`。
-- **下载可换短期直链**：任意同组节点调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = HMAC(k, "link|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
+- **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = HMAC(k, "link|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
 
 `/cluster/join` 用同一种签名；区别只是它同时返回目录。`/health` 不签。
 
@@ -66,9 +66,9 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 | 场景 | 方案 | 要点 |
 |---|---|---|
 | 局域网/VPN | 明文 HTTP | 密码是唯一门槛；确保网络本身可信 |
-| 公网单节点 | Caddy `reverse_proxy` + 域名 | 自动证书；节点只听 127.0.0.1 |
-| 公网多节点 | Caddy/nginx 各节点一套 | 证书可集中签发；注意 SSE 缓冲关闭 |
-| 零信任 | Tailscale/WireGuard | 网络层隔离，节点仍要密码 |
+| 公网单 orca node | Caddy `reverse_proxy` + 域名 | 自动证书；orca node 只听 127.0.0.1 |
+| 公网多 orca node | Caddy/nginx 各 orca node 一套 | 证书可集中签发；注意 SSE 缓冲关闭 |
+| 零信任 | Tailscale/WireGuard | 网络层隔离，orca node 仍要密码 |
 
 `trust_proxy`：只有配置了 `127.0.0.1` 才读 `X-Forwarded-For/Proto`，否则一律用 socket 地址。
 
@@ -81,11 +81,11 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 ### 7.6 授权矩阵
 
-不是“同 workgroup 就能跑一切”。每个节点维护：
+不是“同 workgroup 就能跑一切”。每个 orca node 维护：
 
 | 维度 | 默认 | 可配 |
 |---|---|---|
-| 谁能派任务 | 同 workgroup 的任意已加入节点 | 按 node_id 白名单 |
+| 谁能派任务 | 同 workgroup 的任意已加入 orca node | 按 node_id 白名单 |
 | 权限上限 | 继承 origin 会话 mode | 本机可再降一档 |
 | group workspace 可见性 | 同 workgroup | 仅本机 |
 | 任务/产物读取 | 同 workgroup 凭 id | —（无 per-task / per-blob ACL） |
@@ -104,7 +104,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 - 审计文件不放在 group workspace 里；
 - `permission_request` 全文入审计（脱敏后），便于事后回答“它当时要什么”。
 
-### 7.9 权限跟随发起节点
+### 7.9 权限跟随发起 orca node
 
 人只有一双手，也只坐在一块屏幕前。他在 A 上让 agent 去 B 干活，不会跑到 B 的屏幕前点“允许”。所以：
 
@@ -190,9 +190,9 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 - 轮询看到 `input-required` 后，origin 的 UI 立刻弹卡片并把 task 标黄；不要等下一次轮询才提示。
 - 补发的授权是**同一 task 的后续 message**（带 `taskId` + 新 grant），不是第二个任务，也不是独立的 grant 端点。
 - **origin 是唯一能产生“用户同意”的地方**；`decided_by` 必须来自 UI 的人类动作，不能由模型自批。
-- 审批卡片要显示：来源节点（display_name + id）、目标路径、命令/工具原文、请求理由、将提升到什么权限。不要把 target 传来的长文本渲染成 HTML（注入）。
+- 审批卡片要显示：来源 orca node（display_name + id）、目标路径、命令/工具原文、请求理由、将提升到什么权限。不要把 target 传来的长文本渲染成 HTML（注入）。
 - 审批 UI 直接复用 DSH 的 approval 卡片（Host 既有机制），不另做插件面板。
-- 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用节点反复索权。
+- 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用 orca node 反复索权。
 - origin 侧支持**预授权**（避免每次都弹）：按 `(workgroup, target, tool)` 记一条本地策略，如“允许 N7K3QM 在 P2W8XA 上跑 shell，单次 ≤15 分钟”。预授权记录进审计。
 
 ### 7.13 目标侧硬拒绝清单
@@ -225,7 +225,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 ### 7.15 凭据回传与注入防护
 
-远程节点上经常有 key：`~/.ssh/id_ed25519`、`~/.config/gh/hosts.yml`、`.env`。两种需求同时存在——**要能取回**（开发调试），**又不能被一句话骗走**（prompt injection 的典型外泄路径）。所以做成显式策略，而不是硬规则：
+远程 orca node 上经常有 key：`~/.ssh/id_ed25519`、`~/.config/gh/hosts.yml`、`.env`。两种需求同时存在——**要能取回**（开发调试），**又不能被一句话骗走**（prompt injection 的典型外泄路径）。所以做成显式策略，而不是硬规则：
 
 | 配置 `credential_readback` | 行为 |
 |---|---|

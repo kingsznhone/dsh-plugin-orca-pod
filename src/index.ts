@@ -14,7 +14,7 @@ export * from "./gateway.ts";
 export * from "./membership.ts";
 export * from "./executor.ts";
 export * from "./tasks.ts";
-export * from "./node.ts";
+export * from "./orca_node.ts";
 export * from "./harness.ts";
 
 /** DSH host bundle entry points (consumed by `cordis.patch.yml`). */

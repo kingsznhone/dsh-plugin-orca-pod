@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createMesh } from "../src/index.ts";
 import type { MembershipTimings } from "../src/membership.ts";
-import type { OrcaNode } from "../src/node.ts";
+import type { OrcaNode } from "../src/orca_node.ts";
 
 const FAST: Partial<MembershipTimings> = {
   intervalMs: 20,

@@ -8,7 +8,7 @@
 
 import { isHttpEndpoint, isTerminal } from "../protocol.ts"
 import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
-import type { OrcaNode } from "../node.ts"
+import type { OrcaNode } from "../orca_node.ts"
 
 import type { ContentBlock, RawJsonSchema, ToolDefinition } from "./dsh.ts"
 import type { PodHandle } from "./lifecycle.ts"

@@ -3,10 +3,10 @@ import { createServer } from "node:http";
 
 import { describe, expect, it } from "vitest";
 
-import { createMesh, createNode, createNodeConfig, joinRoster } from "../src/index.ts";
+import { createMesh, createOrcaNode, createNodeConfig, joinRoster } from "../src/index.ts";
 import type { NodeConfig } from "../src/config.ts";
 import type { MembershipTimings } from "../src/membership.ts";
-import type { OrcaNode } from "../src/node.ts";
+import type { OrcaNode } from "../src/orca_node.ts";
 import type { TaskView } from "../src/protocol.ts";
 
 const FAST: Partial<MembershipTimings> = {
@@ -32,7 +32,7 @@ function makeNode(workgroupId: string, password: string, options: Partial<Pick<N
     displayName: options.display_name,
     port: 0,
   });
-  return createNode({ config, timings: FAST });
+  return createOrcaNode({ config, timings: FAST });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
@@ -70,7 +70,7 @@ describe("mesh formation", () => {
       const bootstrap = urls[0];
       if (!bootstrap) throw new Error("bootstrap did not start");
 
-      // 五个节点同时 join 同一个 bootstrap：后到者与先到者互相补齐。
+      // 五个 orca node 同时 join 同一个 bootstrap：后到者与先到者互相补齐。
       await Promise.all(nodes.slice(1).map((node) => node.join(bootstrap)));
 
       await waitFor(() =>
@@ -136,7 +136,7 @@ describe("mesh formation", () => {
       expect(failed).toContain(b.nodeId);
       await waitFor(() => c.members().some((peer) => peer.node_id === a.nodeId && peer.state === "online"));
 
-      // 一个死条目不影响新节点加入，也不影响它对存活节点派任务。
+      // 一个死条目不影响新 orca node 加入，也不影响它对存活 orca node 派任务。
       const task = await c.sendTask(aUrl, {
         message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
         metadata: { echo: { final: { state: "completed", text: "ok" } } },

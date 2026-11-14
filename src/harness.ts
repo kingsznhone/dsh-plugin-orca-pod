@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { createNodeConfig } from "./config.ts";
 import type { MembershipTimings } from "./membership.ts";
-import { createNode, joinRoster, type FetchLike, type OrcaNode } from "./node.ts";
+import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "./orca_node.ts";
 
 export type MeshOptions = {
   nodes?: number;
@@ -45,7 +45,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         port: options.basePort ? options.basePort + index : 0,
         displayName: `${options.displayNamePrefix ?? "node"}-${index}`,
       });
-      nodes.push(createNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
+      nodes.push(createOrcaNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
     }
 
     for (const node of nodes) {

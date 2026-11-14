@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { createMesh, createNode, createNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
+import { createMesh, createOrcaNode, createNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
 import type { MembershipTimings } from "../src/membership.ts";
 import type { TaskView } from "../src/protocol.ts";
 
@@ -62,7 +62,7 @@ function makeNode(
     displayName: options.display_name,
     port: 0,
   });
-  return createNode({ config, timings: options.timings ?? JITTER, fetch: options.fetch });
+  return createOrcaNode({ config, timings: options.timings ?? JITTER, fetch: options.fetch });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10000): Promise<void> {

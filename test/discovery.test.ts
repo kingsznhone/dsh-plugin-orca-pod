@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createNodeConfig } from "../src/config.ts";
-import { createNode, type OrcaNode } from "../src/node.ts";
+import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 
 const TIMINGS = {
   intervalMs: 30,
@@ -16,7 +16,7 @@ const TIMINGS = {
 const nodes: OrcaNode[] = [];
 
 function make(displayName: string): OrcaNode {
-  const node = createNode({
+  const node = createOrcaNode({
     config: createNodeConfig({
       workgroupId: "orca-dev",
       password: "secret",
@@ -85,7 +85,7 @@ describe("lazy discovery", () => {
     await d.start();
     await d.join(b.endpoint);
 
-    // 心跳里只带摘要；摘要不一致时对端回目录，节点据此补齐候选并建立心跳边
+    // 心跳里只带摘要；摘要不一致时对端回目录，orca node 据此补齐候选并建立心跳边
     await waitFor(() =>
       [a, b, c, d].every(
         (node) => node.members().length === 3 && node.members().every((member) => member.state === "online"),

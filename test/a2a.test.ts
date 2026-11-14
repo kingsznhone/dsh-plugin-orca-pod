@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createMesh, type Mesh } from "../src/index.ts";
-import type { OrcaNode } from "../src/node.ts";
+import type { OrcaNode } from "../src/orca_node.ts";
 import type { TaskState, TaskView } from "../src/protocol.ts";
 
 let mesh: Mesh | null = null;

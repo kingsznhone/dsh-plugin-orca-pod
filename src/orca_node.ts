@@ -144,7 +144,7 @@ function endpointFrom(config: NodeConfig, port: number): string {
   return `http://${host}:${port}`;
 }
 
-export function createNode(options: CreateNodeOptions): OrcaNode {
+export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const { config } = options;
   const nodeId = config.node_id;
   const key = workgroupKey(config);
@@ -268,7 +268,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
         response = await sendHeartbeat(peerUrl);
       } catch (error) {
         if ((error as { status?: number }).status !== 404) throw error;
-        // 对端已把本节点记录修剪掉：join 一次让它重新认识我，并带回它的目录。
+        // 对端已把本 orca node 的记录修剪掉：join 一次让它重新认识我，并带回它的目录。
         await join(peerUrl);
         response = await sendHeartbeat(peerUrl);
       }

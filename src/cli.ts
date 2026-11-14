@@ -3,7 +3,7 @@ import process from "node:process";
 
 import { loadConfig } from "./config.ts";
 
-import { createNode, createPersistentStorage } from "./index.ts";
+import { createOrcaNode, createPersistentStorage } from "./index.ts";
 
 const USAGE = `orca-node
 
@@ -18,7 +18,7 @@ async function serve(args: string[]): Promise<void> {
   if (!configPath) throw new Error("serve requires --config <path>");
 
   const config = await loadConfig(configPath);
-  const node = createNode({ config, storage: createPersistentStorage(config) });
+  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
   const { url } = await node.start();
   process.stdout.write(`orca-node ${node.nodeId} listening on ${url}\n`);
 

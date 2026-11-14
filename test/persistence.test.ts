@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createNodeConfig } from "../src/config.ts";
-import { createNode, createPersistentStorage } from "../src/node.ts";
-import type { OrcaNode } from "../src/node.ts";
+import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
+import type { OrcaNode } from "../src/orca_node.ts";
 import type { TaskView } from "../src/protocol.ts";
 
 const dirs: string[] = [];
@@ -30,7 +30,7 @@ function nodeFor(dataRoot: string): OrcaNode {
     dataRoot,
     port: 0,
   });
-  const node = createNode({ config, storage: createPersistentStorage(config) });
+  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
   nodes.push(node);
   return node;
 }

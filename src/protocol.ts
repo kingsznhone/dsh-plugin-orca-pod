@@ -79,7 +79,7 @@ export type JoinResponse = {
 export type HeartbeatRequest = {
   node_id: NodeId;
   busy: BusyState | null;
-  /** 本节点当前成员视图的摘要；与对端不一致时对端会回目录（候选端点）。 */
+  /** 本 orca node 当前成员视图的摘要；与对端不一致时对端会回目录（候选端点）。 */
   digest: string | null;
 };
 
