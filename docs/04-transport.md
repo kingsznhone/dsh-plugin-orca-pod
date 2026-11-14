@@ -26,6 +26,7 @@
 | POST | `/cluster/heartbeat` | 心跳 + 摘要；摘要不一致时响应回目录（候选端点）；可带首次 self | workgroup 签名 | 已实现（含周期发送与看门狗） |
 | GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 | 已实现 |
 | POST | `/cluster/leave` | 主动离开（best-effort，不是安全操作） | workgroup 签名 | 已实现 |
+| POST | `/cluster/child-link` | 本机 task 登记子任务，供自动上升轮询（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） | workgroup 签名 + 传输层限制（仅回环、无转发头） | 已实现 |
 
 `/blobs` 默认 fs 内容寻址存储（内存版仅测试用；去重、256 MiB 上限、直链 TTL 300s）；本机文件的登记没有 HTTP 路由，由 `orca-node publish` 直写节点本地库（[§5.6](05-tasks.md#56-文件交换blob-通道)）；配额、GC、`Content-Disposition` 见 §5.6 的未实现部分。
 

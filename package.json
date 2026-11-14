@@ -28,7 +28,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "harness": "node --no-warnings src/harness-run.ts"
   },
   "dependencies": {
     "fastify": "^5.12.8"

@@ -80,3 +80,35 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
     throw error;
   }
 }
+
+export type WaitForOptions = {
+  timeoutMs?: number;
+  intervalMs?: number;
+  /** What is being waited for, used in the timeout error. */
+  label?: string;
+};
+
+/**
+ * Poll `probe` until `done` accepts its value or the timeout elapses (§10.7).
+ *
+ * Real-process smoke tests observe another process's state through files, HTTP,
+ * or CLI output, so there is no promise to await directly. In-process tests can
+ * use the same helper for convergence assertions.
+ */
+export async function waitFor<T>(
+  probe: () => T | Promise<T>,
+  done: (value: T) => boolean,
+  options: WaitForOptions = {},
+): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const intervalMs = options.intervalMs ?? 50;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await probe();
+    if (done(value)) return value;
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${options.label ?? "condition"}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}

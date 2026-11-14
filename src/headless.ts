@@ -121,12 +121,16 @@ export function createHeadlessExecutor(options: HeadlessExecutorConfig = {}): Lo
               windowsHide: true,
               windowsVerbatimArguments: true,
               stdio: ["pipe", "pipe", "pipe"],
+              // §7.12: the CLI inside this task registers its child tasks for
+              // automatic relay without the agent having to pass --local-task.
+              env: { ...process.env, ORCA_POD_PARENT_TASK: input.taskId },
             },
           )
         : spawn(resolved, args, {
             cwd: input.workspaceDir,
             windowsHide: true,
             stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, ORCA_POD_PARENT_TASK: input.taskId },
             ...(process.platform === "win32" ? {} : { detached: true }),
           });
 

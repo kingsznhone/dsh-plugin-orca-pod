@@ -6,6 +6,12 @@ import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { deriveChildGrant } from "./chain.ts";
 import { createFileBlobRegistry, type FileBlobStore } from "./blob-files.ts";
 import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
+import {
+  createMemoryDispatchStore,
+  TERMINAL_TASK_STATES,
+  type DispatchEntry,
+  type DispatchStore,
+} from "./dispatches.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
 import { candidateEndpointAllowed } from "./net.ts";
@@ -30,7 +36,11 @@ import {
   type TaskRelay,
   type TaskView,
 } from "./protocol.ts";
-import { createSqliteFileBlobStore, createSqliteTaskStore } from "./sqlite.ts";
+import {
+  createSqliteDispatchStore,
+  createSqliteFileBlobStore,
+  createSqliteTaskStore,
+} from "./sqlite.ts";
 import {
   createFsBlobStore,
   createMemoryBlobStore,
@@ -53,6 +63,8 @@ type GatewayOrcaNodeInfo = {
   workgroup_id: string;
   endpoint: string | null;
   max_task_ttl_s?: number;
+  /** Local-only capability: register a child task for automatic relay (§7.12). */
+  linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
 };
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
@@ -83,6 +95,8 @@ export type OrcaNodeStorage = {
   workspace?: WorkspaceManager;
   /** Durable file-blob mapping; the CLI writes it, the gateway reads it. */
   fileBlobStore?: FileBlobStore;
+  /** Origin-side dispatch log: what this node handed to peers (§13.4). */
+  dispatchStore?: DispatchStore;
 };
 
 /**
@@ -95,6 +109,7 @@ export function createPersistentStorage(config: OrcaNodeConfig): OrcaNodeStorage
     taskStore: createSqliteTaskStore(join(config.data_root, "tasks.db")),
     blobStore: createFsBlobStore(join(config.data_root, "blobs"), { ttlMs: DEFAULT_BLOB_TTL_MS }),
     fileBlobStore: createSqliteFileBlobStore(join(config.data_root, "tasks.db")),
+    dispatchStore: createSqliteDispatchStore(join(config.data_root, "tasks.db")),
     workspace: createWorkspaceManager({ dataRoot: config.data_root, workgroupId: config.workgroup_id }),
   };
 }
@@ -152,6 +167,14 @@ export interface OrcaNode {
    * on the local node.
    */
   escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView>;
+  /**
+   * Register a task this node's local task delegated to. While the local task runs,
+   * the node polls the child and, when it asks for a permission, parks the local
+   * task automatically — no explicit `escalate` call from the executor (§7.12).
+   */
+  linkChildTask(parentTaskId: string, peerUrl: string, childTaskId: string): void;
+  /** Origin-side dispatch log, oldest first (§13.4). */
+  listDispatches(): DispatchEntry[];
 }
 
 /**
@@ -198,6 +221,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const runtime = options.runtime ?? collectRuntime();
   const blobs = options.storage?.blobStore ?? createMemoryBlobStore();
   const fileBlobs = createFileBlobRegistry(options.storage?.fileBlobStore);
+  /** §13.4: what this node dispatched to peers, so a restart does not lose track. */
+  const dispatches = options.storage?.dispatchStore ?? createMemoryDispatchStore();
   /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
   const maxTaskTtlS = config.task_timeout_s ?? 3600;
   const workspaceManager = options.storage?.workspace ?? null;
@@ -238,6 +263,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     workgroup_id: config.workgroup_id,
     endpoint: actualEndpoint,
     max_task_ttl_s: maxTaskTtlS,
+    linkChildTask,
   };
   const app = createGateway({
     orcaNode: gatewayOrcaNode,
@@ -382,22 +408,46 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return payload.result as T;
   }
 
-  function sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView> {
+  /** Record or refresh one dispatch entry from the latest task view (§13.4). */
+  function rememberDispatch(peerUrl: string, view: TaskView): void {
+    const now = new Date().toISOString();
+    const previous = dispatches.get(view.id);
+    dispatches.save({
+      task_id: view.id,
+      peer: peerUrl,
+      ...(view.contextId !== undefined ? { context_id: view.contextId } : {}),
+      state: view.status.state,
+      ...(view.status.reason !== undefined ? { last_error: view.status.reason } : {}),
+      ...(previous?.parent_local_task_id !== undefined
+        ? { parent_local_task_id: previous.parent_local_task_id }
+        : {}),
+      created_at: previous?.created_at ?? now,
+      updated_at: now,
+    });
+  }
+
+  async function tracked<T extends TaskView>(peerUrl: string, call: Promise<T>): Promise<T> {
+    const view = await call;
+    rememberDispatch(peerUrl, view);
+    return view;
+  }
+
+  async function sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView> {
     const peer = membership.findByEndpoint(peerUrl);
     if (peer && peer.state !== "online") {
       const error = new Error(`peer ${peer.orca_node_id} is ${peer.state}`) as Error & { code: string };
       error.code = "peer_not_online";
       throw error;
     }
-    return postA2a<TaskView>(peerUrl, "message/send", input);
+    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", input));
   }
 
   function getTask(peerUrl: string, taskId: string): Promise<TaskView> {
-    return postA2a<TaskView>(peerUrl, "tasks/get", { id: taskId });
+    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "tasks/get", { id: taskId }));
   }
 
   function cancelTask(peerUrl: string, taskId: string): Promise<TaskView> {
-    return postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId });
+    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId }));
   }
 
   /** Grant validity is deliberately short: it only has to cover one resume. */
@@ -438,16 +488,97 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       signed = signGrant(key, grant);
     }
     const message = resumeMessage(view, { grant: signed });
-    return postA2a<TaskView>(peerUrl, "message/send", { message });
+    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
   }
 
   function denyTask(peerUrl: string, view: TaskView, reason = "denied by origin"): Promise<TaskView> {
     const message = resumeMessage(view, { permission_denied: true, reason });
-    return postA2a<TaskView>(peerUrl, "message/send", { message });
+    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
   }
 
   function escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView> {
     return postA2a<TaskView>(peerUrl, "tasks/escalate", { taskId, relay });
+  }
+
+  type ChildLink = { parent_task_id: string; peer: string; child_task_id: string; failures: number };
+
+  /** Tasks this node's local task delegated to, watched for child permission requests (§7.12). */
+  const childLinks = new Map<string, ChildLink>();
+  const CHILD_LINK_INTERVAL_MS = 1000;
+  const CHILD_LINK_MAX_FAILURES = 10;
+  let childLinkTimer: NodeJS.Timeout | null = null;
+  let childLinkStopped = true;
+
+  function scheduleChildLinkTick(delayMs = CHILD_LINK_INTERVAL_MS): void {
+    if (childLinkStopped || childLinkTimer !== null) return;
+    childLinkTimer = setTimeout(() => {
+      childLinkTimer = null;
+      void childLinkTick();
+    }, delayMs);
+    childLinkTimer.unref?.();
+  }
+
+  /**
+   * Automatic chain ascent: poll a child task this node dispatched; when it asks for
+   * a permission, park the local task that delegated to it (one `tasks.escalate`),
+   * so the origin approves once and the grant flows back down (§7.12). The executor
+   * never has to call `escalate` itself.
+   */
+  async function childLinkTick(): Promise<void> {
+    if (childLinkStopped) return;
+    for (const link of [...childLinks.values()]) {
+      const parent = tasks.get(link.parent_task_id);
+      if (parent === null || TERMINAL_TASK_STATES.has(parent.status.state)) {
+        childLinks.delete(link.child_task_id);
+        continue;
+      }
+      // Already parked on a permission request: wait for the origin's decision.
+      if (parent.status.state !== "working") continue;
+      let child: TaskView;
+      try {
+        child = await getTask(link.peer, link.child_task_id);
+      } catch {
+        link.failures += 1;
+        if (link.failures >= CHILD_LINK_MAX_FAILURES) childLinks.delete(link.child_task_id);
+        continue;
+      }
+      link.failures = 0;
+      if (TERMINAL_TASK_STATES.has(child.status.state)) {
+        childLinks.delete(link.child_task_id);
+        continue;
+      }
+      const request = permissionRequestOf(child);
+      if (request === null) continue;
+      try {
+        tasks.escalate(link.parent_task_id, { peer: link.peer, task_id: link.child_task_id, request });
+      } catch (error) {
+        // The parent moved on between the read and the call; stop watching.
+        if ((error as { code?: string }).code === "task_not_found") childLinks.delete(link.child_task_id);
+      }
+    }
+    if (childLinks.size > 0) scheduleChildLinkTick();
+  }
+
+  function linkChildTask(parentTaskId: string, peerUrl: string, childTaskId: string): void {
+    if (parentTaskId.length === 0 || peerUrl.length === 0 || childTaskId.length === 0) {
+      throw new Error("child link needs parent task, peer and child task");
+    }
+    const parent = tasks.get(parentTaskId);
+    if (parent === null) throw new Error(`unknown local task ${parentTaskId}`);
+    if (TERMINAL_TASK_STATES.has(parent.status.state)) {
+      throw new Error(`local task ${parentTaskId} is already ${parent.status.state}`);
+    }
+    childLinks.set(childTaskId, {
+      parent_task_id: parentTaskId,
+      peer: peerUrl,
+      child_task_id: childTaskId,
+      failures: 0,
+    });
+    const entry = dispatches.get(childTaskId);
+    if (entry !== undefined && entry.parent_local_task_id !== parentTaskId) {
+      dispatches.save({ ...entry, parent_local_task_id: parentTaskId, updated_at: new Date().toISOString() });
+    }
+    scheduleChildLinkTick(0);
   }
 
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -509,6 +640,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     workspaceManager?.purgeInputs();
     blobs.gc?.();
     tasks.recover();
+    // A restart means this node no longer knows what its in-flight tasks did (§13.3).
+    dispatches.markUnknown();
+    childLinkStopped = false;
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });
     boundPort = Number(new URL(address).port);
     actualEndpoint = endpointFrom(config, boundPort);
@@ -524,10 +658,17 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       clearTimeout(heartbeatTimer);
       heartbeatTimer = null;
     }
+    childLinkStopped = true;
+    if (childLinkTimer) {
+      clearTimeout(childLinkTimer);
+      childLinkTimer = null;
+    }
+    childLinks.clear();
     await app.close();
     executor.close?.();
     options.storage?.taskStore?.close?.();
     options.storage?.fileBlobStore?.close?.();
+    options.storage?.dispatchStore?.close?.();
   }
 
   return {
@@ -553,5 +694,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     approveTask,
     denyTask,
     escalateTask,
+    linkChildTask,
+    listDispatches: () => dispatches.list(),
   };
 }

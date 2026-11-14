@@ -292,7 +292,7 @@ dsh --profile headless --json \
 - 取消：`AbortSignal` → 先 SIGTERM，2s 后 SIGKILL；Windows 用 `taskkill /pid <pid> /T /F` 杀整棵树（`dsh` 会拉子进程）。
 - 超时：仍由任务层 `task_ttl_s` abort；executor 只负责杀进程。
 - 结果文本：`final.text` 直接作为任务结论（走 [§6.11](06-execution.md#611-任务结果与产物) 的内联/截断规则）。
-- prompt 前置 `[orca-pod]` 编排 preamble（任务 id、本 orca node id、`orca-node` CLI 绝对路径、`publish`/`escalate`/`wait` 用法），与 AcpExecutor 共用 `src/preamble.ts`：headless 子进程也要知道自己是跨节点任务的一部分。
+- prompt 前置 `[orca-pod]` 编排 preamble（任务 id、本 orca node id、`orca-node` CLI 绝对路径、`publish`/`escalate`/`wait` 用法，以及 `send --local-task` 后本节点会自动挂起等待 origin 决定、agent 不必自己 `escalate`），与 AcpExecutor 共用 `src/preamble.ts`：headless 子进程也要知道自己是跨节点任务的一部分。spawn 时额外传 `ORCA_POD_PARENT_TASK=<taskId>`，agent 用 CLI `send` 派子任务时自动登记 child-link（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 - usage：`step_end` 里的 `usage.{inputTokens,outputTokens,cacheReadTokens}` 采集成任务 `usage`。
 - 错误码：`turn_end`/`final` 的 `reason.error.code` 透传为任务 `reason`（如 `AUTH_MISSING`），没有 code 时回落 `executor_error`。
 
@@ -342,7 +342,7 @@ cwd = workgroup 根；每次任务一条 in-flight prompt（ACP 服务端本身�
 
 **会话复用**：`state/<workgroup_id>/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
 
-**给 ACP 会话加工具：CLI 优先（Phase 3）**：ACP agent 自带 shell（实测可执行命令），所以不需要把工具 schema 常驻进上下文。`AcpExecutor` 在每条 prompt 前加一段 preamble——`[orca-pod] You are executing task <id> as orca node <id>`、`orca-node` CLI 的绝对路径、`send`/`wait`/`escalate` 用法与退出码——agent 用 shell 调 CLI 即可派任务、查状态、等结果，子任务需要权限时用 `escalate` 把决定权交还 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。CLI 读本机 `config.json` 派生密钥，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；CLI 不是节点，没有独立身份。`wait` 带 `--local-task <此 task>` 时会在轮询到子任务权限请求时自动上升（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），agent 不必再单独调 `escalate`。插件安装时还会把同一套用法写成 user skill（`$DSH_HOME/skills/orca-node/SKILL.md`，幂等、可关），让 headless/ACP 子进程的 profile 自己发现 `orca-node`——和 preamble 互为兜底。MCP（`acp.mcp_servers`）保留为可选透传：需要结构化 schema 的第三方工具仍可挂，但 orca-pod 自己的 `pod_*` 不再依赖它。
+**给 ACP 会话加工具：CLI 优先（Phase 3）**：ACP agent 自带 shell（实测可执行命令），所以不需要把工具 schema 常驻进上下文。`AcpExecutor` 在每条 prompt 前加一段 preamble——`[orca-pod] You are executing task <id> as orca node <id>`、`orca-node` CLI 的绝对路径、`send`/`wait`/`escalate` 用法与退出码——agent 用 shell 调 CLI 即可派任务、查状态、等结果，子任务需要权限时用 `escalate` 把决定权交还 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。CLI 读本机 `config.json` 派生密钥，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；CLI 不是节点，没有独立身份。`send --local-task <此 task>` 建子任务时向本机登记 child-link（headless 自动带父任务 id），本节点每 1s 轮询子任务、遇到权限请求就把父任务挂起为 `input-required`，由 origin 一处决定（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），agent 不必再单独调 `escalate`；`wait --local-task` 保留手动上升路径（同一 `request_id` 只上升一次）。插件安装时还会把同一套用法写成 user skill（`$DSH_HOME/skills/orca-node/SKILL.md`，幂等、可关），让 headless/ACP 子进程的 profile 自己发现 `orca-node`——和 preamble 互为兜底。MCP（`acp.mcp_servers`）保留为可选透传：需要结构化 schema 的第三方工具仍可挂，但 orca-pod 自己的 `pod_*` 不再依赖它。
 
 **不做**：把 `message/stream` 的进度透传到 A2A 流（结论仍走 `tasks/get` 轮询）、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、多 in-flight prompt。
 

@@ -8,20 +8,21 @@ import { Readable } from "node:stream";
 import { createFileBlobRegistry } from "./blob-files.ts";
 import { configPath, defaultDataRoot, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
-import { createOrcaNode, createPersistentStorage } from "./index.ts";
+import { createOrcaNode, createPersistentStorage, joinRoster } from "./index.ts";
 import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
 import { permissionRequestOf } from "./protocol.ts";
-import { createSqliteFileBlobStore } from "./sqlite.ts";
+import { createSqliteDispatchStore, createSqliteFileBlobStore } from "./sqlite.ts";
 
 const USAGE = `orca-node
 
 Usage:
-  orca-node serve   --config <path>                     start an orca node from a config file
-  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--context <id>] [--permission-mode <mode>] [--json]
+  orca-node serve   --config <path> [--peer <url>]        start an orca node from a config file
+  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
   orca-node publish <path> [--ttl <seconds>] [--json]  expose a produced file as a blob URL
+  orca-node log [--json]                               tasks this node dispatched (§13.4)
   orca-node members [--peer <url>] [--json]
   orca-node --help                                      show this help
 
@@ -34,6 +35,9 @@ Exit codes (wait):
   With --local-task, a child permission request is escalated to this task's origin
   automatically; wait keeps going after the decision (3 only if it cannot escalate).
   --timeout is optional: without it the origin may take as long as it needs.
+
+With --local-task on send, this node watches the child task and parks this task
+automatically when the child asks for a permission; the origin then decides once.
 
 Exit codes (escalate):
   0 approved and this task is working again    1 denied/failed    2 timed out
@@ -112,6 +116,15 @@ function normalizePeer(peer: string): string {
 
 function localEndpoint(config: OrcaNodeConfig): string {
   return config.endpoint ?? `http://${config.bind.host}:${config.bind.port}`;
+}
+
+/**
+ * Local control plane: always dial loopback, never a published endpoint. The
+ * gateway only accepts child links from loopback without proxy headers (§7.1).
+ */
+function localControlEndpoint(config: OrcaNodeConfig): string {
+  const host = config.bind.host === "::1" ? "[::1]" : "127.0.0.1";
+  return `http://${host}:${config.bind.port}`;
 }
 
 async function signedJson<T>(
@@ -207,6 +220,13 @@ async function serve(args: string[]): Promise<void> {
       bind: { ...config.bind, port: Number.isInteger(port) && port > 0 ? port : config.bind.port },
     });
   }
+  // `--peer` bootstraps a fresh node into an existing mesh at startup; the
+  // harness (and `npm run harness`) relies on this to avoid a separate join step.
+  const bootstrap = flag(flags, "peer");
+  if (bootstrap !== undefined) {
+    const response = await orcaNode.join(normalizePeer(bootstrap));
+    await joinRoster(orcaNode, response.members);
+  }
   process.stdout.write(`orca-node ${orcaNode.orcaNodeId} listening on ${url}\n`);
 
   const shutdown = (): void => {
@@ -295,6 +315,22 @@ async function send(args: string[]): Promise<number> {
     message,
     ...(metadata !== undefined ? { metadata } : {}),
   });
+  // §7.12: register the child link so this node relays the child's permission
+  // requests automatically instead of making the agent call `escalate`.
+  const parentLocalTask = flag(flags, "local-task") ?? process.env["ORCA_POD_PARENT_TASK"];
+  if (parentLocalTask !== undefined && parentLocalTask.length > 0) {
+    try {
+      await signedJson(config, localControlEndpoint(config), "POST", "/cluster/child-link", {
+        parent_task_id: parentLocalTask,
+        peer: normalizePeer(peer),
+        child_task_id: view.id,
+      });
+    } catch (error) {
+      process.stderr.write(
+        `orca-pod: could not register child link: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
   const json = wantsJson(flags);
   if (!json) {
     for (const uploaded of uploads) {
@@ -468,6 +504,35 @@ async function escalate(args: string[]): Promise<number> {
   return outcome.state === "input-required" ? 2 : 1;
 }
 
+async function logCommand(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  const config = await loadNodeConfig(flags);
+  // Read the origin-side dispatch log straight from SQLite: the node may be down,
+  // and a restart is exactly when this listing matters (§13.4).
+  const store = createSqliteDispatchStore(join(config.data_root, "tasks.db"));
+  try {
+    const entries = store.list().sort((left, right) => left.updated_at.localeCompare(right.updated_at));
+    if (wantsJson(flags)) {
+      process.stdout.write(`${JSON.stringify(entries, null, 2)}\n`);
+      return 0;
+    }
+    if (entries.length === 0) {
+      process.stdout.write("no dispatched tasks\n");
+      return 0;
+    }
+    for (const entry of entries) {
+      const parent = entry.parent_local_task_id === undefined ? "" : `  parent=${entry.parent_local_task_id}`;
+      const error = entry.last_error === undefined ? "" : `  (${entry.last_error})`;
+      process.stdout.write(
+        `${entry.state.padEnd(14)} ${entry.task_id}  ${entry.peer}${parent}${error}\n`,
+      );
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 async function members(args: string[]): Promise<number> {
   const flags = parseFlags(args);
   const config = await loadNodeConfig(flags);
@@ -511,6 +576,7 @@ async function main(): Promise<void> {
   else if (command === "wait") process.exitCode = await wait(args);
   else if (command === "escalate") process.exitCode = await escalate(args);
   else if (command === "publish") process.exitCode = await publish(args);
+  else if (command === "log") process.exitCode = await logCommand(args);
   else if (command === "members") process.exitCode = await members(args);
   else {
     process.stdout.write(USAGE);

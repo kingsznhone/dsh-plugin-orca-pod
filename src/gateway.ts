@@ -44,6 +44,8 @@ export type GatewayOrcaNode = {
   endpoint: string | null;
   /** Per-task budget advertised to peers; origins size tasks to it (§6.9). */
   max_task_ttl_s?: number;
+  /** Local-only capability: register a child task for automatic relay (§7.12). */
+  linkChildTask?: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
 };
 
 export type GatewayDeps = {
@@ -489,6 +491,42 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   app.post("/cluster/leave", async (request) => {
     const auth = authenticate(request, deps);
     deps.peers.remove(auth.orcaNodeId);
+    return { ok: true };
+  });
+
+  /**
+   * Local control: tell this node that one of its local tasks delegated `child_task_id`
+   * to `peer`, so the node can relay the child's permission requests automatically
+   * (§7.12). A shared workgroup key cannot prove which node signed, so "local only"
+   * is a transport fact (loopback, no proxy headers), not a signature claim (§7.1).
+   */
+  app.post("/cluster/child-link", async (request, reply) => {
+    const remote = request.socket.remoteAddress ?? "";
+    const proxied =
+      request.headers["x-forwarded-for"] !== undefined ||
+      request.headers["forwarded"] !== undefined ||
+      request.headers["x-real-ip"] !== undefined;
+    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    if (proxied || !loopback) {
+      return reply.code(403).send({ code: "local_only", message: "child links are a local control" });
+    }
+    authenticate(request, deps);
+    const body = asObject(request.body);
+    if (!body) return badRequest(reply, "body must be a JSON object");
+    const parentTaskId = body["parent_task_id"];
+    const peer = body["peer"];
+    const childTaskId = body["child_task_id"];
+    if (typeof parentTaskId !== "string" || typeof peer !== "string" || typeof childTaskId !== "string") {
+      return badRequest(reply, "parent_task_id, peer and child_task_id must be strings");
+    }
+    if (deps.orcaNode.linkChildTask === undefined) {
+      return reply.code(400).send({ code: "bad_request", message: "this orca node cannot relay child tasks" });
+    }
+    try {
+      deps.orcaNode.linkChildTask(parentTaskId, peer, childTaskId);
+    } catch (error) {
+      return badRequest(reply, error instanceof Error ? error.message : String(error));
+    }
     return { ok: true };
   });
 

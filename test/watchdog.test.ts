@@ -48,14 +48,11 @@ describe("heartbeat loop and watchdog", () => {
         ),
       );
 
-      try {
-        survivors[0]?.sendTask(victim.endpoint, {
+      await expect(
+        survivors[0]!.sendTask(victim.endpoint, {
           message: { role: "user", parts: [{ kind: "text", text: "hello?" }] },
-        });
-        throw new Error("sendTask to an offline peer should have thrown");
-      } catch (error) {
-        expect((error as { code?: string }).code).toBe("peer_not_online");
-      }
+        }),
+      ).rejects.toMatchObject({ code: "peer_not_online" });
 
       await waitFor(() =>
         survivors.every((orcaNode) => orcaNode.members().every((peer) => peer.orca_node_id !== victim.orcaNodeId)),

@@ -38,6 +38,8 @@ origin 轮询 tasks/get
 - `input-required`：标 `failed(node_restart)`（授权请求已失效）；
 - 重启后不允许把旧 task 悄悄“接着跑”——那会让 origin 的状态和实际再次分叉。
 
+**origin 重启（origin 侧任务日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（`task_id`、`peer`、`context_id`、`state`、`last_error`、`parent_local_task_id`、`created_at`、`updated_at`），`sendTask`/`getTask`/`cancelTask`/`approveTask`/`denyTask` 每次成功都 upsert；启动时把仍非终态的条目标成 `state=unknown, last_error=origin_restart`（[§8.3](#83-目标重启) 的规则：不把“看不见”写成“失败”），之后重新轮询到真实状态再覆盖。人可以 `orca-node log [--json]` 直接看这张表；`parent_local_task_id` 同时供自动上升轮询使用（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。子任务终态后条目保留（TTL 由后续的清理任务负责），不随 task 删除。
+
 ### 8.4 幂等键
 
 - 作用域 `(workgroup_id, origin_orca_node, idempotency_key)`，窗口 24h；
