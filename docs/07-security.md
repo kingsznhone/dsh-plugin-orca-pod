@@ -127,11 +127,11 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 | 情形 | 谁批 | 行为 |
 | --- | --- | --- |
 | `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 交 Orca Pod UI：当前会话聊天卡、后台会话弹窗、或面板列表（`pod_approve` park 到人回答，无超时） |
-| `origin == self`，且会话本身在执行某个 inbound task（headless/ACP 执行器派出的子任务） | 链上更上游的人 | 本机不批：请求沿这条 inbound task 继续上升（CLI `wait --local-task <那个 task>` 自动 `tasks/escalate`），一直走到有人的会话为止 |
+| `origin == self`，且会话本身在执行某个 inbound task（ACP 执行器派出的子任务） | 链上更上游的人 | 本机不批：请求沿这条 inbound task 继续上升（CLI `wait --local-task <那个 task>` 自动 `tasks/escalate`），一直走到有人的会话为止 |
 | `origin == self`，且是本机真实根（没有 inbound task，人在这台机器前） | 本机的人 | 同样交 Orca Pod UI；默认无限等待，可配置 `approval_timeout_s` 到点自动 `failed(permission_timeout)`；预授权命中则自动放行并记 `decided_by: policy` |
 | `origin != self` | 链上更上游的人 | 本机不批，只逐跳上升：`permission_request` 交给 origin（CLI 的 `wait --local-task` 自动调 `tasks/escalate`），批准后下发 child grant |
 
-不存在“节点级 attended 标志”：同一台机器通常同时跑桌面 DSH 和 headless/ACP 执行器，有没有人取决于**是哪个会话发起了这个 task**；ACP 执行器会话只有 CLI、没有审批面，所以它派出的子任务一律 escalate。链上唯一的人坐在根会话前。
+不存在“节点级 attended 标志”：同一台机器通常同时跑桌面 DSH 和 ACP 执行器，有没有人取决于**是哪个会话发起了这个 task**；ACP 执行器会话只有 CLI、没有审批面，所以它派出的子任务一律 escalate。链上唯一的人坐在根会话前。
 
 注意 `origin == self` 不等于“本机有人”：A→B→C 里，C 上子任务的 origin 是 B（B 的 CLI 用 B 的密钥签名），但 B 的会话正被 A 的 task 驱动，B 屏幕前没有人。所以这个请求要沿 B 自己的 inbound task 继续上升（CLI `wait --local-task <B 的 inbound task>`），直到 A 的交互式会话。
 
@@ -153,7 +153,7 @@ origin 发起任务时携带会话的 permission mode，target 原样执行：
 - mode 随任务签名一起传，target 校验签名后再执行，防止中间人改宽；
 - mode 不写进 grant 之外的任何持久状态；任务结束即失效。
 
-**实现状态（Phase 3）**：`pod.permission_mode` 进任务元数据并随签名传递，`chain.ts` 校验合法性、子任务由 `childPodMetadata` 继承；本机 `config.json` 的 `permission_mode` 是上限，`src/tasks.ts` 取「上限 vs 继承值」较窄者后交给执行器。`HeadlessExecutor` 传 `--permission-mode`；`AcpExecutor` 在 `session/request_permission` 处按模式自动回答（`read-only` 拒绝写类工具、`workspace-write` 放行工作区内编辑/执行、`danger-full-access` 全放行），没有继承模式时仍挂起、回到 origin 的审批卡片。`pod_send` 与 `orca-node send --permission-mode` 都能显式指定；测试见 `test/permission-mode.test.ts`（8 条）。
+**实现状态（Phase 3）**：`pod.permission_mode` 进任务元数据并随签名传递，`chain.ts` 校验合法性、子任务由 `childPodMetadata` 继承；本机 `config.json` 的 `permission_mode` 是上限，`src/tasks.ts` 取「上限 vs 继承值」较窄者后交给执行器。`AcpExecutor` 在 `session/request_permission` 处按模式自动回答（`read-only` 拒绝写类工具、`workspace-write` 放行工作区内编辑/执行、`danger-full-access` 全放行），没有继承模式时仍挂起、回到 origin 的审批卡片。`pod_send` 与 `orca-node send --permission-mode` 都能显式指定；测试见 `test/permission-mode.test.ts`（7 条）。
 
 ### 7.11 Grant
 
@@ -230,7 +230,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 **实现状态（Phase 3 第三版，Echo relay 原型）**：`tasks.ts` 支持 executor 在 permission 挂起时携带 `relay`（子任务 endpoint、task id、子任务的 `permission_request` 快照）。这时父任务自己挂成 `input-required`，请求里 `requested_by` 是本 orca node、`via` 是祖先路径、`upstream` 记着真正需要权限的下游 `requested_by`；origin 审批后，父任务用拿到的 grant `deriveChildGrant` 派生出面向下游的 child grant，通过 `message/send` 发给子任务，然后继续自己的执行；拒绝或取消则把 `permission_denied` 往下传，子任务随之失败而不是悬挂。每一跳都释放执行槽、不保持连接、不反连，所以 relay 天然非阻塞。**限制**：relay 链接只在内存里（重启后按 §8.3 整体标 `node_restart`，不会恢复）；早期版本要求执行器自己注入 `relay`，这一点已由第六版的自动上升取代（见下）；审批卡片的 `upstream` 展示见第四版。
 
-**实现状态（Phase 3 第六版，自动上升）**：父任务不再依赖执行器注入 `relay`，改由 origin 侧自己发现。CLI `send --local-task <此 task>` 在子任务建成后向本机发 `POST /cluster/child-link`（`headless` 执行器的子进程通过环境变量 `ORCA_POD_PARENT_TASK` 自动带上，agent 不必记参数）；节点为该 `(parent, child)` 起 1s 轮询，看到子任务 `input-required` 且带 `permission_request` 就对本机父任务调用 `tasks/escalate`，父任务随即挂成 `input-required`（`upstream` 指向子任务请求者），origin 批准后 child grant 逐跳下发、父任务回 `working`、子任务继续——第 17 轮测试（`test/relay-auto.test.ts`）用 headless 父任务 + Echo 子任务覆盖了整条链路，父任务未被中断。轮询有界：子任务终态、父任务终态、或连续 10 次读失败都会摘掉链接。**这个控制接口只登记、不执行**，所以它的本地性用传输层判定：只接受回环地址且没有 `x-forwarded-for`/`forwarded`/`x-real-ip` 的请求，否则 `403 local_only`——Ed25519 之后签名身份已不可伪造，但 local-only 能力仍只认传输层事实（纵深防御：代理可能改写来源地址）。**仍未实现**：child link 只在内存里（重启后不恢复，父任务按 §8.3 对账）；`permission_mode`/`limits` 收窄。
+**实现状态（Phase 3 第六版，自动上升）**：父任务不再依赖执行器注入 `relay`，改由 origin 侧自己发现。CLI `send --local-task <此 task>` 在子任务建成后向本机发 `POST /cluster/child-link`（子进程通过环境变量 `ORCA_POD_PARENT_TASK` 自动带上，agent 不必记参数）；节点为该 `(parent, child)` 起 1s 轮询，看到子任务 `input-required` 且带 `permission_request` 就对本机父任务调用 `tasks/escalate`，父任务随即挂成 `input-required`（`upstream` 指向子任务请求者），origin 批准后 child grant 逐跳下发、父任务回 `working`、子任务继续——第 17 轮测试（`test/relay-auto.test.ts`）用 ACP 父任务 + Echo 子任务覆盖了整条链路，父任务未被中断。轮询有界：子任务终态、父任务终态、或连续 10 次读失败都会摘掉链接。**这个控制接口只登记、不执行**，所以它的本地性用传输层判定：只接受回环地址且没有 `x-forwarded-for`/`forwarded`/`x-real-ip` 的请求，否则 `403 local_only`——Ed25519 之后签名身份已不可伪造，但 local-only 能力仍只认传输层事实（纵深防御：代理可能改写来源地址）。**仍未实现**：child link 只在内存里（重启后不恢复，父任务按 §8.3 对账）；`permission_mode`/`limits` 收窄。
 
 **实现状态（Phase 3 第四版，显式 escalate）**：中间 orca node 的 task 可以在执行中主动挂起自己——CLI `orca-node escalate --peer <child> --task <child task> --local-task <此 task>` 取子任务的 `permission_request`，经本机 `tasks/escalate` 交给 runner；runner 把此 task 改成 `input-required` 并填一条上游请求（`requested_by`=本 orca node、`upstream`=[子请求者]、`via`=祖先链），执行器本身继续跑（不打断 ACP turn，也不动 iterator）。origin 批准后按第三版派生子 grant 发回子任务，然后把此 task 放回 `working`；拒绝则向下传 `permission_denied` 并让此 task 失败。`tasks/escalate` 只接受本 orca node 自己签名（跨节点调用一律拒绝）。ACP 的 preamble 里已写明：`wait` 退出码为 3 时用 `escalate` 把决定权交还 origin。审批卡片与 tracker 通知现在都会显示来源链：`permissionOriginNote` 把 `via` 与 `upstream` 拼成 ` via A → B` 后缀，`pod_approve` 的 `approval.request.reason` 由 `approvalReason` 生成（形如 `Remote task <id> on <peer> wants to run "<tool>" via A → B: {...}`），人能看到这张卡是替谁批的。自动感知就是轮询：`orca-node wait` 带上 `--local-task <此 task>` 时，一旦在轮询中看到子任务 `input-required` 且带 `permission_request`，会自己调用 `tasks/escalate` 把请求上升，然后继续等；同一个 `request_id` 只上升一次，批准后子任务恢复、拒绝则失败，agent 不需要再单独发一次 `escalate`。**仍未实现**：不经 CLI 的宿主（例如插件工具直接派发子任务）没有这层轮询；`permission_mode`/`limits` 收窄。
 

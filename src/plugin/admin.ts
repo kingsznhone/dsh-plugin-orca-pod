@@ -51,6 +51,7 @@ export interface PodAdvancedConfig {
   allow_public_peers: boolean | null
   allow_loopback_peers: boolean | null
   permission_mode: PermissionMode | null
+  executor: "echo" | "acp" | null
 }
 
 /** Effective pod configuration as the panel may see it (never the password). */
@@ -169,6 +170,7 @@ export function createPodAdmin(
         allow_public_peers: config.allow_public_peers ?? null,
         allow_loopback_peers: config.allow_loopback_peers ?? null,
         permission_mode: config.permission_mode ?? null,
+    executor: config.executor ?? null,
       },
       password_set: config.workgroup_password.length > 0,
       running: current !== null,

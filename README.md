@@ -5,7 +5,7 @@
 - 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
 - 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、内容寻址 blob 通道。
 - 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，所有自研模块都在 `src/`，安装时不需要本仓库的 `node_modules`。
-- 状态：Phase 0–3 可运行——`/health`、join/心跳/成员、`/a2a`（`message/send`/`tasks/get`/`tasks/cancel`、单槽、grant 与 permission 升级）、`/blobs`、三种执行器（Echo/Headless/ACP）、SQLite task store + fs blob + group 工作区、审批卡片与链式 relay、`orca-node` CLI 与插件后台 tracker；Windows ↔ Hyper-V Ubuntu 跨机 join、A2A 往返、blob 双向与真实 `dsh` 任务均已验证。
+- 状态：Phase 0–3 可运行——`/health`、join/心跳/成员、`/a2a`（`message/send`/`tasks/get`/`tasks/cancel`、单槽、grant 与 permission 升级）、`/blobs`、两种执行器（Echo/ACP）、SQLite task store + fs blob + group 工作区、审批卡片与链式 relay、`orca-node` CLI 与插件后台 tracker；Windows ↔ Hyper-V Ubuntu 跨机 join、A2A 往返、blob 双向与真实 `dsh` 任务均已验证。
 
 ## 布局
 
@@ -15,7 +15,7 @@ orca-pod/
 ├── cordis.patch.yml      # DSH 行：id orca-pod、name 'orca-pod'
 ├── README.md
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # 跨进程联调（cross.ts）、真实 dsh 冒烟（e2e-headless.ts / e2e-acp.mjs）、guest 同步（sync-guest.ps1）
+├── scripts/              # 跨进程联调（cross.ts）、真实 dsh ACP 冒烟（e2e-acp.mjs）、guest 同步（sync-guest.ps1）
 ├── src/
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── protocol.ts       # id、成员 digest、任务/peer 类型
@@ -27,7 +27,6 @@ orca-pod/
 │   ├── membership.ts     # 成员记录、心跳看门狗、墓碑与修剪
 │   ├── gateway.ts        # HTTP: /health、agent card、/cluster/*、/a2a、/blobs
 │   ├── executor.ts       # LocalExecutor 契约 + EchoExecutor
-│   ├── headless.ts       # HeadlessExecutor（dsh headless --json 子进程）
 │   ├── acp.ts            # AcpExecutor（dsh --profile acp stdio：流式、权限、session）
 │   ├── process.ts        # 子进程公共件（Windows shim 解析、killTree）
 │   ├── session-store.ts  # state/<workgroup_id>/sessions.json（origin+context → session）
@@ -35,6 +34,8 @@ orca-pod/
 │   ├── orca_node.ts      # createOrcaNode：装配 gateway、tasks、membership
 │   ├── harness.ts        # 测试用进程内多 orca node
 │   ├── cli.ts            # `orca-node` CLI：serve / send / status / wait / members
+│   ├── orca-pod.ts       # `orca-pod` bin：install（systemd 安装）
+│   ├── install.ts        # install 计划、unit 渲染、守护进程命令（纯函数）
 │   └── plugin/           # DSH bundle：Config、apply(ctx, config)、tools
 └── test/                 # vitest 套件
 ```
@@ -55,6 +56,23 @@ carries no private dependencies, the checkout's `node_modules` is not needed at
 runtime. Use the Plugin Manager (or edit the profile's patch/config) to change
 the config afterwards.
 
+## 后台安装（systemd）
+
+在没有桌面的 Linux 机器上，可以把节点装成 systemd 服务；两种形态：host（推荐，常驻 `orca-node serve`，不需要 dsh web）与 web（常驻 `dsh web` 并加载本插件，适合要用面板的场景）。`npx orca-pod install` 会检查 `dsh --version`、生成 `<data_root>/config.json`（0600、默认 `executor: "acp"`）、写 unit 并启用服务；`--dry-run` 只打印计划，`--user` 装到用户级 systemd，`--skip-dsh-check` 跳过 dsh 检查。
+
+```bash
+# 推荐：host 模式，若服务不需要 sudo 则加 --user
+npx orca-pod install --mode host --workgroup orca-demo --password '...' --data-root ~/.orca-pod
+
+# 先看会写什么、执行什么
+npx orca-pod install --mode host --workgroup orca-demo --password '...' --dry-run
+
+# 备选：web 模式（之后按提示安装插件）
+npx orca-pod install --mode web --user
+```
+
+host 模式只监听节点端口（默认 11811）；web 模式的 UI 与节点端口都在本机回环上，需要时应通过反向代理访问。不要通过代理暴露 `/cluster/child-link` 与 `/cluster/task`（它们只接受回环请求）。
+
 ## 配置
 
 | Field                | Required | Default                         | Meaning                                                                 |
@@ -67,7 +85,7 @@ the config afterwards.
 | `endpoints`          | no       | `[]` = auto-detect LAN/IPv6 addresses | Ordered advertise list (1-8 URLs, primary first): IPv6/IPv4 and LAN/public addresses are dialed in order; loopback-only lists are ignored |
 | `data_root`          | no       | `$ORCA_POD_HOME` or `~/.orca-pod` | Directory of the persisted `config.json` (orca node identity)             |
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
-| `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (headless/ACP profiles) find the CLI; set `false` to opt out |
+| `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (ACP profiles) find the CLI; set `false` to opt out |
 | `approval_timeout_s` | no       | unset (wait forever)            | Auto-reject a parked permission request after this many seconds (`failed(permission_timeout)`); the task TTL is paused while parked |
 | `permission_mode`    | no       | unset (no local ceiling)        | Ceiling for inherited task modes: effective mode = narrower of this and `pod.permission_mode` |
 | `allow_public_peers` | no       | `false`                         | Allow candidate endpoints on public IPs (§7.7)                          |
@@ -75,7 +93,7 @@ the config afterwards.
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码 = 重建组（本机 `identity.json` 保留，节点 id 不变）。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
 
-执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者；`headless.permission_mode` 只是任务未带模式时的缺省值（默认 `read-only`）。节点自述的模型目录（`models`/`default_model`）由插件从 DSH Host 的 `llm`/`agentDefaultModel` 服务采集；纯 CLI 节点（`orca-node serve`）可在 `config.json` 手填，任务用 `pod.model` 选择非默认模型，只有 ACP 执行器能落地（[§6.16](docs/06-execution.md#616-按任务选择模型)）。
+执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "acp"`（插件高级设置可切换，默认 `acp`）。`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.14](docs/06-execution.md#614-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者。节点自述的模型目录（`models`/`default_model`）由插件从 DSH Host 的 `llm`/`agentDefaultModel` 服务采集；纯 CLI 节点（`orca-node serve`）可在 `config.json` 手填，任务用 `pod.model` 选择非默认模型，只有 ACP 执行器能落地（[§6.15](docs/06-execution.md#615-按任务选择模型)）。
 
 审批默认无限等待：任务挂起等 origin 的人时，task TTL 会暂停，也不会因为 120 秒没决定就失败；只有配置了 `approval_timeout_s` 才在到点自动拒绝（`failed(permission_timeout)`）。CLI 的 `wait`/`escalate` 的 `--timeout` 同样可省略，省略就一直等到 origin 决策。
 
@@ -107,7 +125,7 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 # 派任务，文本从 stdin 读，输出 JSON
 echo "compile and run the tests" | orca-node send --peer 192.168.86.252:11811 --text - --json
 
-# 指定非默认模型（目标必须自述该模型且运行 ACP 执行器；§6.16）
+# 指定非默认模型（目标必须自述该模型且运行 ACP 执行器；§6.15）
 orca-node send --peer 192.168.86.252:11811 --text "review this diff" --model deepseek/deepseek-flash --reasoning-effort high --json
 
 # 等结果：0 completed / 1 failed|canceled / 2 仍在跑 / 3 需要权限

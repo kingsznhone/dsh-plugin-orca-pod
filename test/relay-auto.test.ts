@@ -5,13 +5,13 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createAcpExecutor } from "../src/acp.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
 import type { LocalExecutor } from "../src/executor.ts";
-import { createHeadlessExecutor } from "../src/headless.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol.ts";
 
-const FAKE_DSH = fileURLToPath(new URL("./fixtures/fake-dsh.mjs", import.meta.url));
+const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const WORKGROUP = "orca-relay-auto";
 const PASSWORD = "relay-auto-secret";
 
@@ -19,7 +19,6 @@ let nodes: OrcaNode[] = [];
 let roots: string[] = [];
 
 afterEach(async () => {
-  delete process.env.FAKE_DSH_MODE;
   await Promise.all(nodes.map((node) => node.stop().catch(() => undefined)));
   nodes = [];
   for (const root of roots) rmSync(root, { recursive: true, force: true });
@@ -64,9 +63,8 @@ describe("automatic chain ascent (7.12)", () => {
     const leaf = await makeNode();
     // The middle node's local task stays "working" while it delegates, like an
     // agent that keeps thinking after dispatching a child (§7.12).
-    process.env.FAKE_DSH_MODE = "hang";
     const middle = await makeNode(
-      createHeadlessExecutor({ command: process.execPath, extra_args: [FAKE_DSH] }),
+      createAcpExecutor({ command: process.execPath, extra_args: [FAKE_ACP, "hang"] }),
     );
 
     const parentView = await root.sendTask(middle.endpoints[0]!, {

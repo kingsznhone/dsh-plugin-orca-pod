@@ -90,6 +90,7 @@ const OVERRIDE_KEYS = [
   "allow_public_peers",
   "allow_loopback_peers",
   "permission_mode",
+  "executor",
 ] as const
 
 /** `null` explicitly clears a stored override so the base config applies again. */
@@ -179,6 +180,7 @@ const BASE_FIELDS = [
   "allow_public_peers",
   "allow_loopback_peers",
   "permission_mode",
+  "executor",
 ] as const
 
 /** Advanced controls whose absence means "use the default", not "keep stored". */
@@ -191,6 +193,7 @@ const ADVANCED_KEYS = [
   "allow_public_peers",
   "allow_loopback_peers",
   "permission_mode",
+  "executor",
 ] as const
 
 function mergeOverride(base: Config, override: Override): Config {
@@ -237,6 +240,8 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
 
   // Advanced local controls: only fields the panel/bundle configured are
   // written; the stored config keeps everything else from the previous run.
+  // The plugin defaults to the ACP executor: tasks run real DSH sessions.
+  const executor = config.executor ?? "acp"
   const advanced = {
     ...(config.task_timeout_s === undefined ? {} : { task_timeout_s: config.task_timeout_s }),
     ...(config.approval_timeout_s === undefined ? {} : { approval_timeout_s: config.approval_timeout_s }),
@@ -246,6 +251,7 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
     ...(config.allow_public_peers === undefined ? {} : { allow_public_peers: config.allow_public_peers }),
     ...(config.allow_loopback_peers === undefined ? {} : { allow_loopback_peers: config.allow_loopback_peers }),
     ...(config.permission_mode === undefined ? {} : { permission_mode: config.permission_mode }),
+    executor,
   }
 
   let next: OrcaNodeConfig
@@ -280,12 +286,15 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       ...(config.allow_public_peers === undefined ? {} : { allowPublicPeers: config.allow_public_peers }),
       ...(config.allow_loopback_peers === undefined ? {} : { allowLoopbackPeers: config.allow_loopback_peers }),
       ...(config.permission_mode === undefined ? {} : { permissionMode: config.permission_mode }),
+      executor,
     })
   }
 
   // A panel-cleared field must not survive in the persisted orca node config.
+  // `executor` is excepted: the plugin always writes its effective value above.
   const mutable = next as unknown as Record<string, unknown>
   for (const key of ADVANCED_KEYS) {
+    if (key === "executor") continue
     if (config[key] === undefined) delete mutable[key]
   }
 

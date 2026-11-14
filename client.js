@@ -162,6 +162,8 @@ window.__ModuleLoader__.load({
         cfgAllowPublicPeers: "public candidate peers",
         cfgAllowLoopbackPeers: "loopback candidates",
         cfgPermissionMode: "local permission ceiling",
+        cfgExecutor: "executor",
+        cfgExecutorHint: "acp runs real DSH sessions; echo is the debug script machine.",
         cfgAdvancedInvalid: "must be a positive number",
         cfgDefaultOption: "default",
         cfgAllowOption: "allow",
@@ -284,6 +286,8 @@ window.__ModuleLoader__.load({
         cfgAllowPublicPeers: "公网候选节点",
         cfgAllowLoopbackPeers: "回环候选节点",
         cfgPermissionMode: "本机权限上限",
+        cfgExecutor: "执行器",
+        cfgExecutorHint: "acp 跑真实的 DSH 会话；echo 是调试用脚本机。",
         cfgAdvancedInvalid: "必须是正数",
         cfgDefaultOption: "默认",
         cfgAllowOption: "允许",
@@ -982,6 +986,7 @@ window.__ModuleLoader__.load({
         advanced.allow_loopback_peers === true ? "allow" : advanced.allow_loopback_peers === false ? "deny" : "",
       );
       const [permissionMode, setPermissionMode] = React.useState(advanced.permission_mode || "");
+      const [executor, setExecutor] = React.useState(advanced.executor || "");
       const [error, setError] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [resetArmed, setResetArmed] = React.useState(false);
@@ -1035,6 +1040,7 @@ window.__ModuleLoader__.load({
           patch.allow_public_peers = publicPeers.length === 0 ? null : publicPeers === "allow";
           patch.allow_loopback_peers = loopbackPeers.length === 0 ? null : loopbackPeers === "allow";
           patch.permission_mode = permissionMode.length === 0 ? null : permissionMode;
+          patch.executor = executor.length === 0 ? null : executor;
           const next = await api("/orca-api/config", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -1217,6 +1223,11 @@ window.__ModuleLoader__.load({
               { value: "", label: t("cfgDefaultOption") },
               { value: "allow", label: t("cfgAllowOption") },
               { value: "deny", label: t("cfgDenyOption") },
+            ]),
+            advancedSelect(t("cfgExecutor"), executor, setExecutor, [
+              { value: "", label: t("cfgDefaultOption") },
+              { value: "acp", label: "acp" },
+              { value: "echo", label: "echo" },
             ]),
           ),
         ),

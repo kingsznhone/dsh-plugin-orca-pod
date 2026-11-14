@@ -161,6 +161,8 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
           }
           if (body["permission_mode"] === null) patch["permission_mode"] = null
           else if (typeof body["permission_mode"] === "string") patch["permission_mode"] = body["permission_mode"]
+          if (body["executor"] === null) patch["executor"] = null
+          else if (body["executor"] === "echo" || body["executor"] === "acp") patch["executor"] = body["executor"]
           sendJson(response, 200, await admin.saveConfig(patch))
           return
         }
@@ -223,7 +225,7 @@ interface InjectingContext extends HostContext {
  * Register the panel route on the host web server.
  *
  * Registration is fenced behind `inject(['webServer'])` so a host without a web
- * UI (headless, ACP, CLI) simply skips the panel instead of failing startup.
+ * UI (ACP, CLI) simply skips the panel instead of failing startup.
  */
 export function registerPodWeb(ctx: HostContext, admin: PodAdmin, logger: HostLogger): void {
   const route = podApiRoute(admin)

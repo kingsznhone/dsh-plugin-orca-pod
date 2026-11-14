@@ -21,7 +21,8 @@
     "README.md"
   ],
   "bin": {
-    "orca-node": "./src/cli.ts"
+    "orca-node": "./src/cli.ts",
+    "orca-pod": "./src/orca-pod.ts"
   },
   "dsh": {
     "bundle": {

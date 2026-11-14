@@ -71,6 +71,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
         allow_public_peers: null,
         allow_loopback_peers: null,
         permission_mode: null,
+        executor: null,
       },
       password_set: true,
       running: true,
@@ -301,11 +302,12 @@ describe("panel HTTP bridge", () => {
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
+        executor: "echo",
       },
     });
     expect(saved.status).toBe(200);
     expect(admin.calls).toEqual([
-      'saveConfig:{"task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"allow_public_peers":true,"allow_loopback_peers":false,"permission_mode":"workspace-write"}',
+      'saveConfig:{"task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"allow_public_peers":true,"allow_loopback_peers":false,"permission_mode":"workspace-write","executor":"echo"}',
     ]);
 
     // Clearing a control sends null, so the override (and the persisted config
@@ -313,11 +315,11 @@ describe("panel HTTP bridge", () => {
     const cleared = await invoke(createPodApiHandler(admin), {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
-      body: { task_timeout_s: null, allow_public_peers: null, permission_mode: null },
+      body: { task_timeout_s: null, allow_public_peers: null, permission_mode: null, executor: null },
     });
     expect(cleared.status).toBe(200);
     expect(admin.calls[1]).toBe(
-      'saveConfig:{"task_timeout_s":null,"allow_public_peers":null,"permission_mode":null}',
+      'saveConfig:{"task_timeout_s":null,"allow_public_peers":null,"permission_mode":null,"executor":null}',
     );
   });
 

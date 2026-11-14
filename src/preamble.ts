@@ -1,7 +1,7 @@
 /**
  * Orchestration preamble for real executors (§6.14, §6.15).
  *
- * A headless or ACP agent runs in its own profile, so it cannot see the plugin's
+ * An ACP or CLI agent runs in its own profile, so it cannot see the plugin's
  * tools. The local `orca-node` CLI is the bridge: the preamble tells the agent
  * which task it is, where the CLI lives, and how to delegate, wait, escalate,
  * and publish produced files back to its origin.

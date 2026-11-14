@@ -14,7 +14,6 @@ import {
 } from "./dispatches.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createPodEventBus, type PodEventListener } from "./events.ts";
-import { createHeadlessExecutor } from "./headless.ts";
 import {
   candidateEndpointAllowed,
   detectLocalEndpoints,
@@ -294,11 +293,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const workspace: Workspace | null = workspaceManager?.get() ?? null;
   const executor: LocalExecutor =
     options.executor ??
-    (config.executor === "headless"
-      ? createHeadlessExecutor(config.headless ?? {})
-      : config.executor === "acp"
-        ? createAcpExecutor({ ...(config.acp ?? {}), data_root: config.data_root })
-        : new EchoExecutor());
+    (config.executor === "acp"
+      ? createAcpExecutor({ ...(config.acp ?? {}), data_root: config.data_root })
+      : new EchoExecutor());
   const tasks = createTaskRunner({
     executor,
     blobs,

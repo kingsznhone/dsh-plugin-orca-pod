@@ -1,14 +1,13 @@
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createAcpExecutor } from "../src/acp.ts";
 import { childPodMetadata, validatePodMetadata } from "../src/chain.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor.ts";
-import { createHeadlessExecutor } from "../src/headless.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
 import {
   narrowPermissionMode,
@@ -16,7 +15,6 @@ import {
   type PodTaskMetadata,
 } from "../src/protocol.ts";
 
-const FAKE_DSH = fileURLToPath(new URL("./fixtures/fake-dsh.mjs", import.meta.url));
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 
 async function collect(
@@ -33,7 +31,7 @@ async function tempDir(): Promise<string> {
   return root;
 }
 
-function headlessInput(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInput {
+function input(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInput {
   return {
     taskId: "task-1",
     contextId: "context-1",
@@ -45,14 +43,11 @@ function headlessInput(root: string, overrides: Partial<ExecuteInput> = {}): Exe
   };
 }
 
-function acpInput(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInput {
-  return headlessInput(root, overrides);
+function taskText(view: Awaited<ReturnType<ReturnType<typeof createOrcaNode>["getTask"]>>): string {
+  return (view.status.message?.parts ?? [])
+    .map((part) => (part.kind === "text" ? part.text : ""))
+    .join("");
 }
-
-afterEach(() => {
-  delete process.env.FAKE_DSH_MODE;
-  delete process.env.FAKE_DSH_ARGS_FILE;
-});
 
 describe("permission modes", () => {
   it("ranks modes and keeps the narrower one", () => {
@@ -83,21 +78,6 @@ describe("permission modes", () => {
 });
 
 describe("permission mode execution", () => {
-  it("headless passes the inherited mode to dsh", async () => {
-    const root = await tempDir();
-    const argsFile = join(root, "args.json");
-    process.env.FAKE_DSH_MODE = "ok";
-    process.env.FAKE_DSH_ARGS_FILE = argsFile;
-    const executor = createHeadlessExecutor({
-      command: process.execPath,
-      extra_args: [FAKE_DSH],
-      permission_mode: "danger-full-access",
-    });
-    await collect(executor.run(headlessInput(root, { permissionMode: "read-only" }), new AbortController().signal));
-    const args = JSON.parse(await readFile(argsFile, "utf8")) as { argv: string[] };
-    expect(args.argv).toEqual(expect.arrayContaining(["--permission-mode", "read-only"]));
-  });
-
   it("acp auto-denies writes when the inherited mode is read-only", async () => {
     const root = await tempDir();
     const executor = createAcpExecutor({
@@ -105,7 +85,7 @@ describe("permission mode execution", () => {
       extra_args: [FAKE_ACP, "permission", join(root, "acp.log")],
     });
     const events = await collect(
-      executor.run(acpInput(root, { permissionMode: "read-only" }), new AbortController().signal),
+      executor.run(input(root, { permissionMode: "read-only" }), new AbortController().signal),
     );
     expect(events.map((event) => event.type)).not.toContain("suspend");
     expect(events.at(-1)).toEqual({ type: "completed", text: "acp donedenied" });
@@ -119,7 +99,7 @@ describe("permission mode execution", () => {
       extra_args: [FAKE_ACP, "permission", join(root, "acp.log")],
     });
     const events = await collect(
-      executor.run(acpInput(root, { permissionMode: "workspace-write" }), new AbortController().signal),
+      executor.run(input(root, { permissionMode: "workspace-write" }), new AbortController().signal),
     );
     expect(events.map((event) => event.type)).not.toContain("suspend");
     expect(events.at(-1)).toEqual({ type: "completed", text: "acp doneallowed" });
@@ -132,23 +112,20 @@ describe("permission mode execution", () => {
       command: process.execPath,
       extra_args: [FAKE_ACP, "permission", join(root, "acp.log")],
     });
-    const events = await collect(executor.run(acpInput(root), new AbortController().signal));
+    const events = await collect(executor.run(input(root), new AbortController().signal));
     expect(events[0]).toMatchObject({ type: "suspend", suspend: { kind: "permission" } });
     executor.close?.();
   });
 
   it("narrows the origin mode by the local ceiling end to end", async () => {
     const root = await tempDir();
-    const argsFile = join(root, "args.json");
-    process.env.FAKE_DSH_MODE = "ok";
-    process.env.FAKE_DSH_ARGS_FILE = argsFile;
     const config = createOrcaNodeConfig({
       workgroupId: "orca-mode",
       password: "correct horse",
       dataRoot: root,
       port: 0,
-      executor: "headless",
-      headless: { command: process.execPath, extra_args: [FAKE_DSH] },
+      executor: "acp",
+      acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
       permissionMode: "read-only",
     });
     const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
@@ -158,15 +135,16 @@ describe("permission mode execution", () => {
         message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
         metadata: { pod: { permission_mode: "danger-full-access" } },
       });
+      let current = view;
       for (let i = 0; i < 100; i += 1) {
-        const current = await node.getTask(node.endpoints[0]!, view.id);
+        current = await node.getTask(node.endpoints[0]!, view.id);
         if (current.status.state === "completed" || current.status.state === "failed") break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
+      expect(current.status.state).toBe("completed");
+      expect(taskText(current)).toContain("acp donedenied");
     } finally {
       await node.stop();
     }
-    const args = JSON.parse(await readFile(argsFile, "utf8")) as { argv: string[] };
-    expect(args.argv).toEqual(expect.arrayContaining(["--permission-mode", "read-only"]));
   });
 });

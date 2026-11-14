@@ -34,7 +34,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 5. 任务异步执行：提交后返回 task id，进度和结果通过 task 状态取回。
 6. orca node 上下线可被观测；某个 orca node 掉线后，其余 orca node 不再给它派任务。
 7. 跨 workgroup 隔离；不同 workgroup 的 orca node 互不可见、互不可调。
-8. 本地执行器可替换：Echo / headless / ACP / in-process 不改变集群协议。
+8. 本地执行器可替换：Echo / ACP / in-process 不改变集群协议。
 9. 设计可跨 Windows/Linux 移植；不依赖某台机器的本地路径或 DSH profile。
 10. orca node 信息可发现：OS 与版本、CPU、内存、GPU、DSH 版本，以及当前是否忙。
 11. 长程协作连贯：同一个 workgroup 里，后续任务能在同一工作区接着上次的上下文继续，而不是每次从零开始。

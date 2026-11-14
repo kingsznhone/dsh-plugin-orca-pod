@@ -64,6 +64,11 @@ export interface Config {
   allow_loopback_peers?: boolean
   /** Local ceiling for tasks this orca node runs (§7.10). */
   permission_mode?: PermissionMode
+  /**
+   * Executor the host node runs tasks with: `acp` (default) drives a real DSH
+   * ACP session; `echo` is the debugging script machine (§6.2).
+   */
+  executor?: "echo" | "acp"
 }
 
 /** Thrown when a config object does not satisfy the bundle's schema. */
@@ -239,6 +244,18 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
+  let executor: "echo" | "acp" | undefined
+  const executorRaw = value["executor"]
+  if (executorRaw !== undefined && executorRaw !== null) {
+    if (executorRaw === "headless") {
+      issues.push({ path: ["executor"], message: 'the "headless" executor was removed; use "acp"' })
+    } else if (executorRaw !== "echo" && executorRaw !== "acp") {
+      issues.push({ path: ["executor"], message: 'must be "echo" or "acp"' })
+    } else {
+      executor = executorRaw
+    }
+  }
+
   if (issues.length > 0) throw new ConfigValidationError(issues)
 
   const config: Config = { workgroup_id, workgroup_password, port, skill_injection, peers }
@@ -254,6 +271,7 @@ export function validateConfigInput(value: unknown): Config {
   if (allow_public_peers !== undefined) config.allow_public_peers = allow_public_peers
   if (allow_loopback_peers !== undefined) config.allow_loopback_peers = allow_loopback_peers
   if (permission_mode !== undefined) config.permission_mode = permission_mode
+  if (executor !== undefined) config.executor = executor
   return config
 }
 

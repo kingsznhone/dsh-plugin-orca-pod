@@ -5,7 +5,7 @@
  * call here and lets the Orca Pod UI answer it — the chat card when the asking
  * session is on screen, otherwise the popup or the panel's approval list. The
  * wait has no timeout: a desktop main session blocks until the user answers,
- * and a headless/CLI/ACP session is never asked directly (it has an upstream
+ * and a CLI/ACP session is never asked directly (it has an upstream
  * that owns the decision).
  */
 

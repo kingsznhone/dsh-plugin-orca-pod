@@ -3,7 +3,7 @@
  * the `orca-node` CLI.
  *
  * The bundle itself only registers tools inside the DSH host process it runs
- * in. Headless and ACP executors start *other* `dsh` subprocesses (other
+ * in. The ACP executor and CLI sessions start *other* `dsh` subprocesses (other
  * profiles), so the only portable way to hand them a capability is a skill
  * file under the user skill root (`$DSH_HOME/skills` or `~/.dsh/skills`). The
  * file is written during plugin apply, with the CLI path and data root of this

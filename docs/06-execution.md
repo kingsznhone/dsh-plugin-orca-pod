@@ -34,7 +34,7 @@ interface LocalExecutor {
 
 `permissionMode` 必须来自 origin 会话，由 A2A 请求携带并签名；target 不得上调它，只能按它执行或在越界时 escalate。
 
-**Phase 3 实现**：origin 把会话模式写进 `metadata.pod.permission_mode`；target 的 `tasks.ts` 计算生效模式 = 较窄者（本机 `config.permission_mode` 上限 vs 继承值），再传给执行器。`HeadlessExecutor` 把它作 `--permission-mode`；`AcpExecutor` 按模式自动回答 `session/request_permission`（`read-only` 拒绝写类工具、`workspace-write` 允许工作区内编辑/执行、`danger-full-access` 全允许），没有继承模式时仍挂起走 origin 审批（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+**Phase 3 实现**：origin 把会话模式写进 `metadata.pod.permission_mode`；target 的 `tasks.ts` 计算生效模式 = 较窄者（本机 `config.permission_mode` 上限 vs 继承值），再传给执行器。`ACP` 把它作 `--permission-mode`；`AcpExecutor` 按模式自动回答 `session/request_permission`（`read-only` 拒绝写类工具、`workspace-write` 允许工作区内编辑/执行、`danger-full-access` 全允许），没有继承模式时仍挂起走 origin 审批（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
 **Phase 0 实现**：`src/executor.ts` 当前的 `LocalExecutor` 是事件流接口——`run(input: { taskId, contextId?, metadata? }, signal: AbortSignal): AsyncGenerator<ExecutorEvent>`，事件为 `suspend | artifact | completed | failed`；上面的 `submit/get/cancel/subscribe/onPermissionRequest` 是目标接口，尚未实现。
 
@@ -43,13 +43,12 @@ interface LocalExecutor {
 | 实现 | 适用 | 优点 | 缺点 | 现状 |
 |---|---|---|---|---|
 | `EchoExecutor` | Phase 0 协议验证 | 无 DSH 依赖、确定性 | 不执行真实任务 | 已实现 |
-| `HeadlessExecutor` | 一次性任务 | 最简单，`dsh headless "..."` | 无流式、无协作取消、无多轮 | 已实现（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)） |
-| `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent | 已实现（[§6.15](06-execution.md#615-acpexecutorphase-23-长任务执行器)） |
+| `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent | 已实现（[§6.14](06-execution.md#614-acpexecutorphase-23-长任务执行器)） |
 | `InProcessExecutor` | 深度集成 | 无子进程协议、性能好 | 与 DSH 内部 API 耦合，升级易碎 | 未实现 |
 
-推荐顺序：Echo → Headless → ACP，三者现已齐。
+推荐顺序：Echo → ACP，两者已齐。
 
-**谁选执行器**：由**被调用 orca node 自己的配置**决定（将来 `node.executor: "echo" | "headless" | "acp"`），origin 不参与，也不能在任务里指定。executor 是本机实现细节，A2A 线协议完全相同；任务 manifest 里回报的 `executor` 字段只是“这台机器实际用了哪个”的观测事实，不是调用方可以要求的东西。要区分“能不能干这个活”，看 Agent Card / runtime 能力，而不是看执行器类型。
+**谁选执行器**：由**被调用 orca node 自己的配置**决定（`config.executor: "echo" | "acp"`，插件默认 `acp`），origin 不参与，也不能在任务里指定。executor 是本机实现细节，A2A 线协议完全相同；任务 manifest 里回报的 `executor` 字段只是“这台机器实际用了哪个”的观测事实，不是调用方可以要求的东西。要区分“能不能干这个活”，看 Agent Card / runtime 能力，而不是看执行器类型。
 
 ### 6.3 EchoExecutor：用脚本模拟任务
 
@@ -95,7 +94,7 @@ Pod gateway (local)
 
 建议为集群任务使用**专属 profile**（如 `orca`），与用户日常 GUI profile 隔离；ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
 
-**executor 默认不启用 pod 远程工具**：ACPI/headless 会话要么通过 CLI、要么通过插件工具去派发子任务，没有隐式转发。多跳本身不受限制——网关强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），agent 不能自己填；唯一的构造性约束是祖先禁调，环靠 `chain` 检测而不是深度上限。
+**executor 默认不启用 pod 远程工具**：ACP 会话要么通过 CLI、要么通过插件工具去派发子任务，没有隐式转发。多跳本身不受限制——网关强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），agent 不能自己填；唯一的构造性约束是祖先禁调，环靠 `chain` 检测而不是深度上限。
 
 ### 6.5 ACP 映射
 
@@ -127,7 +126,7 @@ Pod gateway (local)
    │     ├─ notes/                   ← 跨 session 的态势感知（STATUS.md、决策、待办）
    │     └─ inputs/<task_id>/        ← 本任务的素材，网关在任务开始前写入、终态删除
    └─ state/<workgroup_id>/          ← 网关状态，agent 不可见、不可写
-         ├─ sessions.json            ← (origin, context) → ACP/headless session
+         ├─ sessions.json            ← (origin, context) → ACP session
          └─ tasks/<task_id>/         ← 每任务私有状态
 ```
 
@@ -147,7 +146,7 @@ Pod gateway (local)
 **跨任务交接（notes/）**：`notes/` 是给**下一个任务/下一个 session** 的现场记录，不是协议字段。节点的做法不是强制格式，而是“把现场摆在任务书里”：
 
 - 建任务时列出 `notes/` 顶层文件（最多 20 个）追加到任务书附录，agent 打开就知道有哪些前情（`notes/STATUS.md`、决策、待办）；
-- headless/ACP 的 preamble 里说明 cwd 是共享 workgroup 根、开工先读 `notes/STATUS.md`、收尾更新它；
+- ACP 的 preamble 里说明 cwd 是共享 workgroup 根、开工先读 `notes/STATUS.md`、收尾更新它；
 - 同一 workgroup 多 origin 交替派任务时，靠的也是这份笔记而不是互相看不见（[§6.7](#67-工作区一份持久)）。
 
 **实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐并 `purgeInputs()`。任务执行时把 workgroup 根作为 `ExecuteInput.workspaceDir`（executor 的 cwd），把 `state/<workgroup_id>/` 作为 `podDir`。物化、附录（inputs 清单 + notes 清单）与清理在 `src/tasks.ts`（`materializeInputs`、`promptWithAttachments`、`finish`）；notes 提示在 `src/preamble.ts`。
@@ -250,73 +249,7 @@ session_id → workspace（本 orca node 唯一的那份）
 - 跨平台：目录分隔符、大小写不敏感（Windows）、保留名（`CON`、`NUL`、`aux`）、尾随点/空格都要处理；路径比较统一用规范化后的形式。
 - 记录：每个任务记录 `workgroup_id`、实际 cwd（相对路径）、写入了哪些文件。
 
-### 6.14 HeadlessExecutor（Phase 2 真实执行器）
-
-Phase 2 的第一个真实执行器：把任务文本交给 `dsh headless` 子进程，把它的 NDJSON 事件翻译成 `LocalExecutor` 事件。它是最薄的一层——一次任务一个进程，没有流式进度、没有交互式权限。
-
-**配置**（orca node 本地，origin 不可指定，见 [§6.2](06-execution.md#62-实现)）：
-
-```json
-{
-  "executor": "headless",
-  "headless": {
-    "command": "dsh",
-    "profile": "headless",
-    "permission_mode": "read-only",
-    "approval_policy": "never",
-    "extra_args": []
-  }
-}
-```
-
-**调用形态**：
-
-```
-dsh --profile headless --json \
-  --permission-mode <preset> --approval-policy never \
-  --add-dir <workspace>/work \
-  [--session-id <session_id>] \
-  <prompt>
-```
-
-- cwd = `<workspace>/work`；`--add-dir` 再显式给一次 work 的绝对路径（`workspace-write` 下 dsh 只接受绝对目录）。
-- `approval_policy` 默认 `never`：无人值守的 orca node 不能弹本地审批窗；Phase 3 的升级回路还没接。
-- 首次运行不带 `--session-id`，从 `{"type":"session","sessionId":…}` 拿到 id，写 `<data_root>/state/<workgroup_id>/sessions.json`，键 `<origin_orca_node>|<context_id>`；同一 context 的后续任务带 `--session-id` 续跑。
-- `command` 可覆盖，测试用它指向假 dsh；`extra_args` 原样插在最前。
-
-**事件映射**（stdout 每行一个 JSON）：
-
-| dsh 事件 | executor 事件 |
-|---|---|
-| `{"type":"session","sessionId":…}` | 无（记录 session id） |
-| `{"type":"status","phase":"turn_end","reason":{"kind":"error","error":{"message":…}}}` | 记下失败原因 |
-| `{"type":"final","text":…}` | `completed`（失败原因为空时） |
-| `{"type":"final","reason":{"kind":"error"…}}` | `failed`（取 reason.error.message） |
-| 其它（`step_*`、`assistant`、`turn_*`） | 忽略；Phase 2 不做流式 |
-
-- 进程退出但没见到 `final` → `failed("dsh exited without a final event")`，附 stderr 尾部 4 KiB。
-- 取消：`AbortSignal` → 先 SIGTERM，2s 后 SIGKILL；Windows 用 `taskkill /pid <pid> /T /F` 杀整棵树（`dsh` 会拉子进程）。
-- 超时：仍由任务层 `task_ttl_s` abort；executor 只负责杀进程。
-- 结果文本：`final.text` 直接作为任务结论（走 [§6.11](06-execution.md#611-任务结果与产物) 的内联/截断规则）。
-- prompt 前置 `[orca-pod]` 编排 preamble（任务 id、本 orca node id、`orca-node` CLI 绝对路径、cwd 是共享 workgroup 根且 `notes/` 用于跨任务交接、`publish`/`escalate`/`wait` 用法，以及 `send --local-task` 后本节点会自动挂起等待 origin 决定、agent 不必自己 `escalate`），与 AcpExecutor 共用 `src/preamble.ts`：headless 子进程也要知道自己是跨节点任务的一部分。spawn 时额外传 `ORCA_POD_PARENT_TASK=<taskId>`，agent 用 CLI `send` 派子任务时自动登记 child-link（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
-- usage：`step_end` 里的 `usage.{inputTokens,outputTokens,cacheReadTokens}` 采集成任务 `usage`。
-- 错误码：`turn_end`/`final` 的 `reason.error.code` 透传为任务 `reason`（如 `AUTH_MISSING`），没有 code 时回落 `executor_error`。
-
-**不做**（留给 AcpExecutor）：`message/stream` 流式进度、`session/update` 细粒度事件、`input-required` 的权限升级透传、协作取消。
-
-**测试**：`test/headless.test.ts` 用 `command: process.execPath` + `extra_args: [fake-dsh.mjs]` 起假 dsh。覆盖：正常完成、`turn_end` 错误、错误码透传、usage 采集、没有 `final` 就退出、挂起被 abort（进程被杀）、第二次任务带 `--session-id` 且 sessions.json 的键正确、prompt 带 preamble。
-
-**真实环境（Windows）**：`dsh` 装出来是 `.cmd` shim，`spawn("dsh")` 会 `ENOENT`。executor 先按 `PATH` + `PATHEXT` 把 `command` 解析成真实路径；命中 `.cmd`/`.bat` 时经 `cmd.exe /d /s /c` 启动，并把 prompt 改成 `-` 从 stdin 传入，避免 shell 引号问题（其余参数由 config 决定，保持原样）。
-
-**真实冒烟**（需要模型凭据，不进 `npm test`）：
-
-```
-DEEPSEEK_API_KEY=... node scripts/e2e-headless.ts
-```
-
-本机实测（2026-11-14，Windows）：两个任务各约 10s；任务 1 `completed` 且 `final.text` 为 `stored`，任务 2 在同一个 context 里复用 session 答出 `pong`；`sessions.json` 只留一条 `<origin_orca_node>|ctx-e2e-headless` 绑定。
-
-### 6.15 AcpExecutor（Phase 2/3 长任务执行器）
+### 6.14 AcpExecutor（Phase 2/3 长任务执行器）
 
 Phase 2 的第二个真实执行器，也是唯一能承接**权限挂起**的那种：任务交给 `dsh --profile acp`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
 
@@ -348,7 +281,7 @@ cwd = workgroup 根；每次任务一条 in-flight prompt（ACP 服务端本身�
 
 **会话复用**：`state/<workgroup_id>/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
 
-**给 ACP 会话加工具：CLI 优先（Phase 3）**：ACP agent 自带 shell（实测可执行命令），所以不需要把工具 schema 常驻进上下文。`AcpExecutor` 在每条 prompt 前加一段 preamble——`[orca-pod] You are executing task <id> as orca node <id>`、`orca-node` CLI 的绝对路径、`send`/`wait`/`escalate` 用法与退出码——agent 用 shell 调 CLI 即可派任务、查状态、等结果，子任务需要权限时用 `escalate` 把决定权交还 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。CLI 读本机 `config.json` 派生密钥，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；CLI 不是节点，没有独立身份。`send --local-task <此 task>` 建子任务时向本机登记 child-link（headless 自动带父任务 id），本节点每 1s 轮询子任务、遇到权限请求就把父任务挂起为 `input-required`，由 origin 一处决定（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），agent 不必再单独调 `escalate`；`wait --local-task` 保留手动上升路径（同一 `request_id` 只上升一次）。插件安装时还会把同一套用法写成 user skill（`$DSH_HOME/skills/orca-node/SKILL.md`，幂等、可关），让 headless/ACP 子进程的 profile 自己发现 `orca-node`——和 preamble 互为兜底。MCP（`acp.mcp_servers`）保留为可选透传：需要结构化 schema 的第三方工具仍可挂，但 orca-pod 自己的 `pod_*` 不再依赖它。
+**给 ACP 会话加工具：CLI 优先（Phase 3）**：ACP agent 自带 shell（实测可执行命令），所以不需要把工具 schema 常驻进上下文。`AcpExecutor` 在每条 prompt 前加一段 preamble——`[orca-pod] You are executing task <id> as orca node <id>`、`orca-node` CLI 的绝对路径、`send`/`wait`/`escalate` 用法与退出码——agent 用 shell 调 CLI 即可派任务、查状态、等结果，子任务需要权限时用 `escalate` 把决定权交还 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。CLI 读本机 `config.json` 派生密钥，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；CLI 不是节点，没有独立身份。`send --local-task <此 task>` 建子任务时向本机登记 child-link（子进程自动带父任务 id），本节点每 1s 轮询子任务、遇到权限请求就把父任务挂起为 `input-required`，由 origin 一处决定（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），agent 不必再单独调 `escalate`；`wait --local-task` 保留手动上升路径（同一 `request_id` 只上升一次）。插件安装时还会把同一套用法写成 user skill（`$DSH_HOME/skills/orca-node/SKILL.md`，幂等、可关），让 ACP 子进程的 profile 自己发现 `orca-node`——和 preamble 互为兜底。MCP（`acp.mcp_servers`）保留为可选透传：需要结构化 schema 的第三方工具仍可挂，但 orca-pod 自己的 `pod_*` 不再依赖它。
 
 **不做**：把 `message/stream` 的进度透传到 A2A 流（结论仍走 `tasks/get` 轮询）、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、多 in-flight prompt。
 
@@ -362,7 +295,7 @@ DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
 
 **测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail | model-reject`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`，以及按任务选模型（`session/set_config_option` 先于 `session/prompt`；目标拒绝时 `failed(model_unavailable)`）。
 
-### 6.16 按任务选择模型
+### 6.15 按任务选择模型
 
 orca node 的默认模型由本机 profile 决定（`agent-default-model` 插件），但同一 mesh 里的机器可能装着不同 provider/模型。协议为此只加两样东西：**节点自述目录**与**任务里的可选选择**，不发明跨节点配置通道。
 
@@ -370,7 +303,7 @@ orca node 的默认模型由本机 profile 决定（`agent-default-model` 插件
 
 **选择**：任务书 `metadata.pod.model` 可选 `{provider, model, reasoning_effort?}`，与 `pod.permission_mode` 同级校验（`validatePodMetadata`，非法直接 `bad_request`）；CLI `orca-node send --model <provider/model> [--reasoning-effort <effort>]` 与工具 `pod_send` 的 `model`/`reasoning_effort` 参数都落到同一字段。
 
-**目标侧执行**：只有 ACP 执行器支持按任务选模型。它在 `session/new`/`session/resume` 拿到 `sessionId` 后、发 `session/prompt` 之前，按 ACP 的 `session/set_config_option` 选择 `configId="model"`、`value=JSON.stringify([provider, model])`；带 reasoning effort 时再选一次 `configId="reasoning_effort"`。选择失败（模型不在该会话的 configuration options 里、或 ACP 拒绝）→ 任务直接 `failed(model_unavailable)`，不会用默认模型偷偷跑。其他执行器（Echo/headless）收到 `pod.model` 时不猜测，直接 `failed(model_unsupported)`：headless 子进程的模型属于 profile/launcher 层，需要按子进程 `--patch` 覆盖默认模型插件才能换（当前未实现）。选择是**提示、不是授权**：目标机仍按本机 `permission_mode`、审批与工作区规则执行；模型目录也不泄露凭据或 provider 配置。
+**目标侧执行**：只有 ACP 执行器支持按任务选模型。它在 `session/new`/`session/resume` 拿到 `sessionId` 后、发 `session/prompt` 之前，按 ACP 的 `session/set_config_option` 选择 `configId="model"`、`value=JSON.stringify([provider, model])`；带 reasoning effort 时再选一次 `configId="reasoning_effort"`。选择失败（模型不在该会话的 configuration options 里、或 ACP 拒绝）→ 任务直接 `failed(model_unavailable)`，不会用默认模型偷偷跑。其他执行器（Echo）收到 `pod.model` 时不猜测，直接 `failed(model_unsupported)`：ACP 子进程的模型属于 profile/launcher 层，需要按子进程 `--patch` 覆盖默认模型插件才能换（当前未实现）。选择是**提示、不是授权**：目标机仍按本机 `permission_mode`、审批与工作区规则执行；模型目录也不泄露凭据或 provider 配置。
 
 **测试**：`test/model-selection.test.ts` 覆盖配置校验边界、join 目录双向可见、非 ACP 执行器 `model_unsupported`、Host 服务目录采集（坏 provider 跳过）；ACP 选模顺序与拒绝路径在 `test/acp.test.ts`，工具参数校验在 `test/plugin.test.ts`。
 

@@ -31,7 +31,7 @@
 - `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
 - `pod.root`：这条调用树的根 task id。origin 建 task 时等于自己的 task id。
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`），target 不能放大；本机 `config.permission_mode` 是本地上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。
-- `pod.model`（可选）：origin 想用的 `{provider, model, reasoning_effort?}`；target 只在自己自述的目录里认它，并由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.16](06-execution.md#616-按任务选择模型)）。
+- `pod.model`（可选）：origin 想用的 `{provider, model, reasoning_effort?}`；target 只在自己自述的目录里认它，并由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
 - 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
 - **祖先禁调（硬限制）**：子任务的目标集合必须排除 `pod.chain` 里的所有 orca node 和自身。尝试调用 → `403 ancestor_call_forbidden`。A→B→A 在第一次就被拒绝，而不是等到第 N 跳才断。
 - 被祖先禁调挡住时，正确动作是把问题写进 `input-required` + `blocked`（[§4.8](04-transport.md#48-任务状态机)），让 A 看到后决定下一步；不是换条路再调回去。
@@ -121,7 +121,6 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 `tasks/cancel` 必须传到 LocalExecutor：
 
 - ACP：`session/cancel`，等待确认，超时后终止子进程；
-- headless：终止进程树（Windows 用 Job Object，Linux 用 process group）；
 - in-process：调取消钩子。
 
 取消后 task 置 `canceled`；若执行器已完成，返回 `completed` 并说明“取消未生效”。取消同时**吊销该 task 的 grant**（[§7.11](07-security.md#711-grant)）。

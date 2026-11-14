@@ -21,16 +21,7 @@ export type BindConfig = {
   port: number;
 };
 
-export type ExecutorKind = "echo" | "headless" | "acp";
-
-/** Local executor choice and its options; origin cannot override these (§6.2). */
-export type HeadlessExecutorConfig = {
-  command?: string;
-  profile?: string;
-  permission_mode?: string;
-  approval_policy?: "ask" | "never";
-  extra_args?: string[];
-};
+export type ExecutorKind = "echo" | "acp";
 
 /** One MCP server handed to the ACP session at session/new (§6.15). */
 export type AcpMcpServer = {
@@ -60,7 +51,6 @@ export type OrcaNodeConfig = {
   key_base64: string;
   created_at: string;
   executor?: ExecutorKind;
-  headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
   /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
   permission_mode?: PermissionMode;
@@ -96,7 +86,6 @@ export type CreateOrcaNodeConfigOptions = {
   /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); empty derives from bind. */
   endpoints?: string[];
   executor?: ExecutorKind;
-  headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
   permissionMode?: PermissionMode;
   approvalTimeoutS?: number;
@@ -234,7 +223,6 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     key_base64: key.toString("base64"),
     created_at: new Date().toISOString(),
     ...(options.executor ? { executor: options.executor } : {}),
-    ...(options.headless ? { headless: options.headless } : {}),
     ...(options.acp ? { acp: options.acp } : {}),
     ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
       ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
@@ -253,35 +241,6 @@ export async function loadConfig(path: string): Promise<OrcaNodeConfig> {
   const raw = await readFile(path, "utf8");
   const parsed: unknown = JSON.parse(raw);
   return validateConfig(parsed);
-}
-
-function parseHeadlessConfig(value: unknown): HeadlessExecutorConfig | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("config.headless must be an object");
-  }
-  const record = value as Record<string, unknown>;
-  const config: HeadlessExecutorConfig = {};
-  for (const key of ["command", "profile", "permission_mode"] as const) {
-    const raw = record[key];
-    if (raw !== undefined) {
-      if (typeof raw !== "string" || raw.length === 0) throw new Error(`config.headless.${key} must be a non-empty string`);
-      config[key] = raw;
-    }
-  }
-  const approval = record["approval_policy"];
-  if (approval !== undefined) {
-    if (approval !== "ask" && approval !== "never") throw new Error('config.headless.approval_policy must be "ask" or "never"');
-    config.approval_policy = approval;
-  }
-  const extra = record["extra_args"];
-  if (extra !== undefined) {
-    if (!Array.isArray(extra) || extra.some((item) => typeof item !== "string")) {
-      throw new Error("config.headless.extra_args must be a string array");
-    }
-    config.extra_args = extra as string[];
-  }
-  return config;
 }
 
 function parseAcpConfig(value: unknown): AcpExecutorConfig | undefined {
@@ -377,13 +336,14 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   if (!config.key_base64) throw new Error("config.key_base64 is missing");
   const executor = record["executor"];
   if (executor !== undefined) {
-    if (executor !== "echo" && executor !== "headless" && executor !== "acp") {
-      throw new Error('config.executor must be "echo", "headless" or "acp"');
+    if (executor === "headless") {
+      throw new Error("config.executor \"headless\" was removed; use \"acp\" instead");
+    }
+    if (executor !== "echo" && executor !== "acp") {
+      throw new Error('config.executor must be "echo" or "acp"');
     }
     config.executor = executor;
   }
-  const headless = parseHeadlessConfig(record["headless"]);
-  if (headless) config.headless = headless;
   const acp = parseAcpConfig(record["acp"]);
   if (acp) config.acp = acp;
   const permissionMode = record["permission_mode"];
