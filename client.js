@@ -417,6 +417,7 @@ window.__ModuleLoader__.load({
       const [endpoints, setEndpoints] = React.useState(suggested.length > 0 ? suggested : [""]);
       const [error, setError] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      const [resetArmed, setResetArmed] = React.useState(false);
 
       function updateEndpoint(index, value) {
         setEndpoints((rows) => rows.map((row, i) => (i === index ? value : row)));
@@ -467,6 +468,24 @@ window.__ModuleLoader__.load({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({}),
           });
+          if (props.onSaved) props.onSaved(next);
+        } catch (err) {
+          setError(messageOf(err));
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function resetAll() {
+        setBusy(true);
+        setError(null);
+        try {
+          const next = await api("/orca-api/reset", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}",
+          });
+          setResetArmed(false);
           if (props.onSaved) props.onSaved(next);
         } catch (err) {
           setError(messageOf(err));
@@ -544,6 +563,29 @@ window.__ModuleLoader__.load({
           h("div", { style: { flex: 1 } }),
           h("span", { style: { ...MUTED, fontSize: 11 } }, props.config && props.config.running ? "running on " + (props.config.port || "-") : "not running"),
         ),
+        !wizard
+          ? h(
+              "div",
+              { style: { marginTop: 20, paddingTop: 14, borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+              h("div", { style: { ...HINT, marginBottom: 8 } }, "完全重置：删除面板配置（ui-config.json）与节点身份（config.json），回到首启向导。任务记录、blob 与工作区文件不受影响。"),
+              h(
+                "button",
+                {
+                  type: "button",
+                  style: { ...BUTTON, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" },
+                  disabled: busy,
+                  onClick: () => {
+                    if (!resetArmed) {
+                      setResetArmed(true);
+                      return;
+                    }
+                    void resetAll();
+                  },
+                },
+                resetArmed ? "确认重置（再次点击）" : "完全重置",
+              ),
+            )
+          : null,
       );
     }
 

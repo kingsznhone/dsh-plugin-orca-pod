@@ -65,6 +65,10 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       calls.push("disconnect");
       return admin.config();
     },
+    reset: async () => {
+      calls.push("reset");
+      return admin.config();
+    },
     task: async (_peer, taskId) => {
       calls.push("task:" + taskId);
       return taskView(taskId, "working");
@@ -275,6 +279,14 @@ describe("panel HTTP bridge", () => {
     const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/disconnect`, body: {} });
     expect(result.status).toBe(200);
     expect(admin.calls).toEqual(["disconnect"]);
+  });
+
+  it("resets the panel configuration", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const handler = createPodApiHandler(admin);
+    const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/reset`, body: {} });
+    expect(result.status).toBe(200);
+    expect(admin.calls).toEqual(["reset"]);
   });
 
   it("registers one prefix route through ctx.inject and cleans it up", () => {

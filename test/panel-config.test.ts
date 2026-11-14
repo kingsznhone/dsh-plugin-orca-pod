@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { configPath } from "../src/config.ts";
 import { createPodAdmin, normalizePeer } from "../src/plugin/admin.ts";
 import type { PodAdmin } from "../src/plugin/admin.ts";
 import type { Config } from "../src/plugin/config.ts";
@@ -69,6 +70,31 @@ describe("panel override lifecycle", () => {
       const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
       expect(stored["setup_complete"]).toBe(true);
       expect(stored["display_name"]).toBe("renamed node");
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("full reset deletes both configs and returns to the wizard", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod(baseConfig(root), logger);
+    await handle.ready;
+    try {
+      await handle.reconfigure({ display_name: "before reset", peers: [] });
+      const before = handle.runtime.orcaNode!.self().orca_node_id;
+      expect(handle.uiConfigured).toBe(true);
+
+      await handle.reset();
+
+      expect(handle.uiConfigured).toBe(false);
+      expect(handle.config.workgroup_id).toBe("wg-panel");
+      expect(handle.runtime.error).toBeNull();
+      await expect(readFile(overridePath(root), "utf8")).rejects.toThrow();
+      // The persisted identity was deleted too, so the restarted node wrote a
+      // fresh config.json with a new id.
+      const rebuilt = JSON.parse(await readFile(configPath(root), "utf8")) as { orca_node_id: string };
+      expect(rebuilt.orca_node_id).not.toBe(before);
+      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(rebuilt.orca_node_id);
     } finally {
       await stopPod(handle, logger);
     }
@@ -179,6 +205,7 @@ describe("panel admin configuration", () => {
         seen.push(peer);
       },
       disconnect: async () => {},
+        reset: async () => {},
     };
     const admin = adminFor(handle);
     await admin.connect("192.168.1.20:11811");

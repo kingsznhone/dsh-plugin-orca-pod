@@ -12,7 +12,7 @@
  * file and is written only from the loopback-gated panel route (§9.2).
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import {
@@ -61,6 +61,8 @@ export interface PodHandle {
   addPeer(peer: string): Promise<void>
   /** Leave the workgroup: tell known peers and clear the persisted peer list. */
   disconnect(): Promise<void>
+  /** Delete the panel override and the persisted orca node identity (full reset). */
+  reset(): Promise<void>
 }
 
 /** Fields the panel may override; the rest stays owned by the bundle config. */
@@ -331,6 +333,30 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
         handle.config = effective
         const previous = (await loadOverride(dataRoot, logger)) ?? {}
         await saveOverride(dataRoot, { ...previous, peers: [], setup_complete: true })
+      })
+      return queue
+    },
+    reset: async () => {
+      queue = queue.then(async () => {
+        await stopNode(runtime, logger)
+        for (const path of [overridePath(dataRoot), configPath(dataRoot)]) {
+          try {
+            await rm(path, { force: true })
+          } catch (error) {
+            logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`)
+          }
+        }
+        uiConfigured = false
+        handle.uiConfigured = false
+        effective = baseConfig
+        handle.config = effective
+        runtime.error = null
+        if (effective.workgroup_id.length === 0) return
+        try {
+          await startNode(effective, runtime, logger)
+        } catch (error) {
+          logger.error(`orca-pod: restart after reset failed: ${errorMessage(error)}`)
+        }
       })
       return queue
     },

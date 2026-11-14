@@ -88,6 +88,7 @@ function handleFor(node: OrcaNode): PodHandle {
     reconfigure: async () => {},
     addPeer: async () => {},
     disconnect: async () => {},
+        reset: async () => {},
   };
 }
 

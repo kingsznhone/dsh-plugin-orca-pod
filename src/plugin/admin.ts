@@ -81,6 +81,8 @@ export interface PodAdmin {
   connect(peer: string): Promise<PodConfigView>
   /** Leave the workgroup: tell known peers and forget them locally. */
   disconnect(): Promise<PodConfigView>
+  /** Delete the panel override and the persisted orca node identity. */
+  reset(): Promise<PodConfigView>
   /** Change notification; subscribes to both node events and tracker updates. */
   subscribe(listener: () => void): () => void
 }
@@ -210,6 +212,10 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
     },
     async disconnect() {
       await handle.disconnect()
+      return configView()
+    },
+    async reset() {
+      await handle.reset()
       return configView()
     },
     subscribe(listener) {

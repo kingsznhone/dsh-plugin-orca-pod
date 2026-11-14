@@ -84,6 +84,7 @@ describe("pod tools", () => {
     reconfigure: async () => {},
     addPeer: async () => {},
     disconnect: async () => {},
+        reset: async () => {},
   }
   const tracker = createTracker(() => null, { intervalMs: 60_000 })
   const tools = createPodTools(handle, tracker)
