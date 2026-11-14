@@ -42,7 +42,7 @@ packages/orca-pod/
 | `executor.ts` | 部分实现 | EchoExecutor；ACP、Headless、InProcess 未实现 |
 | `tasks.ts` | 已实现 | 单槽状态机；task store 为进程内内存 |
 | `node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
-| `harness.ts` | 已实现 | `createMesh` + mesh/A2A 测试；场景 DSL 未实现 |
+| `harness.ts` | 已实现 | `createMesh`；mesh/A2A/discovery 测试；传输注入未实现 |
 | `plugin/` | 部分实现 | `apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
 | `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
 
@@ -78,10 +78,10 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `gateway.ts` | 进程内 `fetch`，假 executor、注入时钟 | 路由、401/403/429、签名 |
 | `executor.ts` | echo 脚本样本；假 ACP 子进程 | 状态时序、`input-required`、resume |
 | `tasks.ts` | 假 executor + 注入时钟 | 单槽、TTL、取消 |
-| `harness.ts` | 场景 DSL | 成员收敛、任务往返 |
+| `harness.ts` | 多节点 mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个，共 80 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
+Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个、discovery 2 个，共 82 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
@@ -89,7 +89,9 @@ Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 �
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
 - harness 目前只有 `createMesh({ nodes, workgroupId, password, basePort, displayNamePrefix, dataRoot })`，返回 `{ nodes, urls, stop() }`。它启动节点后让每个节点 join 第一个节点、按返回目录逐条补 join，再对 bootstrap 发一轮心跳。
-- 注入时钟、日志 ring buffer、场景 DSL（`until` / `assertTaskState`）尚未实现；后台心跳与看门狗也没有，测试直接轮询 `getTask`。
+- 已支持：可注入时钟（`createNode({ clock })`）、节点启停（`start()` / `stop()`）、进程内 mesh、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。
+- 未支持：传输注入（模拟丢包、延迟、单向分区）、统一的 `waitFor` 断言 helper、跨进程 harness。
+- 场景用 vitest 的普通 async 函数写：`await waitFor(() => ...)`、`node.stop()`、`sendTask` 组合，不引入第二套场景描述语言。
 
 ```ts
 const mesh = await createMesh({ nodes: 3, password: "test" });
@@ -195,11 +197,11 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 ### 9.7 与路线图的对应
 
 - Phase 0：单包内 protocol、crypto、config、storage、gateway、executor(echo)、tasks、node、harness、plugin。
-- Phase 1：harness 场景覆盖成员收敛与故障注入。
+- Phase 1：harness 覆盖成员收敛与故障场景（vitest 用例）。
 - Phase 2：AcpExecutor、ui 基本视图。
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 节点压测复用 harness。
 
-**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、ACP 均未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；故障注入场景 DSL 与真实进程 harness 尚未实现。
+**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、ACP 均未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）与真实进程 harness 尚未实现。
 
 ---
