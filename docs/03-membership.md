@@ -36,9 +36,9 @@
 D（新）                                            A（已在 mesh）
   POST http://A:11811/cluster/join
   { workgroup_id, orca_node_id, display_name, endpoints,
-    self, nonce, ts, proof }
+    self, nonce, ts, proof }            # proof = 密码派生 HMAC，仅准入
                                               ├ 校验 workgroup_id
-                                              ├ 校验 proof（§7.2）
+                                              ├ 校验 proof（密码派生 HMAC，仅准入）
                                               ├ 校验 ts 窗口 / nonce 未用过
                                               ├ 校验 orca_node_id 冲突
                                               └ 记录 D（只记 D 的自述）

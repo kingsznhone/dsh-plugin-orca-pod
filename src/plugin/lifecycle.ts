@@ -22,6 +22,7 @@ import {
   loadConfig,
   saveConfig,
 } from "../config.ts"
+import { identityPath, loadOrCreateIdentity } from "../identity.ts"
 import type { OrcaNodeConfig } from "../config.ts"
 import { deriveWorkgroupKey } from "../crypto.ts"
 import { isLoopbackEndpoint } from "../net.ts"
@@ -187,6 +188,8 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
   // loopback-only advertise list is useless across machines, so treat it as
   // "derive from bind" and let the node detect the real interface addresses.
   const bindHost = config.bind_host ?? DEFAULT_PLUGIN_BIND_HOST
+  // The Ed25519 identity is the orca node id; create it on first start.
+  const identity = loadOrCreateIdentity(dataRoot)
   const advertised =
     config.endpoints !== undefined && config.endpoints.length > 0 && !config.endpoints.every(isLoopbackEndpoint)
       ? [...config.endpoints]
@@ -196,6 +199,7 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
   if (stored !== null && stored.workgroup_id === config.workgroup_id) {
     next = {
       ...stored,
+      orca_node_id: identity.orcaNodeId,
       display_name: config.display_name ?? stored.display_name,
       // Advertised endpoints are derived from bind/port unless explicitly
       // configured: reusing stored endpoints could advertise a stale port.
@@ -209,6 +213,7 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       workgroupId: config.workgroup_id,
       password: config.workgroup_password,
       dataRoot,
+      identity,
       host: bindHost,
       port: config.port,
       ...(config.display_name === undefined ? {} : { displayName: config.display_name }),
@@ -365,7 +370,7 @@ export function startPod(baseConfig: Config, logger: HostLogger): PodHandle {
     reset: async () => {
       queue = queue.then(async () => {
         await stopNode(runtime, logger)
-        for (const path of [overridePath(dataRoot), configPath(dataRoot)]) {
+        for (const path of [overridePath(dataRoot), configPath(dataRoot), identityPath(dataRoot)]) {
           try {
             await rm(path, { force: true })
           } catch (error) {

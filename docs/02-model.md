@@ -46,15 +46,15 @@ join（一次，凭 workgroup_id + 密码）→ 拿到 target 自述 + 全量目
 | 反代 + 域名 | `127.0.0.1:11811` | Caddy / nginx | 公网、跨网段、多网卡 | 证书与 HSTS 归代理 |
 | 内建 mTLS（后续） | 任意 | orca node 自己 | Phase 4+ | 需要 CA 分发与轮换 |
 
-### 2.4 orca node 短 id
+### 2.4 orca node 身份（Ed25519 公钥）
 
-- **生成时机**：插件安装/首次启用时生成一次，写入插件配置并持久化（随 profile 存放，不进 git 仓库）。
-- **格式**：短到能在日志和 UI 里念出来——6 字符，Crockford Base32 字母表 `0123456789ABCDEFGHJKMNPQRSTVWXYZ`（无 I/L/O/U，避免 1/0 混淆）。展示为 `N7K3QM`。
-- **可改**：UI/配置可手改成任意合法短 id（也允许小写，落库统一大写）。改完必须重启监听并向各 peer 重新发心跳（[§3.8](03-membership.md#38-id-变更冲突离开)）。
-- **持久化**：写在插件配置（如 `<profile>/plugins/pod/config.json`），含 `orca_node_id`、`display_name`、`endpoints`、`workgroup_id`、密码引用。
-- **不是安全主体**：认证靠 workgroup 密码；短 id 只用于日志、指标、UI、任务元数据。任何人可把 id 改成 `AAAAAA`，安全性不因此变化。
-- **改名语义**：改 id 等价于“离开 + 重新加入”。旧 id 在别人的表里会成为一条逐渐过期的记录；推荐 UI 在改名时提示“其余 orca node 会自己清掉旧记录”。
-- **冲突**：join 时若目标 workgroup 已有同 id 且端点不同 → `409 orca_node_id_conflict`，UI 建议 `N7K3QM-2`。若端点相同（同一 orca node 重复 join）→ 幂等成功。
+- **生成时机**：首次启动时由 `identity.ts` 在 `<data_root>/identity.json` 生成 Ed25519 密钥对（私钥 PKCS8 PEM，文件权限 0600）；`orca_node_id` = SPKI 公钥的 base64url。
+- **格式**：32 字节公钥的 base64url，43 字符、字符集 `[A-Za-z0-9_-]`；可验证、不可伪造。UI/日志显示缩略（前 4 + `…` + 后 4），悬停看完整值。
+- **换身份**：删除 `<data_root>/identity.json` 并重启会生成新密钥对（等价 reset），旧身份需重新入组；不建议手改 id。
+- **持久化**：`<data_root>/identity.json`（0600）存 `{orca_node_id, public_key, private_key_pem, created_at}`；`config.json` 记录 `orca_node_id` 并在启动时校验一致性（不一致则报错要求 reset）。
+- **是安全主体**：签名证明“谁在调用”，伪造需要私钥；密码只用于组网准入。
+- **改名语义**：`display_name` 可随时改（只影响显示）；`orca_node_id` 不可改，改就是换身份（reset）。
+- **冲突**：id 由公钥决定，天然全局唯一；同一 `identity.json` 重复 join 幂等成功。旧 6 字符身份不兼容，需 reset 迁移。
 
 ### 2.5 orca node 自述记录（SelfRecord）
 

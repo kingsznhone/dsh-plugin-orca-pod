@@ -3,9 +3,9 @@ import { cpus, platform as osPlatform, release as osRelease, totalmem } from "no
 import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { deriveChildGrant } from "./chain.ts";
+import { childPodMetadata, deriveChildGrant } from "./chain.ts";
 import { createFileBlobRegistry, type FileBlobStore } from "./blob-files.ts";
-import { buildAuthHeader, blobLinkSignature, NonceCache, signGrant } from "./crypto.ts";
+import { buildAuthHeader, blobLinkSignature, buildJoinProof, NonceCache, signGrant } from "./crypto.ts";
 import {
   createMemoryDispatchStore,
   TERMINAL_TASK_STATES,
@@ -23,6 +23,7 @@ import {
 } from "./net.ts";
 import { createAcpExecutor } from "./acp.ts";
 import { createGateway } from "./gateway.ts";
+import { loadOrCreateIdentity } from "./identity.ts";
 import { createMembership, heartbeatIntervalMsFor, type MembershipClock, type MembershipTimings } from "./membership.ts";
 import {
   membersDigest as computeMembersDigest,
@@ -35,6 +36,7 @@ import {
   type HeartbeatResponse,
   type JoinResponse,
   type PeerView,
+  type PodTaskMetadata,
   type RuntimeInfo,
   type SelfRecord,
   type SignedGrant,
@@ -166,7 +168,11 @@ export interface OrcaNode {
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
   /** Leave the workgroup: tell every known peer, then clear the local roster. */
   leave(): Promise<{ left: string[] }>;
-  sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView>;
+  sendTask(
+    peerUrl: string,
+    input: SubmitTaskInput,
+    options?: { parentTaskId?: string },
+  ): Promise<TaskView>;
   getTask(peerUrl: string, taskId: string): Promise<TaskView>;
   cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
   /** Approve a suspended permission request: sign a grant and resume the task (§7.11). */
@@ -242,6 +248,12 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const { config } = options;
   const orcaNodeId = config.orca_node_id;
   const key = workgroupKey(config);
+  const identity = loadOrCreateIdentity(config.data_root);
+  if (identity.orcaNodeId !== orcaNodeId) {
+    throw new Error(
+      "identity.json does not match config.orca_node_id; reset the orca node to migrate",
+    );
+  }
   const httpFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, init));
   const membership = createMembership({
     selfOrcaNodeId: orcaNodeId,
@@ -315,7 +327,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   };
   const app = createGateway({
     orcaNode: gatewayOrcaNode,
-    key,
+    identity,
+    workgroupKey: key,
     peers,
     nonceCache,
     runtime,
@@ -385,7 +398,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: url.pathname, body }),
+        authorization: buildAuthHeader({ identity, method: "POST", path: url.pathname, body }),
       },
       body,
       signal,
@@ -404,6 +417,16 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   }
 
   async function join(peerUrl: string): Promise<JoinResponse> {
+    // Admission (§7.1): the password-derived proof shows this node knows the
+    // workgroup secret; the Ed25519 auth header shows which node is joining.
+    const ts = Date.now();
+    const nonce = randomUUID();
+    const proof = buildJoinProof(key, {
+      workgroupId: config.workgroup_id,
+      orcaNodeId,
+      ts,
+      nonce,
+    });
     const response = await postSigned<JoinResponse>(peerUrl, "/cluster/join", {
       workgroup_id: config.workgroup_id,
       orca_node_id: orcaNodeId,
@@ -411,6 +434,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       endpoints: actualEndpoints,
       runtime,
       max_task_ttl_s: maxTaskTtlS,
+      ts,
+      nonce,
+      proof,
     });
     peers.upsert(response.self);
     membership.observeInbound(response.self.orca_node_id);
@@ -483,7 +509,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: url.pathname, body }),
+        authorization: buildAuthHeader({ identity, method: "POST", path: url.pathname, body }),
       },
       body,
     });
@@ -527,14 +553,42 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return view;
   }
 
-  async function sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView> {
+  async function sendTask(
+    peerUrl: string,
+    input: SubmitTaskInput,
+    options: { parentTaskId?: string } = {},
+  ): Promise<TaskView> {
     const peer = membership.findByEndpoint(peerUrl);
     if (peer && peer.state !== "online") {
       const error = new Error(`peer ${peer.orca_node_id} is ${peer.state}`) as Error & { code: string };
       error.code = "peer_not_online";
       throw error;
     }
-    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", input));
+    let body = input;
+    if (options.parentTaskId !== undefined) {
+      // Delegation metadata: a task an agent creates while running another task
+      // inherits the parent's chain (§5.1). The receiving gateway validates it and
+      // rejects callbacks to ancestors; the origin-signed grant is matched against
+      // the same chain when a permission request is escalated (§7.12).
+      const parent = tasks.get(options.parentTaskId);
+      if (parent === null) {
+        throw new Error(`unknown local task ${options.parentTaskId}`);
+      }
+      const parentPod = parent.metadata?.["pod"] as PodTaskMetadata | undefined;
+      const callerPod = (input.metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
+      const inherited = childPodMetadata(parentPod, options.parentTaskId, orcaNodeId);
+      const merged: Record<string, unknown> = { ...callerPod, ...inherited };
+      if (callerPod["inputs"] !== undefined) merged["inputs"] = callerPod["inputs"];
+      if (callerPod["task_ttl_s"] !== undefined) merged["task_ttl_s"] = callerPod["task_ttl_s"];
+      body = {
+        ...input,
+        metadata: {
+          ...(input.metadata ?? {}),
+          pod: merged as unknown as PodTaskMetadata,
+        },
+      };
+    }
+    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", body));
   }
 
   function getTask(peerUrl: string, taskId: string): Promise<TaskView> {
@@ -560,11 +614,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       // Chained approval: derive a child grant from the grant this orca node
       // holds for the task that is delegating (§7.12).
       signed = deriveChildGrant({
-        key,
         parent: options.parentGrant,
         request,
         selfOrcaNodeId: orcaNodeId,
-        ...(options.ttlS !== undefined ? { ttlS: options.ttlS } : {}),
       });
     } else {
       const issuedAt = new Date();
@@ -572,6 +624,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       const grant: Grant = {
         grant_id: randomUUID(),
         workgroup_id: config.workgroup_id,
+        origin_orca_node: orcaNodeId,
         task_id: view.id,
         target_orca_node: request.requested_by,
         tool: request.tool,
@@ -580,7 +633,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         issued_at: issuedAt.toISOString(),
         expires_at: expiresAt.toISOString(),
       };
-      signed = signGrant(key, grant);
+      signed = signGrant(identity, grant);
     }
     const message = resumeMessage(view, { grant: signed });
     return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
@@ -694,7 +747,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const primary = actualEndpoints[0];
     if (primary === undefined) return null;
     const exp = String(Math.floor(Date.now() / 1000) + ttlS);
-    const sig = blobLinkSignature(key, blobId, exp);
+    const sig = blobLinkSignature(identity, blobId, exp);
     return `${primary}/blobs/${blobId}?exp=${exp}&sig=${sig}`;
   }
 

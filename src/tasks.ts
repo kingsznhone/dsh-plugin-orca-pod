@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { deriveChildGrant, validatePodMetadata } from "./chain.ts";
+import type { NodeIdentity } from "./identity.ts";
 import { verifyGrant } from "./crypto.ts";
 import { echoScriptFrom, type EchoRelay, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
 import {
@@ -304,9 +305,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     message: A2AMessage,
   ): Promise<void> {
     try {
-      if (deps.key === undefined) throw new TaskError("bad_request", "relay needs the workgroup key");
       const childGrant = deriveChildGrant({
-        key: deps.key,
         parent,
         request: relay.request,
         selfOrcaNodeId,
@@ -332,9 +331,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     parent: SignedGrant,
   ): Promise<void> {
     try {
-      if (deps.key === undefined) throw new TaskError("bad_request", "escalation needs the workgroup key");
       const childGrant = deriveChildGrant({
-        key: deps.key,
         parent,
         request: relay.request,
         selfOrcaNodeId,
@@ -350,15 +347,22 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
 
   /** Returns the failure reason, or null when the grant matches what was asked. */
   function checkGrant(rec: Running, grant: SignedGrant, pending: PermissionRequest): string | null {
-    if (deps.key === undefined || !verifyGrant(deps.key, grant)) return "grant_invalid";
-    if (grant.task_id !== rec.view.id) return "grant_invalid";
-    if (grant.target_orca_node !== selfOrcaNodeId) return "grant_invalid";
+    if (!verifyGrant(grant.origin_orca_node, grant)) return "grant_invalid";
     if (deps.workgroupId !== undefined && grant.workgroup_id !== deps.workgroupId) return "grant_invalid";
     if (grant.tool !== pending.tool) return "grant_invalid";
     if (Number.isNaN(Date.parse(grant.expires_at)) || Date.parse(grant.expires_at) <= Date.now()) {
       return "grant_expired";
     }
-    return null;
+    // Direct decision: the origin signed this very task for this very node.
+    if (grant.task_id === rec.view.id && grant.target_orca_node === selfOrcaNodeId) return null;
+    // Delegated decision (§7.12): the origin signed for an ancestor of this
+    // task's delegation chain; middle nodes forward that grant unchanged.
+    const chain = chainOf(rec);
+    const delegated =
+      grant.target_orca_node !== selfOrcaNodeId &&
+      chain.includes(grant.target_orca_node) &&
+      grant.chain.every((hop, index) => chain[index] === hop);
+    return delegated ? null : "grant_invalid";
   }
 
   /** Data controls a resume may carry; anything else is ordinary task input. */

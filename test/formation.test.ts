@@ -1,5 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -40,12 +43,15 @@ const TEN_NODE_TIMINGS: Partial<MembershipTimings> = {
   tombstoneMs: 30_000,
 };
 
-function makeNode(workgroupId: string, password: string, options: Partial<Pick<OrcaNodeConfig, "data_root" | "orca_node_id" | "display_name">> = {}): OrcaNode {
+function tempRoot(): string {
+  return mkdtempSync(join(tmpdir(), "orca-formation-"));
+}
+
+function makeNode(workgroupId: string, password: string, options: Partial<Pick<OrcaNodeConfig, "data_root" | "display_name">> = {}): OrcaNode {
   const config = createOrcaNodeConfig({
     workgroupId,
     password,
-    dataRoot: options.data_root,
-    orcaNodeId: options.orca_node_id,
+    dataRoot: options.data_root ?? tempRoot(),
     displayName: options.display_name,
     port: 0,
   });
@@ -186,7 +192,6 @@ describe("mesh formation", () => {
       // 同 orca_node_id、同 data_root、新端口：等价于“进程重启”。
       const restarted = makeNode(workgroupId, password, {
         data_root: firstConfig.data_root,
-        orca_node_id: firstConfig.orca_node_id,
         display_name: firstConfig.display_name,
       });
       try {

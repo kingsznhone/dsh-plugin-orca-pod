@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { generateNodeIdentity, shortenNodeId } from "../src/identity.ts";
 import {
-  NODE_ID_ALPHABET,
-  generateOrcaNodeId,
   isHttpEndpoint,
   isOrcaNodeId,
   isWorkgroupId,
@@ -14,7 +13,8 @@ import {
   type RuntimeInfo,
 } from "../src/protocol.ts";
 
-const VALID_NODE_ID = "ABC123";
+// 43 base64url characters decode to a 32-byte Ed25519 public key.
+const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 function makeRuntime(): RuntimeInfo {
   return {
@@ -33,44 +33,47 @@ function makePeer(orcaNodeId: string, endpoints: string[], runtime: RuntimeInfo)
   return { orca_node_id: orcaNodeId, endpoints, runtime_digest: runtimeDigest(runtime) };
 }
 
-describe("generateOrcaNodeId", () => {
-  it("produces 6 characters drawn from the node id alphabet", () => {
-    const id = generateOrcaNodeId();
-    expect(id).toHaveLength(6);
-    for (const char of id) expect(NODE_ID_ALPHABET).toContain(char);
+describe("generateNodeIdentity", () => {
+  it("draws the orca node id from the Ed25519 public key", () => {
+    const identity = generateNodeIdentity();
+    expect(identity.orcaNodeId).toHaveLength(43);
+    expect(identity.orcaNodeId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(isOrcaNodeId(identity.orcaNodeId)).toBe(true);
   });
 
-  it("produces 200 ids that are all valid", () => {
-    for (let index = 0; index < 200; index += 1) {
-      expect(isOrcaNodeId(generateOrcaNodeId())).toBe(true);
+  it("produces 50 identities that are all distinct and valid", () => {
+    const seen = new Set<string>();
+    for (let index = 0; index < 50; index += 1) {
+      const identity = generateNodeIdentity();
+      expect(isOrcaNodeId(identity.orcaNodeId)).toBe(true);
+      expect(seen.has(identity.orcaNodeId)).toBe(false);
+      seen.add(identity.orcaNodeId);
     }
   });
 
-  it("does not repeat on consecutive calls", () => {
-    expect(generateOrcaNodeId()).not.toBe(generateOrcaNodeId());
+  it("shortens ids for display without changing the prefix", () => {
+    const identity = generateNodeIdentity();
+    const short = shortenNodeId(identity.orcaNodeId);
+    expect(short).toBe(`${identity.orcaNodeId.slice(0, 6)}\u2026${identity.orcaNodeId.slice(-4)}`);
   });
 });
 
 describe("isOrcaNodeId", () => {
-  it("accepts a valid id", () => {
+  it("accepts a 43-character base64url public key", () => {
     expect(isOrcaNodeId(VALID_NODE_ID)).toBe(true);
-    expect(isOrcaNodeId(generateOrcaNodeId())).toBe(true);
+    expect(isOrcaNodeId(generateNodeIdentity().orcaNodeId)).toBe(true);
   });
 
   it("rejects ids with the wrong length", () => {
     expect(isOrcaNodeId("ABC12")).toBe(false);
-    expect(isOrcaNodeId("ABC1234")).toBe(false);
+    expect(isOrcaNodeId("A".repeat(42))).toBe(false);
+    expect(isOrcaNodeId("A".repeat(44))).toBe(false);
     expect(isOrcaNodeId("")).toBe(false);
   });
 
-  it("rejects lowercase ids", () => {
-    expect(isOrcaNodeId("abc123")).toBe(false);
-  });
-
-  it("rejects the ambiguous characters I, L, O and U", () => {
-    for (const char of ["I", "L", "O", "U"]) {
-      expect(isOrcaNodeId(`ABC${char}23`)).toBe(false);
-    }
+  it("rejects characters outside base64url", () => {
+    expect(isOrcaNodeId("!".repeat(43))).toBe(false);
+    expect(isOrcaNodeId(`${"A".repeat(42)}=`)).toBe(false);
   });
 
   it("rejects non-strings", () => {
@@ -81,12 +84,13 @@ describe("isOrcaNodeId", () => {
 });
 
 describe("normalizeOrcaNodeId", () => {
-  it("uppercases a lowercase id", () => {
-    expect(normalizeOrcaNodeId("abc123")).toBe(VALID_NODE_ID);
+  it("keeps the case-sensitive public key intact", () => {
+    const identity = generateNodeIdentity();
+    expect(normalizeOrcaNodeId(identity.orcaNodeId)).toBe(identity.orcaNodeId);
   });
 
   it("trims surrounding whitespace", () => {
-    expect(normalizeOrcaNodeId("  abc123  ")).toBe(VALID_NODE_ID);
+    expect(normalizeOrcaNodeId(`  ${VALID_NODE_ID}  `)).toBe(VALID_NODE_ID);
   });
 
   it("returns null for garbage", () => {

@@ -2,9 +2,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveWorkgroupKey } from "./crypto.ts";
+import { isNodeId, loadOrCreateIdentity, shortenNodeId, type NodeIdentity } from "./identity.ts";
 import {
   DEFAULT_PORT,
-  generateOrcaNodeId,
   isPermissionMode,
   isWorkgroupId,
   normalizeEndpoints,
@@ -84,7 +84,8 @@ export type CreateOrcaNodeConfigOptions = {
   host?: string;
   port?: number;
   displayName?: string;
-  orcaNodeId?: OrcaNodeId;
+  /** Reuse an existing identity; otherwise it is loaded from (or created in) dataRoot. */
+  identity?: NodeIdentity;
   /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); empty derives from bind. */
   endpoints?: string[];
   executor?: ExecutorKind;
@@ -159,14 +160,18 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     throw new Error("endpoints must be 1-8 http(s) URLs");
   }
   const endpoints = normalized ?? [];
-  const nodeId = options.orcaNodeId ?? generateOrcaNodeId()
+  const dataRoot = options.dataRoot ?? defaultDataRoot();
+  // The orca node id is the Ed25519 public key (§7.1): identity is created once
+  // per data root and reused afterwards, so the id never changes on restart.
+  const identity = options.identity ?? loadOrCreateIdentity(dataRoot);
+  const nodeId = identity.orcaNodeId;
   return {
     orca_node_id: nodeId,
-    display_name: options.displayName ?? nodeId,
+    display_name: options.displayName ?? shortenNodeId(nodeId),
     workgroup_id: options.workgroupId,
     endpoints,
     bind: { host: options.host ?? "127.0.0.1", port: options.port ?? DEFAULT_PORT },
-    data_root: options.dataRoot ?? defaultDataRoot(),
+    data_root: dataRoot,
     key_base64: key.toString("base64"),
     created_at: new Date().toISOString(),
     ...(options.executor ? { executor: options.executor } : {}),
@@ -305,6 +310,9 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
     created_at: String(record["created_at"] ?? new Date().toISOString()),
   };
   if (!isWorkgroupId(config.workgroup_id)) throw new Error("config.workgroup_id is invalid");
+  if (!isNodeId(config.orca_node_id)) {
+    throw new Error("config.orca_node_id must be an Ed25519 public key; reset the orca node to migrate");
+  }
   if (!config.key_base64) throw new Error("config.key_base64 is missing");
   const executor = record["executor"];
   if (executor !== undefined) {

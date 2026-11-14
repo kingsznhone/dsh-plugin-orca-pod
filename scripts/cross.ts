@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { buildAuthHeader, bodySha256 } from "../src/crypto.ts";
 import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "../src/config.ts";
+import { loadIdentity } from "../src/identity.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 
 type Args = Map<string, string>;
@@ -136,6 +137,8 @@ async function blob(args: Args): Promise<void> {
   const peer = required(args, "peer").replace(/\/$/, "");
   const config = await loadConfig(configFile);
   const key = workgroupKey(config);
+  const identity = loadIdentity(config.data_root);
+  if (identity === null) throw new Error("identity.json is missing; reset the orca node");
   const orcaNodeId = config.orca_node_id;
   const content = args.get("file")
     ? await readFile(required(args, "file"))
@@ -147,7 +150,7 @@ async function blob(args: Args): Promise<void> {
   const upload = await fetch(uploadUrl, {
     method: "POST",
     headers: {
-      authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: uploadPath, body: content }),
+      authorization: buildAuthHeader({ identity, method: "POST", path: uploadPath, body: content }),
       "content-type": "application/octet-stream",
       "x-pod-body-sha256": bodySha256(content),
     },
@@ -158,7 +161,7 @@ async function blob(args: Args): Promise<void> {
 
   const blobPath = `/blobs/${stored.blob_id}`;
   const download = await fetch(`${peer}${blobPath}`, {
-    headers: { authorization: buildAuthHeader({ key, orcaNodeId, method: "GET", path: blobPath }) },
+    headers: { authorization: buildAuthHeader({ identity, method: "GET", path: blobPath }) },
   });
   const downloaded = Buffer.from(await download.arrayBuffer());
   console.log(`download status=${download.status} bytes=${downloaded.length} sha_match=${bodySha256(downloaded) === stored.blob_id}`);
@@ -166,7 +169,7 @@ async function blob(args: Args): Promise<void> {
   const linkPath = `/blobs/${stored.blob_id}/link`;
   const linkResponse = await fetch(`${peer}${linkPath}`, {
     method: "POST",
-    headers: { authorization: buildAuthHeader({ key, orcaNodeId, method: "POST", path: linkPath }) },
+    headers: { authorization: buildAuthHeader({ identity, method: "POST", path: linkPath }) },
   });
   const link = (await linkResponse.json()) as { url: string; expires_at: number };
   const viaLink = await fetch(link.url);

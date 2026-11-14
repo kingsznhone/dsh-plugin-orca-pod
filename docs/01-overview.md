@@ -13,8 +13,8 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - orca node 之间是 **full mesh**，10 台以内不做 ring、不做 gossip、不做中心调度器。
 - **默认单跳**：origin → target，不转发、不回调、不广播；多跳与扇出是可选能力，默认关闭（[§8.6](08-reliability.md#86-放大扇出与唤醒)）。orca node 只被任务请求唤醒，忙时 429 而不是排队。
 - **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
-- orca node 身份 = 安装时自动生成的 **6 字符短 id**（`N7K3QM`），可手改、持久化；它只是标签，不是安全主体。
-- 认证 = `workgroup_id` + 非空密码；密钥由密码直接派生，**每个请求现签现验，没有 session token、没有 TTL**。密码一致就能调，密码一改所有旧凭证立刻作废。
+- orca node 身份 = 首次启动生成的 **Ed25519 公钥**（`<data_root>/identity.json`，43 字符 base64url；面板显示缩略 `psB9…3Zlw`，悬停可看完整值）。节点用自己的私钥签每个请求，别人用公钥验签——id 就是公钥，可验证、不可伪造。
+- 入组 = `workgroup_id` + 非空密码：密码只派生 `/cluster/join` 的准入证明（HMAC），能进组才能交换目录；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。
 - 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询，SSE 可选。
 - 文件交换走**内容寻址 blob 通道**：素材先传后引用，产物按需拉取；结论文本内联返回，`notes/` 不出本机。
@@ -62,7 +62,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 |---|---|
 | **orca node** | mesh 里的一台机器（一个进程、一个 `orca_node_id`）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/orca_node.ts` 与 `createOrcaNode()`。 |
 | **workgroup_id** | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。 |
-| **orca_node_id** | 6 字符短 id，orca node 的显示标签；同一 workgroup 内唯一，非安全主体。 |
+| **orca_node_id** | Ed25519 公钥（43 字符 base64url）；节点身份即公钥，面板与日志显示缩略形式。 |
 | **Peer** | 同一 workgroup 内、本 orca node 已知的另一个 orca node。 |
 | **SelfRecord** | orca node 对自己的描述（`endpoints`、runtime、工作区用量、忙闲），只能由本人写。 |
 | **members_digest** | 排序后的成员记录摘要，用于“我落后了没有”的比对，不表达在线状态。 |
@@ -92,6 +92,6 @@ Full mesh (<= 10 orca nodes), 唯一拓扑
 - nginx proxy 模块：https://nginx.org/en/docs/http/ngx_http_proxy_module.html
 - SQLite WAL：https://sqlite.org/wal.html
 - HKDF（RFC 5869）：https://www.rfc-editor.org/rfc/rfc5869
-- Crockford Base32：https://www.crockford.com/base32.html
+- Ed25519（RFC 8032）：https://www.rfc-editor.org/rfc/rfc8032
 
 ---

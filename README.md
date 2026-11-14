@@ -19,7 +19,8 @@ orca-pod/
 ├── src/
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── protocol.ts       # id、成员 digest、任务/peer 类型
-│   ├── crypto.ts         # workgroup key、请求签名、nonce cache
+│   ├── identity.ts       # Ed25519 密钥对、orca_node_id=公钥
+│   ├── crypto.ts         # 请求签名、join 准入证明、nonce cache
 │   ├── config.ts         # orca node 配置持久化
 │   ├── storage.ts        # peer store（+ 重导出 blob store）
 │   ├── blobs.ts          # 内容寻址 blob store
@@ -72,7 +73,7 @@ the config afterwards.
 | `allow_public_peers` | no       | `false`                         | Allow candidate endpoints on public IPs (§7.7)                          |
 | `allow_loopback_peers` | no     | `true`                          | Set `false` to reject loopback candidate endpoints (§7.7)              |
 
-orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
+orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码 = 重建组（本机 `identity.json` 保留，节点 id 不变）。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
 
 执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者；`headless.permission_mode` 只是任务未带模式时的缺省值（默认 `read-only`）。
 

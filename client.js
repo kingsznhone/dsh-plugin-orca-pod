@@ -509,7 +509,7 @@ window.__ModuleLoader__.load({
         (member) => member.orca_node_id === key || (Array.isArray(member.endpoints) && member.endpoints.includes(key)),
       );
       if (found === undefined) return null;
-      return found.display_name || found.orca_node_id;
+      return found.display_name || short(found.orca_node_id);
     }
 
     /** Panel approval row: display name when known, else a stable short id. */
@@ -996,7 +996,7 @@ window.__ModuleLoader__.load({
           "div",
           { style: { display: "flex", alignItems: "center", gap: 12, paddingRight: 26 } },
           h("div", { style: TITLE }, t("nav")),
-          h("div", { style: { ...MUTED, fontFamily: MONO_FONT } }, self ? self.orca_node_id : t("nodeNotRunning")),
+          h("div", { style: { ...MUTED, fontFamily: MONO_FONT }, title: self ? self.orca_node_id : undefined }, self ? short(self.orca_node_id) : t("nodeNotRunning")),
           self ? stateBadge(self.state) : null,
           h("div", { style: { flex: 1 } }),
           connectionControl,

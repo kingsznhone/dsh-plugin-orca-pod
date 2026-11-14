@@ -174,7 +174,7 @@ workgroup_id, session_id, artifacts, error, reason
 
 ```http
 POST /blobs
-Authorization: Pod orca_node_id=N7K3QM; ts=...; nonce=...; proof=...
+Authorization: Pod orca_node_id=<43-char public key>; ts=...; nonce=...; sig=<base64url>
 X-Pod-Body-SHA256: <hex>
 Content-Type: application/octet-stream
 Content-Length: 1048576

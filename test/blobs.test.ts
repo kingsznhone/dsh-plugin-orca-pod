@@ -1,16 +1,12 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NonceCache, buildAuthHeader } from "../src/crypto.ts";
+import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/crypto.ts";
 import { createFileBlobRegistry, type FileBlobRegistry } from "../src/blob-files.ts";
-import {
-  TaskError,
-  generateOrcaNodeId,
-  type BusyState,
-  type TaskRunner,
-} from "../src/protocol.ts";
+import { TaskError, type BusyState, type TaskRunner } from "../src/protocol.ts";
+import { generateNodeIdentity, type NodeIdentity } from "../src/identity.ts";
 import { createSqliteFileBlobStore } from "../src/sqlite.ts";
 import { createMemoryBlobStore, createMemoryPeerStore, sha256Hex } from "../src/storage.ts";
 import { createGateway, type GatewayDeps, type GatewayOrcaNode } from "../src/gateway.ts";
@@ -50,13 +46,15 @@ const idleTasks: TaskRunner = {
 type Harness = {
   app: ReturnType<typeof createGateway>;
   key: Buffer;
+  identity: NodeIdentity;
   orcaNodeId: string;
   sign(method: string, path: string, body?: Uint8Array | string, bodySha256?: string): string;
 };
 
 function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegistry): Harness {
   const key = randomBytes(32);
-  const orcaNodeId = generateOrcaNodeId();
+  const identity = generateNodeIdentity();
+  const orcaNodeId = identity.orcaNodeId;
   const orcaNode: GatewayOrcaNode = {
     orca_node_id: orcaNodeId,
     display_name: "blob-test-orca-node",
@@ -65,7 +63,8 @@ function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegist
   };
   const deps: GatewayDeps = {
     orcaNode,
-    key,
+    identity,
+    workgroupKey: key,
     peers: createMemoryPeerStore(),
     nonceCache: new NonceCache(),
     runtime: null,
@@ -76,9 +75,10 @@ function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegist
   return {
     app: createGateway(deps),
     key,
+    identity,
     orcaNodeId,
     sign: (method, path, body, bodySha256) =>
-      buildAuthHeader({ key, orcaNodeId, method, path, body, ...(bodySha256 === undefined ? {} : { bodySha256 }) }),
+      buildAuthHeader({ identity, method, path, body, ...(bodySha256 === undefined ? {} : { bodySha256 }) }),
   };
 }
 
@@ -207,9 +207,7 @@ describe("blob channel", () => {
     const payload = Buffer.from("expired link");
     const blobId = (await upload(harness, payload)).json<{ blob_id: string }>().blob_id;
     const exp = String(Math.floor(Date.now() / 1000) - 10);
-    const sig = createHmac("sha256", harness.key)
-      .update(`link|${blobId}|${exp}`)
-      .digest("base64url");
+    const sig = blobLinkSignature(harness.identity, blobId, exp);
     const response = await harness.app.inject({
       method: "GET",
       url: `/blobs/${blobId}?exp=${exp}&sig=${sig}`,
@@ -234,7 +232,7 @@ describe("file blobs registered by the local CLI", () => {
 
     const harness = createHarness(idleTasks, fileBlobs);
     const exp = String(Math.floor(Date.now() / 1000) + 60);
-    const sig = createHmac("sha256", harness.key).update(`link|${blob.blob_id}|${exp}`).digest("base64url");
+    const sig = blobLinkSignature(harness.identity, blob.blob_id, exp);
     const response = await harness.app.inject({
       method: "GET",
       url: `/blobs/${blob.blob_id}?exp=${exp}&sig=${sig}`,
@@ -283,7 +281,7 @@ describe("a2a busy response", () => {
   it("answers orca_node_busy with 429, Retry-After and the holder", async () => {
     const holder: BusyState = {
       task_id: "TASK1",
-      origin_orca_node: generateOrcaNodeId(),
+      origin_orca_node: generateNodeIdentity().orcaNodeId,
       since: new Date().toISOString(),
     };
     const tasks: TaskRunner = {

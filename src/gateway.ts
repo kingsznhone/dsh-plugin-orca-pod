@@ -9,8 +9,11 @@ import Fastify, {
 } from "fastify";
 import {
   blobLinkSignature,
+  DEFAULT_CLOCK_SKEW_MS,
   PodAuthError,
   verifyAuth,
+  verifyBlobLinkSignature,
+  verifyJoinProof,
   type NonceCache,
   type VerifiedAuth,
 } from "./crypto.ts";
@@ -36,6 +39,7 @@ import {
 } from "./protocol.ts";
 import { BlobTooLargeError, type BlobStore, type PeerStore } from "./storage.ts";
 import { createFileBlobRegistry, type FileBlobRegistry } from "./blob-files.ts";
+import type { NodeIdentity } from "./identity.ts";
 
 export type GatewayOrcaNode = {
   orca_node_id: string;
@@ -51,7 +55,8 @@ export type GatewayOrcaNode = {
 
 export type GatewayDeps = {
   orcaNode: GatewayOrcaNode;
-  key: Buffer;
+  identity: NodeIdentity;
+  workgroupKey: Buffer;
   peers: PeerStore;
   nonceCache: NonceCache;
   runtime: RuntimeInfo | null;
@@ -102,11 +107,14 @@ function badRequest(reply: FastifyReply, message: string): FastifyReply {
 const MAX_BLOB_BYTES = 256 * 1024 * 1024;
 const BLOB_LINK_TTL_S = 300;
 
-/** Short-lived link token (§5.6): HMAC over blob id + expiry, no server-side state. */
-function linkSignatureValid(key: Buffer, blobId: string, exp: string, sig: string): boolean {
-  const actual = Buffer.from(sig, "base64url");
-  const expected = Buffer.from(blobLinkSignature(key, blobId, exp), "base64url");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+/** Short-lived link token (§5.6): the orca node signs blob id + expiry itself. */
+function linkSignatureValid(
+  originOrcaNodeId: string,
+  blobId: string,
+  exp: string,
+  sig: string,
+): boolean {
+  return verifyBlobLinkSignature(originOrcaNodeId, blobId, exp, sig);
 }
 
 /** Names are hints only (§5.6): reject separators, traversal and absolute/drive paths. */
@@ -150,7 +158,6 @@ function authenticate(
   bodySha256?: string,
 ): VerifiedAuth {
   return verifyAuth({
-    key: deps.key,
     method: request.method,
     path: request.url.split("?")[0] ?? request.url,
     body: (request as RawBodyRequest).rawBody,
@@ -354,7 +361,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const { blob_id: blobId } = request.params as { blob_id: string };
     const query = request.query as { exp?: unknown; sig?: unknown };
     if (typeof query.exp === "string" && typeof query.sig === "string") {
-      if (!linkSignatureValid(deps.key, blobId, query.exp, query.sig)) {
+      if (!linkSignatureValid(deps.orcaNode.orca_node_id, blobId, query.exp, query.sig)) {
         return reply.code(403).send({ code: "link_invalid" });
       }
       if (Number(query.exp) * 1000 <= Date.now()) {
@@ -402,7 +409,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     if (!deps.blobs.has(blobId)) return reply.code(404).send({ code: "blob_not_found" });
     const expiresAtMs = Date.now() + BLOB_LINK_TTL_S * 1000;
     const exp = String(Math.floor(expiresAtMs / 1000));
-    const sig = blobLinkSignature(deps.key, blobId, exp);
+    const sig = blobLinkSignature(deps.identity, blobId, exp);
     const [primary] = deps.orcaNode.endpoints;
     return {
       url: `${primary ?? ""}/blobs/${blobId}?exp=${exp}&sig=${sig}`,
@@ -422,6 +429,28 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const orcaNodeId = normalizeOrcaNodeId(String(body["orca_node_id"] ?? ""));
     if (!orcaNodeId || orcaNodeId !== auth.orcaNodeId) {
       return badRequest(reply, "orca_node_id does not match the authenticated orca node");
+    }
+
+    // Admission (§7.1): the password-derived workgroup key proves membership;
+    // the Ed25519 signature above proves which node is joining.
+    const proof = body["proof"];
+    const proofNonce = body["nonce"];
+    const proofTs = Number(body["ts"]);
+    if (typeof proof !== "string" || typeof proofNonce !== "string" || !Number.isSafeInteger(proofTs)) {
+      return badRequest(reply, "join requires admission fields ts, nonce and proof");
+    }
+    if (Math.abs(Date.now() - proofTs) > DEFAULT_CLOCK_SKEW_MS) {
+      return reply.code(401).send({ code: "clock_skew", message: "admission proof timestamp outside the skew window" });
+    }
+    if (!verifyJoinProof(
+      deps.workgroupKey,
+      { workgroupId: deps.orcaNode.workgroup_id, orcaNodeId, ts: proofTs, nonce: proofNonce },
+      proof,
+    )) {
+      return reply.code(401).send({ code: "bad_proof", message: "workgroup admission proof does not verify" });
+    }
+    if (!deps.nonceCache.remember(`join:${orcaNodeId}:${proofNonce}`)) {
+      return reply.code(401).send({ code: "nonce_replay", message: "admission nonce already used" });
     }
 
     const displayName = body["display_name"];
@@ -455,7 +484,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
         : {}),
     });
 
-    const { self, digest } = membership(deps);
+        const { self, digest } = membership(deps);
     const response: JoinResponse = {
       self,
       members: deps.peers.list(),
@@ -542,6 +571,35 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       return badRequest(reply, error instanceof Error ? error.message : String(error));
     }
     return { ok: true };
+  });
+
+  /**
+   * Local control: read one of this node's task views so the CLI can inherit
+   * `metadata.pod` (hop/chain/root) when it dispatches a child task (§5.1).
+   * Same transport-level gate as `/cluster/child-link`: local-only is a
+   * transport fact, not a signature claim (§7.1).
+   */
+  app.get("/cluster/task", async (request, reply) => {
+    const remote = request.socket.remoteAddress ?? "";
+    const proxied =
+      request.headers["x-forwarded-for"] !== undefined ||
+      request.headers["forwarded"] !== undefined ||
+      request.headers["x-real-ip"] !== undefined;
+    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    if (proxied || !loopback) {
+      return reply.code(403).send({ code: "local_only", message: "local task reads are a local control" });
+    }
+    authenticate(request, deps);
+    const query = request.query as { task?: unknown } | undefined;
+    const taskId = query?.task;
+    if (typeof taskId !== "string" || taskId.length === 0) {
+      return badRequest(reply, "task must be a task id");
+    }
+    const view = deps.tasks.get(taskId);
+    if (view === null) {
+      return reply.code(404).send({ code: "task_not_found", message: `unknown task ${taskId}` });
+    }
+    return view;
   });
 
   app.setErrorHandler((error: unknown, _request, reply) => {

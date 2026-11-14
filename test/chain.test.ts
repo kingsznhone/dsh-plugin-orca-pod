@@ -12,11 +12,13 @@ import {
   validatePodMetadata,
 } from "../src/chain.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
-import { deriveWorkgroupKey, signGrant } from "../src/crypto.ts";
+import { signGrant } from "../src/crypto.ts";
+import { generateNodeIdentity, loadIdentity, type NodeIdentity } from "../src/identity.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 import {
   permissionRequestOf,
   type PodTaskMetadata,
+  type Grant,
   type SignedGrant,
   type TaskState,
   type TaskView,
@@ -121,13 +123,14 @@ describe("chain metadata", () => {
 });
 
 describe("child grants", () => {
-  const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
+  const origin = generateNodeIdentity();
 
-  function parentGrant(overrides: Partial<SignedGrant> = {}): SignedGrant {
+  function parentGrant(overrides: Partial<Grant> = {}): SignedGrant {
     const now = Date.now();
-    return signGrant(key, {
+    return signGrant(origin, {
       grant_id: randomUUID(),
       workgroup_id: WORKGROUP,
+      origin_orca_node: origin.orcaNodeId,
       task_id: "t_parent",
       target_orca_node: "B",
       tool: "write_file",
@@ -139,10 +142,9 @@ describe("child grants", () => {
     });
   }
 
-  it("derives a narrower child grant: same tool, chain plus this node, earlier expiry", () => {
+  it("forwards the origin grant unchanged instead of minting a new one", () => {
     const parent = parentGrant();
     const child = deriveChildGrant({
-      key,
       parent,
       request: {
         request_id: randomUUID(),
@@ -154,13 +156,11 @@ describe("child grants", () => {
         expires_at: new Date(Date.now() + 30_000).toISOString(),
       },
       selfOrcaNodeId: "B",
-      ttlS: 600,
     });
-    expect(child.task_id).toBe("t_child");
-    expect(child.target_orca_node).toBe("C");
+    expect(child).toEqual(parent);
+    expect(child.chain).toEqual([]);
+    expect(child.target_orca_node).toBe("B");
     expect(child.tool).toBe("write_file");
-    expect(child.chain).toEqual(["B"]);
-    expect(Date.parse(child.expires_at)).toBeLessThanOrEqual(Date.parse(parent.expires_at));
   });
 
   it("requires escalation when the parent grant covers a different tool", () => {
@@ -168,7 +168,6 @@ describe("child grants", () => {
     expect(grantCovers(parentGrant(), { tool: "run_command" })).toBe("escalation_required");
     expect(() =>
       deriveChildGrant({
-        key,
         parent: parentGrant(),
         request: {
           request_id: randomUUID(),
@@ -190,7 +189,6 @@ describe("child grants", () => {
     const tampered = { ...parentGrant(), tool: "run_command" };
     expect(() =>
       deriveChildGrant({
-        key,
         parent: tampered,
         request: {
           request_id: randomUUID(),
@@ -235,9 +233,10 @@ describe("multi-hop enforcement", () => {
 
 describe("chained approval", () => {
   it("derives a child grant from the parent grant and resumes the downstream task", async () => {
-    const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
     const delegator = await makeNode();
     const worker = await makeNode();
+    const origin = loadIdentity(delegator.config.data_root);
+    if (origin === null) throw new Error("delegator identity is missing");
 
     const view = await delegator.sendTask(worker.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
@@ -253,9 +252,10 @@ describe("chained approval", () => {
     expect(request?.via).toEqual(["A", delegator.orcaNodeId]);
 
     const now = Date.now();
-    const parent: SignedGrant = signGrant(key, {
+    const parent: SignedGrant = signGrant(origin, {
       grant_id: randomUUID(),
       workgroup_id: WORKGROUP,
+      origin_orca_node: origin.orcaNodeId,
       task_id: "t_parent",
       target_orca_node: delegator.orcaNodeId,
       tool: "write_file",
@@ -271,9 +271,10 @@ describe("chained approval", () => {
   });
 
   it("refuses to derive when the parent grant does not cover the request", async () => {
-    const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
     const delegator = await makeNode();
     const worker = await makeNode();
+    const origin = loadIdentity(delegator.config.data_root);
+    if (origin === null) throw new Error("delegator identity is missing");
 
     const view = await delegator.sendTask(worker.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
@@ -284,9 +285,10 @@ describe("chained approval", () => {
     });
     const suspended = await waitForState(delegator, worker.endpoints[0]!, view.id, "input-required");
     const now = Date.now();
-    const parent: SignedGrant = signGrant(key, {
+    const parent: SignedGrant = signGrant(origin, {
       grant_id: randomUUID(),
       workgroup_id: WORKGROUP,
+      origin_orca_node: origin.orcaNodeId,
       task_id: "t_parent",
       target_orca_node: delegator.orcaNodeId,
       tool: "run_command",

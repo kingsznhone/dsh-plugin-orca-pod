@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildAuthHeader, deriveWorkgroupKey, signGrant } from "../src/crypto.ts";
+import { buildAuthHeader, signGrant } from "../src/crypto.ts";
+import { loadIdentity, type NodeIdentity } from "../src/identity.ts";
 import { createMesh, type Mesh } from "../src/index.ts";
 import type { OrcaNode } from "../src/orca_node.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
@@ -27,14 +28,16 @@ type ApprovalMesh = {
   target: OrcaNode;
   outsider: OrcaNode;
   targetUrl: string;
-  key: Buffer;
+  identity: NodeIdentity;
 };
 
 async function threeNodes(): Promise<ApprovalMesh> {
   mesh = await createMesh({ orcaNodes: 3, workgroupId: WORKGROUP, password: PASSWORD });
   const [origin, target, outsider] = mesh.orcaNodes;
   if (!origin || !target || !outsider) throw new Error("mesh did not create three orca nodes");
-  return { origin, target, outsider, targetUrl: target.endpoints[0]!, key: deriveWorkgroupKey(WORKGROUP, PASSWORD) };
+  const identity = loadIdentity(origin.config.data_root);
+  if (identity === null) throw new Error("origin identity is missing");
+  return { origin, target, outsider, targetUrl: target.endpoints[0]!, identity };
 }
 
 const permissionEcho = {
@@ -79,8 +82,7 @@ function textOf(view: TaskView): string | null {
 /** Signed JSON-RPC with an explicit caller identity, bypassing the client API. */
 async function signedResume(
   targetUrl: string,
-  callerId: string,
-  key: Buffer,
+  signer: NodeIdentity,
   message: A2AMessage,
 ): Promise<{ status: number; code: string | null; view: TaskView | null }> {
   const url = new URL("/a2a", targetUrl);
@@ -95,8 +97,7 @@ async function signedResume(
     headers: {
       "content-type": "application/json",
       authorization: buildAuthHeader({
-        key,
-        orcaNodeId: callerId,
+        identity: signer,
         method: "POST",
         path: url.pathname,
         body,
@@ -115,13 +116,14 @@ function resumeMessage(taskId: string, data: Record<string, unknown>): A2AMessag
   return { role: "user", parts: [{ kind: "data", data }], taskId, messageId: randomUUID() };
 }
 
-function grantFor(view: TaskView, tool = "write_file"): Grant {
+function grantFor(view: TaskView, originOrcaNode: string, tool = "write_file"): Grant {
   const request = permissionRequestOf(view);
   if (request === null) throw new Error("view has no permission request");
   const issuedAt = new Date();
   return {
     grant_id: randomUUID(),
     workgroup_id: WORKGROUP,
+    origin_orca_node: originOrcaNode,
     task_id: view.id,
     target_orca_node: request.requested_by,
     tool,
@@ -239,7 +241,7 @@ describe("pod_approve tool", () => {
 
 describe("Phase 3 approval round trip", () => {
   it("surfaces a permission request and completes after the origin approves", async () => {
-    const { origin, targetUrl, key } = await threeNodes();
+    const { origin, targetUrl, identity } = await threeNodes();
     const submitted = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
 
@@ -256,8 +258,8 @@ describe("Phase 3 approval round trip", () => {
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("written");
     expect(permissionRequestOf(done)).toBeNull();
-    // The grant was signed with the workgroup key, same as any other request.
-    expect(key).toHaveLength(32);
+    // The grant is signed by the origin node's Ed25519 identity.
+    expect(identity.orcaNodeId).toBe(origin.orcaNodeId);
   });
 
   it("fails the task when the origin denies", async () => {
@@ -274,13 +276,13 @@ describe("Phase 3 approval round trip", () => {
   });
 
   it("rejects a tampered grant", async () => {
-    const { origin, targetUrl, key } = await threeNodes();
+    const { origin, targetUrl, identity } = await threeNodes();
     const submitted = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
 
-    const signed = signGrant(key, grantFor(suspended));
+    const signed = signGrant(identity, grantFor(suspended, origin.orcaNodeId));
     const tampered: SignedGrant = { ...signed, tool: "delete_everything" };
-    const response = await signedResume(targetUrl, origin.orcaNodeId, key, resumeMessage(submitted.id, { grant: tampered }));
+    const response = await signedResume(targetUrl, identity, resumeMessage(submitted.id, { grant: tampered }));
     expect(response.status).toBe(200);
 
     const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
@@ -299,15 +301,16 @@ describe("Phase 3 approval round trip", () => {
   });
 
   it("refuses a resume from a non-origin member", async () => {
-    const { origin, outsider, targetUrl, key } = await threeNodes();
+    const { origin, outsider, targetUrl, identity } = await threeNodes();
     const submitted = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
 
-    const grant = signGrant(key, grantFor(suspended));
+    const grant = signGrant(identity, grantFor(suspended, origin.orcaNodeId));
+    const outsiderIdentity = loadIdentity(outsider.config.data_root);
+    if (outsiderIdentity === null) throw new Error("outsider identity is missing");
     const response = await signedResume(
       targetUrl,
-      outsider.orcaNodeId,
-      key,
+      outsiderIdentity,
       resumeMessage(submitted.id, { grant }),
     );
 
@@ -319,14 +322,13 @@ describe("Phase 3 approval round trip", () => {
   });
 
   it("refuses a plain resume while a permission decision is pending", async () => {
-    const { origin, targetUrl, key } = await threeNodes();
+    const { origin, targetUrl, identity } = await threeNodes();
     const submitted = await submit(origin, targetUrl);
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
     const response = await signedResume(
       targetUrl,
-      origin.orcaNodeId,
-      key,
+      identity,
       resumeMessage(submitted.id, { hello: "no grant here" }),
     );
 

@@ -1,4 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -61,6 +64,7 @@ function makeNode(
     password,
     displayName: options.display_name,
     port: 0,
+    dataRoot: mkdtempSync(join(tmpdir(), "orca-transport-")),
   });
   return createOrcaNode({ config, timings: options.timings ?? JITTER, fetch: options.fetch });
 }

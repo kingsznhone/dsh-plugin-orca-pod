@@ -1,8 +1,16 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { normalizeOrcaNodeId, type Grant, type OrcaNodeId, type SignedGrant } from "./protocol.ts";
+
+import {
+  isNodeId,
+  signWithIdentity,
+  verifyWithNodeId,
+  type NodeIdentity,
+} from "./identity.ts";
+import type { Grant, OrcaNodeId, SignedGrant } from "./protocol.ts";
 
 export const AUTH_SCHEME = "Pod";
 export const PROOF_VERSION = "pod-v1";
+export const JOIN_PROOF_VERSION = "pod-join-v1";
 export const KEY_DERIVATION_SALT = "orca-pod";
 export const DEFAULT_CLOCK_SKEW_MS = 60_000;
 export const DEFAULT_NONCE_TTL_MS = 5 * 60_000;
@@ -13,7 +21,7 @@ export type AuthErrorCode =
   | "malformed_auth"
   | "clock_skew"
   | "nonce_replay"
-  | "bad_proof";
+  | "bad_signature";
 
 export class PodAuthError extends Error {
   readonly code: AuthErrorCode;
@@ -46,7 +54,14 @@ export function bodySha256(body?: Uint8Array | string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-export type ProofFields = {
+// ---------------------------------------------------------------------------
+// Request authentication (§7.1): every request is signed by the sending
+// node's Ed25519 key; the orca node id *is* the public key, so verifying the
+// signature also authenticates the identity. The workgroup password is used
+// only for mesh admission (`buildJoinProof`), never to sign requests.
+// ---------------------------------------------------------------------------
+
+export type SignatureFields = {
   method: string;
   path: string;
   bodySha256: string;
@@ -54,7 +69,7 @@ export type ProofFields = {
   nonce: string;
 };
 
-export function proofInput(fields: ProofFields): string {
+export function signatureInput(fields: SignatureFields): string {
   return [
     PROOF_VERSION,
     fields.method.toUpperCase(),
@@ -65,13 +80,8 @@ export function proofInput(fields: ProofFields): string {
   ].join("|");
 }
 
-export function computeProof(key: Buffer, fields: ProofFields): string {
-  return createHmac("sha256", key).update(proofInput(fields)).digest("base64url");
-}
-
 export type AuthHeaderOptions = {
-  key: Buffer;
-  orcaNodeId: OrcaNodeId;
+  identity: NodeIdentity;
   method: string;
   path: string;
   body?: Uint8Array | string;
@@ -87,21 +97,24 @@ export type AuthHeaderOptions = {
 export function buildAuthHeader(options: AuthHeaderOptions): string {
   const ts = options.ts ?? Date.now();
   const nonce = options.nonce ?? randomBytes(16).toString("base64url");
-  const proof = computeProof(options.key, {
-    method: options.method,
-    path: options.path,
-    bodySha256: options.bodySha256 ?? bodySha256(options.body),
-    ts,
-    nonce,
-  });
-  return `${AUTH_SCHEME} orca_node_id=${options.orcaNodeId}; ts=${ts}; nonce=${nonce}; proof=${proof}`;
+  const signature = signWithIdentity(
+    options.identity,
+    signatureInput({
+      method: options.method,
+      path: options.path,
+      bodySha256: options.bodySha256 ?? bodySha256(options.body),
+      ts,
+      nonce,
+    }),
+  );
+  return `${AUTH_SCHEME} orca_node_id=${options.identity.orcaNodeId}; ts=${ts}; nonce=${nonce}; sig=${signature}`;
 }
 
 export type ParsedAuthHeader = {
   orcaNodeId: string;
   ts: number;
   nonce: string;
-  proof: string;
+  signature: string;
 };
 
 export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | null {
@@ -118,11 +131,11 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
   const orcaNodeId = fields.get("orca_node_id");
   const ts = fields.get("ts");
   const nonce = fields.get("nonce");
-  const proof = fields.get("proof");
-  if (!orcaNodeId || !ts || !nonce || !proof) return null;
+  const signature = fields.get("sig") ?? fields.get("proof");
+  if (!orcaNodeId || !ts || !nonce || !signature) return null;
   const tsValue = Number(ts);
   if (!Number.isSafeInteger(tsValue)) return null;
-  return { orcaNodeId, ts: tsValue, nonce, proof };
+  return { orcaNodeId, ts: tsValue, nonce, signature };
 }
 
 /** Bounded set of recently seen nonces. remember() returns false on replay. */
@@ -160,7 +173,6 @@ export class NonceCache {
 }
 
 export type VerifyAuthOptions = {
-  key: Buffer;
   method: string;
   path: string;
   body?: Uint8Array | string;
@@ -186,35 +198,66 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
       options.header ? "malformed Authorization header" : "missing Authorization header",
     );
   }
-  const orcaNodeId = normalizeOrcaNodeId(parsed.orcaNodeId);
-  if (!orcaNodeId) {
-    throw new PodAuthError("malformed_auth", "orca_node_id in Authorization header is not a valid orca node id");
+  if (!isNodeId(parsed.orcaNodeId)) {
+    throw new PodAuthError("malformed_auth", "orca_node_id in the Authorization header is not an Ed25519 public key");
   }
   const now = options.now ?? Date.now();
   const skewMs = options.skewMs ?? DEFAULT_CLOCK_SKEW_MS;
   if (Math.abs(now - parsed.ts) > skewMs) {
     throw new PodAuthError("clock_skew", "timestamp outside the allowed skew window");
   }
-  const expected = computeProof(options.key, {
-    method: options.method,
-    path: options.path,
-    bodySha256: options.bodySha256 ?? bodySha256(options.body),
-    ts: parsed.ts,
-    nonce: parsed.nonce,
-  });
-  const actualBytes = Buffer.from(parsed.proof, "base64url");
-  const expectedBytes = Buffer.from(expected, "base64url");
-  if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
-    throw new PodAuthError("bad_proof", "signature does not match");
-  }
-  if (!options.nonceCache.remember(`${orcaNodeId}:${parsed.nonce}`, now)) {
+  const valid = verifyWithNodeId(
+    parsed.orcaNodeId,
+    signatureInput({
+      method: options.method,
+      path: options.path,
+      bodySha256: options.bodySha256 ?? bodySha256(options.body),
+      ts: parsed.ts,
+      nonce: parsed.nonce,
+    }),
+    parsed.signature,
+  );
+  if (!valid) throw new PodAuthError("bad_signature", "signature does not match");
+  if (!options.nonceCache.remember(`${parsed.orcaNodeId}:${parsed.nonce}`, now)) {
     throw new PodAuthError("nonce_replay", "nonce already used");
   }
-  return { orcaNodeId, ts: parsed.ts, nonce: parsed.nonce };
+  return { orcaNodeId: parsed.orcaNodeId, ts: parsed.ts, nonce: parsed.nonce };
 }
 
 // ---------------------------------------------------------------------------
-// Grants (§7.11): a human decision travels as a signed, task-scoped record.
+// Admission proof (§7.1): the workgroup password gates *joining* the mesh.
+// ---------------------------------------------------------------------------
+
+export type JoinProofFields = {
+  workgroupId: string;
+  orcaNodeId: string;
+  ts: number;
+  nonce: string;
+};
+
+export function joinProofInput(fields: JoinProofFields): string {
+  return [
+    JOIN_PROOF_VERSION,
+    fields.workgroupId,
+    fields.orcaNodeId,
+    String(fields.ts),
+    fields.nonce,
+  ].join("|");
+}
+
+export function buildJoinProof(key: Buffer, fields: JoinProofFields): string {
+  return createHmac("sha256", key).update(joinProofInput(fields)).digest("base64url");
+}
+
+export function verifyJoinProof(key: Buffer, fields: JoinProofFields, proof: string): boolean {
+  const expected = Buffer.from(buildJoinProof(key, fields), "base64url");
+  const actual = Buffer.from(proof, "base64url");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+// ---------------------------------------------------------------------------
+// Grants (§7.11): the origin node signs its human decision with its own key;
+// deriving a child grant keeps the origin signature verifiable at every hop.
 // ---------------------------------------------------------------------------
 
 export const GRANT_VERSION = "pod-grant-v1";
@@ -234,24 +277,31 @@ export function grantSignatureInput(grant: Grant): string {
   ].join("|");
 }
 
-export function signGrant(key: Buffer, grant: Grant): SignedGrant {
-  const sig = createHmac("sha256", key).update(grantSignatureInput(grant)).digest("base64url");
+export function signGrant(identity: NodeIdentity, grant: Grant): SignedGrant {
+  const sig = signWithIdentity(identity, grantSignatureInput(grant));
   return { ...grant, sig };
 }
 
-export function verifyGrant(key: Buffer, grant: SignedGrant): boolean {
+/** Verify a grant against the origin node that signed it (chain[0]). */
+export function verifyGrant(originOrcaNodeId: string, grant: SignedGrant): boolean {
   if (typeof grant.sig !== "string" || grant.sig.length === 0) return false;
-  const expected = createHmac("sha256", key).update(grantSignatureInput(grant)).digest("base64url");
-  const actualBytes = Buffer.from(grant.sig, "base64url");
-  const expectedBytes = Buffer.from(expected, "base64url");
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+  return verifyWithNodeId(originOrcaNodeId, grantSignatureInput(grant), grant.sig);
 }
 
 /**
  * Capability URL for a blob (§5.6): `GET /blobs/:id?exp&sig` works without a
- * request signature, so a summary can paste the URL as-is. The secret is the
- * workgroup key — every member could mint one, the URL only saves a round trip.
+ * request signature, so a summary can paste the URL as-is. The URL is signed by
+ * the serving node itself and verified with its own public key.
  */
-export function blobLinkSignature(key: Buffer, blobId: string, exp: string): string {
-  return createHmac("sha256", key).update(`link|${blobId}|${exp}`).digest("base64url");
+export function blobLinkSignature(identity: NodeIdentity, blobId: string, exp: string): string {
+  return signWithIdentity(identity, `blob-link-v1|${blobId}|${exp}`);
+}
+
+export function verifyBlobLinkSignature(
+  orcaNodeId: string,
+  blobId: string,
+  exp: string,
+  sig: string,
+): boolean {
+  return verifyWithNodeId(orcaNodeId, `blob-link-v1|${blobId}|${exp}`, sig);
 }

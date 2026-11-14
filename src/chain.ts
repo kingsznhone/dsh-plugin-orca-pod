@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { signGrant, verifyGrant } from "./crypto.ts";
+import { verifyGrant } from "./crypto.ts";
 import {
   TaskError,
   isPermissionMode,
@@ -89,28 +89,31 @@ export function grantCovers(
 }
 
 export type DeriveChildGrantInput = {
-  key: Buffer;
   /** Grant the current node received for the task that is asking to delegate. */
   parent: SignedGrant;
   /** Permission request hanging off the child task. */
   request: PermissionRequest;
-  /** This orca node, appended to the derived grant's chain. */
+  /** This orca node, which must be the parent grant's target. */
   selfOrcaNodeId: string;
-  /** Child grant lifetime; defaults to 300s. Never outlives the parent. */
-  ttlS?: number;
   now?: Date;
 };
 
 /**
- * Derive a child grant from the grant this node holds (§7.12). Deriving instead
- * of forwarding the parent keeps every hop's origin auditable and makes the
- * result necessarily narrower: same tool, chain plus this node, expiry no later
- * than the parent's.
+ * Validate that the origin's grant covers a child permission request (§7.12).
+ *
+ * Only the origin signs grants, and it signs once for the task it decided. A
+ * middle node therefore does not mint a new grant: it forwards the origin's
+ * signed grant unchanged, and the child accepts it because the origin named an
+ * ancestor of the child's delegation chain (§7.11, `checkGrant`). This keeps a
+ * single signature authority and cannot widen scope: same tool, same expiry.
  */
 export function deriveChildGrant(options: DeriveChildGrantInput): SignedGrant {
   const now = options.now ?? new Date();
-  if (!verifyGrant(options.key, options.parent)) {
+  if (!verifyGrant(options.parent.origin_orca_node, options.parent)) {
     throw new TaskError("grant_invalid", "parent grant signature does not verify");
+  }
+  if (options.parent.target_orca_node !== options.selfOrcaNodeId) {
+    throw new TaskError("grant_invalid", "parent grant was issued to another orca node");
   }
   const failure = grantCovers(options.parent, options.request, now.getTime());
   if (failure === "escalation_required") {
@@ -122,19 +125,5 @@ export function deriveChildGrant(options: DeriveChildGrantInput): SignedGrant {
   if (failure === "grant_expired") {
     throw new TaskError("grant_expired", "parent grant has expired");
   }
-  const ttlMs = (options.ttlS ?? 300) * 1000;
-  const parentExpires = Date.parse(options.parent.expires_at);
-  const expiresAt = Math.min(now.getTime() + ttlMs, parentExpires);
-  const grant: Grant = {
-    grant_id: randomUUID(),
-    workgroup_id: options.parent.workgroup_id,
-    task_id: options.request.task_id,
-    target_orca_node: options.request.requested_by,
-    tool: options.request.tool,
-    mode: options.parent.mode,
-    chain: [...options.parent.chain, options.selfOrcaNodeId],
-    issued_at: now.toISOString(),
-    expires_at: new Date(expiresAt).toISOString(),
-  };
-  return signGrant(options.key, grant);
+  return options.parent;
 }

@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/config.ts";
@@ -23,6 +27,7 @@ function make(displayName: string): OrcaNode {
       displayName,
       host: "127.0.0.1",
       port: 0,
+      dataRoot: mkdtempSync(join(tmpdir(), "orca-discovery-")),
     }),
     timings: TIMINGS,
   });

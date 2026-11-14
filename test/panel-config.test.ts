@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath } from "../src/config.ts";
+import { shortenNodeId } from "../src/identity.ts";
 import { createPodAdmin, normalizePeer } from "../src/plugin/admin.ts";
 import type { PodAdmin } from "../src/plugin/admin.ts";
 import type { Config } from "../src/plugin/config.ts";
@@ -244,8 +245,8 @@ describe("panel admin configuration", () => {
     try {
       const admin = adminFor(handle);
       const self = admin.self()!;
-      expect(self.display_name).toBe(self.orca_node_id);
-      expect(admin.config().display_name).toBe(self.orca_node_id);
+      expect(self.display_name).toBe(shortenNodeId(self.orca_node_id));
+      expect(admin.config().display_name).toBe(shortenNodeId(self.orca_node_id));
       const detected = admin.config().detected_endpoints;
       expect(Array.isArray(detected)).toBe(true);
       for (const url of detected) expect(url.startsWith("http://")).toBe(true);

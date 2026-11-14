@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { isNodeId } from "./identity.ts";
+
 export const PROTOCOL_VERSION = "0.1.0";
 export const DEFAULT_PORT = 11811;
-export const NODE_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-export const NODE_ID_LENGTH = 6;
 export const WORKGROUP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,31}$/;
 
 export const ERROR_CODES = [
@@ -99,35 +99,18 @@ export type MembersResponse = {
   members: PeerView[];
 };
 
-export function generateOrcaNodeId(bytes: Uint8Array = randomBytes(5)): OrcaNodeId {
-  let acc = 0;
-  let bits = 0;
-  let out = "";
-  for (const byte of bytes) {
-    acc = (acc << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += NODE_ID_ALPHABET[(acc >>> bits) & 0x1f];
-    }
-    acc &= (1 << bits) - 1;
-    if (out.length >= NODE_ID_LENGTH) break;
-  }
-  while (out.length < NODE_ID_LENGTH) out += NODE_ID_ALPHABET[0];
-  return out;
-}
-
+/**
+ * An orca node id is the base64url-encoded raw Ed25519 public key (§7.1), so a
+ * valid id is self-certifying: whoever signs with the matching private key owns
+ * the id, and no shared workgroup secret can stand in for it.
+ */
 export function normalizeOrcaNodeId(raw: string): OrcaNodeId | null {
-  const value = raw.trim().toUpperCase();
-  return isOrcaNodeId(value) ? value : null;
+  const value = raw.trim();
+  return isNodeId(value) ? value : null;
 }
 
 export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
-  if (typeof value !== "string" || value.length !== NODE_ID_LENGTH) return false;
-  for (const char of value) {
-    if (!NODE_ID_ALPHABET.includes(char)) return false;
-  }
-  return true;
+  return isNodeId(value);
 }
 
 export function isWorkgroupId(value: unknown): value is WorkgroupId {
@@ -310,14 +293,16 @@ export type PermissionRequest = {
 
 /**
  * A human decision travelling from the origin back down to the target (§7.11).
- * Signed with the workgroup key: the transport is already authenticated, but a
- * grant is also the durable record of who allowed what for this task.
+ * Signed by the origin node's Ed25519 key: the transport is already
+ * authenticated, but a grant is also the durable record of who allowed what.
  */
 export type GrantMode = "allow_once";
 
 export type Grant = {
   grant_id: string;
   workgroup_id: string;
+  /** Orca node whose signature authorizes this grant (the deciding origin). */
+  origin_orca_node: string;
   task_id: string;
   target_orca_node: string;
   tool: string;

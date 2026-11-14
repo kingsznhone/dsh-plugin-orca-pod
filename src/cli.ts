@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import { createFileBlobRegistry } from "./blob-files.ts";
 import { configPath, defaultDataRoot, endpointWriteback, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
+import { loadIdentity, type NodeIdentity } from "./identity.ts";
 import { createOrcaNode, createPersistentStorage, joinRoster } from "./index.ts";
 import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
 import { permissionRequestOf } from "./protocol.ts";
@@ -127,6 +128,14 @@ function localControlEndpoint(config: OrcaNodeConfig): string {
   return `http://${host}:${config.bind.port}`;
 }
 
+function nodeIdentity(config: OrcaNodeConfig): NodeIdentity {
+  const identity = loadIdentity(config.data_root);
+  if (identity === null || identity.orcaNodeId !== config.orca_node_id) {
+    throw new Error("identity.json is missing or does not match config.orca_node_id; reset the orca node to migrate");
+  }
+  return identity;
+}
+
 async function signedJson<T>(
   config: OrcaNodeConfig,
   peer: string,
@@ -141,8 +150,7 @@ async function signedJson<T>(
     headers: {
       "content-type": "application/json",
       authorization: buildAuthHeader({
-        key: workgroupKey(config),
-        orcaNodeId: config.orca_node_id,
+        identity: nodeIdentity(config),
         method,
         path: url.pathname,
         ...(body !== undefined ? { body } : {}),
@@ -165,8 +173,7 @@ function a2a<T>(config: OrcaNodeConfig, peer: string, method: string, params: un
     headers: {
       "content-type": "application/json",
       authorization: buildAuthHeader({
-        key: workgroupKey(config),
-        orcaNodeId: config.orca_node_id,
+        identity: nodeIdentity(config),
         method: "POST",
         path: url,
         body,
@@ -254,8 +261,7 @@ async function uploadBlob(
       "content-type": "application/octet-stream",
       "x-pod-body-sha256": digest,
       authorization: buildAuthHeader({
-        key: workgroupKey(config),
-        orcaNodeId: config.orca_node_id,
+        identity: nodeIdentity(config),
         method: "POST",
         path: "/blobs",
         bodySha256: digest,
@@ -297,6 +303,28 @@ async function send(args: string[]): Promise<number> {
   if (uploads.length > 0) {
     pod["inputs"] = uploads.map((uploaded) => ({ blob_id: uploaded.blob_id, name: uploaded.name }));
   }
+  // Inherit the delegation chain from the local parent task (§5.1). The target
+  // validates `pod.chain` and later matches an origin-signed grant against it,
+  // so a permission escalated through this node can resume the child (§7.12).
+  const parentLocalTask = flag(flags, "local-task") ?? process.env["ORCA_POD_PARENT_TASK"];
+  if (parentLocalTask !== undefined && parentLocalTask.length > 0) {
+    const parentView = await signedJson<TaskView>(
+      config,
+      localControlEndpoint(config),
+      "GET",
+      `/cluster/task?task=${encodeURIComponent(parentLocalTask)}`,
+    );
+    const parentPod = (parentView.metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
+    const parentChain = Array.isArray(parentPod["chain"])
+      ? (parentPod["chain"] as unknown[]).filter((hop): hop is string => typeof hop === "string")
+      : [];
+    pod["hop"] = (typeof parentPod["hop"] === "number" ? parentPod["hop"] : 0) + 1;
+    pod["chain"] = [...parentChain, config.orca_node_id];
+    pod["root"] = typeof parentPod["root"] === "string" ? parentPod["root"] : parentLocalTask;
+    if (pod["permission_mode"] === undefined && typeof parentPod["permission_mode"] === "string") {
+      pod["permission_mode"] = parentPod["permission_mode"];
+    }
+  }
   if (Object.keys(pod).length > 0) metadata = { ...(metadata ?? {}), pod };
   const message: A2AMessage = {
     role: "user",
@@ -309,7 +337,6 @@ async function send(args: string[]): Promise<number> {
   });
   // §7.12: register the child link so this node relays the child's permission
   // requests automatically instead of making the agent call `escalate`.
-  const parentLocalTask = flag(flags, "local-task") ?? process.env["ORCA_POD_PARENT_TASK"];
   if (parentLocalTask !== undefined && parentLocalTask.length > 0) {
     try {
       await signedJson(config, localControlEndpoint(config), "POST", "/cluster/child-link", {
@@ -379,7 +406,7 @@ async function publish(args: string[]): Promise<number> {
   }
   const expiresAtMs = Date.now() + 24 * 3600 * 1000;
   const exp = String(Math.floor(expiresAtMs / 1000));
-  const sig = blobLinkSignature(workgroupKey(config), blob.blob_id, exp);
+  const sig = blobLinkSignature(nodeIdentity(config), blob.blob_id, exp);
   const base = config.endpoints[0] ?? (config.bind.port > 0 ? localEndpoint(config) : null);
   if (base === null) {
     throw new Error("publish needs a known endpoint: set `endpoints` in the config or run `orca-node serve` once");

@@ -53,7 +53,7 @@ async function waitForState(
   for (;;) {
     const view = await reader.getTask(peerUrl, taskId);
     if (view.status.state === state) return view;
-    if (Date.now() > deadline) throw new Error(`task ${taskId} did not reach ${state}; last ${view.status.state}`);
+    if (Date.now() > deadline) throw new Error(`task ${taskId} did not reach ${state}; last ${view.status.state} reason=${String(view.status.reason ?? "")}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -87,7 +87,7 @@ describe("automatic chain ascent (7.12)", () => {
           final: { state: "completed", text: "child done" },
         },
       },
-    });
+    }, { parentTaskId: parentView.id });
     await waitForState(root, leaf.endpoints[0]!, childView.id, "input-required");
 
     // The CLI does this on `send --local-task`; here we call it directly.

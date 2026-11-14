@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { generateOrcaNodeId } from "../src/protocol.ts";
+import { generateNodeIdentity } from "../src/identity.ts";
+import type { Grant } from "../src/protocol.ts";
 import {
+  DEFAULT_CLOCK_SKEW_MS,
   NonceCache,
   PodAuthError,
+  blobLinkSignature,
   bodySha256,
   buildAuthHeader,
+  buildJoinProof,
   deriveWorkgroupKey,
   parseAuthHeader,
+  signGrant,
   verifyAuth,
+  verifyBlobLinkSignature,
+  verifyGrant,
+  verifyJoinProof,
   type AuthErrorCode,
 } from "../src/crypto.ts";
 
@@ -55,130 +63,176 @@ describe("deriveWorkgroupKey", () => {
 });
 
 describe("buildAuthHeader + verifyAuth", () => {
-  it("roundtrips with a fresh NonceCache and returns the orca node id", () => {
-    const key = freshKey();
-    const orcaNodeId = generateOrcaNodeId();
+  it("roundtrips and returns the signing orca node id", () => {
+    const identity = generateNodeIdentity();
     const body = JSON.stringify({ task_id: "t_01JABD", message: "hello" });
-    const header = buildAuthHeader({ key, orcaNodeId, method: METHOD, path: PATH, body });
+    const header = buildAuthHeader({ identity, method: METHOD, path: PATH, body });
 
+    expect(header).toContain(`orca_node_id=${identity.orcaNodeId}`);
+    const verified = verifyAuth({ method: METHOD, path: PATH, body, header, nonceCache: new NonceCache() });
+    expect(verified.orcaNodeId).toBe(identity.orcaNodeId);
+    expect(verified.nonce.length).toBeGreaterThan(0);
+  });
+
+  it("signs a caller-provided body digest for streamed bodies", () => {
+    const identity = generateNodeIdentity();
+    const digest = bodySha256("streamed");
+    const header = buildAuthHeader({ identity, method: METHOD, path: PATH, bodySha256: digest });
     const verified = verifyAuth({
-      key,
       method: METHOD,
       path: PATH,
-      body,
+      bodySha256: digest,
       header,
       nonceCache: new NonceCache(),
     });
-
-    expect(verified.orcaNodeId).toBe(orcaNodeId);
+    expect(verified.orcaNodeId).toBe(identity.orcaNodeId);
   });
 
-  it("rejects a tampered body with bad_proof", () => {
-    const key = freshKey();
-    const header = buildAuthHeader({
-      key,
-      orcaNodeId: generateOrcaNodeId(),
-      method: METHOD,
-      path: PATH,
-      body: "original",
-    });
-
-    expectAuthError("bad_proof", () => {
-      verifyAuth({
-        key,
-        method: METHOD,
-        path: PATH,
-        body: "tampered",
-        header,
-        nonceCache: new NonceCache(),
-      });
-    });
+  it("rejects a tampered body with bad_signature", () => {
+    const identity = generateNodeIdentity();
+    const header = buildAuthHeader({ identity, method: METHOD, path: PATH, body: "original" });
+    expectAuthError("bad_signature", () =>
+      verifyAuth({ method: METHOD, path: PATH, body: "tampered", header, nonceCache: new NonceCache() }),
+    );
   });
 
-  it("rejects a replayed header with nonce_replay", () => {
-    const key = freshKey();
+  it("rejects a stale timestamp with clock_skew", () => {
+    const identity = generateNodeIdentity();
+    const now = Date.now();
     const header = buildAuthHeader({
-      key,
-      orcaNodeId: generateOrcaNodeId(),
+      identity,
       method: METHOD,
       path: PATH,
-      body: "replay-me",
+      ts: now - DEFAULT_CLOCK_SKEW_MS - 1_000,
     });
+    expectAuthError("clock_skew", () =>
+      verifyAuth({ method: METHOD, path: PATH, header, nonceCache: new NonceCache(), now }),
+    );
+  });
+
+  it("rejects a replayed nonce", () => {
+    const identity = generateNodeIdentity();
+    const header = buildAuthHeader({ identity, method: METHOD, path: PATH });
     const nonceCache = new NonceCache();
-
-    verifyAuth({ key, method: METHOD, path: PATH, body: "replay-me", header, nonceCache });
-
-    expectAuthError("nonce_replay", () => {
-      verifyAuth({ key, method: METHOD, path: PATH, body: "replay-me", header, nonceCache });
-    });
-  });
-
-  it("rejects a timestamp outside the skew window with clock_skew", () => {
-    const key = freshKey();
-    const header = buildAuthHeader({
-      key,
-      orcaNodeId: generateOrcaNodeId(),
-      method: METHOD,
-      path: PATH,
-      ts: Date.now() - 5 * 60_000,
-    });
-
-    expectAuthError("clock_skew", () => {
-      verifyAuth({ key, method: METHOD, path: PATH, header, nonceCache: new NonceCache() });
-    });
+    verifyAuth({ method: METHOD, path: PATH, header, nonceCache });
+    expectAuthError("nonce_replay", () => verifyAuth({ method: METHOD, path: PATH, header, nonceCache }));
   });
 
   it("rejects a missing header with missing_auth", () => {
-    expectAuthError("missing_auth", () => {
-      verifyAuth({
-        key: freshKey(),
-        method: METHOD,
-        path: PATH,
-        header: undefined,
-        nonceCache: new NonceCache(),
-      });
-    });
+    expectAuthError("missing_auth", () =>
+      verifyAuth({ method: METHOD, path: PATH, header: undefined, nonceCache: new NonceCache() }),
+    );
   });
 
   it("rejects a malformed header with malformed_auth", () => {
-    expectAuthError("malformed_auth", () => {
+    expectAuthError("malformed_auth", () =>
+      verifyAuth({ method: METHOD, path: PATH, header: "Bearer nope", nonceCache: new NonceCache() }),
+    );
+  });
+
+  it("rejects a header carrying a non-Ed25519 orca node id", () => {
+    expectAuthError("malformed_auth", () =>
       verifyAuth({
-        key: freshKey(),
         method: METHOD,
         path: PATH,
-        header: "Bearer x",
+        header: "Pod orca_node_id=ABC123; ts=1; nonce=n; sig=s",
         nonceCache: new NonceCache(),
-      });
-    });
-  });
-});
-
-describe("bodySha256", () => {
-  it("hashes an empty body to 64 hex characters", () => {
-    expect(bodySha256()).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it("hashes a string body to 64 hex characters", () => {
-    expect(bodySha256("hello pod")).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it("differs for different bodies", () => {
-    expect(bodySha256("alpha")).not.toBe(bodySha256("beta"));
+      }),
+    );
   });
 });
 
 describe("parseAuthHeader", () => {
-  it("parses a Pod auth header", () => {
-    expect(parseAuthHeader("Pod orca_node_id=ABC123; ts=1; nonce=n1; proof=p1")).toEqual({
-      orcaNodeId: "ABC123",
-      ts: 1,
-      nonce: "n1",
-      proof: "p1",
-    });
+  it("parses the identity, timestamp, nonce and signature", () => {
+    const identity = generateNodeIdentity();
+    const header = buildAuthHeader({ identity, method: METHOD, path: PATH, ts: 1_700_000_000_000, nonce: "abc" });
+    const parsed = parseAuthHeader(header);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.orcaNodeId).toBe(identity.orcaNodeId);
+    expect(parsed?.ts).toBe(1_700_000_000_000);
+    expect(parsed?.nonce).toBe("abc");
+    expect(parsed?.signature.length).toBeGreaterThan(0);
   });
 
-  it("returns null for missing or non-Pod headers", () => {
+  it("accepts the legacy proof field name", () => {
+    const identity = generateNodeIdentity();
+    const header = buildAuthHeader({ identity, method: METHOD, path: PATH });
+    expect(parseAuthHeader(header.replace("; sig=", "; proof="))).not.toBeNull();
+  });
+
+  it("returns null for garbage", () => {
     expect(parseAuthHeader(undefined)).toBeNull();
-    expect(parseAuthHeader("Bearer x")).toBeNull();
+    expect(parseAuthHeader("")).toBeNull();
+    expect(parseAuthHeader("Bearer token")).toBeNull();
+    expect(parseAuthHeader("Pod orca_node_id=x; ts=1; nonce=n")).toBeNull();
+  });
+});
+
+describe("join admission proof", () => {
+  const fields = { workgroupId: WORKGROUP_ID, orcaNodeId: "x".repeat(43), ts: 1_700_000_000_000, nonce: "n1" };
+
+  it("verifies with the derived workgroup key", () => {
+    const proof = buildJoinProof(freshKey(), fields);
+    expect(verifyJoinProof(freshKey(), fields, proof)).toBe(true);
+  });
+
+  it("is deterministic per field set", () => {
+    expect(buildJoinProof(freshKey(), fields)).toBe(buildJoinProof(freshKey(), fields));
+  });
+
+  it("rejects a different password, node or nonce", () => {
+    const proof = buildJoinProof(freshKey(), fields);
+    const wrongKey = deriveWorkgroupKey(WORKGROUP_ID, "different password");
+    expect(verifyJoinProof(wrongKey, fields, proof)).toBe(false);
+    expect(verifyJoinProof(freshKey(), { ...fields, orcaNodeId: "y".repeat(43) }, proof)).toBe(false);
+    expect(verifyJoinProof(freshKey(), { ...fields, nonce: "n2" }, proof)).toBe(false);
+  });
+});
+
+describe("grants", () => {
+  const identity = generateNodeIdentity();
+  const grant: Grant = {
+    grant_id: "g-1",
+    workgroup_id: WORKGROUP_ID,
+    origin_orca_node: identity.orcaNodeId,
+    task_id: "t-1",
+    target_orca_node: "z".repeat(43),
+    tool: "write_file",
+    mode: "allow_once",
+    chain: [identity.orcaNodeId],
+    issued_at: new Date(0).toISOString(),
+    expires_at: new Date(60_000).toISOString(),
+  };
+
+  it("verifies against the signing origin node", () => {
+    const signed = signGrant(identity, grant);
+    expect(signed.sig.length).toBeGreaterThan(0);
+    expect(verifyGrant(identity.orcaNodeId, signed)).toBe(true);
+  });
+
+  it("rejects a tampered grant", () => {
+    const signed = signGrant(identity, grant);
+    expect(verifyGrant(identity.orcaNodeId, { ...signed, tool: "delete_everything" })).toBe(false);
+  });
+
+  it("rejects verification against a different origin", () => {
+    const signed = signGrant(identity, grant);
+    expect(verifyGrant(generateNodeIdentity().orcaNodeId, signed)).toBe(false);
+  });
+});
+
+describe("blob link signatures", () => {
+  const identity = generateNodeIdentity();
+  const exp = "1700000000";
+
+  it("roundtrips", () => {
+    const sig = blobLinkSignature(identity, "abc123", exp);
+    expect(verifyBlobLinkSignature(identity.orcaNodeId, "abc123", exp, sig)).toBe(true);
+  });
+
+  it("rejects a different blob or expiry", () => {
+    const sig = blobLinkSignature(identity, "abc123", exp);
+    expect(verifyBlobLinkSignature(identity.orcaNodeId, "def456", exp, sig)).toBe(false);
+    expect(verifyBlobLinkSignature(identity.orcaNodeId, "abc123", "1700000001", sig)).toBe(false);
   });
 });

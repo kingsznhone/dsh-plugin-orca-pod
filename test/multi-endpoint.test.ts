@@ -1,4 +1,7 @@
+import { mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -54,6 +57,7 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       workgroupId,
       password,
       port: listenPort,
+      dataRoot: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
       endpoints: [dead, live],
     });
     const b: OrcaNode = createOrcaNode({ config: bConfig, timings: TIMINGS });
@@ -64,7 +68,12 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       if (String(url).includes(`:${deadPort}/`)) deadAttempts += 1;
       return fetch(url, init);
     };
-    const aConfig = createOrcaNodeConfig({ workgroupId, password, port: 0 });
+    const aConfig = createOrcaNodeConfig({
+      workgroupId,
+      password,
+      port: 0,
+      dataRoot: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
+    });
     const a: OrcaNode = createOrcaNode({ config: aConfig, timings: TIMINGS, fetch: counting });
     await a.start();
 

@@ -7,7 +7,7 @@
 ### 7.1 workgroup 与密码
 
 - `workgroup_id`：`[a-z0-9][a-z0-9-]{1,31}`，创建时指定，之后不可改（改名 = 新建 workgroup）。
-- 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`HKDF(ikm = "")` 是公开常量，等于没有认证。
+- 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`HKDF(ikm = "")` 是公开常量，等于没有准入控制。**密码只用于组网准入**（`/cluster/join` 的 HMAC 证明），请求签名与 grant 都用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
 - 密码不入库明文：首选系统钥匙串引用；退而求其次才在插件配置里存 `HKDF` 派生密钥（文件权限 0600）。存派生密钥的代价是：配置文件泄露 = 直接获得签名能力，所以推荐前者。面板覆盖层 `<data_root>/ui-config.json` 目前以明文保存 `workgroup_password`（只由回环闸门写入，生产应换成 credentials 引用）。
 - DSH 插件默认 `bind_host: "::"`（整机网卡监听），并用识别到的 LAN/IPv6 地址做 advertised endpoints：否则局域网 peer 拨不到。代价是**同网段任何人都能打到 `/health`、`/a2a` 与 `/blobs`**——认证仍靠 workgroup 签名，密码为空（开放 mesh）时就等于没有认证，只适合受信 LAN；需要更严格时设 `bind_host: "127.0.0.1"` 并让流量只走代理。
 - 日志、配置文件、错误信息里都不出现密码或派生密钥。
@@ -17,40 +17,41 @@
 k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32)
 ```
 
-- 换密码：**改过的 orca node 用新密码重启，重新 join 组成新 group**；没改的 orca node 留在旧 mesh 里，签名对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
-- **同组 = 同一密码学主体**：任意成员都能为任意 `orca_node_id` 生成合法签名，签名里的 id 不证明“谁在调用”。因此凡是“只有本机可以做”的能力，一律不能用签名身份判定，只能用传输层事实判定：监听在回环、没有转发头、或干脆不经过网络（本机 CLI 直写本机状态）。已落实的一例是文件 blob 登记：[§5.6](05-tasks.md#56-文件交换blob-通道) 里 `publish` 由 CLI 直写本机 SQLite，不提供 HTTP 路由——曾经的设计是 `POST /blobs/register` 加 `auth.orcaNodeId === self` 检查，那等于任何 peer 都能让目标节点读任意本机路径。要真正区分“谁”只有 per-node keypair / mTLS，本设计不做。
-- **授权按记录归属，不按签名身份**：正因为签名只证明“属于这个组”，普通读接口允许同组成员读，但写操作必须在**记录归属**上校验——`tasks/cancel` 只接受 task 的 origin（或执行它的本机节点），其他成员 `403 not_task_origin`（[§5.3](05-tasks.md#53-取消)）；`tasks/resume`、`tasks/escalate` 同理只接受 origin / 本机（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。`/cluster/child-link` 则同时要求传输层回环——它登记的是“本机任务在等某个子任务的权限”，不能让别的节点替你登记。
+- 换密码：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，准入证明对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
+- **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)），每个请求由本节点私钥签名，接收方用目录里的公钥验签——签名现在能证明“谁在调用”，伪造不了的。密码不再参与请求签名。
+- **local-only 能力仍用传输层判定（纵深防御）**：签名身份虽然不可伪造，但“只有本机可以做”的操作仍只看 socket 与转发头，不靠 `auth.orca_node_id`——代理可能改写来源地址，传输层事实更难伪造。已落实的例子是文件 blob 登记（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`publish` 由 CLI 直写本机 SQLite，根本不提供 HTTP 路由。
+- **授权按记录归属，不按签名身份**：签名能证明“谁”，但写操作仍按记录归属校验：普通读接口允许同组成员读，但写操作必须在**记录归属**上校验——`tasks/cancel` 只接受 task 的 origin（或执行它的本机节点），其他成员 `403 not_task_origin`（[§5.3](05-tasks.md#53-取消)）；`tasks/resume`、`tasks/escalate` 同理只接受 origin / 本机（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。`/cluster/child-link` 则同时要求传输层回环——它登记的是“本机任务在等某个子任务的权限”，不能让别的节点替你登记。
 
 ### 7.2 请求签名（没有 session token）
 
-每个请求自带证明，服务端用同一把 `k` 现验：
+每个请求自带 Ed25519 签名，服务端用 `orca_node_id`（即公钥）现验：
 
 ```http
-Authorization: Pod orca_node_id=N7K3QM; ts=1763100000; nonce=9f2c1a; proof=<base64url>
+Authorization: Pod orca_node_id=<43-char base64url public key>; ts=1763100000; nonce=9f2c1a; sig=<base64url>
 ```
 
 ```text
-proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|" + ts + "|" + nonce)
+sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|" + ts + "|" + nonce)
 ```
 
 校验顺序：
 
 1. `ts` 与本地时间差 ≤ 60s（时钟漂移单独报错，别混进 401）；
 2. `nonce` 未在 5 分钟窗口内出现过（每 orca node LRU，容量 10k）；
-3. `proof` 常量时间比较；
+3. 用 `orca_node_id` 对应的公钥验 `sig`；
 4. 通过后按 `orca_node_id` 找/建 peer 记录（首次即登记，见 [§3.2](03-membership.md#32-引导与加入)）。
 
 性质与代价：
 
 - **无状态**：服务端不存 token，不需要清理、不需要刷新、不需要 TTL；
-- **密码即凭证**：密码泄露 = 全组沦陷；所以密码强度与分发是唯一的安全边界；
-- **不可撤销单个 orca node**：密码是全组共享的，想踢人只能换密码并重建 group（[§7.3](07-security.md#73-密钥与密码的分发)）。
+- **密码即准入凭证**：密码泄露 = 对方可以加入组（能发现成员、发任务），但**不能伪造已有节点的请求**（每个节点用自己的私钥）。密码强度与分发仍是入组的安全边界；
+- **撤销**：签名的不可撤销性只到节点私钥为止——私钥在本机，删掉它就从 mesh 消失；把某节点踢出组则要换密码重建 group（[§7.3](07-security.md#73-密钥与密码的分发)），旧组里的签名自然失效。
 - **重放窗口**：60s + nonce 去重；跨 orca node 时钟必须大致同步（NTP）；
 - **代理友好**：签名覆盖 method/path/body，代理改写 body 会验签失败（这是特性）。
 - **大 body 的签名**：带 body 的请求加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘后再自校验，不一致即 `400 body_digest_mismatch`。
-- **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = HMAC(k, "link|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
+- **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = Ed25519(identity.private_key, "blob-link-v1|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
 
-`/cluster/join` 用同一种签名；区别只是它同时返回目录。`/health` 不签。
+`/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = HMAC-SHA256(HKDF(password), "pod-join-v1|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce)`——密码只出现在这一步。`/health` 不签。
 
 ### 7.3 密钥与密码的分发
 
@@ -182,7 +183,7 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 - `expires_at` 到点即失效；任务 cancel / 完成即吊销（target 本地删记录，不需要广播）；
 - 无 grant 的请求直接 `deny(missing_grant)`，不接受“老客户端”兼容。
 
-**实现状态（Phase 3 第一版）**：`crypto.ts` 的 `signGrant`/`verifyGrant` 用 workgroup key 做 HMAC，签名覆盖 `grant_id|workgroup_id|task_id|target_orca_node|tool|mode|chain|issued_at|expires_at`；grant 由 origin 批准时签发，target 端校验签名、`task_id`、`target_orca_node`、`workgroup_id`、`tool` 与过期时间，任一不符即 `failed(reason=grant_invalid)` 或 `failed(reason=grant_expired)`。当前只支持 `mode: "allow_once"`；`limits`、`nonce`、`permission_mode` 尚未进签名结构（原型阶段先只做“单次工具放行”），grant 随 resume message 的 data part 下发，不单独持久化。
+**实现状态（Phase 3 第一版）**：`crypto.ts` 的 `signGrant`/`verifyGrant` 用 **origin 节点的 Ed25519 私钥签发、公钥校验**，签名覆盖 `GRANT_VERSION|grant_id|origin_orca_node|workgroup_id|task_id|target_orca_node|tool|mode|chain|issued_at|expires_at`；`Grant` 结构里带 `origin_orca_node`，中间节点不重签，只转发 origin 的 grant 并按委托链校验（`deriveChildGrant` 返回父 grant 原样，校验 `target`/`chain`/`tool`/`expiry`）；grant 由 origin 批准时签发，target 端校验签名、`task_id`、`target_orca_node`、`workgroup_id`、`tool` 与过期时间，任一不符即 `failed(reason=grant_invalid)` 或 `failed(reason=grant_expired)`。当前只支持 `mode: "allow_once"`；`limits`、`nonce`、`permission_mode` 尚未进签名结构（原型阶段先只做“单次工具放行”），grant 随 resume message 的 data part 下发，不单独持久化。
 
 ### 7.12 升级回路：任务状态，不是反向调用
 
@@ -229,7 +230,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 **实现状态（Phase 3 第三版，Echo relay 原型）**：`tasks.ts` 支持 executor 在 permission 挂起时携带 `relay`（子任务 endpoint、task id、子任务的 `permission_request` 快照）。这时父任务自己挂成 `input-required`，请求里 `requested_by` 是本 orca node、`via` 是祖先路径、`upstream` 记着真正需要权限的下游 `requested_by`；origin 审批后，父任务用拿到的 grant `deriveChildGrant` 派生出面向下游的 child grant，通过 `message/send` 发给子任务，然后继续自己的执行；拒绝或取消则把 `permission_denied` 往下传，子任务随之失败而不是悬挂。每一跳都释放执行槽、不保持连接、不反连，所以 relay 天然非阻塞。**限制**：relay 链接只在内存里（重启后按 §8.3 整体标 `node_restart`，不会恢复）；早期版本要求执行器自己注入 `relay`，这一点已由第六版的自动上升取代（见下）；审批卡片的 `upstream` 展示见第四版。
 
-**实现状态（Phase 3 第六版，自动上升）**：父任务不再依赖执行器注入 `relay`，改由 origin 侧自己发现。CLI `send --local-task <此 task>` 在子任务建成后向本机发 `POST /cluster/child-link`（`headless` 执行器的子进程通过环境变量 `ORCA_POD_PARENT_TASK` 自动带上，agent 不必记参数）；节点为该 `(parent, child)` 起 1s 轮询，看到子任务 `input-required` 且带 `permission_request` 就对本机父任务调用 `tasks/escalate`，父任务随即挂成 `input-required`（`upstream` 指向子任务请求者），origin 批准后 child grant 逐跳下发、父任务回 `working`、子任务继续——第 17 轮测试（`test/relay-auto.test.ts`）用 headless 父任务 + Echo 子任务覆盖了整条链路，父任务未被中断。轮询有界：子任务终态、父任务终态、或连续 10 次读失败都会摘掉链接。**这个控制接口只登记、不执行**，所以它的本地性用传输层判定：只接受回环地址且没有 `x-forwarded-for`/`forwarded`/`x-real-ip` 的请求，否则 `403 local_only`——同组共享 workgroup key 时签名里的身份可伪造（[§7.1](07-security.md#71-威胁模型)），local-only 能力不能靠 `auth.orca_node_id`。**仍未实现**：child link 只在内存里（重启后不恢复，父任务按 §8.3 对账）；`permission_mode`/`limits` 收窄。
+**实现状态（Phase 3 第六版，自动上升）**：父任务不再依赖执行器注入 `relay`，改由 origin 侧自己发现。CLI `send --local-task <此 task>` 在子任务建成后向本机发 `POST /cluster/child-link`（`headless` 执行器的子进程通过环境变量 `ORCA_POD_PARENT_TASK` 自动带上，agent 不必记参数）；节点为该 `(parent, child)` 起 1s 轮询，看到子任务 `input-required` 且带 `permission_request` 就对本机父任务调用 `tasks/escalate`，父任务随即挂成 `input-required`（`upstream` 指向子任务请求者），origin 批准后 child grant 逐跳下发、父任务回 `working`、子任务继续——第 17 轮测试（`test/relay-auto.test.ts`）用 headless 父任务 + Echo 子任务覆盖了整条链路，父任务未被中断。轮询有界：子任务终态、父任务终态、或连续 10 次读失败都会摘掉链接。**这个控制接口只登记、不执行**，所以它的本地性用传输层判定：只接受回环地址且没有 `x-forwarded-for`/`forwarded`/`x-real-ip` 的请求，否则 `403 local_only`——Ed25519 之后签名身份已不可伪造，但 local-only 能力仍只认传输层事实（纵深防御：代理可能改写来源地址）。**仍未实现**：child link 只在内存里（重启后不恢复，父任务按 §8.3 对账）；`permission_mode`/`limits` 收窄。
 
 **实现状态（Phase 3 第四版，显式 escalate）**：中间 orca node 的 task 可以在执行中主动挂起自己——CLI `orca-node escalate --peer <child> --task <child task> --local-task <此 task>` 取子任务的 `permission_request`，经本机 `tasks/escalate` 交给 runner；runner 把此 task 改成 `input-required` 并填一条上游请求（`requested_by`=本 orca node、`upstream`=[子请求者]、`via`=祖先链），执行器本身继续跑（不打断 ACP turn，也不动 iterator）。origin 批准后按第三版派生子 grant 发回子任务，然后把此 task 放回 `working`；拒绝则向下传 `permission_denied` 并让此 task 失败。`tasks/escalate` 只接受本 orca node 自己签名（跨节点调用一律拒绝）。ACP 的 preamble 里已写明：`wait` 退出码为 3 时用 `escalate` 把决定权交还 origin。审批卡片与 tracker 通知现在都会显示来源链：`permissionOriginNote` 把 `via` 与 `upstream` 拼成 ` via A → B` 后缀，`pod_approve` 的 `approval.request.reason` 由 `approvalReason` 生成（形如 `Remote task <id> on <peer> wants to run "<tool>" via A → B: {...}`），人能看到这张卡是替谁批的。自动感知就是轮询：`orca-node wait` 带上 `--local-task <此 task>` 时，一旦在轮询中看到子任务 `input-required` 且带 `permission_request`，会自己调用 `tasks/escalate` 把请求上升，然后继续等；同一个 `request_id` 只上升一次，批准后子任务恢复、拒绝则失败，agent 不需要再单独发一次 `escalate`。**仍未实现**：不经 CLI 的宿主（例如插件工具直接派发子任务）没有这层轮询；`permission_mode`/`limits` 收窄。
 
