@@ -134,4 +134,19 @@
 - [ ] origin 对同一 target 并发 10 个请求：target 只创建 1 个 agent 进程，其余 429
 - [ ] 一个 origin 连续快速失败后进入退避，不出现“越失败越发”的请求上升
 
+### 10.7 构建顺序
+
+> 上面的阶段回答“做到什么程度”，这一节回答“先写哪一块”。原则：每一层都能脱离下一层单独验证，不通过就不往上堆。
+
+1. **仓库骨架**：pnpm workspace、十个包、tsconfig/biome/vitest、CI（只跑进程内测试）。
+2. **headless node core**：protocol/crypto/storage/gateway/orca_node + EchoExecutor；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单节点。
+3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `pnpm harness --nodes 3` 起真实进程和 socket；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
+4. **Echo 行为与回调**：按 10.6 的“Echo 脚本”“三台节点”逐条跑；挂起/恢复/取消/TTL/blob 在这一层定死，后面的执行器只换实现、不换协议。
+5. **真实执行器**：HeadlessExecutor（ACP stdio）→ AcpExecutor；cwd 是工作区、context→session 绑定、取消、`input-required` 映射。放在插件之前，是为了让“协议正确”和“DSH 集成正确”分两次验证，不同时调两个未知量。
+6. **DSH 插件**：`apply` 启动节点、注册工具、后台 tracker、inject/followup、审批卡片与状态卡片。先在单机两个 DSH 实例之间跑通（不同端口、不同 profile）。
+7. **跨机器**：Windows 主机 + Hyper-V Linux guest。分两次做：core 完成后先跑 2 节点 smoke（join/心跳/echo），尽早暴露路径、时钟、编码问题；全部组件完成后再做完整 E2E（真实任务、权限、blob、可选 TLS）。
+8. **加固**：10 节点压测、安全验收、Phase 4。
+
+进程内测试不依赖网络和真实时钟；每个包都有自己的夹具测试；任何一层验收没过，不进入下一层。
+
 ---
