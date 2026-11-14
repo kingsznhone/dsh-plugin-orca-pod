@@ -46,6 +46,20 @@ export interface TrackerOptions {
    * recorded, the notice is just not injected (§7.12: one decision channel).
    */
   isPromptParked?: (peer: string, taskId: string) => boolean
+  /**
+   * Park the permission request in the UI directly instead of injecting a chat
+   * notice. Returns true when a prompt was parked; the callback owns the remote
+   * decision, so the agent never sees the raw request text.
+   */
+  onPermission?: (input: {
+    peer: string
+    taskId: string
+    request: PermissionRequest
+    view: TaskView
+    agentId: string
+  }) => boolean
+  /** The task settled or vanished: drop any parked prompt for it. */
+  onSettled?: (peer: string, taskId: string) => void
   logger?: HostLogger
 }
 
@@ -183,9 +197,13 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         const request = permissionRequestOf(view)
         if (request !== null) {
           // A suspended permission request is surfaced once; the task stays
-          // tracked until it finishes or the request changes. A parked
-          // `pod_approve` answers it through the UI card instead.
-          const parked = options.isPromptParked?.(entry.peer, entry.taskId) === true
+          // tracked until it finishes or the request changes. When the host can
+          // park it in the UI, the raw request text never enters the chat.
+          const parkedByTool = options.isPromptParked?.(entry.peer, entry.taskId) === true
+          const parkedByTracker =
+            options.onPermission?.({ peer: entry.peer, taskId: entry.taskId, request, view, agentId: entry.agent.id }) ===
+            true
+          const parked = parkedByTool || parkedByTracker
           if (parked) dropPermissionNotices(entry.peer, entry.taskId)
           if (request.request_id !== entry.seenRequest) {
             entry.seenRequest = request.request_id
@@ -199,6 +217,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         if (!isTerminal(view.status.state)) continue
         pending.delete(key)
         dropPermissionNotices(entry.peer, entry.taskId)
+        options.onSettled?.(entry.peer, entry.taskId)
         finished.push({ ...entry, kind: "terminal", view })
         scheduleFlush()
       } catch (error) {
@@ -206,6 +225,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         // tracker; drop it and let the agent discover the state through pod_status.
         pending.delete(key)
         changed = true
+        options.onSettled?.(entry.peer, entry.taskId)
         logger?.warn(`orca-pod: stopped tracking ${entry.taskId} on ${entry.peer}: ${errorMessage(error)}`)
       }
     }

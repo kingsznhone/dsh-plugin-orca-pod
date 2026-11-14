@@ -231,6 +231,29 @@ describe("createTracker", () => {
     tracker.stop()
   })
 
+  it("parks a permission request with onPermission instead of injecting a notice", async () => {
+    const agent = new FakeAgent()
+    agent.status = "running"
+    const views = new Map([["01TASK", permissionView("01TASK", "req-1")]])
+    const parked: Array<{ peer: string; taskId: string; agentId: string }> = []
+    const tracker = createTracker(() => fakeNode(views), {
+      ...fast,
+      onPermission: ({ peer, taskId, agentId }) => {
+        parked.push({ peer, taskId, agentId })
+        return true
+      },
+    })
+    tracker.track(agent, "http://peer:11811", "01TASK")
+
+    await waitFor(() => parked.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // The UI card carries the request; the raw text never enters the chat.
+    expect(agent.followed).toHaveLength(0)
+    expect(agent.injected).toHaveLength(0)
+    expect(parked[0]).toEqual({ peer: "http://peer:11811", taskId: "01TASK", agentId: "agent-1" })
+    tracker.stop()
+  })
+
   it("names the orca nodes a permission request travelled through", () => {
     const request = permissionRequestOf(permissionView("01TASK", "req-1"))
     if (request === null) throw new Error("permission request missing")

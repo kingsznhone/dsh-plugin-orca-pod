@@ -404,7 +404,17 @@ window.__ModuleLoader__.load({
     // sessions that are not on screen.
     const APPROVAL_DOCK_CARD = { ...APPROVAL_CARD, width: "100%", padding: "12px 14px", boxShadow: "none" };
     const APPROVAL_POPUP_CARD = { ...APPROVAL_CARD, width: "min(380px, calc(100vw - 32px))" };
-    const DOCK_WRAP = { display: "flex", flexDirection: "column", gap: 8, padding: "6px 0 10px" };
+    const DOCK_WRAP = {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      boxSizing: "border-box",
+      width: "100%",
+      // Match the conversation column so the card never spills past the chat area.
+      maxWidth: 760,
+      margin: "0 auto",
+      padding: "6px 16px 10px",
+    };
     const POPUP_WRAP = {
       position: "fixed",
       right: 16,

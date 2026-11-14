@@ -176,4 +176,31 @@ describe("approval prompts", () => {
     expect(result.decision).toBe("denied")
     expect(node.denied).toBe(1)
   })
+
+  it("runs the decision handler of a tracker-parked approval", async () => {
+    const prompts = createApprovalPrompts()
+    const decisions: string[] = []
+    const park = () =>
+      prompts.park({
+        peer: PEER,
+        task_id: TASK,
+        request: REQUEST,
+        agent_id: "agent-1",
+        onDecision: (decision) => {
+          decisions.push(decision)
+        },
+      })
+
+    park()
+    expect(prompts.list()).toHaveLength(1)
+    // A settled task withdraws its card without a decision.
+    expect(prompts.withdraw(PEER, TASK)).toBe(true)
+    expect(prompts.list()).toEqual([])
+
+    park()
+    expect(prompts.resolve(PEER, TASK, "allow")).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(decisions).toEqual(["allow"])
+    expect(prompts.list()).toEqual([])
+  })
 })

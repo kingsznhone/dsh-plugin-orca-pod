@@ -83,6 +83,27 @@ export function apply(ctx: HostContext, config: Config): void {
     logger,
     isPromptParked: (peer, taskId) =>
       prompts.list().some((prompt) => prompt.peer === peer && prompt.task_id === taskId),
+    onPermission: ({ peer, taskId, request, view, agentId }) => {
+      const orcaNode = handle.runtime.orcaNode
+      if (orcaNode === null) return false
+      // Park the approval in the UI directly: the user answers the card and the
+      // decision is sent to the remote task, so no raw request text is injected
+      // into the agent conversation.
+      prompts.park({
+        peer,
+        task_id: taskId,
+        request,
+        agent_id: agentId,
+        onDecision: (decision) =>
+          decision === "allow"
+            ? orcaNode.approveTask(peer, view)
+            : orcaNode.denyTask(peer, view, "denied in the Orca Pod UI"),
+      })
+      return true
+    },
+    onSettled: (peer, taskId) => {
+      prompts.withdraw(peer, taskId)
+    },
   })
 
   // Headless and ACP executors run in their own `dsh` subprocesses and cannot

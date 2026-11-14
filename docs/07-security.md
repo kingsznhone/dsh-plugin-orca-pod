@@ -203,7 +203,7 @@ target: 工具调用超出继承的 mode
     }
 
 origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
-  → tracker 唤醒派发它的 agent，agent 调 pod_approve 把决定交给 UI
+  → tracker 直接把请求 park 进 UI 注册表（不往 agent 对话里塞原始文本）
   → UI 三通道：正在看的会话里贴聊天卡；后台会话弹窗；面板 Pending approvals 列表
   → 批准：生成新 grant（新 nonce、同 task、窄于等于请求范围），发一条 A2A 后续 message
   → 拒绝：发 message 明确 deny，target 把 task 置 failed(reason=permission_denied)
@@ -235,7 +235,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 **实现状态（Phase 3 第五版，默认无限等待）**：审批不再默认 120 秒过期。`permission_request.expires_at` 变成可选字段，只有配置了 `approval_timeout_s` 的 orca node 才会填；没配就是无限等待——人可能正在吃饭，任务不该因此失败。对应地，`input-required` 期间 task TTL（`task_ttl_s`）暂停，`resume` 后才重新计时，否则“等人”会被 TTL 当成“超时”。配置 `approval_timeout_s` 后，到点自动拒绝对应的挂起请求：先向下游（`pending_escalation`/`relay`）发 `permission_denied`，再让本 task `failed(permission_timeout)`。CLI 的 `wait`/`escalate` 的 `--timeout` 也变成可选：不给就一直等到 origin 决策。grant 范围内按工具/路径自动放行（预授权的自动化）仍未实现。
 
-**实现状态（Phase 3 第七版，会话内审批呈现）**：`pod_approve` 不再直接弹 DSH 原生卡，而是把请求 park 在插件的 `prompts` 注册表里（`src/plugin/prompts.ts`），**不设超时**——desktop 主控会话一直阻塞到人出现；headless/CLI/ACP 永远有上游，由上游的 origin 决定，所以不需要“无 UI 兜底”。目标节点收到权限请求即挂起 task，上游批准后 grant 下发、任务继续。client 侧三个落点共用同一决议通道：会话正在看时在 `conversation.input.dock` 贴聊天卡（按 `prompt.agent_id === sessionId` 过滤）；后台会话的请求由 `shell.overlay` 弹窗展示；面板 Pending approvals 列表照旧、点允许/拒绝即 `prompts.resolve` 唤醒被 park 的工具调用（`admin.approve/deny` 先 resolve prompt，再轮询到任务离开 `input-required`）。当 `pod_approve` 已经 park 时，tracker 只记录该请求、不再注入“needs permission”聊天通知（`TrackerOptions.isPromptParked`）；若通知在 park 之前已入队，任务结束（或转为 parked）时会被丢弃，避免同一个人被卡片和迟到通知问两遍。
+**实现状态（Phase 3 第八版，审批不经过对话文本）**：tracker 轮询到 `permission_request` 时直接调用 `TrackerOptions.onPermission` 把 prompt park 进 `prompts` 注册表（`prompts.park`），回调绑定 approveTask/denyTask——**原始请求文本不再注入 agent 对话**，用户点卡片后回调直接给目标节点发 grant/deny。`pod_approve` 工具仍保留给 agent 主动询问与 CLI 路径（park 后由同一注册表唤醒）。任务终态或消失时 `onSettled` 会收回卡片（`prompts.withdraw`）；已入队的历史通知在 park/终态时丢弃，避免卡片与聊天通知重复。`prompts.resolve` 对 tracker-parked 的 prompt 会执行 `onDecision` 回调，面板/弹窗/聊天卡三条通道因此同权。
 
 #### 链式调用：授权向下收窄，升级向上回传
 
