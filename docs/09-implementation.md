@@ -56,7 +56,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 
 `orca_node` 的 `createNode(config)` 返回 handle：`start() / stop() / port / members() / tasks() / invoke(peer, payload)`。
 
-- 端口用 `0` 让系统分配，避免并行测试抢 41241；
+- 端口用 `0` 让系统分配，避免并行测试抢 11811；
 - 时钟可注入；心跳间隔与 suspect/offline 阈值都可配，测试里用 20ms/60ms/120ms，不必真等 6s/12s；
 - 日志进内存 ring buffer，失败时 dump；
 - harness DSL：`createMesh({ nodes: 3 })`、`until(cond)`、`assertTaskState`。
@@ -123,11 +123,11 @@ harness / CLI 是第三个入口：`packages/harness` 的 `orca-node serve`，�
 
 ### 9.5 工程约定
 
-- TypeScript、ESM、Node ≥ 22；pnpm workspace；vitest + `@vitest/coverage-v8`；`tsc --noEmit` 进 CI。
+- TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm workspaces（不用 pnpm）；vitest + `@vitest/coverage-v8`；`tsc --noEmit` 进 CI。
 - 构建 `tsup`（ESM + d.ts），开发 `tsx`，lint/format 用 `biome`（一个工具替 eslint+prettier），CLI 用 `commander`，日志用 `pino`（开发加 `pino-pretty`）。
 - 不引入框架级 DI 容器：构造函数注入足够，装配只在 `orca_node` 包。
 - 存储默认 fs（`lowdb` + `steno` 原子写），sqlite 用 `better-sqlite3` 作为可选实现进 Phase 2（嫌原生依赖麻烦可退回 `node:sqlite`）。
-- 命令：`pnpm -r test`、`pnpm harness --nodes 5 --scenario join`。
+- 命令：`npm test --workspaces --if-present`、`npm run harness -- --nodes 5 --scenario join`。
 
 ### 9.6 依赖选型：基础能力不自己写
 

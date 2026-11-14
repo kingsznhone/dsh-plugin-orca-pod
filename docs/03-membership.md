@@ -25,7 +25,7 @@
 ```text
 1. 生成 node_id（[§2.4](02-model.md#24-节点短-id)），写配置
 2. 采集 runtime，生成 runtime_digest
-3. 起监听（默认 127.0.0.1:41241）
+3. 起监听（默认 127.0.0.1:11811）
 4. 若配置里已有 workgroup_id + 密码：向目录内每个已知端点后台发第一拍心跳
 5. 否则进入“未加入”状态，只响应 /health
 ```
@@ -34,7 +34,7 @@
 
 ```text
 D（新）                                            A（已在 mesh）
-  POST http://A:41241/cluster/join
+  POST http://A:11811/cluster/join
   { workgroup_id, node_id, display_name, endpoint,
     self, nonce, ts, proof }
                                               ├ 校验 workgroup_id
@@ -75,12 +75,12 @@ D（新）                                            A（已在 mesh）
 
 ```http
 POST /cluster/heartbeat
-{ "from": "P2W8XA", "endpoint": "http://192.168.1.12:41241",
+{ "from": "P2W8XA", "endpoint": "http://192.168.1.12:11811",
   "runtime_digest": "sha256:...", "members_digest": "sha256:...",
   "self": { ... },                                   // 仅首次，或记录变更时
-  "hints": [{ "node_id": "Z3M4AQ", "endpoint": "http://192.168.1.13:41241" }] }
+  "hints": [{ "node_id": "Z3M4AQ", "endpoint": "http://192.168.1.13:11811" }] }
 
-200 { "from": "N7K3QM", "endpoint": "http://192.168.1.11:41241",
+200 { "from": "N7K3QM", "endpoint": "http://192.168.1.11:11811",
       "runtime_digest": "sha256:...", "members_digest": "sha256:...", "hints": [] }
 ```
 
