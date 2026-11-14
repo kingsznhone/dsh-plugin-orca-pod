@@ -187,6 +187,34 @@ describe("panel override lifecycle", () => {
     }
   });
 
+  it("rejoins the remembered peers when the node starts", async () => {
+    const rootA = await tempRoot("orca-panel-a-");
+    const rootB = await tempRoot("orca-panel-b-");
+    const b = startPod(baseConfig(rootB), logger);
+    await b.ready;
+    try {
+      const peerUrl = b.runtime.url!;
+      // `peers` is what the previous session left behind; startup should try it
+      // once without waiting for the operator to click Connect again.
+      const a = startPod({ ...baseConfig(rootA), peers: [peerUrl] }, logger);
+      await a.ready;
+      try {
+        const want = b.runtime.orcaNode!.self().orca_node_id;
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          if (a.runtime.orcaNode!.members().some((member) => member.state === "online")) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        }
+        const members = a.runtime.orcaNode!.members();
+        expect(members.map((member) => member.orca_node_id)).toContain(want);
+      } finally {
+        await stopPod(a, logger);
+      }
+    } finally {
+      await stopPod(b, logger);
+    }
+  });
+
   it("does not remember a peer that cannot be joined", async () => {
     const root = await tempRoot("orca-panel-");
     const handle = startPod(baseConfig(root), logger);

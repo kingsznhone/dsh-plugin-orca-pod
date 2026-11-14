@@ -140,6 +140,27 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
               patch[key] = body[key].filter((value): value is string => typeof value === "string")
             }
           }
+          // Advanced local controls. `null` clears the override so the local
+          // default applies again; the panel sends numbers (or numeric strings)
+          // for the numeric knobs and booleans for the three-state selectors.
+          for (const key of [
+            "task_timeout_s",
+            "approval_timeout_s",
+            "result_max_bytes",
+            "max_input_files",
+            "max_input_bytes",
+          ]) {
+            if (body[key] === null) patch[key] = null
+            else if (body[key] !== undefined) {
+              patch[key] = typeof body[key] === "string" ? Number(body[key]) : body[key]
+            }
+          }
+          for (const key of ["allow_public_peers", "allow_loopback_peers"]) {
+            if (body[key] === null) patch[key] = null
+            else if (typeof body[key] === "boolean") patch[key] = body[key]
+          }
+          if (body["permission_mode"] === null) patch["permission_mode"] = null
+          else if (typeof body["permission_mode"] === "string") patch["permission_mode"] = body["permission_mode"]
           sendJson(response, 200, await admin.saveConfig(patch))
           return
         }

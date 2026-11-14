@@ -122,7 +122,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 
 | 路由 | 方法 | 内容 |
 |---|---|---|
-| `/orca-api/state` | GET | 一次轮询拿全量：`self`、`config`、`members`、`tasks`（最近 50）、`dispatches`、`approvals`、`prompts`（被 park 的 `pod_approve` 请求）、`artifacts`（按任务）、`workspace`、`now` |
+| `/orca-api/state` | GET | 一次轮询拿全量：`self`、`config`、`members`、`tasks`（最近 50）、`dispatches`、`approvals`、`prompts`（被 park 的 `pod_approve` 请求）、`artifacts`（按任务）、`workspace`、`now`；任务详情模态直接复用这份快照 |
 | `/orca-api/task?peer=&task=` | GET | 单任务详情 + 该任务的产物直链 |
 | `/orca-api/config` | GET / POST | GET 返回去敏配置视图（含 `detected_endpoints` 与 `advanced`）；POST `{workgroup_id?, workgroup_password?, display_name?, port?, endpoints?, peers?, task_timeout_s?, approval_timeout_s?, result_max_bytes?, max_input_files?, max_input_bytes?, allow_public_peers?, allow_loopback_peers?, permission_mode?}` → `PodAdmin.saveConfig`（写 override 并重启节点；高级项传 `null` 清除；`workgroup_id` 为空时保持空闲） |
 | `/orca-api/connect` | POST | `{peer}` → `PodAdmin.connect`：先归一化地址再立即 join 并把 peer 记入 override，不重启 |
@@ -145,6 +145,8 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `shell.overlay` | `orca-pod.approval-popup` | **后台会话**的审批请求：框内右下弹窗（不受当前会话过滤），同样允许/拒绝/在面板中处理 |
 
 设置页与浮层共用同一份 `Panel`，面板按状态分三视图：`ui-config.json` 未完成设置时是**首启向导**（workgroup 预填 `WORKGROUP`、保存时统一转小写、密码必填（留空则节点保持未配置、向导要求填写）、显示名初值 = 本节点的 orca node id（每个节点唯一；bundle 默认配置不再带共享 `display_name`）；advertised endpoints（界面名“本地节点地址”）是一行一个可增删的输入框，初值来自 `detected_endpoints`；不再填 peers）；否则第一屏是**集群状态**（自身/成员/待审批/最近任务/工作区），右上 `⚙` 进入**设置视图**，右上另有**连接/断开**：未加入 mesh 时点“连接”展开 host+port 表单（自动拼 `http://host:port`，IPv6 加方括号），已加入时按钮变为“断开”。浮层是居中模态（遮罩 + Esc/`×` 关闭），卡片宽 `min(720px, 100vw-48px)`、高 `min(78vh, 820px)`，内容超出时卡片内部滚动。面板每 2s `fetch('/orca-api/state')`；审批与取消按钮直接 POST，保存配置后自动回到状态页。审批请求来自 `state.prompts`（`pod_approve` park 在 Host 的 `prompts` 注册表里，不设超时，见 §7.12 第七版）：`ApprovalDock` 只渲染 `agent_id === 本会话 sessionId` 的请求，并维护模块级 `activeSessionId`；其余会话的请求由 `ApprovalPopup` 弹出，三个落点共用同一决议通道。文案跟随 DSH 桌面语言：`apply` 里用 `ctx.get("locale")` 取 `locale` 服务，active 以 `zh` 开头用中文，否则英文（`locale.subscribe` 触发重渲染，`useLocaleTick` 挂在 `Panel`/`OverlayPanel`）。样式只用内联对象与 `--dsw-alias-*` 主题 token（字号/圆角对齐 DSH 设计平台 `--dsw-font-*`/`--dsw-radius-*`）：卡片背景 `--dsw-alias-bg-layer-1`、遮罩 `--dsw-alias-bg-mask-1`、输入框 `--dsw-specific-input-major`，随明暗主题自动切换；不写 `document.body`，卸载时清理定时器。
+
+集群状态首屏还会显示自己的忙碌行（`busy · 任务 id · 来自 <节点>`，悬浮显示完整 task_id），成员表的忙碌列同样带完整 task_id 的悬浮提示；最近任务的整行可点开**任务详情**模态：状态、来源、上下文、更新时间、reason、hop/root、usage、状态消息文本、派发日志（`dispatches` 里的对应条目）、产物直链与本次任务的 inputs 文件名。这些数据全部来自每 2s 的 `/orca-api/state` 快照（单行 `tasks` + `dispatches` + `workspace.inputs_dirs` + `artifacts`），打开详情不发额外请求。
 
 清单接线：`package.json` 的 `exports["./client"] = "./client.js"`、`dsh.client = {platform:"web", immediately:true}`、`files` 含 `client.js`；Host 侧 `apply` 把 `createPodAdmin(handle, tracker)` 传给 `registerPodWeb`。
 
@@ -170,7 +172,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `plugin/web.ts` / `client.js` | 假 `PodAdmin` + 假 req/res | 状态/配置快照（含 `prompts`）、回环与转发头拒绝、approve/deny/cancel 直通、config 保存与 connect/disconnect/reset、路由注册与 `effect` 清理 |
 | `lifecycle.ts` + `plugin/admin.ts` | 临时 `data_root` 起真实 orca node（port 0） | 首启未配置→reconfigure 写 `ui-config.json` 并重启保身份、空 workgroup 时保持空闲（向导）→填好后启动、重启后加载 override、live join 持久化、失败 peer 不落盘、disconnect 后清空并落盘、reset 删除两份配置并回到向导、admin 不返回密码、换组需密码、peer 归一化、`detected_endpoints` 与显示名回退 node id |
 
-实际跑通的测试：protocol 32 个、crypto 23 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 13 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 12 个、tracker 13 个、skill 3 个、approval 12 个、approval-prompts 6 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 9 个、limits 6 个、dispatches 4 个、relay-auto 2 个、endpoint 4 个、multi-endpoint 2 个、heartbeat-adaptive 5 个、heartbeat-admission 2 个、ui-surface 4 个、web 13 个、panel-config 14 个，共 283 个、38 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖，面板配置/override/连接 peer 由 `test/panel-config.test.ts` 覆盖，审批 park/唤醒由 `test/approval-prompts.test.ts` 覆盖。
+实际跑通的测试：protocol 32 个、crypto 23 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 13 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 12 个、tracker 13 个、skill 3 个、approval 12 个、approval-prompts 6 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 9 个、limits 6 个、dispatches 4 个、relay-auto 2 个、endpoint 4 个、multi-endpoint 2 个、heartbeat-adaptive 5 个、heartbeat-admission 2 个、ui-surface 4 个、web 14 个、panel-config 15 个，共 285 个、38 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖，面板配置/override/连接 peer 由 `test/panel-config.test.ts` 覆盖，审批 park/唤醒由 `test/approval-prompts.test.ts` 覆盖。
 
 ### 9.4 进程内多 orca node
 
@@ -235,7 +237,7 @@ export function apply(ctx, config) {
 - 配置分两类：`workgroup_id` / `port` / `display_name` 走普通 config（Plugin manager 可改，`configEditor.edit` 持久化）；**密码生产上应进 `ctx.credentials` 记录，不进 config**，也不写进 bundle patch。Phase 0 为了能跑，密码暂在 patch 里（见 README 的安全提示）。
 - 进程内嵌、不开子进程；DSH 退出 → cleanup → listener 关闭。工具注册用 `inject: ['tools']`；审批走插件自己的 `prompts` 注册表（UI 三通道）（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：tracker 看到 `permission_request` 强制 `followup`，模型调用 `pod_approve`，工具在 open turn 内弹卡，再把决定回成同一 task 的后续 message。
 
-harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`members`——`serve` 加载配置 → `createOrcaNode` → `start()`；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，直接打本机或对端的 `/a2a`（`--peer`），`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限，供 ACP/headless 会话里的 agent 用 shell 调用；`AcpExecutor` 在 prompt 前注入的 preamble 就指向这个 CLI。`scripts/cross.ts` 提供 serve/join/task/blob 跨进程、跨机联调命令。两者都复用同一个 `createOrcaNode`，不依赖 DSH。`--nodes` / `--scenario` 这类 harness CLI 尚未实现。
+harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`members`——`serve` 加载配置 → `createOrcaNode` → `start()`；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，直接打本机或对端的 `/a2a`（`--peer`），`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限，供 ACP/headless 会话里的 agent 用 shell 调用；`AcpExecutor` 在 prompt 前注入的 preamble 就指向这个 CLI。`scripts/cross.ts` 提供 serve/join/task/blob 跨进程、跨机联调命令；`scripts/sync-guest.ps1` 把当前提交（`git archive HEAD` + `scp`）同步到 Hyper-V guest 并在远端 `npm install`，保证跨机验证的两端代码一致（只同步已提交内容，未提交改动不会过去）。两者都复用同一个 `createOrcaNode`，不依赖 DSH。`--nodes` / `--scenario` 这类 harness CLI 尚未实现。
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createOrcaNode()`。**
 

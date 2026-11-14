@@ -150,6 +150,9 @@ export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
 /** Default retention for blobs nobody referenced (§5.6). */
 export const DEFAULT_BLOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** The one retention constant: uploads, published files and direct links. */
+export const DEFAULT_BLOB_TTL_S = Math.floor(DEFAULT_BLOB_TTL_MS / 1000);
+
 export type FsBlobStoreOptions = {
   ttlMs?: number | null;
   now?: () => number;

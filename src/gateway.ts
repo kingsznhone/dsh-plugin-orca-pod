@@ -38,6 +38,7 @@ import {
   type A2AMessage,
   type SubmitTaskInput,
 } from "./protocol.ts";
+import { DEFAULT_BLOB_TTL_S } from "./blobs.ts";
 import { BlobTooLargeError, type BlobStore, type PeerStore } from "./storage.ts";
 import { createFileBlobRegistry, type FileBlobRegistry } from "./blob-files.ts";
 import type { NodeIdentity } from "./identity.ts";
@@ -106,7 +107,8 @@ function badRequest(reply: FastifyReply, message: string): FastifyReply {
 
 /** Blob channel limits and link TTL (§5.6). */
 const MAX_BLOB_BYTES = 256 * 1024 * 1024;
-const BLOB_LINK_TTL_S = 300;
+/** §5.6: a direct link lives as long as the blob it points at (one TTL). */
+const BLOB_LINK_TTL_S = DEFAULT_BLOB_TTL_S;
 
 /** Short-lived link token (§5.6): the orca node signs blob id + expiry itself. */
 function linkSignatureValid(

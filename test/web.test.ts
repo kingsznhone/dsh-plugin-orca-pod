@@ -287,6 +287,40 @@ describe("panel HTTP bridge", () => {
     ]);
   });
 
+  it("forwards the advanced local controls from the panel", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const saved = await invoke(createPodApiHandler(admin), {
+      method: "POST",
+      url: `${POD_API_PREFIX}/config`,
+      body: {
+        task_timeout_s: "120",
+        approval_timeout_s: 45,
+        result_max_bytes: 4096,
+        max_input_files: 4,
+        max_input_bytes: 1048576,
+        allow_public_peers: true,
+        allow_loopback_peers: false,
+        permission_mode: "workspace-write",
+      },
+    });
+    expect(saved.status).toBe(200);
+    expect(admin.calls).toEqual([
+      'saveConfig:{"task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"allow_public_peers":true,"allow_loopback_peers":false,"permission_mode":"workspace-write"}',
+    ]);
+
+    // Clearing a control sends null, so the override (and the persisted config
+    // key) disappears and the local default applies again.
+    const cleared = await invoke(createPodApiHandler(admin), {
+      method: "POST",
+      url: `${POD_API_PREFIX}/config`,
+      body: { task_timeout_s: null, allow_public_peers: null, permission_mode: null },
+    });
+    expect(cleared.status).toBe(200);
+    expect(admin.calls[1]).toBe(
+      'saveConfig:{"task_timeout_s":null,"allow_public_peers":null,"permission_mode":null}',
+    );
+  });
+
   it("connects a peer from the panel", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
     const handler = createPodApiHandler(admin);

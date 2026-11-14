@@ -107,6 +107,23 @@ window.__ModuleLoader__.load({
         colOrigin: "origin",
         colAge: "age",
         colArtifacts: "artifacts",
+        busy: "busy",
+        idle: "idle",
+        busyOrigin: "from ",
+        dtTitle: "Task details",
+        dtDispatch: "dispatch",
+        dtDispatchNone: "no dispatch record",
+        dtPeer: "peer",
+        dtLastError: "error",
+        dtArtifacts: "artifacts",
+        dtArtifactsNone: "no artifacts",
+        dtInputs: "inputs",
+        dtInputsNone: "no inputs",
+        dtUsage: "usage",
+        dtReason: "reason",
+        dtMessage: "message",
+        dtTimeline: "timeline",
+        dtCreated: "created",
         stateOnline: "online",
         stateSuspect: "suspect",
         stateUnreachable: "unreachable",
@@ -210,6 +227,23 @@ window.__ModuleLoader__.load({
         colOrigin: "来源",
         colAge: "时间",
         colArtifacts: "产物",
+        busy: "忙碌",
+        idle: "空闲",
+        busyOrigin: "来自 ",
+        dtTitle: "任务详情",
+        dtDispatch: "派发",
+        dtDispatchNone: "无派发记录",
+        dtPeer: "对端",
+        dtLastError: "错误",
+        dtArtifacts: "产物",
+        dtArtifactsNone: "无产物",
+        dtInputs: "输入",
+        dtInputsNone: "无输入",
+        dtUsage: "用量",
+        dtReason: "原因",
+        dtMessage: "消息",
+        dtTimeline: "时间线",
+        dtCreated: "创建",
         stateOnline: "在线",
         stateSuspect: "可疑",
         stateUnreachable: "不可达",
@@ -635,7 +669,11 @@ window.__ModuleLoader__.load({
     }
 
     function Row(props) {
-      return h("tr", null, props.children);
+      return h(
+        "tr",
+        { onClick: props.onClick, style: props.onClick ? { cursor: "pointer", ...props.rowStyle } : props.rowStyle },
+        props.children,
+      );
     }
 
     function stateBadge(value) {
@@ -671,7 +709,14 @@ window.__ModuleLoader__.load({
             { key: member.orca_node_id },
             h("td", { style: CELL }, member.display_name || short(member.orca_node_id)),
             h("td", { style: CELL }, stateBadge(member.state)),
-            h("td", { style: CELL }, member.busy ? short(member.busy.task_id) : "-"),
+            h(
+              "td",
+              {
+                style: CELL,
+                title: member.busy ? member.busy.task_id + " · " + (member.busy.origin_orca_node || "") : undefined,
+              },
+              member.busy ? short(member.busy.task_id) : "-",
+            ),
             h("td", { style: MUTED }, (member.endpoints || []).join(", ") || "-"),
             h("td", { style: MUTED }, member.runtime && member.runtime.os ? member.runtime.os.name + " " + (member.runtime.os.version || "") : "-"),
           ),
@@ -710,7 +755,7 @@ window.__ModuleLoader__.load({
           const links = props.artifacts && props.artifacts[task.id] ? props.artifacts[task.id] : [];
           return h(
             Row,
-            { key: task.id },
+            { key: task.id, onClick: props.onOpen ? () => props.onOpen(task) : undefined },
             h("td", { style: { ...CELL, fontFamily: MONO_FONT } }, short(task.id)),
             h("td", { style: CELL }, taskStateLabel(task.status ? task.status.state : "-")),
             h("td", { style: MUTED }, task.metadata && task.metadata.pod && task.metadata.pod.origin ? short(task.metadata.pod.origin) : "-"),
@@ -731,13 +776,12 @@ window.__ModuleLoader__.load({
                     {
                       style: DANGER,
                       disabled: props.busy,
-                      onClick: () =>
-                        props.onCancel(task) &&
-                        task.metadata &&
-                        task.metadata.pod &&
-                        task.metadata.pod.origin
-                          ? props.onAct("cancel", { peer: task.metadata.pod.origin, task_id: task.id })
-                          : null,
+                      onClick: (event) => {
+                        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+                        const peer = task.metadata && task.metadata.pod ? task.metadata.pod.origin : null;
+                        if (!props.onCancel(task) || !peer) return;
+                        return props.onAct("cancel", { peer, task_id: task.id });
+                      },
                     },
                     t("cancel"),
                   )
@@ -763,6 +807,117 @@ window.__ModuleLoader__.load({
             (workspace.inputs_dirs.length > 0
               ? workspace.inputs_dirs.map((dir) => short(dir.task_id) + " (" + dir.files.length + ")").join(", ")
               : t("empty")),
+        ),
+      );
+    }
+
+    /** Task detail modal: the state snapshot already carries everything we
+     * show, so opening a row costs no extra RPC round-trip. */
+    function TaskDetail(props) {
+      const detail = props.detail;
+      const task = detail.task;
+      const members = props.members || [];
+      const status = task.status || {};
+      const pod = task.metadata && task.metadata.pod ? task.metadata.pod : {};
+      React.useEffect(() => {
+        function onKey(event) {
+          if (event.key === "Escape") props.onClose();
+        }
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [props]);
+      function field(label, value, key) {
+        return h(
+          "div",
+          { key: key || label, style: { display: "flex", gap: 10, marginTop: 6, alignItems: "baseline" } },
+          h("div", { style: { ...MUTED, minWidth: 72 } }, label),
+          h("div", { style: { flex: 1, minWidth: 0, wordBreak: "break-word" } }, value),
+        );
+      }
+      const dispatchRows = detail.dispatch
+        ? [
+            field(t("dtPeer"), detail.dispatch.peer || "-"),
+            field(t("colState"), detail.dispatch.state || "-"),
+            field(t("dtCreated"), detail.dispatch.created_at || "-"),
+            field(t("dtUpdated"), detail.dispatch.updated_at || "-"),
+            detail.dispatch.parent_local_task_id
+              ? field(t("dtTimeline"), short(detail.dispatch.parent_local_task_id), "dt-parent")
+              : null,
+            detail.dispatch.last_error ? field(t("dtLastError"), String(detail.dispatch.last_error)) : null,
+          ].filter(Boolean)
+        : [h("div", { key: "none", style: MUTED }, t("dtDispatchNone"))];
+      const artifacts =
+        detail.artifacts.length > 0
+          ? detail.artifacts.map((link) =>
+              link.url
+                ? h(
+                    "a",
+                    {
+                      key: link.blob_id,
+                      href: link.url,
+                      target: "_blank",
+                      rel: "noreferrer",
+                      style: { display: "inline-block", marginRight: 10, color: "var(--dsw-alias-brand-primary)" },
+                    },
+                    link.name,
+                  )
+                : h(
+                    "span",
+                    { key: link.blob_id, style: { ...MUTED, display: "inline-block", marginRight: 10 } },
+                    link.name,
+                  ),
+            )
+          : [h("span", { key: "none", style: MUTED }, t("dtArtifactsNone"))];
+      const inputs =
+        detail.inputs.length > 0
+          ? detail.inputs.map((name) => h("span", { key: name, style: { ...MUTED, marginRight: 10, fontFamily: MONO_FONT } }, name))
+          : [h("span", { key: "none", style: MUTED }, t("dtInputsNone"))];
+      const messageText = (() => {
+        const parts = status.message && Array.isArray(status.message.parts) ? status.message.parts : [];
+        return parts
+          .map((part) => (part && typeof part.text === "string" ? part.text : ""))
+          .filter(Boolean)
+          .join("\n");
+      })();
+      const usage = task.usage
+        ? t("dtUsage") +
+          ": in " +
+          String(task.usage.input_tokens) +
+          " · out " +
+          String(task.usage.output_tokens) +
+          " · cache " +
+          String(task.usage.cache_read_tokens)
+        : null;
+      return h(
+        "div",
+        {
+          style: OVERLAY,
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) props.onClose();
+          },
+        },
+        h(
+          "div",
+          { style: { ...CARD, width: "min(680px, calc(100vw - 40px))", maxHeight: "min(82vh, 860px)" } },
+          h("button", { type: "button", style: CLOSE_BUTTON, title: t("close"), onClick: props.onClose }, "×"),
+          h("div", { style: { ...H2, marginBottom: 6 } }, t("dtTitle")),
+          h("div", { style: { ...MUTED, fontFamily: MONO_FONT, wordBreak: "break-all", marginBottom: 8 } }, task.id),
+          field(t("colState"), taskStateLabel(status.state)),
+          field(t("dtOrigin"), pod.origin ? approvalsName(members, pod.origin) : "-"),
+          field(t("dtContext"), task.contextId || "-"),
+          field(t("dtUpdated"), status.timestamp ? status.timestamp : "-"),
+          status.reason ? field(t("dtReason"), String(status.reason)) : null,
+          pod.hop !== undefined
+            ? field(t("dtTimeline"), "hop " + String(pod.hop) + (pod.root ? " · root " + short(pod.root) : ""), "dt-hop")
+            : null,
+          usage ? h("div", { style: { ...MUTED, marginTop: 6 } }, usage) : null,
+          messageText ? field(t("dtMessage"), messageText) : null,
+          h("div", { style: { ...H2, marginTop: 16 } }, t("dtDispatch")),
+          ...dispatchRows,
+          h("div", { style: { ...H2, marginTop: 16 } }, t("dtArtifacts")),
+          h("div", { style: { marginTop: 6 } }, artifacts),
+          h("div", { style: { ...H2, marginTop: 16 } }, t("dtInputs")),
+          h("div", { style: { marginTop: 6 } }, inputs),
         ),
       );
     }
@@ -1093,6 +1248,16 @@ window.__ModuleLoader__.load({
       // The header button reflects the live mesh, not the remembered peer list:
       // saved peers that stop answering must read as "Connect", not "Disconnect".
       const joined = members.length > 0;
+      const dispatches = Array.isArray(state.dispatches) ? state.dispatches : [];
+      const inputsDirs = state.workspace && Array.isArray(state.workspace.inputs_dirs) ? state.workspace.inputs_dirs : [];
+      const [detail, setDetail] = React.useState(null);
+
+      function openDetail(task) {
+        const artifacts = state.artifacts && Array.isArray(state.artifacts[task.id]) ? state.artifacts[task.id] : [];
+        const dispatch = dispatches.find((entry) => entry.task_id === task.id) || null;
+        const inputsDir = inputsDirs.find((dir) => dir.task_id === task.id);
+        setDetail({ task, artifacts, dispatch, inputs: inputsDir ? inputsDir.files : [] });
+      }
 
       // Accepts a bare host/IP, host:port, or a full http(s) URL.
       // The Host half normalizes the address and applies the default port.
@@ -1144,6 +1309,18 @@ window.__ModuleLoader__.load({
           h("button", { type: "button", style: ICON_BUTTON, title: t("settings"), onClick: props.onOpenSettings }, "⚙"),
         ),
         h("div", { style: { ...MUTED, marginTop: 2 } }, t("workgroup") + " " + (config.workgroup_id || (self ? self.workgroup_id : "-"))),
+        self && self.busy
+          ? h(
+              "div",
+              { style: { ...MUTED, marginTop: 2, color: "var(--dsw-alias-brand-primary)" }, title: self.busy.task_id },
+              t("busy") +
+                " · " +
+                short(self.busy.task_id) +
+                " · " +
+                t("busyOrigin") +
+                approvalsName(members, self.busy.origin_orca_node),
+            )
+          : null,
         props.error ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, props.error) : null,
         connectError ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, connectError) : null,
         !joined ? h("div", { style: { ...MUTED, marginTop: 6 } }, t("notJoined")) : null,
@@ -1168,10 +1345,11 @@ window.__ModuleLoader__.load({
             )
           : null,
         h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, busy: props.busy, onAct: props.onAct })),
-        h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct })),
+        h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct, onOpen: openDetail })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("members")), h(Members, { members: state.members })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("workspace")), h(Workspace, { workspace: state.workspace })),
         h("div", { style: { ...SECTION, color: "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px" } }, t("updated") + age(state.now) + t("updatedSuffix")),
+        detail ? h(TaskDetail, { detail, members, onClose: () => setDetail(null) }) : null,
       );
     }
 

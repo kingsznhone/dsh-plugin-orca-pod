@@ -16,6 +16,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { resolve } from "node:path";
+import { DEFAULT_BLOB_TTL_MS } from "./blobs.ts";
 
 export type FileBlob = {
   /** sha256 of the file contents; doubles as the content address. */
@@ -40,7 +41,8 @@ export type FileBlobRegistry = {
   has(blobId: string): boolean;
 };
 
-export const DEFAULT_FILE_BLOB_TTL_S = 7 * 24 * 3600;
+/** Published files share the blob retention window (§5.6). */
+export const DEFAULT_FILE_BLOB_TTL_S = Math.floor(DEFAULT_BLOB_TTL_MS / 1000);
 
 async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   const hash = createHash("sha256");
