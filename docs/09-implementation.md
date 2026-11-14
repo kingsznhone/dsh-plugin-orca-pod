@@ -147,11 +147,11 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目�
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createNode()`。**
 
-**Phase 0 现状**：库根 `createNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动节点、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两节点 smoke（join、send、status、cancel、重启后 node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何 `@orca/*` 依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
+**Phase 0 现状**：库根 `createNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动节点、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两节点 smoke（join、send、status、cancel、重启后 node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何内部私有依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
 
 ### 9.5 工程约定
 
-- TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm（不用 pnpm；workspaces 只有一个成员包，便于 `npm install` 一次装齐）；vitest；`tsc --noEmit` 进 CI。
+- TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm（不用 pnpm；单包，`npm install` 在仓库根目录一次装齐）；vitest；`tsc --noEmit` 进 CI。
 - 构建/开发的目标选型是 `tsup` + `tsx` + `biome` + `commander` + `pino`；Phase 0 尚未安装，仓库目前只有 `typescript`、`vitest`、`@types/node`。
 - 不引入框架级 DI 容器：构造函数注入足够，装配只在 `node.ts`。
 - 存储目标：默认 fs（`lowdb` + `steno` 原子写），SQLite 用 `better-sqlite3`（或 `node:sqlite`）作为后续里程碑；Phase 0 只有内存实现（[§5.5](05-tasks.md#55-任务存储)）。
