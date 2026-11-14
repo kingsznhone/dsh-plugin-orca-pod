@@ -64,7 +64,6 @@ const TASK_ERROR_STATUS: Record<string, number> = {
   permission_denied: 409,
   grant_invalid: 409,
   grant_expired: 409,
-  hop_limit: 400,
   ancestor_call_forbidden: 403,
   escalation_required: 409,
 };

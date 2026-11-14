@@ -10,7 +10,6 @@ import {
   deriveChildGrant,
   grantCovers,
   validatePodMetadata,
-  type DelegationConfig,
 } from "../src/chain.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
 import { deriveWorkgroupKey, signGrant } from "../src/crypto.ts";
@@ -36,7 +35,7 @@ afterEach(async () => {
   dataRoots = [];
 });
 
-async function makeNode(options: { delegation?: DelegationConfig } = {}): Promise<OrcaNode> {
+async function makeNode(): Promise<OrcaNode> {
   const dataRoot = mkdtempSync(join(tmpdir(), "orca-chain-"));
   dataRoots.push(dataRoot);
   const config = createOrcaNodeConfig({
@@ -45,7 +44,6 @@ async function makeNode(options: { delegation?: DelegationConfig } = {}): Promis
     dataRoot,
     host: "127.0.0.1",
     port: 0,
-    ...(options.delegation ? { delegation: options.delegation } : {}),
   });
   const node = createOrcaNode({ config });
   await node.start();
@@ -109,17 +107,16 @@ describe("chain metadata", () => {
     });
   });
 
-  it("rejects hops above max_hop and callbacks to an ancestor", () => {
-    expect(() => validatePodMetadata(podMetadata(1, ["A"]), "B", 0)).toThrowError(/max_hop/);
-    expect(() => validatePodMetadata(podMetadata(1, ["A", "B"]), "B", 2)).toThrowError(/ancestors/);
-    expect(validatePodMetadata(podMetadata(2, ["A", "B"]), "C", 3)).toMatchObject({ hop: 2, chain: ["A", "B"] });
+  it("accepts any hop depth but rejects callbacks to an ancestor", () => {
+    expect(() => validatePodMetadata(podMetadata(1, ["A", "B"]), "B")).toThrowError(/ancestors/);
+    expect(validatePodMetadata(podMetadata(2, ["A", "B"]), "C")).toMatchObject({ hop: 2, chain: ["A", "B"] });
     expect(validatePodMetadata(undefined, "C")).toEqual({});
   });
 
   it("rejects malformed hop and chain values", () => {
-    expect(() => validatePodMetadata({ pod: { hop: -1 } }, "B", 2)).toThrowError(/non-negative integer/);
-    expect(() => validatePodMetadata({ pod: { hop: 0.5 } }, "B", 2)).toThrowError(/non-negative integer/);
-    expect(() => validatePodMetadata({ pod: { chain: "A" } }, "B", 2)).toThrowError(/array/);
+    expect(() => validatePodMetadata({ pod: { hop: -1 } }, "B")).toThrowError(/non-negative integer/);
+    expect(() => validatePodMetadata({ pod: { hop: 0.5 } }, "B")).toThrowError(/non-negative integer/);
+    expect(() => validatePodMetadata({ pod: { chain: "A" } }, "B")).toThrowError(/array/);
   });
 });
 
@@ -211,22 +208,9 @@ describe("child grants", () => {
 });
 
 describe("multi-hop enforcement", () => {
-  it("rejects hop > 0 when max_hop is 0 (default)", async () => {
+  it("accepts hop > 0 without a depth limit", async () => {
     const sender = await makeNode();
     const target = await makeNode();
-    await expectCode(
-      () =>
-        sender.sendTask(target.endpoint, {
-        message: { role: "user", parts: [{ kind: "text", text: "two hops" }] },
-        metadata: podMetadata(1, [sender.orcaNodeId]),
-        }),
-      "hop_limit",
-    );
-  });
-
-  it("accepts hop > 0 when max_hop allows it", async () => {
-    const sender = await makeNode();
-    const target = await makeNode({ delegation: { max_hop: 2 } });
     const view = await sender.sendTask(target.endpoint, {
       message: { role: "user", parts: [{ kind: "text", text: "two hops" }] },
       metadata: { ...podMetadata(1, [sender.orcaNodeId]), echo: { final: { state: "completed", text: "hop ok" } } },
@@ -237,7 +221,7 @@ describe("multi-hop enforcement", () => {
 
   it("rejects a callback into an ancestor chain", async () => {
     const sender = await makeNode();
-    const target = await makeNode({ delegation: { max_hop: 2 } });
+    const target = await makeNode();
     await expectCode(
       () =>
         sender.sendTask(target.endpoint, {
@@ -252,8 +236,8 @@ describe("multi-hop enforcement", () => {
 describe("chained approval", () => {
   it("derives a child grant from the parent grant and resumes the downstream task", async () => {
     const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
-    const delegator = await makeNode({ delegation: { max_hop: 1 } });
-    const worker = await makeNode({ delegation: { max_hop: 1 } });
+    const delegator = await makeNode();
+    const worker = await makeNode();
 
     const view = await delegator.sendTask(worker.endpoint, {
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
@@ -288,8 +272,8 @@ describe("chained approval", () => {
 
   it("refuses to derive when the parent grant does not cover the request", async () => {
     const key = deriveWorkgroupKey(WORKGROUP, PASSWORD);
-    const delegator = await makeNode({ delegation: { max_hop: 1 } });
-    const worker = await makeNode({ delegation: { max_hop: 1 } });
+    const delegator = await makeNode();
+    const worker = await makeNode();
 
     const view = await delegator.sendTask(worker.endpoint, {
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
@@ -339,8 +323,8 @@ describe("relay prototype (7.12)", () => {
     suspendedParent: TaskView;
   }> {
     const root = await makeNode();
-    const middle = await makeNode({ delegation: { max_hop: 1 } });
-    const leaf = await makeNode({ delegation: { max_hop: 1 } });
+    const middle = await makeNode();
+    const leaf = await makeNode();
 
     const childView = await middle.sendTask(leaf.endpoint, {
       message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },

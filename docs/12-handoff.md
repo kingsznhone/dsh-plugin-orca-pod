@@ -41,13 +41,13 @@ Hard constraints that must not be undone:
   429 orca_node_busy with retry_after and holder; the calling model decides whether
   to retry, switch orca node, or report back to the user. No server-side queue.
   One endpoint per orca node. Absolute paths from origin are rejected.
-- Tasks are single-hop by default: no forwarding, no callbacks. The gateway, not
-  the agent, decides hop/chain/root. Multi-hop and fan-out exist as opt-in
-  capabilities (max_hop default 0); when enabled, the gateway injects
-  hop+1, appends the orca node to chain, keeps root stable, and rejects over-budget
-  children. Nodes never wake each other except by an origin-issued request.
+- Tasks are never forwarded: a child task is a new task an agent creates
+  explicitly (CLI or plugin tool). The gateway, not the agent, decides
+  hop/chain/root; there is no depth limit (a workgroup is a few machines) and the
+  loop guard is the ancestor chain. Nodes never wake each other except by an
+  origin-issued request.
 - A child task may never target an orca node already in its chain: the gateway returns
-  403 ancestor_call_forbidden, regardless of max_hop. A blocked sub-agent reports
+  403 ancestor_call_forbidden. A blocked sub-agent reports
   via input-required with a `blocked` payload and releases its slot; the origin
   decides and continues the task with a follow-up message. No reverse calls.
 - Polling lives in the Host plugin, not in the agent's shell: pod_send returns a

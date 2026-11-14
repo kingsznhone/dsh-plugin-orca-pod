@@ -2,7 +2,6 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveWorkgroupKey } from "./crypto.ts";
-import type { DelegationConfig } from "./chain.ts";
 import {
   DEFAULT_PORT,
   generateOrcaNodeId,
@@ -60,10 +59,12 @@ export type OrcaNodeConfig = {
   acp?: AcpExecutorConfig;
   /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
   permission_mode?: PermissionMode;
-  /** Multi-hop limits this orca node enforces on incoming tasks (§5.1). */
-  delegation?: DelegationConfig;
   /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
   approval_timeout_s?: number;
+  /** Allow candidate endpoints on public IPs (§7.7). Default: private ranges only. */
+  allow_public_peers?: boolean;
+  /** Reject loopback candidate endpoints; defaults to allowing them for same-host meshes (§7.7). */
+  allow_loopback_peers?: boolean;
 };
 
 export type CreateOrcaNodeConfigOptions = {
@@ -79,8 +80,9 @@ export type CreateOrcaNodeConfigOptions = {
   headless?: HeadlessExecutorConfig;
   acp?: AcpExecutorConfig;
   permissionMode?: PermissionMode;
-  delegation?: DelegationConfig;
   approvalTimeoutS?: number;
+  allowPublicPeers?: boolean;
+  allowLoopbackPeers?: boolean;
 };
 
 export function defaultDataRoot(): string {
@@ -121,8 +123,9 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     ...(options.headless ? { headless: options.headless } : {}),
     ...(options.acp ? { acp: options.acp } : {}),
     ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
-    ...(options.delegation ? { delegation: options.delegation } : {}),
-    ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
+      ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
+  ...(options.allowPublicPeers !== undefined ? { allow_public_peers: options.allowPublicPeers } : {}),
+  ...(options.allowLoopbackPeers !== undefined ? { allow_loopback_peers: options.allowLoopbackPeers } : {}),
   };
 }
 
@@ -221,23 +224,6 @@ function parseAcpConfig(value: unknown): AcpExecutorConfig | undefined {
   return config;
 }
 
-function parseDelegationConfig(value: unknown): DelegationConfig | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("config.delegation must be an object");
-  }
-  const record = value as Record<string, unknown>;
-  const delegation: DelegationConfig = {};
-  const maxHop = record["max_hop"];
-  if (maxHop !== undefined) {
-    if (typeof maxHop !== "number" || !Number.isInteger(maxHop) || maxHop < 0 || maxHop > 3) {
-      throw new Error("config.delegation.max_hop must be an integer between 0 and 3");
-    }
-    delegation.max_hop = maxHop;
-  }
-  return delegation;
-}
-
 export function validateConfig(value: unknown): OrcaNodeConfig {
   if (typeof value !== "object" || value === null) throw new Error("config must be an object");
   const record = value as Record<string, unknown>;
@@ -277,14 +263,19 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
     }
     config.permission_mode = permissionMode;
   }
-  const delegation = parseDelegationConfig(record["delegation"]);
-  if (delegation) config.delegation = delegation;
   const approvalTimeout = record["approval_timeout_s"];
   if (approvalTimeout !== undefined) {
     if (typeof approvalTimeout !== "number" || !Number.isFinite(approvalTimeout) || approvalTimeout <= 0) {
       throw new Error("config.approval_timeout_s must be a positive number of seconds");
     }
     config.approval_timeout_s = approvalTimeout;
+  }
+  for (const key of ["allow_public_peers", "allow_loopback_peers"] as const) {
+    const value = record[key];
+    if (value !== undefined) {
+      if (typeof value !== "boolean") throw new Error(`config.${key} must be a boolean`);
+      config[key] = value;
+    }
   }
   return config;
 }

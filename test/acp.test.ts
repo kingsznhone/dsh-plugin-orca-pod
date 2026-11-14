@@ -17,14 +17,13 @@ afterEach(async () => {
   for (const node of LIVE.splice(0)) await node.stop();
 });
 
-function configFor(root: string, mode: string, delegation?: { max_hop: number }): OrcaNodeConfig {
+function configFor(root: string, mode: string): OrcaNodeConfig {
   return createOrcaNodeConfig({
     workgroupId: "acp-test",
     password: "correct horse",
     dataRoot: root,
     port: 0,
     executor: "acp",
-    ...(delegation ? { delegation } : {}),
     acp: {
       command: process.execPath,
       extra_args: [FAKE_ACP, mode, join(root, "acp.log")],
@@ -194,7 +193,7 @@ describe("AcpExecutor in a chain", () => {
     const rootC = await mkdtemp(join(tmpdir(), "orca-acp-c-"));
     const a = await startNode(echoConfigFor(rootA));
     const b = await startNode(echoConfigFor(rootB));
-    const c = await startNode(configFor(rootC, "permission", { max_hop: 1 }));
+    const c = await startNode(configFor(rootC, "permission"));
 
     // B (mid node) creates the child task on C; C's ACP agent asks for permission.
     const child = await b.sendTask(c.endpoint, {

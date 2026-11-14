@@ -78,8 +78,6 @@ export type TaskRunnerDeps = {
   permissionTtlS?: number;
   /** Local ceiling for inherited origin modes; undefined means no local cap (§7.10). */
   permissionMode?: PermissionMode;
-  /** Largest `pod.hop` this orca node accepts; default 0 (single hop only, §5.1). */
-  maxHop?: number;
   /** Sends a control message to a child task (grant/denial downward, §7.12). */
   sendTaskMessage?: (peerUrl: string, taskId: string, message: A2AMessage) => Promise<void>;
 };
@@ -373,7 +371,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
 
   function submit(input: SubmitTaskInput): TaskView {
     if (activeTaskId !== null) throw new TaskError("orca_node_busy", "orca node is busy with another task");
-    validatePodMetadata(input.metadata, selfOrcaNodeId, deps.maxHop ?? 0);
+    validatePodMetadata(input.metadata, selfOrcaNodeId);
     try {
       echoScriptFrom(input.metadata); // validate before a task exists (§6.3)
     } catch (error) {

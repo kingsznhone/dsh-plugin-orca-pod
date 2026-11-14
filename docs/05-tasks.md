@@ -26,18 +26,18 @@
 - `context_id` 把多个 task 归到同一逻辑会话；目标 orca node 把它映射到本地 DSH session，cwd 固定为本 orca node 的工作区（[§6.7](06-execution.md#67-工作区一份持久)）。
 - `idempotency_key` 作用域 = 同一 workgroup 内；目标 orca node 去重窗口默认 24h。它只防重复提交，不承担重发。
 - `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
-- `pod.hop`：任务已经跨了几跳。origin 建 task 时为 0。target 是否接受 `hop > 0` 由 `delegation.max_hop` 决定（默认 **0** → `400 hop_limit`；可配 1–3）。target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
+- `pod.hop`：任务已经跨了几跳，只作信息与审计，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。origin 建 task 时为 0；target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
 - `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
 - `pod.root`：这条调用树的根 task id。origin 建 task 时等于自己的 task id。
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`），target 不能放大；本机 `config.permission_mode` 是本地上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。
 - 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
-- **祖先禁调（硬限制）**：子任务的目标集合必须排除 `pod.chain` 里的所有 orca node 和自身。尝试调用 → `403 ancestor_call_forbidden`。这条不受 `max_hop` 影响，开了多跳也一样——A→B→A 在第一次就被拒绝，而不是等到第 N 跳才断。
+- **祖先禁调（硬限制）**：子任务的目标集合必须排除 `pod.chain` 里的所有 orca node 和自身。尝试调用 → `403 ancestor_call_forbidden`。A→B→A 在第一次就被拒绝，而不是等到第 N 跳才断。
 - 被祖先禁调挡住时，正确动作是把问题写进 `input-required` + `blocked`（[§4.8](04-transport.md#48-任务状态机)），让 A 看到后决定下一步；不是换条路再调回去。
 - 这些字段都进签名；target 只读不写。
 - `grant_id` 指向 origin 签发的 grant；目标 orca node 校验其绑定关系（[§7.11](07-security.md#711-grant)）。
 - `workspace.kind` 当前只有 `"group"` 一个合法值，显式声明“在本 orca node 工作区执行”；没有发布式目录（[§6.12](06-execution.md#612-明确不做)）。
 
-**实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数，超过本 orca node 的 `delegation.max_hop`（`config.json` 的可选项，0–3，默认 0）→ `400 hop_limit`；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；`pod.permission_mode` 必须是合法权限模式（非法 → `400 bad_request`），且本机 `config.permission_mode` 作为上限与继承值取窄；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task、继承 `permission_mode`），插件侧的多跳派发尚未接线——目前只有测试与直接调用 API 能构造 `pod` 元数据。
+**实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数（**没有深度上限**）；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；`pod.permission_mode` 必须是合法权限模式（非法 → `400 bad_request`），且本机 `config.permission_mode` 作为上限与继承值取窄；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task、继承 `permission_mode`）；多跳派发由 agent 通过 CLI/插件工具显式发起，`hop` 只是记账。
 
 ### 5.2 任务回报
 

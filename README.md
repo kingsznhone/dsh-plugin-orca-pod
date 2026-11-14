@@ -68,6 +68,8 @@ the config afterwards.
 | `skill_injection`    | no       | `true`                          | Write `$DSH_HOME/skills/orca-node/SKILL.md` so subprocess sessions (headless/ACP profiles) find the CLI; set `false` to opt out |
 | `approval_timeout_s` | no       | unset (wait forever)            | Auto-reject a parked permission request after this many seconds (`failed(permission_timeout)`); the task TTL is paused while parked |
 | `permission_mode`    | no       | unset (no local ceiling)        | Ceiling for inherited task modes: effective mode = narrower of this and `pod.permission_mode` |
+| `allow_public_peers` | no       | `false`                         | Allow candidate endpoints on public IPs (§7.7)                          |
+| `allow_loopback_peers` | no     | `true`                          | Set `false` to reject loopback candidate endpoints (§7.7)              |
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
 
@@ -75,7 +77,7 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 
 审批默认无限等待：任务挂起等 origin 的人时，task TTL 会暂停，也不会因为 120 秒没决定就失败；只有配置了 `approval_timeout_s` 才在到点自动拒绝（`failed(permission_timeout)`）。CLI 的 `wait`/`escalate` 的 `--timeout` 同样可省略，省略就一直等到 origin 决策。
 
-多跳委派也在本机 `config.json` 里：`"delegation": { "max_hop": 1 }`（0–3，默认 0，即拒绝 `hop > 0` 的子任务）。超过上限返回 `400 hop_limit`，祖先回环返回 `403 ancestor_call_forbidden`。
+多跳没有深度上限：子任务由 agent 显式派发（CLI/工具），网关注入 `hop`/`chain`/`root`；唯一构造性约束是祖先禁调（`403 ancestor_call_forbidden`），环靠 `chain` 检测。
 
 ### 安全注意（原型）
 

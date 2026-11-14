@@ -7,6 +7,7 @@ import { deriveChildGrant } from "./chain.ts";
 import { buildAuthHeader, NonceCache, signGrant } from "./crypto.ts";
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createHeadlessExecutor } from "./headless.ts";
+import { candidateEndpointAllowed } from "./net.ts";
 import { createAcpExecutor } from "./acp.ts";
 import { createGateway } from "./gateway.ts";
 import { createMembership, type MembershipClock, type MembershipTimings } from "./membership.ts";
@@ -208,7 +209,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     selfOrcaNodeId: orcaNodeId,
     workgroupId: config.workgroup_id,
     key,
-    maxHop: config.delegation?.max_hop ?? 0,
     ...(config.permission_mode ? { permissionMode: config.permission_mode } : {}),
     ...(config.approval_timeout_s !== undefined ? { permissionTtlS: config.approval_timeout_s } : {}),
     sendTaskMessage: async (peerUrl, _taskId, message) => {
@@ -436,6 +436,37 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     heartbeatTimer.unref();
   }
 
+  /** Candidate endpoints came from someone else's list, so screen them before dialing (§7.7). */
+  const candidatePolicy = {
+    ...(config.allow_public_peers === true ? { allowPublicPeers: true } : {}),
+    ...(config.allow_loopback_peers === false ? { allowLoopbackPeers: false } : {}),
+  };
+  const candidateVerdicts = new Map<string, boolean>();
+  const warnedCandidates = new Set<string>();
+
+  /** DNS lookups are not free, so each endpoint is judged once per process. */
+  async function candidateAllowed(peer: PeerView): Promise<boolean> {
+    const cached = candidateVerdicts.get(peer.endpoint);
+    if (cached !== undefined) return cached;
+    const allowed = await candidateEndpointAllowed(peer.endpoint, candidatePolicy);
+    candidateVerdicts.set(peer.endpoint, allowed);
+    if (!allowed && !warnedCandidates.has(peer.orca_node_id)) {
+      warnedCandidates.add(peer.orca_node_id);
+      console.warn(`orca-pod: refusing candidate endpoint ${peer.endpoint} from ${peer.orca_node_id} (§7.7)`);
+    }
+    return allowed;
+  }
+
+  async function dialableCandidates(peers: PeerView[]): Promise<PeerView[]> {
+    const allowed: PeerView[] = [];
+    for (const peer of peers) {
+      if (membership.originOf(peer.orca_node_id) !== "candidate" || (await candidateAllowed(peer))) {
+        allowed.push(peer);
+      }
+    }
+    return allowed;
+  }
+
   async function heartbeatTick(): Promise<void> {
     if (heartbeatStopped) return;
     membership.evaluate();
@@ -443,7 +474,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const targets = membership
       .list()
       .filter((peer) => peer.endpoint && membership.needsProbe(peer.orca_node_id, now));
-    await Promise.allSettled(targets.map((peer) => heartbeat(peer.endpoint)));
+    const dialable = await dialableCandidates(targets);
+    await Promise.allSettled(dialable.map((peer) => heartbeat(peer.endpoint)));
     scheduleHeartbeat();
   }
 

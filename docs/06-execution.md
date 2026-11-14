@@ -95,7 +95,7 @@ Pod gateway (local)
 
 建议为集群任务使用**专属 profile**（如 `orca`），与用户日常 GUI profile 隔离；ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
 
-**默认不启用 pod 远程工具**；多跳与扇出是可选能力，配置 `delegation` 打开后才生效。理由不是“安全”，而是“一个会自己跑起来的集群很难调试”：默认行为应当是可预测的单跳。打开后网关会强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），并按 `max_hop` 拒绝超限；agent 不能自己填这些字段。
+**executor 默认不启用 pod 远程工具**：ACPI/headless 会话要么通过 CLI、要么通过插件工具去派发子任务，没有隐式转发。多跳本身不受限制——网关强制注入 `hop` / `chain` / `root`（[§5.1](05-tasks.md#51-任务标识与元数据)），agent 不能自己填；唯一的构造性约束是祖先禁调，环靠 `chain` 检测而不是深度上限。
 
 ### 6.5 ACP 映射
 

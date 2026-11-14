@@ -10,12 +10,6 @@ import {
   type SignedGrant,
 } from "./protocol.ts";
 
-/** Delegation limits this orca node enforces on incoming tasks (§5.1, §6.4). */
-export type DelegationConfig = {
-  /** Accept `pod.hop > 0` up to this many hops; default 0 (single hop only). */
-  max_hop?: number;
-};
-
 /**
  * Metadata a child task inherits from the task whose agent created it (§5.1).
  * The gateway is the only place that increments the hop and appends the chain;
@@ -35,14 +29,13 @@ export function childPodMetadata(
 }
 
 /**
- * Validate the `pod` block of an incoming task (§5.1). Throws `hop_limit` when
- * the task crossed more hops than this node accepts, and
- * `ancestor_call_forbidden` when the ancestor path already contains this node.
+ * Validate the `pod` block of an incoming task (§5.1, §6.4). There is no hop
+ * limit — a workgroup is a handful of machines — so only malformed metadata and
+ * a callback to an ancestor (`ancestor_call_forbidden`) are rejected.
  */
 export function validatePodMetadata(
   metadata: Record<string, unknown> | undefined,
   selfOrcaNodeId: string,
-  maxHop = 0,
 ): PodTaskMetadata {
   const raw = metadata?.["pod"];
   if (raw === undefined) return {};
@@ -70,9 +63,6 @@ export function validatePodMetadata(
     );
   }
   const path = (chain as string[] | undefined) ?? [];
-  if (typeof hop === "number" && hop > maxHop) {
-    throw new TaskError("hop_limit", `task hop ${hop} exceeds this orca node's max_hop ${maxHop}`);
-  }
   if (path.includes(selfOrcaNodeId)) {
     throw new TaskError(
       "ancestor_call_forbidden",

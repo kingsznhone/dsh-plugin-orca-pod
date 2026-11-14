@@ -32,8 +32,6 @@ async function makeNode(): Promise<OrcaNode> {
     dataRoot,
     host: "127.0.0.1",
     port: 0,
-    // The middle orca node accepts one delegated hop (§5.1).
-    delegation: { max_hop: 1 },
   });
   const node = createOrcaNode({ config });
   await node.start();

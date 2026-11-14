@@ -93,11 +93,12 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 ### 7.7 SSRF / 候选端点防护
 
-- 候选端点在拨号前校验：拒绝回环、`0.0.0.0`、组播、`169.254.0.0/16`（含元数据地址 `169.254.169.254`）、`::1`、`fe80::/10`；
-- 允许 RFC1918、`100.64/10`、`fd00::/8`；公网地址需要 `allow_public_peers: true`；
-- 探测失败按 `recover_probe`（15s→30s）退避；候选探测单独计数，防止被当作端口扫描器。
+- 候选端点（从别人目录里学到、尚未直接 join 的）在拨号前校验；显式配置、CLI `--peer`、直接 `join` 的端点不在此列；
+- 恒定拒绝：`0.0.0.0`/`::`、组播、`169.254.0.0/16`（含元数据地址 `169.254.169.254`）、`fe80::/10`；
+- 允许 RFC1918、`100.64/10`、`fd00::/8`；**回环默认允许**（同机多进程是常见部署），可用 `allow_loopback_peers: false` 收紧为拒绝；公网地址需要 `allow_public_peers: true`；
+- 主机名先解析、再按解析结果判断，解析失败即拒；探测失败按 `recover_probe`（15s→30s）退避；候选探测单独计数，防止被当作端口扫描器。
 
-**实现状态**：SSRF 过滤尚未实现。当前 join/心跳只使用显式配置的端点与目录返回的端点，没有“候选端点”标记，因此上面的 IP 段清单还没有落到拨号前检查；本地回环在测试与同机多 orca node 场景中是合法目标。等引入候选标记后按本清单在 `heartbeat`/`joinRoster` 拨号前过滤。
+**实现状态（Phase 3）**：已实现。`membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/net.ts` 的 `candidateEndpointAllowed`（`test/ssrf.test.ts` 7 条覆盖私网/回环/元数据/组播/公网/主机名/非法 URL 与 origin 标记）。被拒的候选只 warning 一次、不进 online，也不会被当作在线成员。
 
 ### 7.8 审计
 
@@ -264,7 +265,7 @@ A（B 的 origin，也是人的位置）：tasks/get 看到 → 审批卡片显�
 - **grant 逐跳派生，派生必然收窄**：每一跳不转发父 grant，而是由当前 orca node 用自己持有的父 grant 派生一张新的 SignedGrant（绑定自己的 task 与 `target_orca_node`，`chain` 追加当前跳）——这就是“继承”。因为派生只能从父 grant 里取子集，`permission_mode` 不高于父 grant、`limits` 不宽于父 grant、`expires_at` 不晚于父 grant，所以结果必然收窄，不需要额外一步“裁剪”。父 grant 的 `task_id`/`target_orca_node` 绑定的是上一跳，原样转发给下一跳本来就会被 target 校验拒绝（既无效，也让审计失去“谁批给谁”）。
 - **请求逐跳上升**：`via` 只追加、不改写；每跳把自己的 `expires_in_s` 减一档，避免“最后一秒批下来、下游已超时”。任一跳超时 → 该跳 deny，逐跳向下传 `failed(permission_denied)` 或 `failed(permission_timeout)`。
 - **等待不占槽**：C 与 B 都停在 `input-required`（槽位释放）；A 长期无人 → 链上各级超时失败，不会挂住 B 或 C。
-- **链深有界**：`max_hop` 默认 0（链式默认不开）；打开后 `via` 长度 ≤ `max_hop`，超过即 deny（[§5.1](05-tasks.md#51-任务标识与元数据)）。
+- **环靠祖先禁调阻断，不靠深度上限**：链可以任意长（workgroup 就是几台机器），但子任务不能指向 `chain` 里的任何 orca node 或自身（[§5.1](05-tasks.md#51-任务标识与元数据)）；长链由每跳超时与 task TTL 兜底。
 - **根 A 的卡片必须显示来源链**：否则人只看到“C 要写 /etc”，不知道是 B 代“B 转述的 C”在问。
 
 Phase 3 先只做“逐跳上升 + 逐跳收窄”，不做 B 的自动放行；等链式任务实际跑过，再决定要不要给中间节点 `auto_approve_within_grant` 开关。

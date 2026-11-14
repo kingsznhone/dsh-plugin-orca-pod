@@ -46,8 +46,13 @@ export type MembershipClock = {
   wallIso?: () => string;
 };
 
+/** How this orca node learned about a peer (§3.5, §7.7). */
+export type PeerOrigin = "explicit" | "candidate";
+
 export type PeerRecord = {
   view: PeerView;
+  /** Explicit: joined or configured directly. Candidate: only seen in a remote list. */
+  origin: PeerOrigin;
   last_ok_at: string | null;
   fails: number;
   suspect_reason: SuspectReason | null;
@@ -69,6 +74,8 @@ export type Membership = {
   observeOutboundFail(orcaNodeId: OrcaNodeId): void;
   /** Remote lists only add/update records; they never touch online state. */
   mergeRemote(members: readonly PeerView[] | null | undefined): void;
+  /** Whether a peer was joined explicitly or only seen in a remote list (§7.7). */
+  originOf(orcaNodeId: OrcaNodeId): PeerOrigin | null;
   /** Apply timeout transitions and prune stale records. */
   evaluate(): PeerView[];
   needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean;
@@ -109,9 +116,10 @@ export function createMembership(options: CreateMembershipOptions): Membership {
   const tombstones = new Map<OrcaNodeId, number>();
   const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
 
-  function createRecord(view: PeerView, state: PeerState, nowMs: number): PeerRecord {
+  function createRecord(view: PeerView, state: PeerState, nowMs: number, origin: PeerOrigin): PeerRecord {
     return {
       view: { ...view, state, last_recv_at: state === "unknown" ? null : wallIso() },
+      origin,
       last_ok_at: null,
       fails: 0,
       suspect_reason: null,
@@ -158,10 +166,11 @@ export function createMembership(options: CreateMembershipOptions): Membership {
       const nowMs = monotonicMs();
       if (existing) {
         profilePatch(existing, peer);
+        existing.origin = "explicit";
         return;
       }
       if (isTombstoned(peer.orca_node_id)) return;
-      records.set(peer.orca_node_id, createRecord(peer, "online", nowMs));
+      records.set(peer.orca_node_id, createRecord(peer, "online", nowMs, "explicit"));
     },
     get(orcaNodeId: OrcaNodeId): PeerView | undefined {
       const record = records.get(orcaNodeId);
@@ -247,7 +256,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
         profilePatch(existing, member);
         continue;
       }
-      records.set(member.orca_node_id, createRecord(member, "unknown", nowMs));
+      records.set(member.orca_node_id, createRecord(member, "unknown", nowMs, "candidate"));
     }
   }
 
@@ -313,6 +322,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     observeOutboundOk,
     observeOutboundFail,
     mergeRemote,
+    originOf: (orcaNodeId) => records.get(orcaNodeId)?.origin ?? null,
     evaluate,
     needsProbe,
     now: monotonicMs,
