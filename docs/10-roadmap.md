@@ -16,7 +16,7 @@
 
 - core 已跑通：`npm test` 61 个测试通过（protocol 30、crypto 15、harness mesh 1、harness a2a 7、gateway blobs 8），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
-- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；`@orca/pod` DSH host 插件（4 个非阻塞工具）；task store 与 blob store 为进程内内存。
+- 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）；task store 与 blob store 为进程内内存。
 - 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、后台心跳循环与 12s 看门狗、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
 
 ### 10.2 Phase 1：三节点 full mesh 与惰性收敛
@@ -149,7 +149,7 @@
 > 上面的阶段回答“做到什么程度”，这一节回答“先写哪一块”。原则：每一层都能脱离下一层单独验证，不通过就不往上堆。
 
 1. **仓库骨架**：npm workspaces、十个包、tsconfig/biome/vitest、CI（只跑进程内测试）。
-2. **headless node core**：protocol/crypto/storage/gateway/orca_node + EchoExecutor；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单节点。
+2. **headless node core**：protocol/crypto/storage/gateway/node + EchoExecutor；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单节点。
 3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `npm run harness -- --nodes 3` 起真实进程和 socket；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
 4. **Echo 行为与回调**：按 10.6 的“Echo 脚本”“三台节点”逐条跑；挂起/恢复/取消/TTL/blob 在这一层定死，后面的执行器只换实现、不换协议。
 5. **真实执行器**：HeadlessExecutor（ACP stdio）→ AcpExecutor；cwd 是工作区、context→session 绑定、取消、`input-required` 映射。放在插件之前，是为了让“协议正确”和“DSH 集成正确”分两次验证，不同时调两个未知量。

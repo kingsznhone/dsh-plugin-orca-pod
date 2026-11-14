@@ -49,9 +49,9 @@ target: task store（Phase 0 为进程内存；SQLite 见 §5.5）推进 submitt
 origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 ```
 
-**Phase 0 现状**：协议层已经支持 `tasks/get` 轮询；`scripts/cross.ts task` 用固定 100ms、最多 300 次轮询到终态，只是联调脚本。下面的退避与自动判定属于 dsh-plugin tracker 的设计，尚未实现。target 侧 TTL 已实现：默认 3600s，可由 `metadata.pod.task_ttl_s` 覆盖，到期置 `failed(reason=timeout)`；origin 侧超时后补发 `tasks/cancel` 也尚未实现。
+**Phase 0 现状**：协议层已经支持 `tasks/get` 轮询；`scripts/cross.ts task` 用固定 100ms、最多 300 次轮询到终态，只是联调脚本。下面的退避与自动判定属于 plugin tracker 的设计，尚未实现。target 侧 TTL 已实现：默认 3600s，可由 `metadata.pod.task_ttl_s` 覆盖，到期置 `failed(reason=timeout)`；origin 侧超时后补发 `tasks/cancel` 也尚未实现。
 
-轮询规则（dsh-plugin 目标实现）：
+轮询规则（plugin 目标实现）：
 
 - 初始 500ms，退避到 2s，加 ±20% 抖动；
 - 终态立即停；连续 `404` 说明目标重启丢了 task → 记 `failed(reason=task_lost)`；
@@ -66,7 +66,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 - 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
 - agent 只看到薄工具，没有一个会阻塞：`pod_send`（建完 task 立刻返回 `task_id`）、`pod_status(task_id)`（读缓存/任务存储，立即返回）、`pod_cancel(task_id)`、`pod_members()`。**没有 `pod_wait`**——等待不是 agent 的职责。
 
-**Phase 0 现状**：`@orca/pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-orca_node安装根在-dsh-plugin)），但**后台 tracker、`inject`/`followup` 唤醒、`pod_wait`（已明确不做）都未实现**；当前完成通知要靠 agent 自己 `pod_status` 轮询，`scripts/cross.ts` 是联调入口。
+**Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.4](09-implementation.md#94-组合入口库根在-nodets安装根是整个包)），但**后台 tracker、`inject`/`followup` 唤醒、`pod_wait`（已明确不做）都未实现**；当前完成通知要靠 agent 自己 `pod_status` 轮询，`scripts/cross.ts` 是联调入口。
 
 派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会按 `notify` 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)），不由协议层排队。
 
@@ -91,7 +91,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`pod_status` 随时可重放，插件内存只是缓存。
 
-CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.4](09-implementation.md#94-组合入口库根在-orca_node安装根在-dsh-plugin) 里 harness 入口的一部分。
+CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.4](09-implementation.md#94-组合入口库根在-nodets安装根是整个包) 里 harness 入口的一部分。
 
 #### 完成唤醒（notify: auto）
 
@@ -143,7 +143,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 每个节点的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个节点不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
-**Phase 0 现状**：task store 是 `orca_node` 进程内的内存 `Map`（`packages/orca_node/src/tasks.ts`），不落盘；进程退出或重启后 task 全部丢失，`tasks/get` 返回 `task_not_found`。peer store 与 blob store 同样是内存实现。因此当前实现只适合单次联调，不能把“任务持久化”当成已具备的能力。
+**Phase 0 现状**：task store 是 `tasks.ts` 进程内的内存 `Map`（`packages/orca-pod/src/tasks.ts`），不落盘；进程退出或重启后 task 全部丢失，`tasks/get` 返回 `task_not_found`。peer store 与 blob store 同样是内存实现。因此当前实现只适合单次联调，不能把“任务持久化”当成已具备的能力。
 
 **目标设计（SQLite，后续里程碑）**
 

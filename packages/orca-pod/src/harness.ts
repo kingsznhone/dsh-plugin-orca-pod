@@ -1,0 +1,79 @@
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { createNodeConfig } from "./config.ts";
+import { createNode, type OrcaNode } from "./node.ts";
+import { isHttpEndpoint } from "./protocol.ts";
+
+export type MeshOptions = {
+  nodes?: number;
+  workgroupId?: string;
+  password?: string;
+  basePort?: number;
+  displayNamePrefix?: string;
+  dataRoot?: string;
+};
+
+export type Mesh = {
+  nodes: OrcaNode[];
+  urls: string[];
+  stop(): Promise<void>;
+};
+
+const DEFAULT_NODES = 3;
+const DEFAULT_WORKGROUP_ID = "orca-dev";
+
+/** Boot `nodes` in-process Orca nodes and converge them on the first node. */
+export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
+  const count = options.nodes ?? DEFAULT_NODES;
+  const workgroupId = options.workgroupId ?? DEFAULT_WORKGROUP_ID;
+  const password = options.password ?? randomBytes(8).toString("hex");
+  const dataRoot = options.dataRoot ?? join(tmpdir(), `orca-pod-mesh-${randomBytes(8).toString("hex")}`);
+  const nodes: OrcaNode[] = [];
+  const urls: string[] = [];
+
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const config = createNodeConfig({
+        workgroupId,
+        password,
+        dataRoot: join(dataRoot, `node-${index}`),
+        port: options.basePort ? options.basePort + index : 0,
+        displayName: `${options.displayNamePrefix ?? "node"}-${index}`,
+      });
+      nodes.push(createNode({ config }));
+    }
+
+    for (const node of nodes) {
+      const { url } = await node.start();
+      urls.push(url);
+    }
+
+    const bootstrapUrl = urls[0];
+    if (!bootstrapUrl) throw new Error("createMesh needs at least one node");
+
+    for (const node of nodes.slice(1)) {
+      const response = await node.join(bootstrapUrl);
+      for (const member of response.members) {
+        if (member.node_id === node.nodeId || !isHttpEndpoint(member.endpoint)) continue;
+        await node.join(member.endpoint);
+      }
+    }
+
+    for (const node of nodes) {
+      await node.heartbeat(bootstrapUrl);
+    }
+
+    return {
+      nodes,
+      urls,
+      async stop(): Promise<void> {
+        await Promise.all(nodes.map((node) => node.stop()));
+      },
+    };
+  } catch (error) {
+    await Promise.all(nodes.map((node) => node.stop()));
+    throw error;
+  }
+}

@@ -4,54 +4,63 @@
 
 ## 9. 实现
 
-### 9.1 包划分
+### 9.1 单包内的模块划分
+
+整个项目**只有一个 npm 包** `packages/orca-pod/`。DSH 插件规范就是一个 npm 包（`package.json` + `dsh.bundle.patch`），拆成多个私有 workspace 包会让安装物不自包含：插件依赖的 `@orca/*` 在仓库外解析不到。因此用目录和 import 纪律维持模块边界，不再用包边界。
 
 ```text
-packages/
-  protocol/    类型 + schema + 签名规范化 + 错误码（零依赖）
-  crypto/      HKDF、请求签名
-  config/      schema、默认值、加载、环境覆盖
-  storage/     接口 + 实现（fs / sqlite）+ GC
-  gateway/     HTTP 路由、鉴权、槽位、心跳、成员表
-  executor/    LocalExecutor 接口 + EchoExecutor + AcpExecutor
-  orca_node/   组合根：一个进程 = 一个节点
-  harness/     进程内多节点 + 场景 DSL + CLI
-  ui/          与框架无关的 view-model + 组件
-  dsh-plugin/  DSH 适配：工具、审批卡片、状态页
+packages/orca-pod/
+  package.json        唯一依赖 fastify；dsh.bundle.patch -> cordis.patch.yml
+  cordis.patch.yml    DSH 行：id orca-pod、name 'orca-pod'
+  src/
+    protocol.ts       类型、错误码、node_id、成员 digest、签名规范化（零依赖）
+    crypto.ts         HKDF、请求签名、nonce cache
+    config.ts         配置校验、默认值、密钥派生、JSON 读写
+    storage.ts        PeerStore（+ 重导出 blobs）
+    blobs.ts          内容寻址 blob store
+    gateway.ts        HTTP：/health、Agent Card、/cluster/*、/a2a、/blobs
+    executor.ts       LocalExecutor 接口 + EchoExecutor（ACP 后续）
+    tasks.ts          单槽任务运行器
+    node.ts           组合根：一个进程 = 一个节点
+    harness.ts        进程内多节点，测试用
+    cli.ts            `orca-node serve --config <path>`
+    plugin/           DSH bundle：Config、apply、pod_* 工具
+  test/               vitest 套件（protocol/crypto/mesh/a2a/blobs/plugin）
 ```
 
 当前代码状态（Phase 0）：
 
-| 包 | 状态 | 说明 |
+| 模块 | 状态 | 说明 |
 |---|---|---|
-| `protocol` | 已实现 | 类型、错误码、任务视图、node_id、digest、签名规范化 |
-| `crypto` | 已实现 | HKDF、请求签名、nonce cache |
-| `config` | 已实现 | 配置校验、密钥派生、JSON 读写 |
-| `storage` | 部分实现 | 内存 `PeerStore` / `BlobStore`；fs、SQLite、GC 未实现 |
-| `gateway` | 已实现 | `/health`、Agent Card、`/a2a`、`/cluster/*`、`/blobs`（上传/下载/直链） |
-| `executor` | 部分实现 | EchoExecutor；ACP、Headless、InProcess 未实现 |
-| `orca_node` | 已实现 | 组合根；task store 为进程内内存，无后台心跳与看门狗 |
-| `harness` | 已实现 | `createMesh` + mesh/A2A 测试；场景 DSL 未实现 |
-| `ui` | 未实现 | 占位包 |
-| `dsh-plugin` | 部分实现 | `@orca/pod` host bundle：`apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
+| `protocol.ts` | 已实现 | 类型、错误码、任务视图、node_id、digest、签名规范化 |
+| `crypto.ts` | 已实现 | HKDF、请求签名、nonce cache |
+| `config.ts` | 已实现 | 配置校验、密钥派生、JSON 读写 |
+| `storage.ts` / `blobs.ts` | 部分实现 | 内存 `PeerStore` / `BlobStore`；fs、SQLite、GC 未实现 |
+| `gateway.ts` | 已实现 | `/health`、Agent Card、`/a2a`、`/cluster/*`、`/blobs`（上传/下载/直链） |
+| `executor.ts` | 部分实现 | EchoExecutor；ACP、Headless、InProcess 未实现 |
+| `tasks.ts` | 已实现 | 单槽状态机；task store 为进程内内存 |
+| `node.ts` | 已实现 | 组合根；无后台心跳与看门狗 |
+| `harness.ts` | 已实现 | `createMesh` + mesh/A2A 测试；场景 DSL 未实现 |
+| `plugin/` | 部分实现 | `apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
+| `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
 
 “已实现”指当前可运行、有测试或用例覆盖；未列出的目标能力属于后续里程碑。
 
-依赖方向单向，禁止反向：
+模块依赖方向单向，禁止反向（靠 review 与 import 检查，不靠包边界）：
 
 ```text
-protocol  ← crypto, config, storage, gateway, executor, ui
-crypto    ← gateway, orca_node
-storage   ← gateway, executor, orca_node
-gateway   ← orca_node  （gateway 只依赖 protocol + storage 接口，不 import executor 实现）
-executor  ← orca_node
-orca_node ← harness, dsh-plugin
-ui        ← dsh-plugin
+protocol  ← crypto, config, storage, gateway, executor, tasks, node
+crypto    ← config, gateway, node
+storage   ← gateway, node
+gateway   ← node   （gateway 只依赖 protocol + storage 接口，不 import executor/tasks 实现）
+executor  ← tasks
+tasks     ← node
+node      ← harness, plugin
 ```
 
 `gateway` 通过构造参数拿到 `TaskRunner` 接口实例，而不是 import executor 或具体实现——这是“gateway 能单独测”的前提。
 
-包名刻意避开 `node`：`orca_node` 是“orca 的节点”，跟 Node.js 运行时没有关系，import 时也不容易看错。
+`node.ts` 是“orca 的节点”，与 Node.js 运行时无关；文件命名保持短，import 时靠目录区分。
 
 HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`、错误处理都用它现成的，不手写 http server。
 
@@ -59,21 +68,21 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 
 | 模块 | 夹具 | 断言 |
 |---|---|---|
-| protocol | 固定 JSON 样本 + 签名向量 | schema 通过/拒绝、MAC 与向量一致 |
-| crypto | RFC 5869 向量 + 冻结的 MAC | 换密钥/时间/body 任一字节即变 |
-| config | 合法/非法配置样本 | 错误信息指向具体字段 |
-| storage | 一套 contract test，跑 fs 与 sqlite | 两实现行为一致 |
-| gateway | 进程内 `fetch`，假 executor、注入时钟 | 路由、401/403/429、签名 |
-| executor | echo 脚本样本；假 ACP 子进程 | 状态时序、`input-required`、resume |
-| harness | 场景 DSL | 成员收敛、任务往返 |
-| ui | view-model 纯函数 | 忙闲、任务列表的渲染数据 |
-| dsh-plugin | 假 DSH host 的 smoke | 工具注册、生命周期 |
+| `protocol.ts` | 固定 JSON 样本 + 签名向量 | schema 通过/拒绝、MAC 与向量一致 |
+| `crypto.ts` | RFC 5869 向量 + 冻结的 MAC | 换密钥/时间/body 任一字节即变 |
+| `config.ts` | 合法/非法配置样本 | 错误信息指向具体字段 |
+| `storage.ts` / `blobs.ts` | 一套 contract test，跑 fs 与 sqlite | 两实现行为一致 |
+| `gateway.ts` | 进程内 `fetch`，假 executor、注入时钟 | 路由、401/403/429、签名 |
+| `executor.ts` | echo 脚本样本；假 ACP 子进程 | 状态时序、`input-required`、resume |
+| `tasks.ts` | 假 executor + 注入时钟 | 单槽、TTL、取消 |
+| `harness.ts` | 场景 DSL | 成员收敛、任务往返 |
+| `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、harness mesh 1 个、harness a2a 7 个、gateway blobs 8 个、dsh-plugin 12 个，共 73 个（`npm test`）。storage、executor、ui 还没有独立夹具；gateway 与 executor 的行为由 `packages/harness/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/dsh-plugin/test/plugin.test.ts` 覆盖。
+Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个，共 73 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
-`orca_node` 的 `createNode({ config })` 返回 handle：`start() / stop() / self() / members() / membersDigest() / join(peerUrl) / heartbeat(peerUrl) / sendTask(peerUrl, input) / getTask(peerUrl, id) / cancelTask(peerUrl, id)`。
+`node.ts` 的 `createNode({ config })` 返回 handle：`start() / stop() / self() / members() / membersDigest() / join(peerUrl) / heartbeat(peerUrl) / sendTask(peerUrl, input) / getTask(peerUrl, id) / cancelTask(peerUrl, id)`。
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
 - harness 目前只有 `createMesh({ nodes, workgroupId, password, basePort, displayNamePrefix, dataRoot })`，返回 `{ nodes, urls, stop() }`。它启动节点后让每个节点 join 第一个节点、按返回目录逐条补 join，再对 bootstrap 发一轮心跳。
@@ -87,68 +96,59 @@ const task = await origin.sendTask(targetUrl, {
   message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
   metadata: { echo: { final: { state: "completed", text: "hi" } } },
 });
-// 轮询 tasks/get 直到终态；真实断言见 packages/harness/test/a2a.test.ts
+// 轮询 tasks/get 直到终态；真实断言见 packages/orca-pod/test/a2a.test.ts
 ```
 
-### 9.4 组合入口：库根在 `orca_node`，安装根在 `dsh-plugin`
+### 9.4 组合入口：库根在 `node.ts`，安装根是整个包
 
 “组合根”有两层，别混：
 
 | 层 | 文件 | 谁调用它 | 职责 |
 |---|---|---|---|
-| 库根 | `packages/orca_node/src/index.ts` → `createNode(config)` | harness、dsh-plugin、将来的独立服务 | 装配一个节点：config → storage → gateway → executor。不读 argv、不读 DSH |
-| 安装根 | `packages/dsh-plugin/`（bundle `@orca/pod`） | DSH 的 Loader | `apply(ctx, config)` 里 createNode、注册工具/审批/UI，cleanup 里 `stop()` |
+| 库根 | `packages/orca-pod/src/node.ts` → `createNode(config)` | harness、plugin、将来的独立服务 | 装配一个节点：config → storage → gateway → executor。不读 argv、不读 DSH |
+| 安装根 | `packages/orca-pod/` 本身（bundle 名 `orca-pod`） | DSH 的 Loader | `apply(ctx, config)` 里 createNode、注册工具/审批/UI，cleanup 里 `stop()` |
 
-DSH 加载一个 bundle 靠包清单里的 patch 行，不是 `main`：
+DSH 加载一个 bundle 靠包清单里的 `dsh.bundle.patch` 行，不是 `main`：
 
 ```text
-packages/dsh-plugin/
-  package.json       "exports": { ".": "./index.js", "./client": "./client.js" },
-                     "dsh": { "bundle": { "patch": "./cordis.patch.yml" },
-                              "client": { "platform": "web", "immediately": true } }
-  cordis.patch.yml   - insert: { id: orca-pod, name: '@orca/pod' }          # Host 行
-                     - insert: { id: orca-pod-client, name: '@orca/pod/client' }  # Client 行
-  index.js           export const inject = ['tools']
-                     export const Config = ...
-                     export function apply(ctx, config) { ... }
-  client.js          UI（状态页、审批视图），只消费 view-model
-  locale/{en,zh}.json  meta.title / meta.description / meta.detail
+packages/orca-pod/
+  package.json       "exports": { ".": "./src/index.ts", "./testing": "./src/harness.ts" },
+                     "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+                     "dependencies": { "fastify": "^5.6.0" }        # 唯一运行时依赖
+  cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod' }  # Host 行
+  src/index.ts       export { Config, apply, inject } from './plugin/index.ts'
+                     + 全部库导出（createNode 等），DSH 与库共用一个入口
+  src/plugin/        apply / config / node 生命周期 / tools / 最小 DSH 类型
 ```
 
-`apply` 只做四件事，其余都靠注入：
+`apply` 只做四件事，其余都靠注入（实际实现见 `src/plugin/index.ts`）：
 
 ```ts
 export function apply(ctx, config) {
-  const node = createNode({
-    workgroupId: config.workgroup_id,
-    displayName: config.display_name,
-    port: config.port,                        // 默认 0：系统分配，启动后写回 config
-    dataRoot: config.data_root ?? defaultDataRoot(),
-    password: () => ctx.credentials.readRecord('orca-pod'),  // 签名时取，不缓存
-  })
-  ctx.effect(() => () => node.stop())
-  void node.start().catch(err => ctx.logger.error(err))
-  for (const tool of podTools(node)) ctx.tools.register(tool)
+  const handle = startPod(config, ctx.logger)          // 非阻塞启动，失败只记日志/状态
+  ctx.effect(() => async () => stopPod(handle, ctx.logger), "orca-pod.node")
+  for (const tool of createPodTools(handle)) ctx.tools.register(tool)
+  // 密码：原型阶段从 patch config 读；生产应改为 ctx.credentials.readRecord('orca-pod')
 }
 ```
 
 三条约束：
 
 - `apply` 必须快速返回：`start()` 异步，端口占用/证书问题写日志与状态页，不能让 DSH 启动卡在网络监听上。
-- 配置分两类：`workgroup_id` / `port` / `display_name` 走普通 config（Plugin manager 可改，`configEditor.edit` 持久化）；**密码进 `ctx.credentials` 记录，不进 config**，也不写进 bundle patch。
+- 配置分两类：`workgroup_id` / `port` / `display_name` 走普通 config（Plugin manager 可改，`configEditor.edit` 持久化）；**密码生产上应进 `ctx.credentials` 记录，不进 config**，也不写进 bundle patch。Phase 0 为了能跑，密码暂在 patch 里（见 README 的安全提示）。
 - 进程内嵌、不开子进程；DSH 退出 → cleanup → listener 关闭。工具注册用 `inject: ['tools']`；审批走 DSH 的 approval/卡片（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），插件只把 `permission_request` 转成卡片数据、把人的操作回成后续 message。
 
-harness / CLI 是第三个入口：`packages/orca_node` 提供 bin `orca-node`，目前只有 `orca-node serve --config <path>`（加载配置 → `createNode` → `start()` → 打印监听地址）；`scripts/cross.ts` 提供 serve/join/task 三个跨进程、跨机联调命令。两者都复用同一个 `createNode`，不依赖 DSH。`--nodes` / `--scenario` 这类 harness CLI 尚未实现。
+harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）目前只有 `orca-node serve --config <path>`（加载配置 → `createNode` → `start()` → 打印监听地址）；`scripts/cross.ts` 提供 serve/join/task/blob 跨进程、跨机联调命令。两者都复用同一个 `createNode`，不依赖 DSH。`--nodes` / `--scenario` 这类 harness CLI 尚未实现。
 
-一句话：**装进 DSH desktop 的东西 = `dsh-plugin` 这个 bundle；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createNode()`。**
+一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createNode()`。**
 
-**Phase 0 现状**：库根 `createNode` 与安装根 `dsh-plugin` 都已可用。`@orca/pod` bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动节点、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两节点 smoke（join、send、status、cancel、重启后 node_id 不变）。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
+**Phase 0 现状**：库根 `createNode` 与安装根 `orca-pod` bundle 都已可用。bundle 有 `cordis.patch.yml`、`Config`（Standard Schema）、`apply(ctx, config)`：非阻塞启动节点、`ctx.effect` 清理、注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个不阻塞工具；已用 DSH 自带 Node 运行时做过两节点 smoke（join、send、status、cancel、重启后 node_id 不变）。包自包含（运行时只依赖 `fastify`），`npm pack` 产物不含任何 `@orca/*` 依赖。未做：client bundle/locale、审批卡片接线、`ctx.credentials` 读取（原型阶段密码暂放配置）、后台 tracker 与 `inject`/`followup` 唤醒（[§5.2](05-tasks.md#轮询归-host不归-agent)）。
 
 ### 9.5 工程约定
 
-- TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm workspaces（不用 pnpm）；vitest；`tsc --noEmit` 进 CI。
+- TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm（不用 pnpm；workspaces 只有一个成员包，便于 `npm install` 一次装齐）；vitest；`tsc --noEmit` 进 CI。
 - 构建/开发的目标选型是 `tsup` + `tsx` + `biome` + `commander` + `pino`；Phase 0 尚未安装，仓库目前只有 `typescript`、`vitest`、`@types/node`。
-- 不引入框架级 DI 容器：构造函数注入足够，装配只在 `orca_node` 包。
+- 不引入框架级 DI 容器：构造函数注入足够，装配只在 `node.ts`。
 - 存储目标：默认 fs（`lowdb` + `steno` 原子写），SQLite 用 `better-sqlite3`（或 `node:sqlite`）作为后续里程碑；Phase 0 只有内存实现（[§5.5](05-tasks.md#55-任务存储)）。
 - 本地命令（当前可用）：
 
@@ -185,18 +185,18 @@ harness / CLI 是第三个入口：`packages/orca_node` 提供 bin `orca-node`�
 | 限流（Phase 4） | `@fastify/rate-limit` | 代理后按 IP；现在不装 |
 | SSE（Phase 4） | `fastify-sse-v2` | 只在做 `message/stream` 时引 |
 
-**Phase 0 实际依赖**：运行时只有 `fastify`（gateway）；其余包零第三方依赖，开发依赖只有 `typescript`、`vitest`、`@types/node`。表中的 `zod`、`pino`、`lowdb`、`better-sqlite3`、`commander`、`tsup`、`biome` 等是目标选型，尚未安装。
+**Phase 0 实际依赖**：运行时只有 `fastify`（在一个包里，随包发布）；开发依赖只有 `typescript`、`vitest`、`@types/node`。表中的 `zod`、`pino`、`lowdb`、`better-sqlite3`、`commander`、`tsup`、`biome` 等是目标选型，尚未安装。
 
 明确不引的：认证/签名框架（没有比 30 行 Node `crypto` 更合适的）、DI 容器、ORM、消息队列、服务网格。集群只有十台机器，这些是负资产。
 
 ### 9.7 与路线图的对应
 
-- Phase 0：protocol、crypto、config、storage、gateway、executor(echo)、node、harness。
+- Phase 0：单包内 protocol、crypto、config、storage、gateway、executor(echo)、tasks、node、harness、plugin。
 - Phase 1：harness 场景覆盖成员收敛与故障注入。
 - Phase 2：AcpExecutor、ui 基本视图。
-- Phase 3：dsh-plugin、审批卡片、权限。
+- Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 节点压测复用 harness。
 
-**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、orca_node、harness 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、dsh-plugin、ACP 均未开始。Phase 1 的心跳/看门狗与故障注入也尚未实现。
+**Phase 0 实际状态**：protocol、crypto、config、gateway（含 blob 路由）、tasks、node、harness、plugin 已实现；storage 只有内存实现；executor 只有 EchoExecutor；SQLite、fs 存储、ui、ACP 均未开始。Phase 1 的心跳/看门狗与故障注入也尚未实现。
 
 ---

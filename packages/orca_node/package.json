@@ -1,1 +1,0 @@
-{"name":"@orca/orca-node","version":"0.0.0","private":true,"type":"module","exports":{".":"./src/index.ts"},"bin":{"orca-node":"./src/cli.ts"},"dependencies":{"@orca/protocol":"*","@orca/crypto":"*","@orca/config":"*","@orca/storage":"*","@orca/gateway":"*","@orca/executor":"*"}}

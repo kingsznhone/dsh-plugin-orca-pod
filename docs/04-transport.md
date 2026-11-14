@@ -139,6 +139,6 @@ submitted ──► working ──► input-required ──► working
 - `completed` / `failed` / `canceled`：终态。
 - 终态不可逆；重试要产生新的 task（带 `retry_of`），不复活旧 task。
 
-**Phase 0 实现**：六种状态与 `input-required`/取消/恢复路径已在 `orca_node` 的 TaskRunner 中实现；`input-required` 载荷位于 `status.message.parts[0]`，data part 形如 `{"blocked":{...}}` 或 `{"permission_request":{...}}`；进入 `input-required` 时释放单槽，恢复时重新竞争。尚未实现 `session/resume` 续接与 `resume=degraded` 标记，`retry_of` 也未接入。任务状态存在进程内存里（[§5.5](05-tasks.md#55-任务存储)），进程退出即丢失。
+**Phase 0 实现**：六种状态与 `input-required`/取消/恢复路径已在 `tasks.ts` 的 TaskRunner 中实现；`input-required` 载荷位于 `status.message.parts[0]`，data part 形如 `{"blocked":{...}}` 或 `{"permission_request":{...}}`；进入 `input-required` 时释放单槽，恢复时重新竞争。尚未实现 `session/resume` 续接与 `resume=degraded` 标记，`retry_of` 也未接入。任务状态存在进程内存里（[§5.5](05-tasks.md#55-任务存储)），进程退出即丢失。
 
 ---

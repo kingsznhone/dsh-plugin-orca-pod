@@ -1,8 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
-import { buildAuthHeader, bodySha256 } from "@orca/crypto";
-import { createNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "@orca/config";
-import { createNode, type OrcaNode } from "@orca/orca-node";
+import { buildAuthHeader, bodySha256 } from "../packages/orca-pod/src/crypto.ts";
+import { createNodeConfig, defaultDataRoot, loadConfig, saveConfig, workgroupKey } from "../packages/orca-pod/src/config.ts";
+import { createNode, type OrcaNode } from "../packages/orca-pod/src/node.ts";
 
 type Args = Map<string, string>;
 

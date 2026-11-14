@@ -1,1 +1,0 @@
-{"name":"@orca/storage","version":"0.0.0","private":true,"type":"module","exports":{".":"./src/index.ts"},"dependencies":{"@orca/protocol":"*"}}

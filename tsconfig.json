@@ -10,12 +10,7 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "types": ["node"],
-    "baseUrl": ".",
-    "paths": {
-      "@orca/orca-node": ["packages/orca_node/src/index.ts"],
-      "@orca/*": ["packages/*/src/index.ts"]
-    }
+    "types": ["node"]
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "scripts/**/*.ts"]
 }
