@@ -114,6 +114,16 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 这条前提排除了两种设计：target 本地审批（无人应答、任务挂死）和 target 自由裁量（origin 无法预期远端能做什么）。
 
+**审批面属于会话，不属于节点**，所以 orca node 不需要判断“本机有没有人”，只看这个 task 的 `origin_orca_node`：
+
+| 情形 | 谁批 | 行为 |
+| --- | --- | --- |
+| `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 弹审批卡片（`pod_approve` → DSH `approval.request`） |
+| `origin == self`，但会话没有审批面（headless/ACP 执行器自己作为根） | 无人可批 | 命中预授权则自动放行并记 `decided_by: policy`，否则超时后 `failed(permission_timeout)`；不会“往上抛”，因为它就是链根 |
+| `origin != self` | 链上更上游的人 | 本机不批，只逐跳上升：`permission_request` 交给 origin（CLI 的 `wait --local-task` 自动调 `tasks/escalate`），批准后下发 child grant |
+
+不存在“节点级 attended 标志”：同一台机器通常同时跑桌面 DSH 和 headless/ACP 执行器，有没有人取决于**是哪个会话发起了这个 task**；ACP 执行器会话只有 CLI、没有审批面，所以它派出的子任务一律 escalate。链上唯一的人坐在根会话前。
+
 链式调用（A→B→C）时，“origin”是相对的：每个 task 的 origin 负责把请求往上传，直到有人的那个 orca node——规则见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用) 的「链式调用」小节。
 
 ### 7.10 权限模式继承
