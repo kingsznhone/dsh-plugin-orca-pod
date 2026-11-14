@@ -66,8 +66,9 @@ Hard constraints that must not be undone:
   task_id or blob_id can read it; there is no per-task/per-blob ACL and no
   listing. Id leakage is the exposure boundary. One shared key means orca-node-level
   checks are policy, not cryptographic isolation.
-- Handoff uses the shared group workspace: a later task reads `work/` and
-  `notes/` left by earlier ones. There is no protocol-level continuation flag;
+- Handoff uses the shared group workspace: a later task reads the workgroup root
+  (the agent's cwd) and `notes/` left by earlier ones. There is no protocol-level
+  continuation flag;
   whether to continue, and from where, is the agent's call.
 - Password rotation rebuilds the whole group. There is no per-orca-node revocation
   and no transition window with two passwords.

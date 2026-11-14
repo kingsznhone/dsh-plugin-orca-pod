@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -33,7 +34,7 @@ import {
   type A2AMessage,
   type SubmitTaskInput,
 } from "./protocol.ts";
-import { sha256Hex, type BlobStore, type PeerStore } from "./storage.ts";
+import { BlobTooLargeError, type BlobStore, type PeerStore } from "./storage.ts";
 import { createFileBlobRegistry, type FileBlobRegistry } from "./blob-files.ts";
 
 export type GatewayOrcaNode = {
@@ -74,6 +75,10 @@ const TASK_ERROR_STATUS: Record<string, number> = {
   grant_expired: 409,
   ancestor_call_forbidden: 403,
   escalation_required: 409,
+  duplicate_input_name: 409,
+  input_blob_missing: 400,
+  too_many_inputs: 400,
+  inputs_too_large: 400,
 };
 
 function nowIso(): string {
@@ -122,12 +127,31 @@ function rawBodyParser(
   done(null, undefined);
 }
 
-function authenticate(request: FastifyRequest, deps: GatewayDeps): VerifiedAuth {
+/** Fallback for stores without `putStream`: buffer a streamed body, bounded. */
+async function collectBody(stream: Readable | undefined, maxBytes: number): Promise<Buffer> {
+  if (stream === undefined) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    size += buffer.length;
+    if (size > maxBytes) throw new BlobTooLargeError(maxBytes);
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function authenticate(
+  request: FastifyRequest,
+  deps: GatewayDeps,
+  bodySha256?: string,
+): VerifiedAuth {
   return verifyAuth({
     key: deps.key,
     method: request.method,
     path: request.url.split("?")[0] ?? request.url,
     body: (request as RawBodyRequest).rawBody,
+    ...(bodySha256 === undefined ? {} : { bodySha256 }),
     header: request.headers.authorization,
     nonceCache: deps.nonceCache,
   });
@@ -169,8 +193,23 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     },
   );
 
-  // Blob uploads (§5.6) are raw bytes; signature verification needs the raw body too.
-  app.addContentTypeParser<Buffer>("application/octet-stream", { parseAs: "buffer" }, rawBodyParser);
+  // Blob uploads (§5.6) stream raw bytes: the client signs the file digest in
+  // `x-pod-body-sha256`, so the body is never buffered in memory. The overload
+  // that accepts a stream parser is not part of Fastify's generic typings.
+  type StreamParserRegistration = (
+    contentType: string,
+    parser: (
+      request: unknown,
+      payload: Readable,
+      done: (error: Error | null, body?: unknown) => void,
+    ) => void,
+  ) => void;
+  (app as unknown as { addContentTypeParser: StreamParserRegistration }).addContentTypeParser(
+    "application/octet-stream",
+    (_request, payload, done) => {
+      done(null, payload);
+    },
+  );
   app.addContentTypeParser<Buffer>("*", { parseAs: "buffer" }, rawBodyParser);
 
   app.get("/health", async () => ({ status: "ok", version: PROTOCOL_VERSION }));
@@ -257,12 +296,14 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   });
 
   app.post("/blobs", async (request, reply) => {
-    authenticate(request, deps);
-    const body = (request as RawBodyRequest).rawBody ?? Buffer.alloc(0);
-    const blobId = sha256Hex(body);
-    if (request.headers["x-pod-body-sha256"] !== blobId) {
-      return reply.code(400).send({ code: "blob_digest_mismatch" });
+    // Streaming uploads sign the digest up front, so auth is verified before
+    // any body bytes are read; the store hashes while it writes (§5.6).
+    const declaredHeader = request.headers["x-pod-body-sha256"];
+    const declared = typeof declaredHeader === "string" ? declaredHeader : undefined;
+    if (declared === undefined || !/^[0-9a-f]{64}$/.test(declared)) {
+      return reply.code(400).send({ code: "blob_digest_missing", message: "x-pod-body-sha256 is required" });
     }
+    authenticate(request, deps, declared);
     const rawName = (request.query as { name?: unknown }).name;
     let name: string | undefined;
     if (rawName !== undefined) {
@@ -271,13 +312,26 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       }
       name = rawName;
     }
-    const existed = deps.blobs.has(blobId);
-    const blob = deps.blobs.put(body, { name });
+    const existed = deps.blobs.has(declared);
+    const stream = request.body as Readable | undefined;
+    let record;
+    try {
+      record =
+        deps.blobs.putStream !== undefined && stream !== undefined
+          ? await deps.blobs.putStream(stream, { name, maxBytes: MAX_BLOB_BYTES })
+          : deps.blobs.put(await collectBody(stream, MAX_BLOB_BYTES), { name });
+    } catch (error) {
+      if (error instanceof BlobTooLargeError) return reply.code(413).send({ code: "blob_too_large" });
+      throw error;
+    }
+    if (record.blob_id !== declared) {
+      return reply.code(400).send({ code: "blob_digest_mismatch" });
+    }
     return reply.code(existed ? 200 : 201).send({
-      blob_id: blob.blob_id,
-      size: blob.size,
-      name: blob.name,
-      expires_at: blob.expires_at,
+      blob_id: record.blob_id,
+      size: record.size,
+      name: record.name,
+      expires_at: record.expires_at,
     });
   });
 
@@ -293,6 +347,20 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       }
     } else {
       authenticate(request, deps);
+    }
+    // Stream when the store supports it; only the small in-memory test store
+    // buffers the whole blob (§5.6).
+    const read = deps.blobs.openRead?.(blobId);
+    if (read) {
+      const expiresAt = read.record.expires_at;
+      if (expiresAt !== null && Date.parse(expiresAt) <= Date.now()) {
+        read.stream.destroy();
+        return reply.code(410).send({ code: "blob_expired" });
+      }
+      return reply
+        .header("content-type", read.record.media_type ?? "application/octet-stream")
+        .header("content-length", String(read.size))
+        .send(read.stream);
     }
     const blob = deps.blobs.get(blobId);
     const file = blob ? undefined : fileBlobs.get(blobId);

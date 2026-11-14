@@ -45,7 +45,7 @@ type Harness = {
   app: ReturnType<typeof createGateway>;
   key: Buffer;
   orcaNodeId: string;
-  sign(method: string, path: string, body?: Uint8Array | string): string;
+  sign(method: string, path: string, body?: Uint8Array | string, bodySha256?: string): string;
 };
 
 function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegistry): Harness {
@@ -71,7 +71,8 @@ function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegist
     app: createGateway(deps),
     key,
     orcaNodeId,
-    sign: (method, path, body) => buildAuthHeader({ key, orcaNodeId, method, path, body }),
+    sign: (method, path, body, bodySha256) =>
+      buildAuthHeader({ key, orcaNodeId, method, path, body, ...(bodySha256 === undefined ? {} : { bodySha256 }) }),
   };
 }
 
@@ -81,14 +82,15 @@ async function upload(
   options: { name?: string; digest?: string } = {},
 ) {
   const url = options.name === undefined ? "/blobs" : `/blobs?name=${encodeURIComponent(options.name)}`;
+  const digest = options.digest ?? sha256Hex(payload);
   return harness.app.inject({
     method: "POST",
     url,
     payload,
     headers: {
       "content-type": "application/octet-stream",
-      authorization: harness.sign("POST", "/blobs", payload),
-      "x-pod-body-sha256": options.digest ?? sha256Hex(payload),
+      authorization: harness.sign("POST", "/blobs", payload, digest),
+      "x-pod-body-sha256": digest,
     },
   });
 }
@@ -142,6 +144,23 @@ describe("blob channel", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe("application/octet-stream");
+    expect(response.rawPayload.equals(payload)).toBe(true);
+  });
+
+  it("streams a large upload and download without buffering it", async () => {
+    const harness = createHarness();
+    const payload = Buffer.alloc(1024 * 1024, 7);
+    const uploaded = await upload(harness, payload, { name: "big.bin" });
+    expect(uploaded.statusCode).toBe(201);
+    const blobId = uploaded.json<{ blob_id: string; size: number }>().blob_id;
+    expect(uploaded.json<{ size: number }>().size).toBe(payload.length);
+    const response = await harness.app.inject({
+      method: "GET",
+      url: `/blobs/${blobId}`,
+      headers: { authorization: harness.sign("GET", `/blobs/${blobId}`) },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(Number(response.headers["content-length"])).toBe(payload.length);
     expect(response.rawPayload.equals(payload)).toBe(true);
   });
 

@@ -29,7 +29,7 @@ orca-pod/
 │   ├── headless.ts       # HeadlessExecutor（dsh headless --json 子进程）
 │   ├── acp.ts            # AcpExecutor（dsh --profile acp stdio：流式、权限、session）
 │   ├── process.ts        # 子进程公共件（Windows shim 解析、killTree）
-│   ├── session-store.ts  # .pod/sessions.json（origin+context → session）
+│   ├── session-store.ts  # state/<workgroup_id>/sessions.json（origin+context → session）
 │   ├── tasks.ts          # 单槽任务运行器
 │   ├── orca_node.ts      # createOrcaNode：装配 gateway、tasks、membership
 │   ├── harness.ts        # 测试用进程内多 orca node

@@ -29,7 +29,7 @@ async function collect(
 
 async function tempDir(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "orca-mode-"));
-  await mkdir(join(root, ".pod"), { recursive: true });
+  await mkdir(join(root, ".state"), { recursive: true });
   return root;
 }
 
@@ -40,7 +40,7 @@ function headlessInput(root: string, overrides: Partial<ExecuteInput> = {}): Exe
     originOrcaNode: "ORIGIN",
     prompt: "do it",
     workspaceDir: root,
-    podDir: join(root, ".pod"),
+    podDir: join(root, ".state"),
     ...overrides,
   };
 }

@@ -220,6 +220,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     ...(config.permission_mode ? { permissionMode: config.permission_mode } : {}),
     ...(config.approval_timeout_s !== undefined ? { permissionTtlS: config.approval_timeout_s } : {}),
     ...(config.result_max_bytes !== undefined ? { resultMaxBytes: config.result_max_bytes } : {}),
+    ...(config.max_input_files !== undefined ? { maxInputFiles: config.max_input_files } : {}),
+    ...(config.max_input_bytes !== undefined ? { maxInputBytes: config.max_input_bytes } : {}),
     taskTimeoutS: maxTaskTtlS,
     dataRoot: config.data_root,
     sendTaskMessage: async (peerUrl, _taskId, message) => {
@@ -504,6 +506,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
 
   async function start(): Promise<{ url: string; port: number }> {
     workspaceManager?.ensure();
+    workspaceManager?.purgeInputs();
     blobs.gc?.();
     tasks.recover();
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +70,27 @@ describe("orca-node CLI", () => {
     expect(waited.code).toBe(0);
     const done = JSON.parse(waited.stdout) as { status: { state: string } };
     expect(done.status.state).toBe("completed");
+  });
+
+  it("uploads --file attachments before creating the task", async () => {
+    const filePath = join(root, "payload.bin");
+    const content = Buffer.from("attachment bytes");
+    await writeFile(filePath, content);
+    const sent = await runCli([
+      "send",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--text",
+      "read the attachment",
+      "--file",
+      filePath,
+    ]);
+    expect(sent.code).toBe(0);
+    expect(sent.stdout).toContain("uploaded payload.bin (16 bytes)");
+    const sha = sha256Hex(content);
+    expect(existsSync(join(root, "blobs", sha.slice(0, 2), sha))).toBe(true);
   });
 
   it("returns 3 when the task needs permission", async () => {

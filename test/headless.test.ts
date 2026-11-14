@@ -133,7 +133,7 @@ describe("HeadlessExecutor", () => {
     expect(error?.name).toBe("AbortError");
   });
 
-  it("runs through createOrcaNode with cwd = workspace work/ and resumes the session", async () => {
+  it("runs through createOrcaNode with cwd = workgroup root and resumes the session", async () => {
     const dataRoot = await podDir();
     const pod = join(dataRoot, "workgroups", "orca-dev");
     const argsFile = join(pod, "args.json");
@@ -170,7 +170,7 @@ describe("HeadlessExecutor", () => {
       expect(firstArgs.prompt).toContain("[orca-pod]");
       expect(firstArgs.prompt).toContain("run the tests");
       expect(firstArgs.argv).toContain("--add-dir");
-      expect(firstArgs.cwd.endsWith(join("workgroups", "orca-dev", "work"))).toBe(true);
+      expect(firstArgs.cwd.endsWith(join("workgroups", "orca-dev"))).toBe(true);
       expect(firstArgs.sessionId).toBeUndefined();
 
       await sendAndWait("again");

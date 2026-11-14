@@ -112,7 +112,7 @@ describe("AcpExecutor", () => {
     expect(taskText(view)).toBe("acp done");
     const entries = await logEntries(join(root, "acp.log"));
     const created = entries.find((entry) => entry.method === "session/new");
-    expect(created?.cwd?.endsWith(join("workgroups", "acp-test", "work"))).toBe(true);
+    expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);
     expect(created?.mcpServers).toBe(1);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");

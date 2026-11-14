@@ -75,6 +75,11 @@ export type AuthHeaderOptions = {
   method: string;
   path: string;
   body?: Uint8Array | string;
+  /**
+   * Digest of a body that is streamed rather than held in memory (§5.6): the
+   * caller hashes the file first and signs that digest.
+   */
+  bodySha256?: string;
   ts?: number;
   nonce?: string;
 };
@@ -85,7 +90,7 @@ export function buildAuthHeader(options: AuthHeaderOptions): string {
   const proof = computeProof(options.key, {
     method: options.method,
     path: options.path,
-    bodySha256: bodySha256(options.body),
+    bodySha256: options.bodySha256 ?? bodySha256(options.body),
     ts,
     nonce,
   });
@@ -159,6 +164,8 @@ export type VerifyAuthOptions = {
   method: string;
   path: string;
   body?: Uint8Array | string;
+  /** Digest signed by a streaming client; overrides hashing `body` when set. */
+  bodySha256?: string;
   header: string | undefined;
   nonceCache: NonceCache;
   now?: number;
@@ -191,7 +198,7 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   const expected = computeProof(options.key, {
     method: options.method,
     path: options.path,
-    bodySha256: bodySha256(options.body),
+    bodySha256: options.bodySha256 ?? bodySha256(options.body),
     ts: parsed.ts,
     nonce: parsed.nonce,
   });

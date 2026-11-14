@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { join, basename } from "node:path";
+import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 
 import { createFileBlobRegistry } from "./blob-files.ts";
 import { configPath, defaultDataRoot, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
@@ -15,7 +17,7 @@ const USAGE = `orca-node
 
 Usage:
   orca-node serve   --config <path>                     start an orca node from a config file
-  orca-node send    --peer <url> --text <text|-> [--context <id>] [--permission-mode <mode>] [--json]
+  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--context <id>] [--permission-mode <mode>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
@@ -67,6 +69,24 @@ function parseFlags(args: string[]): Map<string, string | true> {
 function flag(flags: Map<string, string | true>, name: string): string | undefined {
   const value = flags.get(name);
   return typeof value === "string" ? value : undefined;
+}
+
+/** Every value of a repeatable flag (`--file a --file b` or `--file=a`). */
+function flagValues(args: string[], name: string): string[] {
+  const values: string[] = [];
+  const prefix = `--${name}=`;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string;
+    if (arg.startsWith(prefix)) {
+      values.push(arg.slice(prefix.length));
+      continue;
+    }
+    if (arg === `--${name}` && index + 1 < args.length) {
+      values.push(args[index + 1] as string);
+      index += 1;
+    }
+  }
+  return values;
 }
 
 function requireFlag(flags: Map<string, string | true>, name: string): string {
@@ -196,6 +216,51 @@ async function serve(args: string[]): Promise<void> {
   process.once("SIGTERM", shutdown);
 }
 
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
+}
+
+/**
+ * Upload one attachment as a content-addressed blob (§5.6). The client hashes
+ * the file first and signs that digest, so the body streams without buffering.
+ */
+async function uploadBlob(
+  config: OrcaNodeConfig,
+  peer: string,
+  filePath: string,
+): Promise<{ blob_id: string; size: number; name: string }> {
+  const name = basename(filePath);
+  const digest = await sha256File(filePath);
+  const body = Readable.toWeb(createReadStream(filePath)) as unknown as ReadableStream<Uint8Array>;
+  const url = new URL("/blobs", normalizePeer(peer));
+  url.searchParams.set("name", name);
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-pod-body-sha256": digest,
+      authorization: buildAuthHeader({
+        key: workgroupKey(config),
+        orcaNodeId: config.orca_node_id,
+        method: "POST",
+        path: "/blobs",
+        bodySha256: digest,
+      }),
+    },
+    body,
+    duplex: "half",
+  };
+  const response = await fetch(url, init);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`blob upload failed for ${filePath}: ${response.status} ${text}`);
+  }
+  const uploaded = JSON.parse(text) as { blob_id: string; size: number; name: string | null };
+  return { blob_id: uploaded.blob_id, size: uploaded.size, name: uploaded.name ?? name };
+}
+
 async function send(args: string[]): Promise<number> {
   const flags = parseFlags(args);
   const config = await loadNodeConfig(flags);
@@ -207,10 +272,20 @@ async function send(args: string[]): Promise<number> {
   const metadataRaw = flag(flags, "metadata");
   const permissionModeFlag = flag(flags, "permission-mode");
   let metadata = metadataRaw === undefined ? undefined : (JSON.parse(metadataRaw) as Record<string, unknown>);
-  if (permissionModeFlag !== undefined) {
-    const pod = (metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
-    metadata = { ...(metadata ?? {}), pod: { ...pod, permission_mode: permissionModeFlag } };
+  const pod = (metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
+  if (permissionModeFlag !== undefined) pod["permission_mode"] = permissionModeFlag;
+  const uploads: Array<{ blob_id: string; size: number; name: string }> = [];
+  const seen = new Set<string>();
+  for (const file of flagValues(args, "file")) {
+    const uploaded = await uploadBlob(config, peer, file);
+    if (seen.has(uploaded.name)) throw new Error(`duplicate input file name ${uploaded.name}`);
+    seen.add(uploaded.name);
+    uploads.push(uploaded);
   }
+  if (uploads.length > 0) {
+    pod["inputs"] = uploads.map((uploaded) => ({ blob_id: uploaded.blob_id, name: uploaded.name }));
+  }
+  if (Object.keys(pod).length > 0) metadata = { ...(metadata ?? {}), pod };
   const message: A2AMessage = {
     role: "user",
     parts: [{ kind: "text", text }],
@@ -220,7 +295,13 @@ async function send(args: string[]): Promise<number> {
     message,
     ...(metadata !== undefined ? { metadata } : {}),
   });
-  printView(view, wantsJson(flags));
+  const json = wantsJson(flags);
+  if (!json) {
+    for (const uploaded of uploads) {
+      process.stdout.write(`uploaded ${uploaded.name} (${uploaded.size} bytes) ${uploaded.blob_id}\n`);
+    }
+  }
+  printView(view, json);
   return 0;
 }
 

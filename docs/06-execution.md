@@ -122,26 +122,34 @@ Pod gateway (local)
 ### 6.7 工作区：一份，持久
 
 ```text
-<data_root>/workgroups/<workgroup_id>/
-   ├─ work/        ← agent 的 cwd，DSH sandbox 的写根
-   ├─ notes/       ← 跨 session 的态势感知（STATUS.md、决策、待办）
-   ├─ inputs/      ← 本任务从 blob 拉下来的素材（任务结束清空）
-   └─ .pod/
-       ├─ index.json      ← 产物索引（相对路径 + sha256）
-       └─ tasks/<task_id>/
+<data_root>/
+   ├─ workgroups/<workgroup_id>/     ← agent 的 cwd，DSH sandbox 的写根
+   │     ├─ notes/                   ← 跨 session 的态势感知（STATUS.md、决策、待办）
+   │     └─ inputs/<task_id>/        ← 本任务的素材，网关在任务开始前写入、终态删除
+   └─ state/<workgroup_id>/          ← 网关状态，agent 不可见、不可写
+         ├─ sessions.json            ← (origin, context) → ACP/headless session
+         └─ tasks/<task_id>/         ← 每任务私有状态
 ```
 
 - 加入 workgroup 时创建一次，之后所有任务共用；跨任务、跨 session 持久，任务结束不删，orca node 重启不删。
+- **cwd 就是 workgroup 根**：`inputs/<task_id>/` 与 `notes/STATUS.md` 都是 cwd 相对路径，agent 用普通相对路径就能读写，不需要知道 `<data_root>` 在哪。
 - **为什么持久**：长程任务靠上下文。今天改一个模块、明天接着改，每次都给新目录的话 agent 既看不到昨天的改动，也读不到昨天的结论。
 - **多 origin 共享同一份工作区**：允许，但串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。A 和 C 的交接靠 `notes/`，而不是互相看不见。
 - origin 不能指定目录、不能传路径（[§6.12](06-execution.md#612-明确不做)）。
 
-**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐 `work/notes/inputs/.pod/tasks`，任务执行时把 `work/` 作为 `ExecuteInput.workspaceDir` 交给 executor（`pwd` 的落点）。`inputs/`、`.pod/index.json` 的写入流程尚未接（按 [§5.6](05-tasks.md#56-文件交换blob-通道) 由 origin 上传、executor 拉取）。
+**任务素材（inputs）**：origin 先把文件上传成 blob（[§5.6](05-tasks.md#56-文件交换blob-通道)），再在 `metadata.pod.inputs` 里给出 `[{blob_id, name}]`。
+
+- target 在**建 task 之前**物化到 `inputs/<task_id>/`，任何失败（blob 缺失、超限、重名）直接拒绝，不建任务；
+- 任务书末尾追加 cwd 相对清单（`- inputs/<task_id>/name`），agent 打开即见；
+- task 进入终态时删除该目录；进程重启时 `purgeInputs()` 清掉上次残留（那时任务都已被恢复逻辑标成 `failed`）；
+- 上限默认 32 个文件、512 MiB，本地 `max_input_files` / `max_input_bytes` 可调；重名直接 `409 duplicate_input_name`。
+
+**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐并 `purgeInputs()`。任务执行时把 workgroup 根作为 `ExecuteInput.workspaceDir`（executor 的 cwd），把 `state/<workgroup_id>/` 作为 `podDir`。物化、附录与清理在 `src/tasks.ts`（`materializeInputs`、`promptWithInputs`、`finish`）。
 
 ### 6.8 目录边界
 
-- `work/` 是唯一写根；`notes/` 可写；`inputs/` 只由回传流程写；`.pod/` 归网关，agent 不可写（sandbox 规则挡）。
-- 所有路径进入 agent 前做规范化（大小写、分隔符、`..`、符号链接、Windows 8.3 短名），且必须在 `work/` 之下；越界一律 `deny`。
+- workgroup 根是 agent 的写根；`notes/`、`inputs/` 都可写。**网关状态在 cwd 之外**（`state/<workgroup_id>/`），agent 删不到 session 绑定和任务状态。
+- 所有路径进入 agent 前做规范化（大小写、分隔符、`..`、符号链接、Windows 8.3 短名），且必须在 workgroup 根之下；越界一律 `deny`。
 - Windows 长路径：启用 `\\?\` 前缀或 `LongPathsEnabled`；超过 260 字符在创建时即报错，不静默截断。
 - 不跟随 junction/symlink 出工作区；符号链接指向外部时，访问被拒并记审计。
 
@@ -199,7 +207,7 @@ session_id → workspace（本 orca node 唯一的那份）
 {
   "task_id": "t_01JABD",
   "result_text_chars": 1200,
-  "changed": ["work/src/main.ts", "work/README.md"],
+  "changed": ["src/main.ts", "README.md"],
   "artifacts": [
     { "blob_id": "sha256:...", "name": "build.zip", "media_type": "application/zip", "bytes": 1048576 },
     { "blob_id": "sha256:...", "name": "change.patch", "media_type": "text/x-diff", "bytes": 8192 }
@@ -212,7 +220,7 @@ session_id → workspace（本 orca node 唯一的那份）
 
 规则：
 
-- `changed` 一律**相对 `work/`**；出现绝对路径或 `..` 直接判 manifest 非法。
+- `changed` 一律**相对 workgroup 根**；出现绝对路径或 `..` 直接判 manifest 非法。
 - `patch` 是可选 artifact（`git diff` 产物）；有 git 时建议给，便于 review 与回滚。
 - artifact **不内联**，只给 blob 引用；origin 取不取、什么时候取，由人决定。
 - 结论文本超过 `result_max_bytes`：截断并加标记；不额外写 `result.txt` blob。要传大文件，由子节点在结论文本附录里贴一个 `publish` 出来的 blob URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
@@ -267,7 +275,7 @@ dsh --profile headless --json \
 
 - cwd = `<workspace>/work`；`--add-dir` 再显式给一次 work 的绝对路径（`workspace-write` 下 dsh 只接受绝对目录）。
 - `approval_policy` 默认 `never`：无人值守的 orca node 不能弹本地审批窗；Phase 3 的升级回路还没接。
-- 首次运行不带 `--session-id`，从 `{"type":"session","sessionId":…}` 拿到 id，写 `<workspace>/.pod/sessions.json`，键 `<origin_orca_node>|<context_id>`；同一 context 的后续任务带 `--session-id` 续跑。
+- 首次运行不带 `--session-id`，从 `{"type":"session","sessionId":…}` 拿到 id，写 `<data_root>/state/<workgroup_id>/sessions.json`，键 `<origin_orca_node>|<context_id>`；同一 context 的后续任务带 `--session-id` 续跑。
 - `command` 可覆盖，测试用它指向假 dsh；`extra_args` 原样插在最前。
 
 **事件映射**（stdout 每行一个 JSON）：
@@ -313,12 +321,12 @@ Phase 2 的第二个真实执行器，也是唯一能承接**权限挂起**的�
 "acp": { "command": "dsh", "profile": "acp", "extra_args": [] }
 ```
 
-cwd = group workspace 的 `work/`；每次任务一条 in-flight prompt（ACP 服务端本身也限制一条）。
+cwd = workgroup 根；每次任务一条 in-flight prompt（ACP 服务端本身也限制一条）。
 
 | ACP | executor |
 |---|---|
 | `initialize` → `{protocolVersion: 1, ...}` | 连接就绪；`clientCapabilities` 只声明空 fs/terminal 能力 |
-| `session/new {cwd, mcpServers: []}` | 开工前建会话；`sessionId` 写 `<workspace>/.pod/sessions.json` |
+| `session/new {cwd, mcpServers: []}` | 开工前建会话；`sessionId` 写 `<data_root>/state/<workgroup_id>/sessions.json` |
 | `session/resume {sessionId, cwd}` | 重启或第二次任务优先复用；失败回落 `session/new` |
 | `session/prompt {sessionId, prompt: [{type:"text", text}]}` | 发送任务文本 |
 | `session/update` → `agent_message_chunk` | 累积结论文本 |
@@ -332,7 +340,7 @@ cwd = group workspace 的 `work/`；每次任务一条 in-flight prompt（ACP �
 
 **grant 与 ACP 的对齐**：[§7.11](07-security.md#711-grant) 的 grant 第一版就是 `allow_once`，与 ACP 的 `session/request_permission`（one-shot allow/reject）语义一一对应；target 侧不需要理解 grant 的具体工具参数，只把“允许/拒绝”翻译成 optionId。
 
-**会话复用**：`.pod/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
+**会话复用**：`state/<workgroup_id>/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
 
 **给 ACP 会话加工具：CLI 优先（Phase 3）**：ACP agent 自带 shell（实测可执行命令），所以不需要把工具 schema 常驻进上下文。`AcpExecutor` 在每条 prompt 前加一段 preamble——`[orca-pod] You are executing task <id> as orca node <id>`、`orca-node` CLI 的绝对路径、`send`/`wait`/`escalate` 用法与退出码——agent 用 shell 调 CLI 即可派任务、查状态、等结果，子任务需要权限时用 `escalate` 把决定权交还 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。CLI 读本机 `config.json` 派生密钥，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；CLI 不是节点，没有独立身份。`wait` 带 `--local-task <此 task>` 时会在轮询到子任务权限请求时自动上升（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），agent 不必再单独调 `escalate`。插件安装时还会把同一套用法写成 user skill（`$DSH_HOME/skills/orca-node/SKILL.md`，幂等、可关），让 headless/ACP 子进程的 profile 自己发现 `orca-node`——和 preamble 互为兜底。MCP（`acp.mcp_servers`）保留为可选透传：需要结构化 schema 的第三方工具仍可挂，但 orca-pod 自己的 `pod_*` 不再依赖它。
 
@@ -344,7 +352,7 @@ cwd = group workspace 的 `work/`；每次任务一条 in-flight prompt（ACP �
 DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
 ```
 
-本机实测（2026-11-14，Windows）：`Reply with exactly the word pong` → `completed`、结论文本 `pong`、约 2.6s；`.pod/sessions.json` 写入 `acp|<origin_orca_node>|ctx-e2e-acp` 的绑定。
+本机实测（2026-11-14，Windows）：`Reply with exactly the word pong` → `completed`、结论文本 `pong`、约 2.6s；`state/<workgroup_id>/sessions.json` 写入 `acp|<origin_orca_node>|ctx-e2e-acp` 的绑定。
 
 **测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`。
 

@@ -14,7 +14,7 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 201 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 12、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 10、skill 3、approval 12、chain 12、headless 9、acp 7、cli 9、escalation 4、watchdog 2、discovery 2、formation 6、transport 4、ssrf 7、limits 6），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 210 个测试通过（28 个文件；workspace、inputs、blobs 流式、CLI `send --file` 均已覆盖），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（5 个非阻塞工具 + 后台 tracker/inject/followup）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push；权限、工作区与 session 已在 Phase 2/3 落地。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
@@ -31,24 +31,24 @@
 **Phase 1 进展**
 
 - 已实现：2s 心跳循环（±20% 抖动）、双向看门狗（3 次 ≈6s suspect、6 次 ≈12s offline）、单调时钟、`suspect(unreachable)`、offline 探测退避（15s→30s）、墓碑与 `record_ttl` 修剪、摘要差异回目录（候选端点）与 404 重 join；只有 `online` 接受新任务（`peer_not_online`）。
-- 测试：`membership.test.ts`（注入时钟 5 条）、`watchdog.test.ts`（三个 orca node 收敛、停 orca node→offline→修剪，2 条）、`discovery.test.ts`（心跳 404 重 join、四个 orca node 分半收敛，2 条）、`formation.test.ts`（并发加入、交错 join 幂等、死目录条目仍收敛、重启重认、10 个 orca node、404 重 join 不放大，6 条）、`transport.test.ts`（随机延迟、丢包恢复、单向出站失败、短暂全断，4 条）。
+- 测试：`membership.test.ts`（注入时钟 5 条）、`watchdog.test.ts`（三个 orca node 收敛、停 orca node→offline→修剪，2 条）、`discovery.test.ts`（心跳 404 重 join、四个 orca node 分半收敛，2 条）、`formation.test.ts`（并发加入、交错 join 幂等、死目录条目仍收敛、重启重认、10 个 orca node、404 重 join 不放大，7 条）、`transport.test.ts`（随机延迟、丢包恢复、单向出站失败、短暂全断，4 条）。
 - 未实现：`waitFor` 断言 helper、真实进程 `npm run harness`。
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
-- `HeadlessExecutor` → `AcpExecutor`；专属 profile；cwd = group workspace。
+- `HeadlessExecutor` → `AcpExecutor`；专属 profile；cwd = workgroup 根（工作区）。
 - context → session 绑定；`session/update` → task 事件；thought 过滤。
 - 取消（process tree / `session/cancel`）；`input-required` 透传。
-- 工作区持久化、`notes/STATUS.md` 约定、配额；单槽 busy（`429 orca_node_busy` + `Retry-After`）。
+- 工作区持久化（根即 cwd）、`notes/` 与 `inputs/`（已实现）；`notes/STATUS.md` 约定、配额；单槽 busy（`429 orca_node_busy` + `Retry-After`）。
 - blob 通道（[§5.6](05-tasks.md#56-文件交换blob-通道)）：上传素材、下载产物、去重、GC；结论文本内联回传。
 - 权限模式继承（[§7.10](07-security.md#710-权限模式继承)）：origin 会话模式写进 `pod.permission_mode`，本机 `config.permission_mode` 为上限取较窄（headless 传 `--permission-mode`、ACP 按模式自动回答）。
 - 验收：真实任务完成；跨任务续跑能看到上次的文件与 notes；orca node 失联 → 12s 内 `failed(node_unreachable)`；取消生效；重启后 `working` 标 `failed(node_restart)`；上传→任务→下载 roundtrip 通过；orca node 忙时第二个任务返回 429 且 UI 显示持有者。
 
 **Phase 2 进展**
 
-- 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用），并在 Windows 本机用真实 `dsh` + 模型凭据跑通（`scripts/e2e-headless.ts`：两任务 `completed`，第二个复用 session）；`AcpExecutor`（[§6.15](06-execution.md#615-acpexecutorphase-23-长任务执行器)，`dsh --profile acp` stdio、`session/update`→文本、`session/request_permission`→`input-required`、grant 回 allow-once、`session/cancel` 取消、session 复用与重启 `session/resume`）；`orca-node` CLI（`send`/`status`/`wait`/`members`，签名打本机或对端 `/a2a`，`--json`、`--text -` 读 stdin、退出码 0/1/2/3）与 AcpExecutor 的 prompt preamble（把 CLI 绝对路径、task id 与用法注入 ACP 会话，agent 用自带 shell 调用），ACP 会话因此不需要 MCP schema 常驻。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 9 条（假 dsh；含错误码、usage、preamble）、`acp.test.ts` 7 条（假 ACP server；含一条 ACP 叶子经 relay 链升级的端到端），`cli.test.ts` 9 条（真实 HTTP + 子进程，含 `escalate` 错误路径与 `publish` 本地登记/无 HTTP 路由），`escalation.test.ts` 4 条（父任务挂起、批准派生 child grant、拒绝向下传播、CLI `wait --local-task` 自动上升），`skill.test.ts` 3 条（技能内容/幂等安装/DSH_HOME 解析），`permission-mode.test.ts` 8 条（rank/取窄、`pod.permission_mode` 校验、子任务继承、headless argv、ACP 自动拒绝/允许/无模式挂起、本地上限收窄），`acceptance.test.ts` 4 条（双向断链→offline→恢复、同组成员凭 `task_id` 读结果、并发 10 请求只建 1 个 agent、旧密码被拒），`ssrf.test.ts` 7 条（候选端点私网/回环/元数据/组播/公网/主机名/非法 URL，`allow_public_peers` 与 `allow_loopback_peers` 开关，membership origin 标记），`limits.test.ts` 6 条（硬 TTL 到点杀任务、`result_max_bytes` 截断与标记、usage 记录、`max_task_ttl_s` 在 Agent Card 与成员记录可见），全套 199 通过。
-- 未实现：`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
+- 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；workgroup 工作区（`<data_root>/workgroups/<wg>/` 即 agent cwd，含 `notes/` 与 `inputs/<task_id>/`；网关状态另在 `<data_root>/state/<wg>/`，启动时 `ensure()` + `purgeInputs()`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用），并在 Windows 本机用真实 `dsh` + 模型凭据跑通（`scripts/e2e-headless.ts`：两任务 `completed`，第二个复用 session）；`AcpExecutor`（[§6.15](06-execution.md#615-acpexecutorphase-23-长任务执行器)，`dsh --profile acp` stdio、`session/update`→文本、`session/request_permission`→`input-required`、grant 回 allow-once、`session/cancel` 取消、session 复用与重启 `session/resume`）；`orca-node` CLI（`send`/`status`/`wait`/`members`/`escalate`/`publish`，签名打本机或对端 `/a2a`，`--json`、`--text -` 读 stdin、`--file` 上传附件、退出码 0/1/2/3）与 AcpExecutor 的 prompt preamble（把 CLI 绝对路径、task id 与用法注入 ACP 会话，agent 用自带 shell 调用），ACP 会话因此不需要 MCP schema 常驻。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 5 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 9 条（假 dsh；含错误码、usage、preamble）、`acp.test.ts` 7 条（假 ACP server；含一条 ACP 叶子经 relay 链升级的端到端），`cli.test.ts` 10 条（真实 HTTP + 子进程，含 `escalate` 错误路径、`publish` 本地登记/无 HTTP 路由、`send --file` 上传附件），`escalation.test.ts` 4 条（父任务挂起、批准派生 child grant、拒绝向下传播、CLI `wait --local-task` 自动上升），`skill.test.ts` 3 条（技能内容/幂等安装/DSH_HOME 解析），`permission-mode.test.ts` 8 条（rank/取窄、`pod.permission_mode` 校验、子任务继承、headless argv、ACP 自动拒绝/允许/无模式挂起、本地上限收窄），`acceptance.test.ts` 4 条（双向断链→offline→恢复、同组成员凭 `task_id` 读结果、并发 10 请求只建 1 个 agent、旧密码被拒），`ssrf.test.ts` 7 条（候选端点私网/回环/元数据/组播/公网/主机名/非法 URL，`allow_public_peers` 与 `allow_loopback_peers` 开关，membership origin 标记），`limits.test.ts` 6 条（硬 TTL 到点杀任务、`result_max_bytes` 截断与标记、usage 记录、`max_task_ttl_s` 在 Agent Card 与成员记录可见），`inputs.test.ts` 6 条（物化/附录/清理、重名、越界名、文件数上限、字节上限、缺失 blob），全套 210 通过。
+- 未实现：`notes/` 约定（写法与清理）、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
 
@@ -96,12 +96,12 @@
 
 - [x] 假 dsh：`final.text` → `completed`；`turn_end` 的 error → `failed`；没有 `final` 就退出 → `failed`
 - [x] 取消任务时子进程被杀（POSIX 进程组 / Windows `taskkill /T`），任务进 `canceled`
-- [x] cwd = 工作区 `work/`，`--add-dir` 带绝对路径；同一 `(origin, context)` 的第二次任务带 `--session-id`
+- [x] cwd = workgroup 根（工作区），`--add-dir` 带绝对路径；同一 `(origin, context)` 的第二次任务带 `--session-id`
 - [x] 真实 `dsh` 任务端到端（Windows 本机 + 模型凭据：`scripts/e2e-headless.ts` 两个任务 `completed`、`final.text` 正确、第二个任务复用 session）
 
 #### AcpExecutor（Phase 2/3）
 
-- [x] 假 ACP server：`session/update` 文本累积 → `completed`；`session/new` 的 cwd = 工作区 `work/`
+- [x] 假 ACP server：`session/update` 文本累积 → `completed`；`session/new` 的 cwd = workgroup 根
 - [x] `session/request_permission` → `input-required`，`approveTask` 后回 `allow-once` 并继续
 - [x] 取消任务发 `session/cancel`，任务进 `canceled`
 - [x] 同一 `(origin, context)` 复用 session（`session/new` 只一次）；orca node 重启后走 `session/resume`
@@ -129,7 +129,7 @@
 - [x] orca node 忙时第二个任务返回 429 `orca_node_busy` + `Retry-After`，调用方模型能从错误体拿到 `retry_after_s` 与持有者，自行选择重试、换 orca node 或向用户回报（UI 显示持有者尚未实现）
 - [x] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举（`tasks/get` 只认 id，无列表接口）
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
-- [x] 交接不走协议层：同一 workgroup 的任务共享 `work/` 与 `notes/`，后到的 agent 自己读现场决定接着干什么；协议没有 `continuation_of`，旧 task 天然不可变（`test/workspace.test.ts`、`test/persistence.test.ts`）
+- [x] 交接不走协议层：同一 workgroup 的任务共享 workgroup 根（agent cwd）与 `notes/`，后到的 agent 自己读现场决定接着干什么；协议没有 `continuation_of`，旧 task 天然不可变（`test/workspace.test.ts`、`test/persistence.test.ts`）
 - [ ] 链式升级：A→B→C 时 C 的越界请求经 B 上升为 A 的 `input-required`（`via` 带来源、`expires_in_s` 逐跳递减、等待期间 B/C 槽位都释放），A 批准后 grant 逐跳收窄下发、C 继续；任一跳超时则整链失败且不挂住节点（第一版已做 hop/祖先校验与 child grant 派生，并有 Echo relay 原型；ACP 执行器的自动上升未实现）
 
 #### 文件交换

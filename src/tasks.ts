@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { deriveChildGrant, validatePodMetadata } from "./chain.ts";
 import { verifyGrant } from "./crypto.ts";
@@ -41,6 +43,8 @@ type Running = {
   relay: EchoRelay | null;
   /** Set when the task itself is parked because a child needs an approval (§7.12 escalation). */
   pending_escalation: EchoRelay | null;
+  /** Materialized inputs directory, removed when the task reaches a terminal state (§6.7). */
+  inputs_dir: string | null;
 };
 
 function nowIso(): string {
@@ -76,6 +80,47 @@ function truncateMessage(message: A2AMessage, maxBytes: number): A2AMessage {
   return { role: message.role, parts: [{ kind: "text", text: cut + marker }] };
 }
 
+/** Task inputs are content-addressed blobs referenced by name (§6.7). */
+export type TaskInputRef = { blob_id: string; name: string };
+
+const INPUT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const DEFAULT_MAX_INPUT_FILES = 32;
+const DEFAULT_MAX_INPUT_BYTES = 512 * 1024 * 1024;
+
+/** Validate `metadata.pod.inputs`; duplicates and unsafe names are rejected (§6.7). */
+export function taskInputs(metadata: SubmitTaskInput["metadata"]): TaskInputRef[] {
+  const pod = metadata?.["pod"] as Record<string, unknown> | undefined;
+  const raw = pod?.["inputs"];
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new TaskError("bad_request", "pod.inputs must be an array");
+  const seen = new Set<string>();
+  const inputs: TaskInputRef[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new TaskError("bad_request", "pod.inputs entries must be objects");
+    }
+    const record = item as Record<string, unknown>;
+    const blobId = record["blob_id"];
+    const name = record["name"];
+    if (typeof blobId !== "string" || !/^[0-9a-f]{64}$/.test(blobId)) {
+      throw new TaskError("bad_request", "pod.inputs[].blob_id must be a sha256 blob id");
+    }
+    if (typeof name !== "string" || !INPUT_NAME_PATTERN.test(name) || name === "." || name === "..") {
+      throw new TaskError("bad_request", `pod.inputs[].name "${String(name)}" is not a safe file name`);
+    }
+    if (seen.has(name)) throw new TaskError("duplicate_input_name", `input name ${name} appears twice`);
+    seen.add(name);
+    inputs.push({ blob_id: blobId, name });
+  }
+  return inputs;
+}
+
+/** Relative paths listed after the task text; cwd is the group workspace root (§6.7). */
+function promptWithInputs(prompt: string, taskId: string, inputs: TaskInputRef[]): string {
+  if (inputs.length === 0) return prompt;
+  const list = inputs.map((input) => `- inputs/${taskId}/${input.name}`).join("\n");
+  return `${prompt}\n\n---\n[orca-pod] Task inputs are in the current directory; they are deleted when the task ends.\n${list}`;
+}
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
   blobs: BlobStore;
@@ -98,6 +143,10 @@ export type TaskRunnerDeps = {
   resultMaxBytes?: number;
   /** Data root, used by executors that need to point an agent at the local CLI (§6.14). */
   dataRoot?: string;
+  /** Max inputs one origin may attach in one task (§6.7). Default 32. */
+  maxInputFiles?: number;
+  /** Max total input bytes per task (§6.7). Default 512 MiB. */
+  maxInputBytes?: number;
   /** Sends a control message to a child task (grant/denial downward, §7.12). */
   sendTaskMessage?: (peerUrl: string, taskId: string, message: A2AMessage) => Promise<void>;
 };
@@ -114,7 +163,50 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const resultMaxBytes = deps.resultMaxBytes ?? 32 * 1024;
   const permissionTtlS = deps.permissionTtlS;
   const selfOrcaNodeId = deps.selfOrcaNodeId ?? "unknown";
+  const workspace = deps.workspace ?? null;
+  const maxInputFiles = deps.maxInputFiles ?? DEFAULT_MAX_INPUT_FILES;
+  const maxInputBytes = deps.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES;
   let activeTaskId: string | null = null;
+
+  function copyBlobTo(blobId: string, destination: string): boolean {
+    if (deps.blobs.copyTo !== undefined) return deps.blobs.copyTo(blobId, destination);
+    const blob = deps.blobs.get(blobId);
+    if (!blob) return false;
+    writeFileSync(destination, blob.bytes);
+    return true;
+  }
+
+  /**
+   * Copy declared inputs into `inputs/<task_id>/` before the task exists (§6.7).
+   * Throws — and leaves no directory behind — when a blob is missing or a cap
+   * is exceeded, so a bad request never creates a task.
+   */
+  function materializeInputs(taskId: string, inputs: TaskInputRef[]): string | null {
+    if (inputs.length === 0) return null;
+    if (workspace === null) throw new TaskError("bad_request", "task inputs require a group workspace");
+    if (inputs.length > maxInputFiles) {
+      throw new TaskError("too_many_inputs", `at most ${maxInputFiles} inputs per task`);
+    }
+    let total = 0;
+    for (const input of inputs) {
+      const read = deps.blobs.openRead?.(input.blob_id);
+      const size = read?.size ?? deps.blobs.get(input.blob_id)?.size;
+      read?.stream.destroy();
+      if (size === undefined) throw new TaskError("input_blob_missing", `unknown blob ${input.blob_id}`);
+      total += size;
+      if (total > maxInputBytes) {
+        throw new TaskError("inputs_too_large", `task inputs exceed ${maxInputBytes} bytes`);
+      }
+    }
+    const dir = workspace.inputDir(taskId);
+    mkdirSync(dir, { recursive: true });
+    for (const input of inputs) {
+      if (copyBlobTo(input.blob_id, join(dir, input.name))) continue;
+      rmSync(dir, { recursive: true, force: true });
+      throw new TaskError("input_blob_missing", `unknown blob ${input.blob_id}`);
+    }
+    return dir;
+  }
 
   function chainOf(rec: Running): string[] {
     const pod = rec.metadata?.["pod"] as { chain?: unknown } | undefined;
@@ -327,6 +419,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     clearPermissionTimer(rec);
     releaseSlot(rec);
     persist(rec);
+    if (rec.inputs_dir !== null) {
+      rmSync(rec.inputs_dir, { recursive: true, force: true });
+      rec.inputs_dir = null;
+    }
   }
 
   async function pump(rec: Running, resume?: A2AMessage): Promise<void> {
@@ -346,7 +442,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           prompt: rec.prompt,
           originOrcaNode: rec.origin_orca_node,
           ...(deps.selfOrcaNodeId ? { selfOrcaNodeId: deps.selfOrcaNodeId } : {}),
-          ...(deps.workspace ? { workspaceDir: deps.workspace.work, podDir: deps.workspace.pod } : {}),
+          ...(workspace ? { workspaceDir: workspace.root, podDir: workspace.state } : {}),
           ...(deps.dataRoot ? { dataRootDir: deps.dataRoot } : {}),
           ...(permissionMode ? { permissionMode } : {}),
           metadata: rec.metadata,
@@ -409,9 +505,11 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       const message = error instanceof Error ? error.message : String(error);
       throw new TaskError("bad_echo_script", message);
     }
+    const inputRefs = taskInputs(input.metadata);
     const id = newTaskId();
     const contextId = input.message.contextId ?? id;
     const createdAt = nowIso();
+    const inputsDir = materializeInputs(id, inputRefs);
     const requestedTtl = Number(
       input.metadata?.["pod"] && (input.metadata["pod"] as { task_ttl_s?: number }).task_ttl_s,
     );
@@ -427,7 +525,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       },
       metadata: input.metadata,
       origin_orca_node: input.originOrcaNode ?? "unknown",
-      prompt: messageText(input.message),
+      prompt: promptWithInputs(messageText(input.message), id, inputRefs),
       created_at: createdAt,
       since: createdAt,
       abort: new AbortController(),
@@ -438,6 +536,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       pending_permission: null,
       relay: null,
       pending_escalation: null,
+      inputs_dir: inputsDir,
     };
     activeTaskId = id;
     tasks.set(id, rec);

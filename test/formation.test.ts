@@ -23,6 +23,21 @@ function newWorkgroupId(): string {
   return `wg-${randomBytes(6).toString("hex")}`;
 }
 
+/**
+ * Ten orca nodes make 90 heartbeat links; at FAST's 50ms interval a busy test
+ * runner cannot keep every link inside a 150ms suspect window, so the scale
+ * case gets proportionally slower timings.
+ */
+const TEN_NODE_TIMINGS: Partial<MembershipTimings> = {
+  intervalMs: 120,
+  suspectAfterMs: 800,
+  offlineAfterMs: 1600,
+  recoverProbeMs: 300,
+  maxRecoverProbeMs: 600,
+  recordTtlMs: 10_000,
+  tombstoneMs: 10_000,
+};
+
 function makeNode(workgroupId: string, password: string, options: Partial<Pick<OrcaNodeConfig, "data_root" | "orca_node_id" | "display_name">> = {}): OrcaNode {
   const config = createOrcaNodeConfig({
     workgroupId,
@@ -193,10 +208,17 @@ describe("mesh formation", () => {
 
   it("converges ten orca nodes (the recommended upper bound)", async () => {
     const workgroupId = newWorkgroupId();
-    const mesh = await createMesh({ orcaNodes: 10, workgroupId, password: "formation-test", timings: FAST });
+    const mesh = await createMesh({ orcaNodes: 10, workgroupId, password: "formation-test", timings: TEN_NODE_TIMINGS });
 
     try {
-      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 9));
+      await waitFor(
+        () =>
+          mesh.orcaNodes.every((orcaNode) => {
+            const members = orcaNode.members();
+            return members.length === 9 && members.every((peer) => peer.state === "online");
+          }),
+        10_000,
+      );
       const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest()));
       expect(digests.size).toBe(1);
       expect(mesh.orcaNodes.every((orcaNode) => orcaNode.members().every((peer) => peer.state === "online"))).toBe(true);

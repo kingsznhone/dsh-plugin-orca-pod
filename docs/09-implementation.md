@@ -17,20 +17,22 @@ orca-pod/（仓库根目录）
     crypto.ts         HKDF、请求签名、nonce cache、grant 签名/校验
     config.ts         配置校验、默认值、密钥派生、JSON 读写
     storage.ts        PeerStore / TaskStore 接口 + 内存实现（+ 重导出 blobs）
-    blobs.ts          内容寻址 blob store（内存 + fs，含 TTL GC）
-    sqlite.ts         TaskStore 的 node:sqlite 实现（WAL，单进程写）
-    workspace.ts      group 工作区目录：work/notes/inputs/.pod
+    blobs.ts          内容寻址 blob store（内存 + fs，含 TTL GC，流式上传/下载）
+    blob-files.ts     本地文件 blob 映射（CLI 登记，网关按签名 URL 流式读取）
+    sqlite.ts         TaskStore 与 file_blobs 映射的 node:sqlite 实现（WAL，单进程写）
+    workspace.ts      workgroup 工作区（根 = agent cwd）与网关状态目录
     membership.ts     成员记录、心跳看门狗、墓碑与修剪
     gateway.ts        HTTP：/health、Agent Card、/cluster/*、/a2a、/blobs
     executor.ts       LocalExecutor 接口 + EchoExecutor
     headless.ts       HeadlessExecutor（dsh headless 子进程，一次性任务）
     acp.ts            AcpExecutor（dsh acp stdio：流式事件、权限挂起、session resume）
     process.ts        子进程公共件：命令解析（Windows shim）、killTree、abort 错误
-    session-store.ts  `.pod/sessions.json` 读写（按 origin+context 绑 ACP/headless session）
+    preamble.ts       编排 preamble（task id、CLI 路径、send/wait/escalate/publish 用法）
+    session-store.ts  `state/<workgroup_id>/sessions.json` 读写（按 origin+context 绑 ACP/headless session）
     tasks.ts          单槽任务运行器
     orca_node.ts      组合根：一个进程 = 一个 orca node
     harness.ts        进程内多 orca node，测试用
-    cli.ts            `orca-node` CLI：serve / send / status / wait / members
+    cli.ts            `orca-node` CLI：serve / send / status / wait / members / escalate / publish
     plugin/           DSH bundle：Config、apply、pod_* 工具、后台 tracker、skill.ts（安装期技能注入）
   test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/tracker/skill/approval/watchdog）
 ```
@@ -43,16 +45,17 @@ orca-pod/（仓库根目录）
 | `crypto.ts` | 已实现 | HKDF、请求签名、nonce cache、grant 签名/校验 |
 | `chain.ts` | 已实现 | 多跳元数据（hop/chain/root）校验、祖先禁调、child grant 派生（含 Echo relay 原型的下发） |
 | `config.ts` | 已实现 | 配置校验、密钥派生、JSON 读写 |
-| `storage.ts` / `blobs.ts` | 已实现 | PeerStore/TaskStore 接口 + 内存实现；blob 另有 fs 实现（内容寻址、临时文件+rename、TTL GC） |
-| `sqlite.ts` | 已实现 | `node:sqlite` TaskStore：`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、整条记录 JSON 存储 |
-| `workspace.ts` | 已实现 | `<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动时创建一次 |
+| `storage.ts` / `blobs.ts` | 已实现 | PeerStore/TaskStore 接口 + 内存实现；blob 另有 fs 实现（内容寻址、临时文件+rename、TTL GC、流式 `putStream`/`openRead`） |
+| `sqlite.ts` | 已实现 | `node:sqlite`：TaskStore 与 `file_blobs` 映射都在 `<data_root>/tasks.db`，WAL、`synchronous=NORMAL`、整条记录 JSON 存储 |
+| `workspace.ts` | 已实现 | `<data_root>/workgroups/<workgroup_id>/`（根 = agent cwd，含 `notes/`、`inputs/<task_id>/`）与 `<data_root>/state/<workgroup_id>/`（sessions、任务目录）；启动 `ensure()` + `purgeInputs()` |
 | `membership.ts` | 已实现 | 双向看门狗、单调时钟、suspect(unreachable)、墓碑与 record_ttl 修剪 |
 | `gateway.ts` | 已实现 | `/health`、Agent Card、`/a2a`、`/cluster/*`、`/blobs`（上传/下载/直链） |
 | `executor.ts` | 已实现 | `LocalExecutor` 事件流接口 + EchoExecutor；真实实现在 `headless.ts` / `acp.ts` |
 | `headless.ts` | 已实现 | `dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 复用 |
 | `acp.ts` | 已实现 | `dsh --profile acp` stdio（NDJSON JSON-RPC）：initialize/session/prompt/update/permission/cancel，权限挂起映射为 `input-required`，grant 回 allow-once |
-| `process.ts` / `session-store.ts` | 已实现 | Windows `.cmd` shim 解析、进程树终止；`.pod/sessions.json` 原子读写 |
-| `tasks.ts` | 已实现 | 单槽状态机；TaskStore 可注入（默认内存，CLI/插件用 SQLite），启动时把非终态标 `failed(node_restart)` |
+| `process.ts` / `session-store.ts` | 已实现 | Windows `.cmd` shim 解析、进程树终止；`state/<workgroup_id>/sessions.json` 原子读写 |
+| `tasks.ts` | 已实现 | 单槽状态机；inputs 物化/附录/终态清理、硬 TTL、简报截断、usage/错误码；TaskStore 可注入（默认内存，CLI/插件用 SQLite），启动时把非终态标 `failed(node_restart)` |
+| `blob-files.ts` | 已实现 | 本地文件 sha256→路径映射（SQLite 持久化），`GET /blobs/:id` 按映射流式读取 |
 | `orca_node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）；mesh/A2A/discovery/formation/transport 测试 |
 | `plugin/` | 部分实现 | `apply` 启动 orca node、注册 5 个 `pod_*` 工具（含 `pod_approve`）；后台 tracker 轮询终态并 `inject`/`followup`，权限请求强制唤醒；审批卡片已接线（reason 显示来源链）；安装期幂等写 user skill `orca-node/SKILL.md`；client bundle、credentials 读取未做 |
@@ -75,7 +78,7 @@ executor  ← tasks, headless, acp
 headless  ← orca_node   （Headless 实现只依赖 executor 的接口）
 acp       ← orca_node   （AcpExecutor 同样只依赖 executor 的接口）
 process   ← headless, acp   （命令解析与杀进程树，不知道 ACP 协议）
-session-store ← headless, acp   （只读写 .pod/sessions.json）
+session-store ← headless, acp   （只读写 state/<workgroup_id>/sessions.json）
 tasks     ← orca_node
 orca_node ← harness, plugin
 ```
@@ -105,7 +108,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 9 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个，共 201 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 6 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 7 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个，共 210 个、28 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 
@@ -228,6 +231,6 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `
 - Phase 3：plugin 的审批卡片、权限。
 - Phase 4：10 个 orca node 压测复用 harness。
 
-**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）、executor（Echo + Headless + ACP）已实现；InProcess executor、ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、group 工作区与 `work/` cwd 绑定、重启恢复）已实现；HeadlessExecutor 已用假 `dsh` 验证协议映射，并在 Windows 本机用真实 `dsh` + 模型凭据跑通端到端（`scripts/e2e-headless.ts`：两个任务 `completed`、第二个复用 session）；AcpExecutor 已用假 ACP server 验证协议映射、权限挂起→grant→继续、取消与 session 复用/重启 `session/resume`，并在 Windows 本机用真实 `dsh --profile acp` + 模型凭据跑通端到端（`scripts/e2e-acp.mjs`：一个任务 `completed`、文本 `pong`）；`orca-node` CLI 的 send/status/wait/members/publish 与 ACP prompt preamble 已实现（`test/cli.test.ts` 9 条，`publish` 直写本机 SQLite、无 HTTP 登记路由）；跨进程 harness 未开始。Phase 3 的审批回路第一版（grant 用 workgroup key 做 HMAC 签发/校验、`permission_request` 载荷、`pod_approve` 在 open turn 内调 DSH approval、批准/拒绝/篡改/过期/非 origin 测试）已实现；链式逐跳升级与收窄未开始。
+**实际状态**：protocol、crypto、config、storage（内存 + SQLite/fs）、workspace、gateway（含 blob 路由）、tasks、orca_node、harness、plugin（含后台 tracker/唤醒）、executor（Echo + Headless + ACP）已实现；InProcess executor、ui 未开始。Phase 1 的心跳循环、双向看门狗、单调时钟、墓碑修剪与候选端点扩散（摘要差异回目录、404 重 join）已实现；传输注入（丢包/分区）已用于 test。Phase 2 的持久化底座（`node:sqlite` task store、fs blob store + TTL GC、workgroup 根（agent cwd）与 `state/` 分离、任务 inputs 物化、流式 blob、重启恢复）已实现；HeadlessExecutor 已用假 `dsh` 验证协议映射，并在 Windows 本机用真实 `dsh` + 模型凭据跑通端到端（`scripts/e2e-headless.ts`：两个任务 `completed`、第二个复用 session）；AcpExecutor 已用假 ACP server 验证协议映射、权限挂起→grant→继续、取消与 session 复用/重启 `session/resume`，并在 Windows 本机用真实 `dsh --profile acp` + 模型凭据跑通端到端（`scripts/e2e-acp.mjs`：一个任务 `completed`、文本 `pong`）；`orca-node` CLI 的 send/status/wait/members/escalate/publish 与 ACP/headless 共享 preamble 已实现（`test/cli.test.ts` 10 条，`publish` 直写本机 SQLite、无 HTTP 登记路由，`send --file` 上传附件）；跨进程 harness 未开始。Phase 3 的审批回路第一版（grant 用 workgroup key 做 HMAC 签发/校验、`permission_request` 载荷、`pod_approve` 在 open turn 内调 DSH approval、批准/拒绝/篡改/过期/非 origin 测试）已实现；链式逐跳升级与收窄未开始。
 
 ---

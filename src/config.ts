@@ -63,6 +63,10 @@ export type OrcaNodeConfig = {
   task_timeout_s?: number;
   /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). */
   result_max_bytes?: number;
+  /** Max number of task inputs one origin may attach (§6.7). Default 32. */
+  max_input_files?: number;
+  /** Max total bytes of task inputs materialized per task (§6.7). Default 512 MiB. */
+  max_input_bytes?: number;
   /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
   approval_timeout_s?: number;
   /** Allow candidate endpoints on public IPs (§7.7). Default: private ranges only. */
@@ -87,6 +91,8 @@ export type CreateOrcaNodeConfigOptions = {
   approvalTimeoutS?: number;
   taskTimeoutS?: number;
   resultMaxBytes?: number;
+  maxInputFiles?: number;
+  maxInputBytes?: number;
   allowPublicPeers?: boolean;
   allowLoopbackPeers?: boolean;
 };
@@ -118,6 +124,8 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
   for (const [name, value] of [
     ["taskTimeoutS", options.taskTimeoutS],
     ["resultMaxBytes", options.resultMaxBytes],
+    ["maxInputFiles", options.maxInputFiles],
+    ["maxInputBytes", options.maxInputBytes],
   ] as const) {
     if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
       throw new Error(`${name} must be a positive number`);
@@ -140,6 +148,8 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
       ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
   ...(options.taskTimeoutS !== undefined ? { task_timeout_s: options.taskTimeoutS } : {}),
   ...(options.resultMaxBytes !== undefined ? { result_max_bytes: options.resultMaxBytes } : {}),
+  ...(options.maxInputFiles !== undefined ? { max_input_files: options.maxInputFiles } : {}),
+  ...(options.maxInputBytes !== undefined ? { max_input_bytes: options.maxInputBytes } : {}),
   ...(options.allowPublicPeers !== undefined ? { allow_public_peers: options.allowPublicPeers } : {}),
   ...(options.allowLoopbackPeers !== undefined ? { allow_loopback_peers: options.allowLoopbackPeers } : {}),
   };
@@ -286,7 +296,7 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
     }
     config.approval_timeout_s = approvalTimeout;
   }
-  for (const key of ["task_timeout_s", "result_max_bytes"] as const) {
+  for (const key of ["task_timeout_s", "result_max_bytes", "max_input_files", "max_input_bytes"] as const) {
     const value = record[key];
     if (value !== undefined) {
       if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {

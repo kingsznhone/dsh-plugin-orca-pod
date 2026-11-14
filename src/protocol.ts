@@ -263,6 +263,8 @@ export type PodTaskMetadata = {
   idempotency_key?: string;
   task_ttl_s?: number;
   grant_id?: string;
+  /** Blobs the target materializes under `inputs/<task_id>/` before the run (§6.7). */
+  inputs?: Array<{ blob_id: string; name: string }>;
 };
 
 /**

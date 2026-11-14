@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,16 +23,17 @@ describe("workspace manager", () => {
     const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
     const workspace = manager.ensure();
 
-    for (const dir of [workspace.work, workspace.notes, workspace.inputs, workspace.pod]) {
+    for (const dir of [workspace.root, workspace.notes, workspace.inputs, workspace.state]) {
       expect(existsSync(dir)).toBe(true);
     }
-    expect(existsSync(join(workspace.pod, "tasks"))).toBe(true);
+    expect(existsSync(join(workspace.state, "tasks"))).toBe(true);
     expect(workspace.root.endsWith(join("workgroups", "orca-dev"))).toBe(true);
+    expect(workspace.state.endsWith(join("state", "orca-dev"))).toBe(true);
   });
 
   it("is idempotent and stable across calls", () => {
     const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
-    expect(manager.ensure().work).toBe(manager.get().work);
+    expect(manager.ensure().root).toBe(manager.get().root);
   });
 
   it("isolates workgroups", () => {
@@ -42,10 +43,21 @@ describe("workspace manager", () => {
     expect(first.ensure().root).not.toBe(second.ensure().root);
   });
 
-  it("builds per-task dirs under .pod and rejects traversal", () => {
+  it("builds per-task dirs under the state dir and rejects traversal", () => {
     const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" }).get();
-    expect(workspace.taskDir("TASK01")).toBe(join(workspace.pod, "tasks", "TASK01"));
+    expect(workspace.taskDir("TASK01")).toBe(join(workspace.state, "tasks", "TASK01"));
+    expect(workspace.inputDir("TASK01")).toBe(join(workspace.root, "inputs", "TASK01"));
     expect(() => workspace.taskDir("../escape")).toThrow();
     expect(() => workspace.taskDir("a/b")).toThrow();
+    expect(() => workspace.inputDir("../escape")).toThrow();
+  });
+
+  it("purges leftover input dirs on startup", () => {
+    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
+    const workspace = manager.ensure();
+    writeFileSync(join(workspace.inputs, "stale"), "x");
+    manager.purgeInputs();
+    expect(existsSync(workspace.inputs)).toBe(true);
+    expect(existsSync(join(workspace.inputs, "stale"))).toBe(false);
   });
 });

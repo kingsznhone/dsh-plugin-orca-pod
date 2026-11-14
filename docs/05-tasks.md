@@ -198,15 +198,15 @@ Authorization: Pod ...
 
 ```text
 # 在本机登记一个已生成的文件（不经过网络，不需要节点在跑）
-$ orca-node publish ./work/report.md --ttl 86400
+$ orca-node publish ./report.md --ttl 86400
 http://host.example/blobs/<sha256>?exp=...&sig=...
 ```
 
 规则：
 
 - `blob_id = sha256(bytes)`，内容寻址 → 天然去重；同内容重复上传返回 `200` 且不占新空间，首次返回 `201`。
-- 上传必须带 `X-Pod-Body-SHA256` 并被签名覆盖；服务端边收边算，落盘后不一致 → `400 blob_digest_mismatch` 并删除。签名不覆盖 body 本身，避免为 1 GiB 文件算两遍哈希。
-- 上限：单文件默认 256 MiB，每 workgroup 默认 5 GiB；超限 `413`。
+- 上传与下载都**流式**：客户端先算摘要再签名（签名覆盖 `X-Pod-Body-SHA256` 而不是 body 本身），服务端边收边算、写临时文件后 rename，内存里不攒整个文件；`GET` 走流式响应，不 `readFile` 整个 blob。
+- 上限：单 blob 默认 256 MiB；单个任务附带的 inputs 默认 32 个文件 / 512 MiB（本地 `max_input_files`、`max_input_bytes` 可调）；超限 `413`/`400`。
 - 文件名只作提示（`name`），不参与寻址；存储路径由 blob_id 决定，元数据里出现 `../`、绝对路径、驱动器号一律拒绝。
 - 生命周期：默认 7 天未被任务引用即 GC；被任务引用则延长到任务终态 + 24h。GC 是本地行为，不传播；下载方拿不到就是被清了，按 `410 blob_expired` 处理。**GC 全自动，不依赖用户到子 orca node 手动清理**——没人会去 B 的机器上清 blob；要保住某个产物，就在 7 天内下载它，或让它继续被任务引用。
 - 下载支持短期直链：任意同组 orca node 调 `POST /blobs/{id}/link` 拿 TTL 5 分钟的 URL，方便 `curl` / 浏览器 / 前端直链，不必把长期密钥给第三方。直链只是省掉签名头，不改变可读范围。
@@ -216,9 +216,9 @@ http://host.example/blobs/<sha256>?exp=...&sig=...
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。跨 orca node 交接产物就是传一个 id；id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新 blob。
 
-**实现状态**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现；存储默认 fs（内容寻址目录 + sidecar 元数据 + 临时文件 rename），`gc()` 在 orca node 启动时跑一次，默认 7 天过期；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。本地文件登记：没有 HTTP 路由（`POST /blobs/register` 为 `404`），由 `orca-node publish` 直写 `file_blobs` 表；`GET` 走文件流、文件消失 `410 blob_file_missing`、映射跨重启保留。**未实现**：每 workgroup 5 GiB 配额、引用延期（目前只看 ttl 不看任务引用）、`Content-Disposition` 文件名恢复、断点续传、`file_blobs` 过期行清理。
+**实现状态**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现；存储默认 fs（内容寻址目录 + sidecar 元数据 + 临时文件 rename），`gc()` 在 orca node 启动时跑一次，默认 7 天过期；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。上传与下载均已流式（`putStream`/`openRead`，客户端 `send --file` 与 `publish` 共享同一签名摘要机制）。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 300s；未知 blob `404`、过期直链 `403 link_invalid`/`410`。本地文件登记：没有 HTTP 路由（`POST /blobs/register` 为 `404`），由 `orca-node publish` 直写 `file_blobs` 表；`GET` 走文件流、文件消失 `410 blob_file_missing`、映射跨重启保留。任务 inputs：`send --file` 上传 + `metadata.pod.inputs` 物化 + 附录 + 终态清理已实现（`test/inputs.test.ts`）。**未实现**：每 workgroup 5 GiB 配额、引用延期（目前只看 ttl 不看任务引用）、`Content-Disposition` 文件名恢复、断点续传、`file_blobs` 过期行清理。
 
-**输入**：origin 先把素材 `POST /blobs` 到 target，任务消息里带 `inputs: [{blob_id, name, media_type}]`；target 直接读本地已落盘的 blob（上传即到达），不需要回源。小于 64 KiB 的可以直接内联 `bytes`（A2A file part），省一次往返。
+**输入**：origin 先把素材 `POST /blobs` 到 target（`orca-node send --file <path>` 会自动做这一步），再在任务消息里带 `metadata.pod.inputs: [{blob_id, name}]`；target 在**建 task 之前**把 blob 物化到 `inputs/<task_id>/`（cwd 相对，见 [§6.7](06-execution.md#67-工作区一份持久)），任务书末尾附相对清单，终态删除目录。任何失败都不建任务：blob 缺失 `400 input_blob_missing`、超上限 `400 too_many_inputs` / `400 inputs_too_large`、重名 `409 duplicate_input_name`、名字不安全 `400 bad_request`。小于 64 KiB 的可以直接内联 `bytes`（A2A file part），省一次往返。
 
 **输出**：任务终态时 manifest 给 `artifacts: [{blob_id, name, media_type, bytes}]`；origin 按需 `GET /blobs/{id}`。**不自动全量回传**：大产物由人或 agent 显式取，避免把网络当同步盘。已实现的路径是更简的一版：子节点完成时自己决定交不交、交哪个文件，`publish` 出 URL 贴在结论文本附录里；manifest 全量 `artifacts` 尚未实现。
 
@@ -230,14 +230,14 @@ A 在 B 上跑完一段，想把后续交给 C（另一台机器、另一个模�
 
 交接靠工作区本身：
 
-- 同一 workgroup 的任务共用一份持久工作区（[§6.7](06-execution.md#67-工作区一份持久)）：`work/` 是执行现场，`notes/` 是跨 session 的状态备忘。
-- 后到的 C 发起一个**普通新任务**；B 的 agent 打开 `work/` 看代码、看 diff、看 `notes/` 里上一次的结论，自己判断该接着干什么、从哪一步开始。
+- 同一 workgroup 的任务共用一份持久工作区（[§6.7](06-execution.md#67-工作区一份持久)）：workgroup 根是执行现场（agent 的 cwd），`notes/` 是跨 session 的状态备忘。
+- 后到的 C 发起一个**普通新任务**；B 的 agent 在 workgroup 根里看代码、看 diff、看 `notes/` 里上一次的结论，自己判断该接着干什么、从哪一步开始。
 - 这就是“态势感知”：它需要读文件、看测试结果、判断语义，只有 LLM 做得好；协议层只能表达“我声明要接续某个 task”，既保证不了正确性，还把判断从 agent 手里拿走了。
 
 协议只保证两件与交接有关的事：
 
 - 工作区跨任务、跨 session、跨重启持久（[§6.7](06-execution.md#67-工作区一份持久)）；
-- 同一 orca node 单槽串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），所以不会有两个任务同时写同一份 `work/`。
+- 同一 orca node 单槽串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），所以不会有两个任务同时写同一份工作区。
 
 旧 task 天然不可变：C 的新任务和 A 的旧 task 是两个独立记录，各自的 artifacts、`updated_at` 互不影响；审计靠时间戳与 task id 还原，不需要一个指向“前一个 task”的字段。
 

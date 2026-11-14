@@ -105,6 +105,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 - 落盘 JSONL，按天轮转；字段：`ts, actor_node, action, target, result, task_id, grant_id`；
 - 审计文件不放在 group workspace 里；
+- 网关状态（`<data_root>/state/<workgroup_id>/`：session 绑定、任务目录）也必须在 workgroup 根之外：agent 对 cwd 有写权限，看得见就能删；放进工作区等于把会话绑定和网关状态交给被调用的 agent（[§6.7](06-execution.md#67-工作区一份持久)）。
 - `permission_request` 全文入审计（脱敏后），便于事后回答“它当时要什么”。
 
 ### 7.9 权限跟随发起 orca node
