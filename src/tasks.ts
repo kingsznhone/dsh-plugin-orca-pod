@@ -17,6 +17,7 @@ type Running = {
   view: TaskView;
   metadata: Record<string, unknown> | undefined;
   origin_orca_node: string;
+  prompt: string;
   created_at: string;
   since: string;
   abort: AbortController;
@@ -26,6 +27,13 @@ type Running = {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function messageText(message: A2AMessage): string {
+  return message.parts
+    .filter((part): part is { kind: "text"; text: string } => part.kind === "text")
+    .map((part) => part.text)
+    .join("\n");
 }
 
 function cloneView(view: TaskView): TaskView {
@@ -109,8 +117,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         {
           taskId: rec.view.id,
           contextId: rec.view.contextId,
+          prompt: rec.prompt,
+          originOrcaNode: rec.origin_orca_node,
+          ...(deps.workspace ? { workspaceDir: deps.workspace.work, podDir: deps.workspace.pod } : {}),
           metadata: rec.metadata,
-          ...(deps.workspace ? { workspaceDir: deps.workspace.work } : {}),
         },
         rec.abort.signal,
       );
@@ -175,6 +185,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       },
       metadata: input.metadata,
       origin_orca_node: input.originOrcaNode ?? "unknown",
+      prompt: messageText(input.message),
       created_at: createdAt,
       since: createdAt,
       abort: new AbortController(),

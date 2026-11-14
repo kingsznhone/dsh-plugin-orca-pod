@@ -26,6 +26,7 @@ orca-pod/
 │   ├── membership.ts     # 成员记录、心跳看门狗、墓碑与修剪
 │   ├── gateway.ts        # HTTP: /health、agent card、/cluster/*、/a2a、/blobs
 │   ├── executor.ts       # LocalExecutor 契约 + EchoExecutor
+│   ├── headless.ts       # HeadlessExecutor（dsh headless --json 子进程）
 │   ├── tasks.ts          # 单槽任务运行器
 │   ├── orca_node.ts      # createOrcaNode：装配 gateway、tasks、membership
 │   ├── harness.ts        # 测试用进程内多 orca node
@@ -63,6 +64,8 @@ the config afterwards.
 | `peers`              | no       | `[]`                            | Peer endpoint URLs to `join` at startup; failures are logged only       |
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。
+
+执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless"`，`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`。详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)。
 
 ### 安全注意（原型）
 

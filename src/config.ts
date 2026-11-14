@@ -15,6 +15,17 @@ export type BindConfig = {
   port: number;
 };
 
+export type ExecutorKind = "echo" | "headless";
+
+/** Local executor choice and its options; origin cannot override these (§6.2). */
+export type HeadlessExecutorConfig = {
+  command?: string;
+  profile?: string;
+  permission_mode?: string;
+  approval_policy?: "ask" | "never";
+  extra_args?: string[];
+};
+
 export type OrcaNodeConfig = {
   orca_node_id: OrcaNodeId;
   display_name: string;
@@ -24,6 +35,8 @@ export type OrcaNodeConfig = {
   data_root: string;
   key_base64: string;
   created_at: string;
+  executor?: ExecutorKind;
+  headless?: HeadlessExecutorConfig;
 };
 
 export type CreateOrcaNodeConfigOptions = {
@@ -35,6 +48,8 @@ export type CreateOrcaNodeConfigOptions = {
   displayName?: string;
   orcaNodeId?: OrcaNodeId;
   endpoint?: string | null;
+  executor?: ExecutorKind;
+  headless?: HeadlessExecutorConfig;
 };
 
 export function defaultDataRoot(): string {
@@ -62,6 +77,8 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     data_root: options.dataRoot ?? defaultDataRoot(),
     key_base64: key.toString("base64"),
     created_at: new Date().toISOString(),
+    ...(options.executor ? { executor: options.executor } : {}),
+    ...(options.headless ? { headless: options.headless } : {}),
   };
 }
 
@@ -69,6 +86,35 @@ export async function loadConfig(path: string): Promise<OrcaNodeConfig> {
   const raw = await readFile(path, "utf8");
   const parsed: unknown = JSON.parse(raw);
   return validateConfig(parsed);
+}
+
+function parseHeadlessConfig(value: unknown): HeadlessExecutorConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("config.headless must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const config: HeadlessExecutorConfig = {};
+  for (const key of ["command", "profile", "permission_mode"] as const) {
+    const raw = record[key];
+    if (raw !== undefined) {
+      if (typeof raw !== "string" || raw.length === 0) throw new Error(`config.headless.${key} must be a non-empty string`);
+      config[key] = raw;
+    }
+  }
+  const approval = record["approval_policy"];
+  if (approval !== undefined) {
+    if (approval !== "ask" && approval !== "never") throw new Error('config.headless.approval_policy must be "ask" or "never"');
+    config.approval_policy = approval;
+  }
+  const extra = record["extra_args"];
+  if (extra !== undefined) {
+    if (!Array.isArray(extra) || extra.some((item) => typeof item !== "string")) {
+      throw new Error("config.headless.extra_args must be a string array");
+    }
+    config.extra_args = extra as string[];
+  }
+  return config;
 }
 
 export function validateConfig(value: unknown): OrcaNodeConfig {
@@ -92,6 +138,15 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   };
   if (!isWorkgroupId(config.workgroup_id)) throw new Error("config.workgroup_id is invalid");
   if (!config.key_base64) throw new Error("config.key_base64 is missing");
+  const executor = record["executor"];
+  if (executor !== undefined) {
+    if (executor !== "echo" && executor !== "headless") {
+      throw new Error('config.executor must be "echo" or "headless"');
+    }
+    config.executor = executor;
+  }
+  const headless = parseHeadlessConfig(record["headless"]);
+  if (headless) config.headless = headless;
   return config;
 }
 

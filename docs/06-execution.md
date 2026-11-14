@@ -41,7 +41,7 @@ interface LocalExecutor {
 | 实现 | 适用 | 优点 | 缺点 | 现状 |
 |---|---|---|---|---|
 | `EchoExecutor` | Phase 0 协议验证 | 无 DSH 依赖、确定性 | 不执行真实任务 | 已实现 |
-| `HeadlessExecutor` | 一次性任务 | 最简单，`dsh headless "..."` | 无流式、无协作取消、无多轮 | 未实现 |
+| `HeadlessExecutor` | 一次性任务 | 最简单，`dsh headless "..."` | 无流式、无协作取消、无多轮 | 已实现（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)） |
 | `AcpExecutor` | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent | 未实现 |
 | `InProcessExecutor` | 深度集成 | 无子进程协议、性能好 | 与 DSH 内部 API 耦合，升级易碎 | 未实现 |
 
@@ -231,5 +231,58 @@ session_id → workspace（本 orca node 唯一的那份）
 - 清理：工作区不按 TTL 删；只在配额压力下按“最久未使用”驱逐，并提前在 UI 标黄；`purge` 是显式动作，要求二次确认。
 - 跨平台：目录分隔符、大小写不敏感（Windows）、保留名（`CON`、`NUL`、`aux`）、尾随点/空格都要处理；路径比较统一用规范化后的形式。
 - 审计：每个任务记录 `workgroup_id`、实际 cwd（相对路径）、写入了哪些文件。
+
+### 6.14 HeadlessExecutor（Phase 2 真实执行器）
+
+Phase 2 的第一个真实执行器：把任务文本交给 `dsh headless` 子进程，把它的 NDJSON 事件翻译成 `LocalExecutor` 事件。它是最薄的一层——一次任务一个进程，没有流式进度、没有交互式权限。
+
+**配置**（orca node 本地，origin 不可指定，见 [§6.2](06-execution.md#62-实现)）：
+
+```json
+{
+  "executor": "headless",
+  "headless": {
+    "command": "dsh",
+    "profile": "headless",
+    "permission_mode": "read-only",
+    "approval_policy": "never",
+    "extra_args": []
+  }
+}
+```
+
+**调用形态**：
+
+```
+dsh --profile headless --json \
+  --permission-mode <preset> --approval-policy never \
+  --add-dir <workspace>/work \
+  [--session-id <session_id>] \
+  <prompt>
+```
+
+- cwd = `<workspace>/work`；`--add-dir` 再显式给一次 work 的绝对路径（`workspace-write` 下 dsh 只接受绝对目录）。
+- `approval_policy` 默认 `never`：无人值守的 orca node 不能弹本地审批窗；Phase 3 的升级回路还没接。
+- 首次运行不带 `--session-id`，从 `{"type":"session","sessionId":…}` 拿到 id，写 `<workspace>/.pod/sessions.json`，键 `<origin_orca_node>|<context_id>`；同一 context 的后续任务带 `--session-id` 续跑。
+- `command` 可覆盖，测试用它指向假 dsh；`extra_args` 原样插在最前。
+
+**事件映射**（stdout 每行一个 JSON）：
+
+| dsh 事件 | executor 事件 |
+|---|---|
+| `{"type":"session","sessionId":…}` | 无（记录 session id） |
+| `{"type":"status","phase":"turn_end","reason":{"kind":"error","error":{"message":…}}}` | 记下失败原因 |
+| `{"type":"final","text":…}` | `completed`（失败原因为空时） |
+| `{"type":"final","reason":{"kind":"error"…}}` | `failed`（取 reason.error.message） |
+| 其它（`step_*`、`assistant`、`turn_*`） | 忽略；Phase 2 不做流式 |
+
+- 进程退出但没见到 `final` → `failed("dsh exited without a final event")`，附 stderr 尾部 4 KiB。
+- 取消：`AbortSignal` → 先 SIGTERM，2s 后 SIGKILL；Windows 用 `taskkill /pid <pid> /T /F` 杀整棵树（`dsh` 会拉子进程）。
+- 超时：仍由任务层 `task_ttl_s` abort；executor 只负责杀进程。
+- 结果文本：`final.text` 直接作为任务结论（走 [§6.11](06-execution.md#611-任务结果与产物) 的内联/截断规则）。
+
+**不做**（留给 AcpExecutor）：`message/stream` 流式进度、`session/update` 细粒度事件、`input-required` 的权限升级透传、协作取消。
+
+**测试**：`test/headless.test.ts` 用 `command: process.execPath` + `extra_args: [fake-dsh.mjs]` 起假 dsh。覆盖：正常完成、`turn_end` 错误、没有 `final` 就退出、挂起被 abort（进程被杀）、第二次任务带 `--session-id` 且 sessions.json 的键正确。
 
 ---

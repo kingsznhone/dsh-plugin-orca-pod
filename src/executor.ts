@@ -29,9 +29,15 @@ export type ExecutorEvent =
 export type ExecuteInput = {
   taskId: string;
   contextId?: string;
-  metadata?: Record<string, unknown>;
+  /** Text of the task message (or the resume message). */
+  prompt?: string;
+  /** Origin orca node; part of the session binding key (§6.10). */
+  originOrcaNode?: string;
   /** Group workspace `work/` dir; the executor's cwd when present (§6.7). */
   workspaceDir?: string;
+  /** Group workspace `.pod/` dir; executors keep their own state here. */
+  podDir?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export interface LocalExecutor {

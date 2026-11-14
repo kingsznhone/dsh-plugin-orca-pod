@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { buildAuthHeader, NonceCache } from "./crypto.ts";
-import { EchoExecutor } from "./executor.ts";
+import { EchoExecutor, type LocalExecutor } from "./executor.ts";
+import { createHeadlessExecutor } from "./headless.ts";
 import { createGateway } from "./gateway.ts";
 import { createMembership, type MembershipClock, type MembershipTimings } from "./membership.ts";
 import {
@@ -94,6 +95,8 @@ export type CreateNodeOptions = {
   fetch?: FetchLike;
   /** Durable stores; omit for an in-memory orcaNode. */
   storage?: OrcaNodeStorage;
+  /** Executor override; defaults to config.executor (echo when unset). */
+  executor?: LocalExecutor;
 };
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
@@ -161,7 +164,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const workspaceManager = options.storage?.workspace ?? null;
   const workspace: Workspace | null = workspaceManager?.get() ?? null;
   const tasks = createTaskRunner({
-    executor: new EchoExecutor(),
+    executor:
+      options.executor ??
+      (config.executor === "headless" ? createHeadlessExecutor(config.headless ?? {}) : new EchoExecutor()),
     blobs,
     ...(options.storage?.taskStore ? { store: options.storage.taskStore } : {}),
     ...(workspace ? { workspace } : {}),

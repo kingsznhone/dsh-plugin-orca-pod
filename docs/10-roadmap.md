@@ -14,7 +14,7 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 112 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 6、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 119 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、blobs-fs 5、storage-sqlite 3、workspace 4、persistence 2、plugin 12、tracker 6、headless 7、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `orca_node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具 + 后台 tracker/inject/followup）。持久化底座按计划挪到 Phase 2 落地（SQLite task store、fs blob + GC、工作区）。
 - 未实现：`/blobs` 的配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
@@ -46,9 +46,9 @@
 
 **Phase 2 进展**
 
-- 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`），全套 112 通过。
-- 未实现：`HeadlessExecutor`/`AcpExecutor`、`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
+- 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用）。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh），全套 119 通过。
+- 未实现：`AcpExecutor`、真实 `dsh` 任务（需要模型凭据）、`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
 
@@ -90,6 +90,13 @@
 - [x] 产物 blob 可被另一 orca node GET（artifact id = sha256，与跨 orca node blob GET 同通道）
 - [x] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
 - [x] 非法脚本（`at_ms` 递减、未知字段、`state` 非法）在建 task 前 `400 bad_echo_script`
+
+#### HeadlessExecutor（Phase 2）
+
+- [x] 假 dsh：`final.text` → `completed`；`turn_end` 的 error → `failed`；没有 `final` 就退出 → `failed`
+- [x] 取消任务时子进程被杀（POSIX 进程组 / Windows `taskkill /T`），任务进 `canceled`
+- [x] cwd = 工作区 `work/`，`--add-dir` 带绝对路径；同一 `(origin, context)` 的第二次任务带 `--session-id`
+- [ ] 真实 `dsh` 任务端到端（需要模型凭据；当前工具链无 API key）
 
 #### 三台 orca node
 
