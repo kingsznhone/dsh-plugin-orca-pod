@@ -18,6 +18,9 @@ export const ERROR_CODES = [
   "unknown_node",
   "not_found",
   "node_busy",
+  "bad_echo_script",
+  "task_not_found",
+  "task_not_terminal",
   "unsupported",
   "internal",
 ] as const;
@@ -156,3 +159,106 @@ export function isHttpEndpoint(value: unknown): value is string {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// A2A task surface (§4.7, §4.8, §5.1)
+// ---------------------------------------------------------------------------
+
+export type TaskState = "submitted" | "working" | "input-required" | "completed" | "failed" | "canceled";
+
+export const TERMINAL_STATES: ReadonlyArray<TaskState> = ["completed", "failed", "canceled"];
+
+export function isTerminal(state: TaskState): boolean {
+  return TERMINAL_STATES.includes(state);
+}
+
+export type MessagePart =
+  | { kind: "text"; text: string }
+  | { kind: "data"; data: Record<string, unknown> }
+  | { kind: "file"; file: { name: string; mimeType?: string; bytes?: string } };
+
+export type A2AMessage = {
+  role: "user" | "agent";
+  parts: MessagePart[];
+  messageId?: string;
+  /** Set when this message continues an input-required task (§4.8). */
+  taskId?: string;
+  contextId?: string;
+};
+
+/** Suspended payload lives in `status.message`; it is task state, not a push (§4.7). */
+export type TaskStatus = {
+  state: TaskState;
+  timestamp: string;
+  message?: A2AMessage;
+  reason?: string;
+};
+
+export type TaskArtifact = {
+  artifactId: string;
+  name: string;
+  mediaType?: string;
+  bytes: number;
+};
+
+export type TaskView = {
+  kind: "task";
+  id: string;
+  contextId: string;
+  status: TaskStatus;
+  artifacts?: TaskArtifact[];
+  metadata?: Record<string, unknown>;
+};
+
+export type PodTaskMetadata = {
+  hop?: number;
+  chain?: string[];
+  root?: string;
+  notify?: "auto" | "inbox" | "wake";
+  continuation_of?: string | null;
+  idempotency_key?: string;
+  task_ttl_s?: number;
+  grant_id?: string;
+};
+
+export type SubmitTaskInput = {
+  message: A2AMessage;
+  metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
+};
+
+/** Implemented by orca_node (needs an executor), consumed by the gateway. */
+export interface TaskRunner {
+  submit(input: SubmitTaskInput): TaskView;
+  get(taskId: string): TaskView | null;
+  resume(taskId: string, message: A2AMessage): TaskView;
+  cancel(taskId: string): TaskView;
+}
+
+/** Task-level failure carrying a stable code for the gateway's HTTP mapping. */
+export class TaskError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "TaskError";
+    this.code = code;
+  }
+}
+
+
+const TASK_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * ULID-shaped task id: 48-bit millisecond timestamp + 80 random bits, base32.
+ * Time-ordered, 26 chars, unguessable enough to act as a capability handle (§5.5).
+ */
+export function newTaskId(now: number = Date.now(), random: Uint8Array = randomBytes(10)): string {
+  let value = BigInt(now & 0xffffffffffff) << 80n;
+  for (const byte of random.subarray(0, 10)) value = (value << 8n) | BigInt(byte);
+  let out = "";
+  for (let index = 0; index < 26; index += 1) {
+    out = TASK_ID_ALPHABET[Number(value & 31n)] + out;
+    value >>= 5n;
+  }
+  return out;
+}
+

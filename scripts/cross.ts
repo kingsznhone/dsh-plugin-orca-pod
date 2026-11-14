@@ -90,10 +90,49 @@ async function join(args: Args): Promise<void> {
   await withNode(node, true);
 }
 
+async function task(args: Args): Promise<void> {
+  const configFile = required(args, "config");
+  const peer = required(args, "peer");
+  const config = await loadConfig(configFile);
+  const node = createNode({ config });
+  const echo = args.get("echo")
+    ? (JSON.parse(required(args, "echo")) as Record<string, unknown>)
+    : { final: { state: "completed", text: args.get("text") ?? "echo from host" } };
+  const submitted = await node.sendTask(peer, {
+    message: { role: "user", parts: [{ kind: "text", text: args.get("text") ?? "run echo" }] },
+    metadata: { echo },
+  });
+  console.log(`submitted task=${submitted.id} state=${submitted.status.state}`);
+  let resumed = false;
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const view = await node.getTask(peer, submitted.id);
+    if (view.status.state === "input-required") {
+      console.log(`input-required: ${JSON.stringify(view.status.message)}`);
+      if (args.get("auto-resume") === "true" && !resumed) {
+        resumed = true;
+        await node.sendTask(peer, {
+          message: { role: "user", parts: [{ kind: "text", text: "approved" }], taskId: submitted.id },
+        });
+        console.log("resumed");
+      }
+    }
+    if (view.status.state === "completed" || view.status.state === "failed" || view.status.state === "canceled") {
+      console.log(`final=${view.status.state} message=${JSON.stringify(view.status.message)}`);
+      console.log(`artifacts=${JSON.stringify(view.artifacts ?? [])}`);
+      await node.stop();
+      return;
+    }
+    await sleep(100);
+  }
+  console.log("timed out waiting for terminal state");
+  await node.stop();
+}
+
 function printHelp(): void {
   console.log("usage:");
   console.log("  node scripts/cross.ts serve --workgroup <id> --password <secret> [--port 11811] [--host 0.0.0.0] [--endpoint http://ip:port] [--name host]");
   console.log("  node scripts/cross.ts join  --peer <url> --workgroup <id> --password <secret> [--name guest]");
+  console.log("  node scripts/cross.ts task  --config <file> --peer <url> [--text hello] [--echo '<json>'] [--auto-resume true]");
 }
 
 const { command, args } = parseArgs(process.argv.slice(2));
@@ -101,6 +140,8 @@ if (command === "serve") {
   await serve(args);
 } else if (command === "join") {
   await join(args);
+} else if (command === "task") {
+  await task(args);
 } else {
   printHelp();
 }

@@ -15,6 +15,7 @@ import {
   membersDigest,
   normalizeNodeId,
   runtimeDigest,
+  TaskError,
   type BusyState,
   type HeartbeatResponse,
   type JoinResponse,
@@ -22,6 +23,10 @@ import {
   type PeerView,
   type RuntimeInfo,
   type SelfRecord,
+  type TaskRunner,
+  type TaskView,
+  type A2AMessage,
+  type SubmitTaskInput,
 } from "@orca/protocol";
 import type { PeerStore } from "@orca/storage";
 
@@ -38,10 +43,21 @@ export type GatewayDeps = {
   peers: PeerStore;
   nonceCache: NonceCache;
   runtime: RuntimeInfo | null;
+  tasks: TaskRunner;
 };
 
 type RawBodyRequest = FastifyRequest & { rawBody?: Buffer };
 type JsonObject = Record<string, unknown>;
+type JsonRpcEnvelope = { id?: unknown; method?: string; params?: unknown };
+
+/** Task failures are protocol-level; the HTTP status mirrors the documented code (§6.3, §6.9). */
+const TASK_ERROR_STATUS: Record<string, number> = {
+  bad_echo_script: 400,
+  node_busy: 429,
+  task_not_found: 404,
+  bad_request: 400,
+  unsupported: 400,
+};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -107,8 +123,53 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   app.get("/.well-known/agent-card.json", async () => ({
     name: deps.node.display_name,
     protocol_version: PROTOCOL_VERSION,
-    url: deps.node.endpoint ?? "",
+    url: deps.node.endpoint ? `${deps.node.endpoint}/a2a` : "",
   }));
+
+  app.post("/a2a", async (request, reply) => {
+    authenticate(request, deps);
+    const body = asObject(request.body) as JsonRpcEnvelope | null;
+    if (!body || typeof body.method !== "string") {
+      return badRequest(reply, "body must be a JSON-RPC request");
+    }
+    const id = body.id ?? null;
+    const params = asObject(body.params) ?? {};
+    try {
+      let result: TaskView;
+      if (body.method === "message/send") {
+        const message = asObject(params["message"]) as A2AMessage | null;
+        if (!message || !Array.isArray(message.parts)) {
+          return badRequest(reply, "params.message with parts is required");
+        }
+        if (typeof message.taskId === "string" && message.taskId.length > 0) {
+          result = deps.tasks.resume(message.taskId, message);
+        } else {
+          result = deps.tasks.submit({ message, metadata: params["metadata"] as SubmitTaskInput["metadata"] });
+        }
+      } else if (body.method === "tasks/get") {
+        const taskId = String(params["id"] ?? "");
+        const view = deps.tasks.get(taskId);
+        if (!view) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+        result = view;
+      } else if (body.method === "tasks/cancel") {
+        result = deps.tasks.cancel(String(params["id"] ?? ""));
+      } else {
+        throw new TaskError("unsupported", `unsupported method ${body.method}`);
+      }
+      return { jsonrpc: "2.0", id, result };
+    } catch (error) {
+      if (error instanceof TaskError) {
+        const status = TASK_ERROR_STATUS[error.code] ?? 500;
+        reply.code(status).send({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32000, message: error.code, data: { message: error.message } },
+        });
+        return reply;
+      }
+      throw error;
+    }
+  });
 
   app.post("/cluster/join", async (request, reply) => {
     const auth = authenticate(request, deps);

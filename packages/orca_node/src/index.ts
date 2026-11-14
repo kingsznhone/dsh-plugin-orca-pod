@@ -1,19 +1,25 @@
+import { randomUUID } from "node:crypto";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 
 import { workgroupKey, type NodeConfig } from "@orca/config";
 import { buildAuthHeader, NonceCache } from "@orca/crypto";
+import { EchoExecutor } from "@orca/executor";
 import { createGateway } from "@orca/gateway";
 import {
   membersDigest as computeMembersDigest,
   PROTOCOL_VERSION,
   runtimeDigest,
+  type A2AMessage,
   type HeartbeatResponse,
   type JoinResponse,
   type PeerView,
   type RuntimeInfo,
   type SelfRecord,
+  type SubmitTaskInput,
+  type TaskView,
 } from "@orca/protocol";
-import { createMemoryPeerStore, type PeerStore } from "@orca/storage";
+import { createMemoryBlobStore, createMemoryPeerStore, type PeerStore } from "@orca/storage";
+import { createTaskRunner } from "./tasks.ts";
 
 /**
  * Gateway dependency record. `endpoint` is mutable: the gateway is built before
@@ -64,6 +70,9 @@ export interface OrcaNode {
   membersDigest(): string;
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
+  sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView>;
+  getTask(peerUrl: string, taskId: string): Promise<TaskView>;
+  cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
 }
 
 /** Address a remote node should dial: wildcard binds are reachable on loopback. */
@@ -80,6 +89,8 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   const peers: PeerStore = createMemoryPeerStore();
   const nonceCache = new NonceCache();
   const runtime = options.runtime ?? collectRuntime();
+  const blobs = createMemoryBlobStore();
+  const tasks = createTaskRunner({ executor: new EchoExecutor(), blobs });
 
   let boundPort = config.bind.port;
   let actualEndpoint = endpointFrom(config, boundPort);
@@ -90,7 +101,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
     workgroup_id: config.workgroup_id,
     endpoint: actualEndpoint,
   };
-  const app = createGateway({ node: gatewayNode, key, peers, nonceCache, runtime });
+  const app = createGateway({ node: gatewayNode, key, peers, nonceCache, runtime, tasks });
 
   function selfPeer(): PeerView {
     return {
@@ -169,6 +180,44 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
     return response;
   }
 
+  /** Signed JSON-RPC call to a peer's /a2a endpoint (§4.7). */
+  async function postA2a<T>(peerUrl: string, method: string, params: unknown): Promise<T> {
+    const url = new URL("/a2a", peerUrl);
+    const body = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: buildAuthHeader({ key, nodeId, method: "POST", path: url.pathname, body }),
+      },
+      body,
+    });
+    const payload = (await response.json()) as {
+      result?: T;
+      error?: { message?: string; data?: { message?: string } };
+    };
+    if (!response.ok || payload.error) {
+      const code = payload.error?.message ?? `http_${response.status}`;
+      const error = new Error(`${method} ${response.status}: ${code}`) as Error & { code: string; status: number };
+      error.code = code;
+      error.status = response.status;
+      throw error;
+    }
+    return payload.result as T;
+  }
+
+  function sendTask(peerUrl: string, input: SubmitTaskInput): Promise<TaskView> {
+    return postA2a<TaskView>(peerUrl, "message/send", input);
+  }
+
+  function getTask(peerUrl: string, taskId: string): Promise<TaskView> {
+    return postA2a<TaskView>(peerUrl, "tasks/get", { id: taskId });
+  }
+
+  function cancelTask(peerUrl: string, taskId: string): Promise<TaskView> {
+    return postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId });
+  }
+
   async function start(): Promise<{ url: string; port: number }> {
     const address = await app.listen({ host: config.bind.host, port: config.bind.port });
     boundPort = Number(new URL(address).port);
@@ -198,5 +247,8 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
     membersDigest: currentDigest,
     join,
     heartbeat,
+    sendTask,
+    getTask,
+    cancelTask,
   };
 }

@@ -1,46 +1,227 @@
 /**
- * LocalExecutor: the target-node side of task execution (§6.1). Phase 0 only
- * needs the deterministic Echo stand-in; the full echo script machine (steps,
- * suspends, artifacts) lands later.
+ * LocalExecutor (§6.1) plus the Phase-0 EchoExecutor script machine (§6.3).
+ * The echo script describes timing, suspensions, and result so the network,
+ * state machine, approval loop, and blob path can be exercised without an agent.
  */
+
+export type EchoSuspend =
+  | { kind: "blocked"; reason: string; question: string; options?: string[] }
+  | { kind: "permission"; tool: string; requested: Record<string, unknown> };
+
+export type EchoStep = { at_ms: number; suspend: EchoSuspend };
+
+export type EchoFinal = { state: "completed" | "failed" | "hang"; text: string };
+
+export type EchoArtifact = { name: string; content: string };
+
+export type EchoScript = {
+  steps: EchoStep[];
+  final: EchoFinal;
+  artifacts: EchoArtifact[];
+};
+
+export type ExecutorEvent =
+  | { type: "suspend"; suspend: EchoSuspend }
+  | { type: "artifact"; name: string; content: string }
+  | { type: "completed"; text: string }
+  | { type: "failed"; text: string };
+
 export type ExecuteInput = {
   taskId: string;
   contextId?: string;
-  runRoot: string;
   metadata?: Record<string, unknown>;
 };
 
-export type ExecuteResult = {
-  state: "completed" | "failed";
-  text: string;
-  artifacts?: Array<{ name: string; content: string }>;
-};
-
 export interface LocalExecutor {
-  execute(input: ExecuteInput, signal?: AbortSignal): Promise<ExecuteResult>;
+  run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, unknown>;
+}
+
+export const ECHO_LIMITS = {
+  max_steps: 8,
+  max_total_ms: 60_000,
+  max_text_bytes: 8 * 1024,
+  max_artifacts: 4,
+  max_artifact_bytes: 4 * 1024,
+} as const;
+
+export class EchoScriptError extends Error {
+  readonly code: string = "bad_echo_script";
+  constructor(message: string) {
+    super(message);
+    this.name = "EchoScriptError";
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Reads `metadata.echo.final.text` when the script declares it; anything else
- * (missing script, non-object echo, non-string text) falls back to "echo".
- */
-function declaredEchoText(metadata: Record<string, unknown> | undefined): string | null {
-  const echo = metadata?.["echo"];
-  if (!isRecord(echo)) return null;
-  const final = echo["final"];
-  if (!isRecord(final)) return null;
-  const text = final["text"];
-  return typeof text === "string" ? text : null;
+function ensureKeys(value: Record<string, unknown>, allowed: readonly string[], where: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) throw new EchoScriptError(`${where}: unknown field "${key}"`);
+  }
 }
 
-/** Deterministic executor used for connectivity and protocol probes (§6.3). */
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+function validateSuspend(raw: unknown, where: string): EchoSuspend {
+  if (!isRecord(raw)) throw new EchoScriptError(`${where}: suspend must be an object`);
+  const kind = raw["kind"];
+  if (kind === "blocked") {
+    ensureKeys(raw, ["kind", "reason", "question", "options"], where);
+    const reason = raw["reason"];
+    const question = raw["question"];
+    if (typeof reason !== "string" || typeof question !== "string") {
+      throw new EchoScriptError(`${where}: blocked needs reason and question strings`);
+    }
+    const options = raw["options"];
+    if (options !== undefined) {
+      if (!Array.isArray(options) || options.some((option) => typeof option !== "string")) {
+        throw new EchoScriptError(`${where}: options must be a string array`);
+      }
+    }
+    return { kind: "blocked", reason, question, ...(options ? { options: options as string[] } : {}) };
+  }
+  if (kind === "permission") {
+    ensureKeys(raw, ["kind", "tool", "requested"], where);
+    const tool = raw["tool"];
+    const requested = raw["requested"];
+    if (typeof tool !== "string" || !isRecord(requested)) {
+      throw new EchoScriptError(`${where}: permission needs tool and requested object`);
+    }
+    return { kind: "permission", tool, requested };
+  }
+  throw new EchoScriptError(`${where}: suspend.kind must be "blocked" or "permission"`);
+}
+
+/**
+ * Validate an echo script and return it in normalized form. Anything unknown,
+ * out of order, or over a limit fails here — before a task is created (§6.3).
+ */
+export function validateEchoScript(raw: unknown): EchoScript {
+  if (raw === undefined || raw === null) {
+    return { steps: [], final: { state: "completed", text: "echo" }, artifacts: [] };
+  }
+  if (!isRecord(raw)) throw new EchoScriptError("echo must be an object");
+  ensureKeys(raw, ["steps", "final", "artifacts"], "echo");
+
+  const rawSteps = raw["steps"] ?? [];
+  if (!Array.isArray(rawSteps)) throw new EchoScriptError("echo.steps must be an array");
+  if (rawSteps.length > ECHO_LIMITS.max_steps) {
+    throw new EchoScriptError(`echo.steps must be <= ${ECHO_LIMITS.max_steps}`);
+  }
+  const steps: EchoStep[] = [];
+  let previous = -1;
+  for (const [index, rawStep] of rawSteps.entries()) {
+    if (!isRecord(rawStep)) throw new EchoScriptError(`echo.steps[${index}] must be an object`);
+    ensureKeys(rawStep, ["at_ms", "suspend"], `echo.steps[${index}]`);
+    const atMs = rawStep["at_ms"];
+    if (typeof atMs !== "number" || !Number.isInteger(atMs) || atMs < 0) {
+      throw new EchoScriptError(`echo.steps[${index}].at_ms must be a non-negative integer`);
+    }
+    if (atMs <= previous) throw new EchoScriptError("echo.steps.at_ms must strictly increase");
+    if (atMs > ECHO_LIMITS.max_total_ms) {
+      throw new EchoScriptError(`echo.steps.at_ms must be <= ${ECHO_LIMITS.max_total_ms}`);
+    }
+    previous = atMs;
+    steps.push({ at_ms: atMs, suspend: validateSuspend(rawStep["suspend"], `echo.steps[${index}].suspend`) });
+  }
+
+  const rawFinal = raw["final"] ?? { state: "completed", text: "echo" };
+  if (!isRecord(rawFinal)) throw new EchoScriptError("echo.final must be an object");
+  ensureKeys(rawFinal, ["state", "text"], "echo.final");
+  const state = rawFinal["state"];
+  if (state !== "completed" && state !== "failed" && state !== "hang") {
+    throw new EchoScriptError('echo.final.state must be "completed", "failed" or "hang"');
+  }
+  const text = rawFinal["text"] ?? "";
+  if (typeof text !== "string") throw new EchoScriptError("echo.final.text must be a string");
+  if (byteLength(text) > ECHO_LIMITS.max_text_bytes) {
+    throw new EchoScriptError(`echo.final.text must be <= ${ECHO_LIMITS.max_text_bytes} bytes`);
+  }
+
+  const rawArtifacts = raw["artifacts"] ?? [];
+  if (!Array.isArray(rawArtifacts)) throw new EchoScriptError("echo.artifacts must be an array");
+  if (rawArtifacts.length > ECHO_LIMITS.max_artifacts) {
+    throw new EchoScriptError(`echo.artifacts must be <= ${ECHO_LIMITS.max_artifacts}`);
+  }
+  const artifacts: EchoArtifact[] = [];
+  for (const [index, rawArtifact] of rawArtifacts.entries()) {
+    if (!isRecord(rawArtifact)) throw new EchoScriptError(`echo.artifacts[${index}] must be an object`);
+    ensureKeys(rawArtifact, ["name", "content"], `echo.artifacts[${index}]`);
+    const name = rawArtifact["name"];
+    const content = rawArtifact["content"];
+    if (typeof name !== "string" || name.length === 0 || /[\\/]/.test(name)) {
+      throw new EchoScriptError(`echo.artifacts[${index}].name must be a plain file name`);
+    }
+    if (typeof content !== "string") throw new EchoScriptError(`echo.artifacts[${index}].content must be a string`);
+    if (byteLength(content) > ECHO_LIMITS.max_artifact_bytes) {
+      throw new EchoScriptError(`echo.artifacts[${index}].content must be <= ${ECHO_LIMITS.max_artifact_bytes} bytes`);
+    }
+    artifacts.push({ name, content });
+  }
+
+  return { steps, final: { state, text }, artifacts };
+}
+
+export function echoScriptFrom(metadata: Record<string, unknown> | undefined): EchoScript {
+  return validateEchoScript(metadata?.["echo"]);
+}
+
+function abortError(): Error {
+  const error = new Error("aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort(): void {
+      clearTimeout(timer);
+      reject(abortError());
+    }
+    if (signal.aborted) {
+      clearTimeout(timer);
+      reject(abortError());
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Deterministic executor used for connectivity, protocol, and approval probes (§6.3). */
 export class EchoExecutor implements LocalExecutor {
-  async execute(input: ExecuteInput, signal?: AbortSignal): Promise<ExecuteResult> {
-    if (signal?.aborted) throw new Error("aborted");
-    return { state: "completed", text: declaredEchoText(input.metadata) ?? "echo" };
+  async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, unknown> {
+    const script = echoScriptFrom(input.metadata);
+    let lastAt = 0;
+    for (const step of script.steps) {
+      await sleep(step.at_ms - lastAt, signal);
+      lastAt = step.at_ms;
+      // Suspension time is not counted: the next delay is measured from at_ms.
+      yield { type: "suspend", suspend: step.suspend };
+    }
+    for (const artifact of script.artifacts) {
+      yield { type: "artifact", name: artifact.name, content: artifact.content };
+    }
+    if (script.final.state === "completed") {
+      yield { type: "completed", text: script.final.text };
+      return;
+    }
+    if (script.final.state === "failed") {
+      yield { type: "failed", text: script.final.text };
+      return;
+    }
+    // hang: only tasks/cancel or TTL can end it (§6.3).
+    await new Promise<void>((_resolve, reject) => {
+      if (signal.aborted) reject(abortError());
+      else signal.addEventListener("abort", () => reject(abortError()), { once: true });
+    });
   }
 }

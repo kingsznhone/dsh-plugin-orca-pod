@@ -1,5 +1,7 @@
 import type { NodeId, PeerView } from "@orca/protocol";
 
+export * from "./blobs.ts";
+
 /**
  * In-memory peer directory. The durable store (SQLite) implements the same
  * interface later; callers only depend on this contract.
