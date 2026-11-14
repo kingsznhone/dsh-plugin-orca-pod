@@ -1,22 +1,24 @@
-# 13 交接
+# 12 交接
 
-> 关注：新工作区/新 agent 接手时的阅读顺序、第一条 prompt、交接规则与建议的下一步拆分。
->
-> 章节编号沿用全局编号。
+> 给接手实现的新工作区：读什么、先做什么、哪些约束不能推翻。
 
-## 19. 新工作区交接
+## 12. 交接
 
-### 19.1 阅读顺序
+### 12.1 阅读顺序
 
-1. 本文件 `DESIGN.md`（宏观基线）。
-2. 之后拆分出的 `AGENTS.md`（硬约束）。
-3. `docs/design/00-overview.md`、`01-a2a-task-plane.md`、`02-control-plane.md`、`03-permissions.md`、`04-workspace.md`、`05-security.md`。
-4. ADR：关键决策及理由。
+1. [docs/README.md](README.md)（文档地图与编号约定）。
+2. [01-overview.md](01-overview.md)（为什么做、做什么、不做什么、术语）。
+3. [02-model.md](02-model.md) → [03-membership.md](03-membership.md) → [04-transport.md](04-transport.md)（系统模型与协议骨架）。
+4. [05-tasks.md](05-tasks.md) → [06-execution.md](06-execution.md)（任务与执行）。
+5. [07-security.md](07-security.md) → [08-reliability.md](08-reliability.md)（安全与运维）。
+6. [09-implementation.md](09-implementation.md) → [10-roadmap.md](10-roadmap.md)（落地与验收）。
+7. [11-open-questions.md](11-open-questions.md) → 本文件（未决与交接）。
+8. [DECISIONS.md](DECISIONS.md)（关键决策及理由）。
 
-### 19.2 第一条 prompt 建议
+### 12.2 第一条 prompt 建议
 
 ```text
-Read DESIGN.md first.
+Read docs/README.md and docs/01-overview.md first, then 02 → 03 → 04 as needed.
 
 Hard constraints that must not be undone:
 - Topology is full mesh only. There is no ring, no gossip, no coordinator.
@@ -72,21 +74,21 @@ Hard constraints that must not be undone:
   re-dispatch and do not invent a resume.
 ```
 
-### 19.3 交接规则
+### 12.3 交接规则
 
 1. 新 agent 的第一件事是读本文与 ADR，不是写代码。
 2. 任何与本文冲突的实现选择，要么改文档（并写 ADR），要么改实现；不允许“代码里先这么写，文档以后补”。
 3. 新增依赖、放宽权限、改变传输层，必须显式提出，不能夹带在功能 PR 里。
-4. 每个 Phase 结束时更新 [§17](10-roadmap.md#17-验收标准摘要) 的勾选项与 [§18](12-open-questions.md#18-未决问题) 的未决问题。
+4. 每个 Phase 结束时更新 [§10.6](10-roadmap.md#106-验收标准) 的勾选项与 [§11](11-open-questions.md#11-未决问题) 的未决问题。
 
-### 19.4 建议的下一步拆分
+### 12.4 后续可拆的专题
 
-- `docs/design/00-overview.md`：[§0](README.md)–[§4](02-architecture.md#4-总体架构) 的展开。
-- `01-a2a-task-plane.md`：[§7](03-protocol.md#7-a2a-任务面)–[§8](05-executor.md#8-localexecutor)。
-- `02-control-plane.md`：[§10](10-roadmap.md#10-节点)（含 hints/墓碑的测试用例）。
-- `03-permissions.md`：[§9](07-permissions.md#9-权限与审批跟随发起节点) + [§12.5](08-security.md#125-远程任务是不可信输入)，附威胁模型。
-- `04-workspace.md`：[§11](06-workspace.md#11-工作区单槽执行与-workgroup-工作区)，附目录布局图与清理策略。
-- `05-security.md`：[§12](08-security.md#12-安全与授权)，附密码分发与轮换 runbook。
+当前 12 篇是稳定骨架；以下内容适合作为附录或独立文件，等对应章节长大后再说：
+
+- 威胁模型与攻击面清单：07 的附录。
+- 密码分发与轮换 runbook：07.3（[§7.3](07-security.md#73-密钥与密码的分发)）的附录。
+- Windows 路径 / 保留名 / 长路径测试矩阵：[10.6](10-roadmap.md#106-验收标准) 的展开。
+- EchoExecutor 场景脚本样例集：[06.3](06-execution.md#63-echoexecutor用脚本模拟任务) 的附录。
 - ADR：`0001-full-mesh-no-ring.md`、`0002-node-id-as-label.md`、`0003-password-derived-hmac.md`、`0004-approval-on-origin.md`、`0005-group-workspace.md`、`0006-fail-fast-on-node-loss.md`、`0007-hints-are-not-liveness.md`、`0008-plain-http-behind-proxy.md`、`0009-sqlite-task-store.md`。
 
 ---

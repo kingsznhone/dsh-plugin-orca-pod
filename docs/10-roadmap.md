@@ -1,48 +1,46 @@
 # 10 路线图与验收
 
-> 关注：分几个阶段做、每个阶段做到什么、做完怎么算过。
->
-> 章节编号沿用全局编号；实现结构在 11-implementation.md。
+> 本章给出从两台机器到 10 台机器的分阶段计划与验收标准。
 
-## 15. 分阶段路线图
+## 10. 路线图与验收
 
-### Phase 0：两台机器，静态 peer，EchoExecutor
+### 10.1 Phase 0：两台机器，静态 peer，EchoExecutor
 
 - 单端口：`/health`、Agent Card、`/a2a`、`/cluster/join|heartbeat|members`。
 - 短 id 生成 + 持久化；workgroup_id + 非空密码；HKDF + 请求签名。
-- EchoExecutor（[§8.6](05-executor.md#86-echoexecutor用脚本模拟任务)）：按脚本模拟耗时、挂起（`blocked`/`permission`）、最终文本与产物；`ping` 只返回节点信息。
+- EchoExecutor（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)）：按脚本模拟耗时、挂起（`blocked`/`permission`）、最终文本与产物；`ping` 只返回节点信息。
 - `message/send` + `tasks/get` + `tasks/cancel`；SQLite task store。
 - 验收：`/health` OK；带签名能读 Agent Card；join 成功；两节点双向心跳；kill 一方 12s 内从在线集消失；重启后 task store 仍可查。
 
-### Phase 1：三节点 full mesh 与惰性收敛
+### 10.2 Phase 1：三节点 full mesh 与惰性收敛
 
 - 新节点 join 任意节点 → 按目录对每个 peer 各 join 一次（幂等）→ 自动补全 mesh。
 - 双向看门狗（6s/12s）、单调时钟、`unreachable` 状态。
-- hints/候选/墓碑（[§10.5](02-architecture.md#105-hints候选与墓碑死节点为什么不会复活)）：验证“死节点不会互相刷活”。
+- hints/候选/墓碑（[§3.5](03-membership.md#35-hints候选与墓碑)）：验证“死节点不会互相刷活”。
 - `runtime` 采集与展示；`members_digest` 比对。
 - id 冲突 409；leave；记录修剪。
 - 验收：C 加入 A 后 2s 内 A/B/C 互相可见；kill B 后 6s suspect、12s offline；拔掉 B 的网线后 A/C 不会把 B 互相刷回在线；B 重启并重新发心跳后 15s 内恢复。
 
-### Phase 2：接 DSH 执行 + workgroup 工作区
+### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
 - `HeadlessExecutor` → `AcpExecutor`；专属 profile；cwd = group workspace。
 - context → session 绑定；`session/update` → task 事件；thought 过滤。
 - 取消（process tree / `session/cancel`）；`input-required` 透传。
 - 工作区持久化、`notes/STATUS.md` 约定、配额；单槽 busy（`429 node_busy` + `Retry-After`）。
-- blob 通道（[§7.10](04-tasks.md#710-文件交换blob-通道)）：上传素材、下载产物、去重、GC；结论文本内联回传。
+- blob 通道（[§5.6](05-tasks.md#56-文件交换blob-通道)）：上传素材、下载产物、去重、GC；结论文本内联回传。
 - 权限模式继承（先只做 `read-only`/`workspace-write` 两档的映射，escalate 先回固定 deny）。
 - 验收：真实任务完成；跨任务续跑能看到上次的文件与 notes；节点失联 → 12s 内 `failed(node_unreachable)`；取消生效；重启后 `working` 标 `failed(node_restart)`；上传→任务→下载 roundtrip 通过；节点忙时第二个任务返回 429 且 UI 显示持有者。
 
-### Phase 3：权限模型 + 审批回路
+### 10.4 Phase 3：权限模型 + 审批回路
 
-- grant 签发/校验/吊销（[§9.3](07-permissions.md#93-grant)）；默认 `delegated`。
-- `input-required` 升级回路（[§9.4](07-permissions.md#94-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询/SSE 看到 → **用 DSH 审批卡片弹** → 批准生成新 grant 并作为同一 task 的后续 message 补发 / 拒绝置 `failed(permission_denied)`。
+- grant 签发/校验/吊销（[§7.11](07-security.md#711-grant)）；默认 `delegated`。
+- `input-required` 升级回路（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询/SSE 看到 → **用 DSH 审批卡片弹** → 批准生成新 grant 并作为同一 task 的后续 message 补发 / 拒绝置 `failed(permission_denied)`。
 - 预授权策略（按 target + 工具 + 时长）与本机总开关。
 - `credential_readback` 三档 + 审计。
-- 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§11.8](06-workspace.md#118-配额清理跨平台)）。
+- 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - 验收：越界写被拒；权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守节点不会被阻塞。
 
-### Phase 4：安全与规模化
+### 10.5 Phase 4：安全与规模化
 
 - TLS 部署配方（Caddy/nginx）、`trust_proxy`、限流、审计落盘与轮转。
 - 10 节点 full mesh 压测：45 链路、45 心跳/s、任务延迟、内存/CPU。
@@ -50,11 +48,9 @@
 - 可选：节点内建 mTLS。
 - 验收：安全测试通过；10 节点 24h 稳定；单节点故障不影响其他节点任务。
 
----
+### 10.6 验收标准
 
-## 17. 验收标准（摘要）
-
-### 两台节点
+#### 两台节点
 
 - [ ] `/health` 无鉴权可达；Agent Card 公开可读且不含 runtime/路径/拓扑；`/cluster/members` 无签名被 401
 - [ ] 错误 workgroup / 错误密码被 401（同一文案，不区分）
@@ -62,7 +58,7 @@
 - [ ] 两节点双向心跳；kill 一方 12s 内从在线集消失
 - [ ] 节点重启后 task store 与工作区仍在
 
-### Echo 脚本（Phase 0/1）
+#### Echo 脚本（Phase 0/1）
 
 - [ ] `echo.final.text` 原样出现在 `tasks/get` 的 `status.message.text`，逐字节相等
 - [ ] 到 `at_ms` 时任务变 `input-required`，`blocked`/`permission_request` 可读，槽位释放
@@ -71,7 +67,7 @@
 - [ ] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
 - [ ] 非法脚本（`at_ms` 递减、未知字段、`state` 非法）在建 task 前 `400 bad_echo_script`
 
-### 三台节点
+#### 三台节点
 
 - [ ] C join A 后 2s 内三向可见（C 按目录自行补全到 B 的边）
 - [ ] 拔掉 B 的网线：A 与 C 都判 offline，且不会通过 hints 互相把 B 刷回 online
@@ -79,7 +75,7 @@
 - [ ] B 离线 7 天后记录被修剪
 - [ ] 不出现任何 epoch/incarnation 字段
 
-### 权限与工作区
+#### 权限与工作区
 
 - [ ] origin 只读会话 → target 写文件被 escalate/deny
 - [ ] origin workspace-write → target 只能在 group workspace 内写
@@ -92,7 +88,7 @@
 - [ ] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
 
-### 文件交换
+#### 文件交换
 
 - [ ] 上传 1 MiB 文件返回 201，`blob_id == sha256(bytes)`
 - [ ] 重复上传同内容返回 200，不占新空间
@@ -101,7 +97,7 @@
 - [ ] 短期直链 token 过期后不可用；换 blob 或篡改 blob_id 被拒；token 不可由本地密钥伪造
 - [ ] 未被任务引用的 blob 在 TTL 后被 GC，下载返回 410
 
-### agent 侧（插件接线）
+#### agent 侧（插件接线）
 
 - [ ] `pod_send` 立即返回 `task_id`，工具调用不挂到任务结束
 - [ ] 插件后台 tracker 按 500ms→2s 拉状态；target 开了 `message/stream` 时改持 SSE，两种模式行为一致
@@ -115,7 +111,7 @@
 - [ ] 派发后用户发了新消息 → 完成时只 inject，不打断当前轮
 - [ ] 2s 内三个任务完成只产生一次 `followup()`；连续第 4 次后台唤醒被拦下并留 inbox
 
-### 安全
+#### 安全
 
 - [ ] 无密码不能创建 workgroup
 - [ ] 密码不出现在配置、日志、错误信息中
@@ -123,7 +119,7 @@
 - [ ] 重放请求（同 nonce）被拒
 - [ ] hint 指向 `169.254.169.254` 被拒
 
-### 10 节点
+#### 10 节点
 
 - [ ] 45 条心跳链路稳定 24h，CPU/内存无泄漏
 - [ ] 单节点故障不影响其余节点任务

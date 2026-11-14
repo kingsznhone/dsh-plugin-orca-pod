@@ -1,14 +1,10 @@
-# 11 代码结构与工程约定
+# 09 实现
 
-> 关注：包怎么分、每个模块怎么用夹具测、进程内怎么跑多节点、DSH 插件从哪里进、基础能力用哪些现成库。
->
-> 章节编号沿用全局编号。
+> 本章给出仓库结构、测试夹具、DSH 组合入口与工程约定。
 
-## 16. 代码结构与模块边界
+## 9. 实现
 
-目标有三个，按优先级：每个模块能**单独用夹具测**；最简核心能在**纯 Node 里起 N 个节点**跑复杂 group 场景；DSH 插件只做适配，**不实现协议**。
-
-### 16.1 包划分
+### 9.1 包划分
 
 ```text
 packages/
@@ -42,7 +38,7 @@ ui        ← dsh-plugin
 
 HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`、错误处理都用它现成的，不手写 http server。
 
-### 16.2 每个模块怎么测
+### 9.2 每个模块怎么测
 
 | 模块 | 夹具 | 断言 |
 |---|---|---|
@@ -56,7 +52,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | ui | view-model 纯函数 | 忙闲、任务列表的渲染数据 |
 | dsh-plugin | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-### 16.3 进程内多节点
+### 9.3 进程内多节点
 
 `orca_node` 的 `createNode(config)` 返回 handle：`start() / stop() / port / members() / tasks() / invoke(peer, payload)`。
 
@@ -73,7 +69,7 @@ const t = await mesh.get("A").invoke("B", {
 await until(() => mesh.get("A").task(t.id).state === "completed");
 ```
 
-### 16.4 组合入口：库根在 `orca_node`，安装根在 `dsh-plugin`
+### 9.4 组合入口：库根在 `orca_node`，安装根在 `dsh-plugin`
 
 “组合根”有两层，别混：
 
@@ -119,13 +115,13 @@ export function apply(ctx, config) {
 
 - `apply` 必须快速返回：`start()` 异步，端口占用/证书问题写日志与状态页，不能让 DSH 启动卡在网络监听上。
 - 配置分两类：`workgroup_id` / `port` / `display_name` 走普通 config（Plugin manager 可改，`configEditor.edit` 持久化）；**密码进 `ctx.credentials` 记录，不进 config**，也不写进 bundle patch。
-- 进程内嵌、不开子进程；DSH 退出 → cleanup → listener 关闭。工具注册用 `inject: ['tools']`；审批走 DSH 的 approval/卡片（[§9.4](07-permissions.md#94-升级回路任务状态不是反向调用)），插件只把 `permission_request` 转成卡片数据、把人的操作回成后续 message。
+- 进程内嵌、不开子进程；DSH 退出 → cleanup → listener 关闭。工具注册用 `inject: ['tools']`；审批走 DSH 的 approval/卡片（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），插件只把 `permission_request` 转成卡片数据、把人的操作回成后续 message。
 
 harness / CLI 是第三个入口：`packages/harness` 的 `orca-node serve`，同一个 `createNode`，不依赖 DSH；测试与“非 DSH 机器”用它，将来单独跑 headless 服务也是它，不是新代码。
 
 一句话：**装进 DSH desktop 的东西 = `dsh-plugin` 这个 bundle；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createNode()`。**
 
-### 16.5 工程约定
+### 9.5 工程约定
 
 - TypeScript、ESM、Node ≥ 22；pnpm workspace；vitest + `@vitest/coverage-v8`；`tsc --noEmit` 进 CI。
 - 构建 `tsup`（ESM + d.ts），开发 `tsx`，lint/format 用 `biome`（一个工具替 eslint+prettier），CLI 用 `commander`，日志用 `pino`（开发加 `pino-pretty`）。
@@ -133,7 +129,7 @@ harness / CLI 是第三个入口：`packages/harness` 的 `orca-node serve`，�
 - 存储默认 fs（`lowdb` + `steno` 原子写），sqlite 用 `better-sqlite3` 作为可选实现进 Phase 2（嫌原生依赖麻烦可退回 `node:sqlite`）。
 - 命令：`pnpm -r test`、`pnpm harness --nodes 5 --scenario join`。
 
-### 16.6 依赖选型：基础能力不自己写
+### 9.6 依赖选型：基础能力不自己写
 
 原则：路由、解析、校验、日志、CLI、原子写、id 生成这类“基础功能”直接用成熟包；自己写的只有**协议语义**——签名规范化、任务状态机、单槽、成员 digest、grant、blob 生命周期。这些是本项目的全部价值，也没有包能替。
 
@@ -158,7 +154,7 @@ harness / CLI 是第三个入口：`packages/harness` 的 `orca-node serve`，�
 
 明确不引的：认证/签名框架（没有比 30 行 Node `crypto` 更合适的）、DI 容器、ORM、消息队列、服务网格。集群只有十台机器，这些是负资产。
 
-### 16.7 与路线图的对应
+### 9.7 与路线图的对应
 
 - Phase 0：protocol、crypto、config、storage、gateway、executor(echo)、node、harness。
 - Phase 1：harness 场景覆盖成员收敛与故障注入。
