@@ -42,7 +42,7 @@ packages/orca-pod/
 | `executor.ts` | 部分实现 | EchoExecutor；ACP、Headless、InProcess 未实现 |
 | `tasks.ts` | 已实现 | 单槽状态机；task store 为进程内内存 |
 | `node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器 |
-| `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）；mesh/A2A/discovery/formation 测试；传输注入未实现 |
+| `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）；mesh/A2A/discovery/formation/transport 测试 |
 | `plugin/` | 部分实现 | `apply` 启动节点、注册 4 个 `pod_*` 工具；client bundle、审批卡片、credentials 读取未做 |
 | `ui`（未建） | 未开始 | 将来仍放在同一包内（`src/ui/` 或独立包都可，发布物不增加依赖） |
 
@@ -81,16 +81,16 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多节点 mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个，共 88 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
+Phase 0 实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、plugin 12 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 92 个（`npm test`）。storage、executor 还没有独立夹具；gateway 与 executor 的行为由 `packages/orca-pod/test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `packages/orca-pod/test/plugin.test.ts` 覆盖。
 
 ### 9.3 进程内多节点
 
 `node.ts` 的 `createNode({ config })` 返回 handle：`start() / stop() / self() / members() / membersDigest() / join(peerUrl) / heartbeat(peerUrl) / sendTask(peerUrl, input) / getTask(peerUrl, id) / cancelTask(peerUrl, id)`。
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
-- harness 目前只有 `createMesh({ nodes, workgroupId, password, basePort, displayNamePrefix, dataRoot })`，返回 `{ nodes, urls, stop() }`。它启动节点后让每个节点 join 第一个节点、按返回目录逐条补 join，再对 bootstrap 发一轮心跳。
-- 已支持：可注入时钟（`createNode({ clock })`）、节点启停（`start()` / `stop()`）、进程内 mesh、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。
-- 未支持：传输注入（模拟丢包、延迟、单向分区）、跨进程 harness；`waitFor` 仍是各测试文件内的本地 helper。
+- harness 目前有 `createMesh({ nodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, fetch })`，返回 `{ nodes, urls, stop() }`。它启动节点后让每个节点 join 第一个节点、用 `joinRoster` 按返回目录 best-effort 补 join，再对 bootstrap 发一轮心跳。
+- 已支持：可注入时钟（`createNode({ clock })`）、可注入 transport（`createNode({ fetch })`，模拟丢包、延迟、单向阻断）、节点启停（`start()` / `stop()`）、进程内 mesh、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。
+- 未支持：跨进程 harness；`waitFor` 仍是各测试文件内的本地 helper。
 - 场景用 vitest 的普通 async 函数写：`await waitFor(() => ...)`、`node.stop()`、`sendTask` 组合，不引入第二套场景描述语言。
 
 ```ts

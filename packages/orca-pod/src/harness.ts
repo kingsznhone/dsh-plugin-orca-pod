@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { createNodeConfig } from "./config.ts";
 import type { MembershipTimings } from "./membership.ts";
-import { createNode, joinRoster, type OrcaNode } from "./node.ts";
+import { createNode, joinRoster, type FetchLike, type OrcaNode } from "./node.ts";
 
 export type MeshOptions = {
   nodes?: number;
@@ -14,6 +14,8 @@ export type MeshOptions = {
   displayNamePrefix?: string;
   dataRoot?: string;
   timings?: Partial<MembershipTimings>;
+  /** Per-node outbound HTTP override, used to simulate jitter and partitions. */
+  fetch?: (index: number) => FetchLike | undefined;
 };
 
 export type Mesh = {
@@ -43,7 +45,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         port: options.basePort ? options.basePort + index : 0,
         displayName: `${options.displayNamePrefix ?? "node"}-${index}`,
       });
-      nodes.push(createNode({ config, timings: options.timings }));
+      nodes.push(createNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
     }
 
     for (const node of nodes) {

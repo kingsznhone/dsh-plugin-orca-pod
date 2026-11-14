@@ -60,7 +60,12 @@ export type CreateNodeOptions = {
   runtime?: RuntimeInfo;
   timings?: Partial<MembershipTimings>;
   clock?: MembershipClock;
+  /** Outbound HTTP for peer calls; tests inject packet loss / delay / partitions. */
+  fetch?: FetchLike;
 };
+
+/** Same shape as the global `fetch`, so a test can wrap it without a library. */
+export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
 
 export interface OrcaNode {
   readonly nodeId: string;
@@ -111,6 +116,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   const { config } = options;
   const nodeId = config.node_id;
   const key = workgroupKey(config);
+  const httpFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, init));
   const membership = createMembership({
     selfNodeId: nodeId,
     timings: options.timings,
@@ -170,7 +176,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   ): Promise<T> {
     const url = new URL(path, peerUrl);
     const body = JSON.stringify(payload);
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -241,7 +247,7 @@ export function createNode(options: CreateNodeOptions): OrcaNode {
   async function postA2a<T>(peerUrl: string, method: string, params: unknown): Promise<T> {
     const url = new URL("/a2a", peerUrl);
     const body = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",

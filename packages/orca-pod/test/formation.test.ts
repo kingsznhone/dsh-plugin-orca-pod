@@ -73,10 +73,13 @@ describe("mesh formation", () => {
       // 五个节点同时 join 同一个 bootstrap：后到者与先到者互相补齐。
       await Promise.all(nodes.slice(1).map((node) => node.join(bootstrap)));
 
-      await waitFor(() => nodes.every((node) => node.members().length === 4));
+      await waitFor(() =>
+        nodes.every(
+          (node) => node.members().length === 4 && node.members().every((peer) => peer.state === "online"),
+        ),
+      );
       const digests = new Set(nodes.map((node) => node.membersDigest()));
       expect(digests.size).toBe(1);
-      expect(nodes.every((node) => node.members().every((peer) => peer.state === "online"))).toBe(true);
     } finally {
       await Promise.all(nodes.map((node) => node.stop()));
     }

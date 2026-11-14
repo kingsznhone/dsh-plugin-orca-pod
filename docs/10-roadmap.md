@@ -14,7 +14,7 @@
 
 **Phase 0 进展**
 
-- core 已跑通：`npm test` 88 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、plugin 12、watchdog 2、discovery 2、formation 6），`npm run typecheck` 通过。
+- core 已跑通：`npm test` 92 个测试通过（protocol 30、crypto 15、membership 5、harness mesh 1、harness a2a 7、blobs 8、plugin 12、watchdog 2、discovery 2、formation 6、transport 4），`npm run typecheck` 通过。
 - 跨机已实测：Windows 主机 `192.168.86.152:11811` 与 Hyper-V Ubuntu guest `192.168.86.252:11812` 互 join，`members_digest` 一致；跨机 A2A（blocked→续跑→产物）与 `/blobs` 双向上传/下载/直链均通过。
 - 已实现：单端口 `/health`、最小 Agent Card、`/a2a`（`message/send`、`tasks/get`、`tasks/cancel`）、`/cluster/join|heartbeat|members|leave`；短 id 与配置持久化；workgroup + 非空密码 + HKDF/请求签名；EchoExecutor；单槽（忙时 429 `node_busy` + `Retry-After` + holder）；`/blobs` 上传/下载/直链（内存存储）；`orca-pod` 单包 DSH host 插件（4 个非阻塞工具）；task store 与 blob store 为进程内内存。
 - 未实现：SQLite task store（因此“重启后 task store 仍可查”不成立）、`/blobs` 的 GC/配额与 `Content-Disposition`、`message/stream` / `tasks/resubscribe` / push、`continuation_of`、权限/工作区/session。Agent Card 的完整字段与 A2A schema 对齐也属于后续里程碑。
@@ -31,8 +31,8 @@
 **Phase 1 进展**
 
 - 已实现：2s 心跳循环（±20% 抖动）、双向看门狗（3 次 ≈6s suspect、6 次 ≈12s offline）、单调时钟、`suspect(unreachable)`、offline 探测退避（15s→30s）、墓碑与 `record_ttl` 修剪、摘要差异回目录（候选端点）与 404 重 join；只有 `online` 接受新任务（`peer_not_online`）。
-- 测试：`membership.test.ts`（注入时钟 5 条）、`watchdog.test.ts`（三节点收敛、停节点→offline→修剪，2 条）、`discovery.test.ts`（心跳 404 重 join、四节点分半收敛，2 条）、`formation.test.ts`（并发加入、交错 join 幂等、死目录条目仍收敛、重启重认、10 节点、404 重 join 不放大，6 条）。
-- 未实现：传输注入（丢包/分区）、`waitFor` 断言 helper、真实进程 `npm run harness`。
+- 测试：`membership.test.ts`（注入时钟 5 条）、`watchdog.test.ts`（三节点收敛、停节点→offline→修剪，2 条）、`discovery.test.ts`（心跳 404 重 join、四节点分半收敛，2 条）、`formation.test.ts`（并发加入、交错 join 幂等、死目录条目仍收敛、重启重认、10 节点、404 重 join 不放大，6 条）、`transport.test.ts`（随机延迟、丢包恢复、单向出站失败、短暂全断，4 条）。
+- 未实现：`waitFor` 断言 helper、真实进程 `npm run harness`。
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
