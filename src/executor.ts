@@ -4,21 +4,14 @@
  * state machine, approval loop, and blob path can be exercised without an agent.
  */
 
-import type { PermissionRequest } from "./protocol.ts";
+import type { TaskRelay } from "./protocol.ts";
 
 /**
  * A child task one hop down is waiting for permission. The echo script carries
  * the child's request snapshot so the task runner can turn it into this orca
  * node's own `permission_request` without a network call (§7.12 relay prototype).
  */
-export type EchoRelay = {
-  /** Child task's orca node endpoint. */
-  peer: string;
-  /** Child task id that is waiting. */
-  task_id: string;
-  /** The child's permission request, as observed by the agent. */
-  request: PermissionRequest;
-};
+export type EchoRelay = TaskRelay;
 
 export type EchoSuspend =
   | { kind: "blocked"; reason: string; question: string; options?: string[] }

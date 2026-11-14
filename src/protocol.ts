@@ -269,6 +269,19 @@ export type ResumeControl =
   | { grant: SignedGrant }
   | { permission_denied: true; reason?: string };
 
+/**
+ * A child task an orca node is waiting on while it escalates upward (§7.12).
+ * The parent task holds this so an approval can be turned into a child grant.
+ */
+export type TaskRelay = {
+  /** Endpoint of the orca node running the child task. */
+  peer: string;
+  /** Child task id on that orca node. */
+  task_id: string;
+  /** The child's permission request being escalated. */
+  request: PermissionRequest;
+};
+
 /** Read the permission request a suspended task carries, if any (§7.11). */
 export function permissionRequestOf(view: TaskView): PermissionRequest | null {
   for (const part of view.status.message?.parts ?? []) {
@@ -291,6 +304,13 @@ export interface TaskRunner {
   submit(input: SubmitTaskInput): TaskView;
   get(taskId: string): TaskView | null;
   resume(taskId: string, message: A2AMessage, callerOrcaNode?: OrcaNodeId): TaskView;
+  /**
+   * Suspend a running task because a child task it delegated to needs a
+   * permission only this task's origin can grant (§7.12). The parent task goes
+   * `input-required` with an upstream request; an approval derives a child
+   * grant from the parent grant and resumes the child.
+   */
+  escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: OrcaNodeId): TaskView;
   cancel(taskId: string): TaskView;
   /** Currently running task (single-slot, §6.9); null when idle. */
   busy(): BusyState | null;

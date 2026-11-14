@@ -126,4 +126,15 @@ describe("orca-node CLI", () => {
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("orca-node:");
   });
+
+  it("escalate reports a child that is not waiting for permission", async () => {
+    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "quick", "--json"]);
+    expect(sent.code).toBe(0);
+    const created = JSON.parse(sent.stdout) as { id: string };
+    const escalated = await runCli([
+      "escalate", "--data-root", root, "--peer", endpoint, "--task", created.id, "--local-task", created.id, "--json",
+    ]);
+    expect(escalated.code).toBe(1);
+    expect(escalated.stderr).toContain("not waiting for permission");
+  });
 });

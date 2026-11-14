@@ -32,6 +32,8 @@ type Running = {
   pending_permission: PermissionRequest | null;
   /** Child task this task escalates for; set only by a relay suspension (§7.12). */
   relay: EchoRelay | null;
+  /** Set when the task itself is parked because a child needs an approval (§7.12 escalation). */
+  pending_escalation: EchoRelay | null;
 };
 
 function nowIso(): string {
@@ -162,6 +164,33 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       const code = error instanceof TaskError ? error.code : "relay_failed";
       const text = error instanceof Error ? error.message : String(error);
       finish(rec, "failed", textMessage(`relay to child failed: ${text}`), code);
+    }
+  }
+
+  /**
+   * Derive a child grant from this task's approval and hand it to the child,
+   * then put this task back to work. The executor kept running while parked, so
+   * unlike `relayThenPump` this must not feed anything into the iterator (§7.12).
+   */
+  async function escalationThenContinue(
+    rec: Running,
+    relay: EchoRelay,
+    parent: SignedGrant,
+  ): Promise<void> {
+    try {
+      if (deps.key === undefined) throw new TaskError("bad_request", "escalation needs the workgroup key");
+      const childGrant = deriveChildGrant({
+        key: deps.key,
+        parent,
+        request: relay.request,
+        selfOrcaNodeId,
+      });
+      await sendRelayControl(relay, { grant: childGrant });
+    } catch (error) {
+      if (rec.abort.signal.aborted) return;
+      const code = error instanceof TaskError ? error.code : "relay_failed";
+      const text = error instanceof Error ? error.message : String(error);
+      finish(rec, "failed", textMessage(`escalation to child failed: ${text}`), code);
     }
   }
 
@@ -305,6 +334,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       ttl: null,
       pending_permission: null,
       relay: null,
+      pending_escalation: null,
     };
     activeTaskId = id;
     tasks.set(id, rec);
@@ -346,13 +376,19 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     }
     // A permission suspension ends only with a grant or an explicit denial (§7.11).
     let grant: SignedGrant | undefined;
+    let escalation: EchoRelay | null = null;
     if (rec.pending_permission !== null) {
       const control = resumeControl(message);
+      const parked = rec.pending_escalation;
       if (control.denied !== undefined) {
         if (rec.relay !== null) {
           const relay = rec.relay;
           rec.relay = null;
           void sendRelayControl(relay, { permission_denied: true, reason: control.denied }).catch(() => {});
+        }
+        if (parked !== null) {
+          rec.pending_escalation = null;
+          void sendRelayControl(parked, { permission_denied: true, reason: control.denied }).catch(() => {});
         }
         finish(rec, "failed", textMessage(`permission denied: ${control.denied}`), "permission_denied");
         return cloneView(rec.view);
@@ -367,6 +403,23 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       }
       grant = control.grant;
       rec.pending_permission = null;
+      if (parked !== null) {
+        rec.pending_escalation = null;
+        escalation = parked;
+      }
+    }
+    if (escalation !== null && grant !== undefined) {
+      // The parked task's executor never stopped, so re-acquire the slot and
+      // hand the derived child grant to the child without touching the iterator.
+      if (activeTaskId !== null && activeTaskId !== taskId) {
+        finish(rec, "failed", textMessage("orca node is busy with another task"), "orca_node_busy");
+        return cloneView(rec.view);
+      }
+      activeTaskId = taskId;
+      rec.view.status = { state: "working", timestamp: nowIso() };
+      persist(rec);
+      void escalationThenContinue(rec, escalation, grant);
+      return cloneView(rec.view);
     }
     activeTaskId = taskId;
     const relay = rec.relay;
@@ -378,6 +431,53 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     } else {
       void pump(rec, message);
     }
+    return cloneView(rec.view);
+  }
+
+  /**
+   * Park a running task because a child task it delegated to needs a permission
+   * only this task's origin can grant (§7.12). The executor keeps running; the
+   * task only surfaces an upstream `permission_request` and frees the slot.
+   */
+  function escalate(taskId: string, relay: EchoRelay, callerOrcaNode?: string): TaskView {
+    if (callerOrcaNode !== undefined && callerOrcaNode !== selfOrcaNodeId) {
+      throw new TaskError("bad_request", "escalate is a local control invoked by this orca node");
+    }
+    const rec = tasks.get(taskId);
+    if (!rec) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+    if (rec.view.status.state !== "working") {
+      throw new TaskError("bad_request", "only a running task can escalate");
+    }
+    if (rec.pending_permission !== null || rec.pending_escalation !== null) {
+      throw new TaskError("bad_request", "task is already waiting for a decision");
+    }
+    if (
+      typeof relay.peer !== "string" || relay.peer.length === 0 ||
+      typeof relay.task_id !== "string" || relay.task_id.length === 0 ||
+      typeof relay.request !== "object" || relay.request === null ||
+      typeof relay.request.requested_by !== "string" || typeof relay.request.tool !== "string"
+    ) {
+      throw new TaskError("bad_request", "escalate needs a child relay with peer, task_id and request");
+    }
+    const request: PermissionRequest = {
+      request_id: randomUUID(),
+      task_id: rec.view.id,
+      tool: relay.request.tool,
+      requested: relay.request.requested ?? {},
+      requested_by: selfOrcaNodeId,
+      via: chainOf(rec),
+      upstream: [relay.request.requested_by],
+      expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString(),
+    };
+    rec.pending_permission = request;
+    rec.pending_escalation = { peer: relay.peer, task_id: relay.task_id, request: relay.request };
+    rec.view.status = {
+      state: "input-required",
+      timestamp: nowIso(),
+      message: { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] },
+    };
+    releaseSlot(rec);
+    persist(rec);
     return cloneView(rec.view);
   }
 
@@ -393,6 +493,11 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       const relay = rec.relay;
       rec.relay = null;
       void sendRelayControl(relay, { permission_denied: true, reason: "task canceled" }).catch(() => {});
+    }
+    if (rec.pending_escalation !== null) {
+      const parked = rec.pending_escalation;
+      rec.pending_escalation = null;
+      void sendRelayControl(parked, { permission_denied: true, reason: "task canceled" }).catch(() => {});
     }
     rec.abort.abort();
     finish(rec, "canceled", undefined, "canceled");
@@ -426,5 +531,5 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return count;
   }
 
-  return { submit, get, resume, cancel, busy, recover };
+  return { submit, get, resume, escalate, cancel, busy, recover };
 }

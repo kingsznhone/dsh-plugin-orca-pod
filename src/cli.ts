@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { configPath, defaultDataRoot, loadConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { buildAuthHeader } from "./crypto.ts";
 import { createOrcaNode, createPersistentStorage } from "./index.ts";
-import type { A2AMessage, MembersResponse, TaskView } from "./protocol.ts";
+import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
+import { permissionRequestOf } from "./protocol.ts";
 
 const USAGE = `orca-node
 
@@ -14,6 +15,7 @@ Usage:
   orca-node send    --peer <url> --text <text|-> [--context <id>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--timeout <seconds>] [--json]
+  orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
   orca-node members [--peer <url>] [--json]
   orca-node --help                                      show this help
 
@@ -23,6 +25,9 @@ Common options:
 
 Exit codes (wait):
   0 completed    1 failed/canceled    2 still running    3 input-required
+
+Exit codes (escalate):
+  0 approved and this task is working again    1 denied/failed    2 timed out
 `;
 
 const TERMINAL = new Set(["completed", "failed", "canceled"]);
@@ -230,6 +235,36 @@ async function wait(args: string[]): Promise<number> {
   return 1;
 }
 
+async function escalate(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  const config = await loadNodeConfig(flags);
+  const peer = requireFlag(flags, "peer");
+  const childTask = requireFlag(flags, "task");
+  const localTask = requireFlag(flags, "local-task");
+  const timeoutS = Number(flag(flags, "timeout") ?? "120");
+  if (!Number.isFinite(timeoutS) || timeoutS <= 0) throw new Error("--timeout must be a positive number of seconds");
+
+  const child = await a2a<TaskView>(config, peer, "tasks/get", { id: childTask });
+  const request = permissionRequestOf(child);
+  if (request === null) throw new Error(`task ${childTask} on ${peer} is not waiting for permission`);
+  const relay: TaskRelay = { peer: normalizePeer(peer), task_id: childTask, request };
+
+  const local = localEndpoint(config);
+  let view = await a2a<TaskView>(config, local, "tasks/escalate", { taskId: localTask, relay });
+  const deadline = Date.now() + timeoutS * 1000;
+  while (view.status.state === "input-required") {
+    if (Date.now() >= deadline) {
+      printView(view, wantsJson(flags));
+      return 2;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    view = await a2a<TaskView>(config, local, "tasks/get", { id: localTask });
+  }
+  printView(view, wantsJson(flags));
+  if (view.status.state === "working" || view.status.state === "completed") return 0;
+  return 1;
+}
+
 async function members(args: string[]): Promise<number> {
   const flags = parseFlags(args);
   const config = await loadNodeConfig(flags);
@@ -271,6 +306,7 @@ async function main(): Promise<void> {
   if (command === "send") process.exitCode = await send(args);
   else if (command === "status") process.exitCode = await status(args);
   else if (command === "wait") process.exitCode = await wait(args);
+  else if (command === "escalate") process.exitCode = await escalate(args);
   else if (command === "members") process.exitCode = await members(args);
   else {
     process.stdout.write(USAGE);

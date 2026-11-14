@@ -103,9 +103,12 @@ orca-node wait --peer 192.168.86.252:11811 --task <id> --timeout 60 --json
 
 orca-node status --peer 192.168.86.252:11811 --task <id> --json
 orca-node members --json
+
+# 子任务需要权限：把它上升到本 task 的 origin（0 已批准恢复 / 1 拒绝 / 2 超时）
+orca-node escalate --peer 192.168.86.252:11811 --task <child id> --local-task <this task> --json
 ```
 
-CLI 读本机 `config.json`（`--config` 或 `--data-root`），用本 orca node 的身份做请求签名；它不是节点，不监听端口。`wait` 返回 3 时，agent 应通过宿主（ACP 的 `session/request_permission` 或插件 tracker）请求人工批准，而不是自己批准。
+CLI 读本机 `config.json`（`--config` 或 `--data-root`），用本 orca node 的身份做请求签名；它不是节点，不监听端口。`wait` 返回 3 时，agent 先调 `escalate` 把请求交还 origin，由 origin 上的人决定；它自己不批准（ACP 的 `session/request_permission` 只对本地权限生效）。
 
 ## 开发
 

@@ -36,6 +36,8 @@ function promptWithPreamble(input: ExecuteInput, dataRoot: string | undefined, t
     `  ${cli} send${rootFlag} --peer <host:port> --text - --json`,
     `Check it with: ${cli} wait${rootFlag} --peer <host:port> --task <id> --json`,
     `  (exit 0 completed, 1 failed/canceled, 2 still running, 3 needs permission)`,
+    `If wait exits 3, escalate the child's request to your origin with:`,
+    `  ${cli} escalate${rootFlag} --peer <child:port> --task <child task id> --local-task ${input.taskId} --json`,
     "",
     text,
   ].join("\n");

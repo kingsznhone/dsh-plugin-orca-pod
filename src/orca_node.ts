@@ -25,6 +25,7 @@ import {
   type SelfRecord,
   type SignedGrant,
   type SubmitTaskInput,
+  type TaskRelay,
   type TaskView,
 } from "./protocol.ts";
 import { createSqliteTaskStore } from "./sqlite.ts";
@@ -139,6 +140,12 @@ export interface OrcaNode {
   approveTask(peerUrl: string, view: TaskView, options?: ApprovalOptions): Promise<TaskView>;
   /** Deny a suspended permission request: the remote task fails with permission_denied. */
   denyTask(peerUrl: string, view: TaskView, reason?: string): Promise<TaskView>;
+  /**
+   * Park this orca node's running task because a child it delegated to needs a
+   * permission only this task's origin can grant (§7.12). The CLI calls this
+   * on the local node.
+   */
+  escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView>;
 }
 
 /**
@@ -412,6 +419,10 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return postA2a<TaskView>(peerUrl, "message/send", { message });
   }
 
+  function escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView> {
+    return postA2a<TaskView>(peerUrl, "tasks/escalate", { taskId, relay });
+  }
+
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let heartbeatStopped = false;
 
@@ -480,5 +491,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     cancelTask,
     approveTask,
     denyTask,
+    escalateTask,
   };
 }

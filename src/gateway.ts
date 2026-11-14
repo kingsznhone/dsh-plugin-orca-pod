@@ -26,6 +26,7 @@ import {
   type SelfRecord,
   type TaskRunner,
   type TaskView,
+  type TaskRelay,
   type A2AMessage,
   type SubmitTaskInput,
 } from "./protocol.ts";
@@ -204,6 +205,17 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
         const view = deps.tasks.get(taskId);
         if (!view) throw new TaskError("task_not_found", `unknown task ${taskId}`);
         result = view;
+      } else if (body.method === "tasks/escalate") {
+        // Local control used by the CLI: the agent parks its own task because a
+        // child task needs an approval that only this task's origin can give.
+        if (auth.orcaNodeId !== deps.orcaNode.orca_node_id) {
+          throw new TaskError("bad_request", "tasks/escalate is a local control");
+        }
+        result = deps.tasks.escalate(
+          String(params["taskId"] ?? ""),
+          params["relay"] as TaskRelay,
+          auth.orcaNodeId,
+        );
       } else if (body.method === "tasks/cancel") {
         result = deps.tasks.cancel(String(params["id"] ?? ""));
       } else {

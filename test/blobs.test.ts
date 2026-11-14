@@ -28,6 +28,9 @@ const idleTasks: TaskRunner = {
   busy() {
     return null;
   },
+  escalate() {
+    throw new Error("not used");
+  },
   recover() {
     return 0;
   },
@@ -205,6 +208,9 @@ describe("a2a busy response", () => {
       },
       busy() {
         return holder;
+      },
+      escalate() {
+        throw new Error("not used");
       },
       recover() {
         return 0;
