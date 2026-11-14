@@ -4,9 +4,25 @@
  * state machine, approval loop, and blob path can be exercised without an agent.
  */
 
+import type { PermissionRequest } from "./protocol.ts";
+
+/**
+ * A child task one hop down is waiting for permission. The echo script carries
+ * the child's request snapshot so the task runner can turn it into this orca
+ * node's own `permission_request` without a network call (§7.12 relay prototype).
+ */
+export type EchoRelay = {
+  /** Child task's orca node endpoint. */
+  peer: string;
+  /** Child task id that is waiting. */
+  task_id: string;
+  /** The child's permission request, as observed by the agent. */
+  request: PermissionRequest;
+};
+
 export type EchoSuspend =
   | { kind: "blocked"; reason: string; question: string; options?: string[] }
-  | { kind: "permission"; tool: string; requested: Record<string, unknown> };
+  | { kind: "permission"; tool: string; requested: Record<string, unknown>; relay?: EchoRelay };
 
 export type EchoStep = { at_ms: number; suspend: EchoSuspend };
 
@@ -74,6 +90,62 @@ function byteLength(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
 
+function validateRelay(raw: unknown, where: string): EchoRelay | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new EchoScriptError(`${where}: relay must be an object`);
+  ensureKeys(raw, ["peer", "task_id", "request"], where);
+  const peer = raw["peer"];
+  const taskId = raw["task_id"];
+  const request = raw["request"];
+  if (typeof peer !== "string" || peer.length === 0) {
+    throw new EchoScriptError(`${where}.peer must be a non-empty string`);
+  }
+  if (typeof taskId !== "string" || taskId.length === 0) {
+    throw new EchoScriptError(`${where}.task_id must be a non-empty string`);
+  }
+  if (!isRecord(request)) throw new EchoScriptError(`${where}.request must be an object`);
+  ensureKeys(
+    request,
+    ["request_id", "task_id", "tool", "requested", "requested_by", "via", "expires_at"],
+    `${where}.request`,
+  );
+  const requestId = request["request_id"];
+  const childTaskId = request["task_id"];
+  const tool = request["tool"];
+  const requested = request["requested"];
+  const requestedBy = request["requested_by"];
+  const via = request["via"];
+  const expiresAt = request["expires_at"];
+  if (
+    typeof requestId !== "string" ||
+    typeof childTaskId !== "string" ||
+    typeof tool !== "string" ||
+    typeof requestedBy !== "string" ||
+    typeof expiresAt !== "string"
+  ) {
+    throw new EchoScriptError(
+      `${where}.request needs string request_id, task_id, tool, requested_by and expires_at`,
+    );
+  }
+  if (!isRecord(requested)) throw new EchoScriptError(`${where}.request.requested must be an object`);
+  if (!Array.isArray(via) || via.some((hop) => typeof hop !== "string")) {
+    throw new EchoScriptError(`${where}.request.via must be a string array`);
+  }
+  return {
+    peer,
+    task_id: taskId,
+    request: {
+      request_id: requestId,
+      task_id: childTaskId,
+      tool,
+      requested,
+      requested_by: requestedBy,
+      via: via as string[],
+      expires_at: expiresAt,
+    },
+  };
+}
+
 function validateSuspend(raw: unknown, where: string): EchoSuspend {
   if (!isRecord(raw)) throw new EchoScriptError(`${where}: suspend must be an object`);
   const kind = raw["kind"];
@@ -93,13 +165,14 @@ function validateSuspend(raw: unknown, where: string): EchoSuspend {
     return { kind: "blocked", reason, question, ...(options ? { options: options as string[] } : {}) };
   }
   if (kind === "permission") {
-    ensureKeys(raw, ["kind", "tool", "requested"], where);
+    ensureKeys(raw, ["kind", "tool", "requested", "relay"], where);
     const tool = raw["tool"];
     const requested = raw["requested"];
     if (typeof tool !== "string" || !isRecord(requested)) {
       throw new EchoScriptError(`${where}: permission needs tool and requested object`);
     }
-    return { kind: "permission", tool, requested };
+    const relay = validateRelay(raw["relay"], `${where}.relay`);
+    return { kind: "permission", tool, requested, ...(relay ? { relay } : {}) };
   }
   throw new EchoScriptError(`${where}: suspend.kind must be "blocked" or "permission"`);
 }

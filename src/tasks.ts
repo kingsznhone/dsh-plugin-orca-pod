@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { validatePodMetadata } from "./chain.ts";
+import { deriveChildGrant, validatePodMetadata } from "./chain.ts";
 import { verifyGrant } from "./crypto.ts";
-import { echoScriptFrom, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
+import { echoScriptFrom, type EchoRelay, type ExecutorEvent, type LocalExecutor } from "./executor.ts";
 import {
   isTerminal,
   newTaskId,
@@ -30,6 +30,8 @@ type Running = {
   ttl: ReturnType<typeof setTimeout> | null;
   /** Set while the task waits for a human decision on one tool (§7.11). */
   pending_permission: PermissionRequest | null;
+  /** Child task this task escalates for; set only by a relay suspension (§7.12). */
+  relay: EchoRelay | null;
 };
 
 function nowIso(): string {
@@ -67,6 +69,8 @@ export type TaskRunnerDeps = {
   permissionTtlS?: number;
   /** Largest `pod.hop` this orca node accepts; default 0 (single hop only, §5.1). */
   maxHop?: number;
+  /** Sends a control message to a child task (grant/denial downward, §7.12). */
+  sendTaskMessage?: (peerUrl: string, taskId: string, message: A2AMessage) => Promise<void>;
 };
 
 /**
@@ -105,17 +109,60 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         ],
       };
     }
+    const suspended = suspend.suspend;
+    const relay = suspended.relay;
     const request: PermissionRequest = {
       request_id: randomUUID(),
       task_id: rec.view.id,
-      tool: suspend.suspend.tool,
-      requested: suspend.suspend.requested,
+      tool: suspended.tool,
+      requested: suspended.requested,
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
+      ...(relay ? { upstream: [relay.request.requested_by] } : {}),
       expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString(),
     };
     rec.pending_permission = request;
+    rec.relay = relay ?? null;
     return { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] };
+  }
+
+  /** Sends a grant or denial down to the child task a relay suspension waits on. */
+  async function sendRelayControl(relay: EchoRelay, data: Record<string, unknown>): Promise<void> {
+    if (deps.sendTaskMessage === undefined) {
+      throw new TaskError("bad_request", "this orca node has no task relay transport");
+    }
+    const message: A2AMessage = {
+      role: "user",
+      parts: [{ kind: "data", data }],
+      taskId: relay.task_id,
+      messageId: randomUUID(),
+    };
+    await deps.sendTaskMessage(relay.peer, relay.task_id, message);
+  }
+
+  /** Derive a child grant, resume the child task, then continue this task (§7.12). */
+  async function relayThenPump(
+    rec: Running,
+    relay: EchoRelay,
+    parent: SignedGrant,
+    message: A2AMessage,
+  ): Promise<void> {
+    try {
+      if (deps.key === undefined) throw new TaskError("bad_request", "relay needs the workgroup key");
+      const childGrant = deriveChildGrant({
+        key: deps.key,
+        parent,
+        request: relay.request,
+        selfOrcaNodeId,
+      });
+      await sendRelayControl(relay, { grant: childGrant });
+      void pump(rec, message);
+    } catch (error) {
+      if (rec.abort.signal.aborted) return;
+      const code = error instanceof TaskError ? error.code : "relay_failed";
+      const text = error instanceof Error ? error.message : String(error);
+      finish(rec, "failed", textMessage(`relay to child failed: ${text}`), code);
+    }
   }
 
   /** Returns the failure reason, or null when the grant matches what was asked. */
@@ -256,6 +303,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       iterator: null,
       ttl: null,
       pending_permission: null,
+      relay: null,
     };
     activeTaskId = id;
     tasks.set(id, rec);
@@ -296,9 +344,15 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       throw new TaskError("orca_node_busy", "orca node is busy with another task");
     }
     // A permission suspension ends only with a grant or an explicit denial (§7.11).
+    let grant: SignedGrant | undefined;
     if (rec.pending_permission !== null) {
       const control = resumeControl(message);
       if (control.denied !== undefined) {
+        if (rec.relay !== null) {
+          const relay = rec.relay;
+          rec.relay = null;
+          void sendRelayControl(relay, { permission_denied: true, reason: control.denied }).catch(() => {});
+        }
         finish(rec, "failed", textMessage(`permission denied: ${control.denied}`), "permission_denied");
         return cloneView(rec.view);
       }
@@ -310,10 +364,19 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         finish(rec, "failed", textMessage(`permission grant rejected: ${failure}`), failure);
         return cloneView(rec.view);
       }
+      grant = control.grant;
       rec.pending_permission = null;
     }
     activeTaskId = taskId;
-    void pump(rec, message);
+    const relay = rec.relay;
+    rec.relay = null;
+    if (relay !== null && grant !== undefined) {
+      rec.view.status = { state: "working", timestamp: nowIso() };
+      persist(rec);
+      void relayThenPump(rec, relay, grant, message);
+    } else {
+      void pump(rec, message);
+    }
     return cloneView(rec.view);
   }
 
@@ -325,6 +388,11 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       return cloneView(stored.view);
     }
     if (isTerminal(rec.view.status.state)) return cloneView(rec.view);
+    if (rec.relay !== null) {
+      const relay = rec.relay;
+      rec.relay = null;
+      void sendRelayControl(relay, { permission_denied: true, reason: "task canceled" }).catch(() => {});
+    }
     rec.abort.abort();
     finish(rec, "canceled", undefined, "canceled");
     return cloneView(rec.view);

@@ -38,7 +38,7 @@ orca-pod/（仓库根目录）
 |---|---|---|
 | `protocol.ts` | 已实现 | 类型、错误码、任务视图、orca_node_id、digest、签名规范化 |
 | `crypto.ts` | 已实现 | HKDF、请求签名、nonce cache、grant 签名/校验 |
-| `chain.ts` | 已实现 | 多跳元数据（hop/chain/root）校验、祖先禁调、child grant 派生 |
+| `chain.ts` | 已实现 | 多跳元数据（hop/chain/root）校验、祖先禁调、child grant 派生（含 Echo relay 原型的下发） |
 | `config.ts` | 已实现 | 配置校验、密钥派生、JSON 读写 |
 | `storage.ts` / `blobs.ts` | 已实现 | PeerStore/TaskStore 接口 + 内存实现；blob 另有 fs 实现（内容寻址、临时文件+rename、TTL GC） |
 | `sqlite.ts` | 已实现 | `node:sqlite` TaskStore：`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、整条记录 JSON 存储 |
@@ -95,7 +95,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 8 个、approval 10 个、chain 11 个、headless 7 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 142 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 8 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 4 个、persistence 2 个、plugin 12 个、tracker 8 个、approval 10 个、chain 13 个、headless 7 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个，共 144 个（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 

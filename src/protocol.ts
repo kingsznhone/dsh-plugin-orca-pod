@@ -238,6 +238,8 @@ export type PermissionRequest = {
   requested_by: string;
   /** Chain from this orca node up to the origin that can decide. */
   via: string[];
+  /** Orca nodes further down the chain that actually need the permission (§7.12 relay). */
+  upstream?: string[];
   expires_at: string;
 };
 

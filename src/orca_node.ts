@@ -196,6 +196,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     workgroupId: config.workgroup_id,
     key,
     maxHop: config.delegation?.max_hop ?? 0,
+    sendTaskMessage: async (peerUrl, _taskId, message) => {
+      await postA2a<TaskView>(peerUrl, "message/send", { message });
+    },
   });
 
   let boundPort = config.bind.port;

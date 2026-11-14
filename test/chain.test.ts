@@ -316,3 +316,91 @@ describe("chained approval", () => {
     expect((await delegator.getTask(worker.endpoint, view.id)).status.state).toBe("input-required");
   });
 });
+describe("relay prototype (7.12)", () => {
+  const childEcho = {
+    steps: [
+      {
+        at_ms: 10,
+        suspend: { kind: "permission", tool: "write_file", requested: { path: "child.txt", bytes: 9 } },
+      },
+    ],
+    final: { state: "completed", text: "child done" },
+  };
+
+  async function relaySetup(): Promise<{
+    root: OrcaNode;
+    middle: OrcaNode;
+    leaf: OrcaNode;
+    parentTaskId: string;
+    childTaskId: string;
+    suspendedParent: TaskView;
+  }> {
+    const root = await makeNode();
+    const middle = await makeNode({ delegation: { max_hop: 1 } });
+    const leaf = await makeNode({ delegation: { max_hop: 1 } });
+
+    const childView = await middle.sendTask(leaf.endpoint, {
+      message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },
+      metadata: { ...podMetadata(1, [middle.orcaNodeId]), echo: childEcho },
+    });
+    const waitingChild = await waitForState(leaf, leaf.endpoint, childView.id, "input-required");
+    const childRequest = permissionRequestOf(waitingChild);
+    if (childRequest === null) throw new Error("child did not publish a permission request");
+
+    const parentView = await root.sendTask(middle.endpoint, {
+      message: { role: "user", parts: [{ kind: "text", text: "parent delegates writing" }] },
+      metadata: {
+        echo: {
+          steps: [
+            {
+              at_ms: 10,
+              suspend: {
+                kind: "permission",
+                tool: "write_file",
+                requested: { path: "note.txt", bytes: 12 },
+                relay: { peer: leaf.endpoint, task_id: childView.id, request: childRequest },
+              },
+            },
+          ],
+          final: { state: "completed", text: "parent done" },
+        },
+      },
+    });
+    const suspendedParent = await waitForState(root, middle.endpoint, parentView.id, "input-required");
+    return {
+      root,
+      middle,
+      leaf,
+      parentTaskId: parentView.id,
+      childTaskId: childView.id,
+      suspendedParent,
+    };
+  }
+
+  it("escalates the child's request and relays a derived grant down on approval", async () => {
+    const { root, middle, leaf, parentTaskId, childTaskId, suspendedParent } = await relaySetup();
+
+    const request = permissionRequestOf(suspendedParent);
+    expect(request?.requested_by).toBe(middle.orcaNodeId);
+    expect(request?.upstream).toEqual([leaf.orcaNodeId]);
+    expect(request?.tool).toBe("write_file");
+
+    await root.approveTask(middle.endpoint, suspendedParent);
+    const parentDone = await waitForState(root, middle.endpoint, parentTaskId, "completed");
+    expect(parentDone.status.message?.parts).toContainEqual({ kind: "text", text: "parent done" });
+
+    const childDone = await waitForState(root, leaf.endpoint, childTaskId, "completed");
+    expect(childDone.status.message?.parts).toContainEqual({ kind: "text", text: "child done" });
+  });
+
+  it("propagates a denial down so the child fails instead of hanging", async () => {
+    const { root, middle, leaf, parentTaskId, childTaskId, suspendedParent } = await relaySetup();
+
+    await root.denyTask(middle.endpoint, suspendedParent, "policy says no");
+    const parentFailed = await waitForState(root, middle.endpoint, parentTaskId, "failed");
+    expect(parentFailed.status.reason).toBe("permission_denied");
+
+    const childFailed = await waitForState(root, leaf.endpoint, childTaskId, "failed");
+    expect(childFailed.status.reason).toBe("permission_denied");
+  });
+});

@@ -47,7 +47,7 @@
 **Phase 2 进展**
 
 - 已实现：`node:sqlite` task store（`<data_root>/tasks.db`、WAL、`synchronous=NORMAL`、payload JSON、`tasks/get` 回落库、启动时非终态标 `failed(node_restart)`）；fs blob store（内容寻址、临时文件 rename、sidecar 元数据、去重、启动时 7 天 TTL GC）；group 工作区（`<data_root>/workgroups/<workgroup_id>/{work,notes,inputs,.pod}`，orca node 启动 `ensure()`，executor 的 `workspaceDir` 指向 `work/`）；orca node/CLI/插件都接持久化存储；`HeadlessExecutor`（[§6.14](06-execution.md#614-headlessexecutorphase-2-真实执行器)，`dsh headless --json` 子进程、NDJSON→状态机、取消杀进程树、session 按 `(origin, context)` 复用），并在 Windows 本机用真实 `dsh` + 模型凭据跑通（`scripts/e2e-headless.ts`：两任务 `completed`，第二个复用 session）。
-- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh），全套 142 通过。
+- 测试：`storage-sqlite.test.ts` 3 条、`blobs-fs.test.ts` 5 条、`workspace.test.ts` 4 条、`persistence.test.ts` 2 条（真实 HTTP：重启后 task 仍 completed；hang 中的 working 重启后 `failed/node_restart`）、`headless.test.ts` 7 条（假 dsh），全套 144 通过。
 - 未实现：`AcpExecutor`、`inputs/` 拉取与 `notes/` 约定、`task_events` 表与 origin 本地任务日志、blob 配额与引用延期。
 
 ### 10.4 Phase 3：权限模型 + 审批回路
@@ -60,7 +60,7 @@
 - 工作区加固：配额、清理、Windows 长路径/保留名测试矩阵（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - 验收：越界写被拒；权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
 
-**Phase 3 进展**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 8 条，[§5.2](05-tasks.md#52-任务回报)）。审批回路第一版已实现：grant 用 workgroup key 做 HMAC 签发/校验（§7.11）、`permission_request` 写进 task 状态、只有 origin 能 resume（其他成员 403）、插件 `pod_approve` 在 open turn 内调 DSH approval 卡片、tracker 对权限请求强制唤醒；`test/approval.test.ts` 10 条覆盖批准/拒绝/篡改/过期/非 origin/无 grant 六种情形。链式第一版已实现：`chain.ts` 提供 `childPodMetadata`/`validatePodMetadata`/`deriveChildGrant`，`submit` 校验 hop（超限 `400 hop_limit`）与祖先链（`403 ancestor_call_forbidden`），`approveTask({parentGrant})` 校验父 grant 后派生收窄的 child grant（失败 `escalation_required`/`grant_expired`）；`test/chain.test.ts` 11 条，全套 142 通过。自动逐跳上升 relay、`permission_mode`/`limits` 收窄、预授权策略、`credential_readback`、配额与 Windows 路径矩阵仍未开始。
+**Phase 3 进展**：插件后台 tracker 与 `inject`/`followup` 唤醒已实现（`test/tracker.test.ts` 8 条，[§5.2](05-tasks.md#52-任务回报)）。审批回路第一版已实现：grant 用 workgroup key 做 HMAC 签发/校验（§7.11）、`permission_request` 写进 task 状态、只有 origin 能 resume（其他成员 403）、插件 `pod_approve` 在 open turn 内调 DSH approval 卡片、tracker 对权限请求强制唤醒；`test/approval.test.ts` 10 条覆盖批准/拒绝/篡改/过期/非 origin/无 grant 六种情形。链式第一版已实现：`chain.ts` 提供 `childPodMetadata`/`validatePodMetadata`/`deriveChildGrant`，`submit` 校验 hop（超限 `400 hop_limit`）与祖先链（`403 ancestor_call_forbidden`），`approveTask({parentGrant})` 校验父 grant 后派生收窄的 child grant（失败 `escalation_required`/`grant_expired`）；`test/chain.test.ts` 11 条；同文件另有 2 条 Echo relay 原型（父任务以 `relay` 挂起 → origin 批准 → 派生 child grant 下发 → 子任务继续；拒绝向下传播），全套 144 通过。自动发现子任务权限需求并上升（需 ACP 执行器的挂起入口）、`permission_mode`/`limits` 收窄、预授权策略、`credential_readback`、配额与 Windows 路径矩阵仍未开始。
 
 ### 10.5 Phase 4：安全与规模化
 
@@ -120,7 +120,7 @@
 - [ ] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [ ] C 用 `continuation_of` 续跑：旧 task 状态与 artifact 不变，新 task 落在同一工作区；旧 task 未终态 → `409 task_not_terminal`
-- [ ] 链式升级：A→B→C 时 C 的越界请求经 B 上升为 A 的 `input-required`（`via` 带来源、`expires_in_s` 逐跳递减、等待期间 B/C 槽位都释放），A 批准后 grant 逐跳收窄下发、C 继续；任一跳超时则整链失败且不挂住节点（第一版已做 hop/祖先校验与 child grant 派生；自动逐跳上升 relay 未实现）
+- [ ] 链式升级：A→B→C 时 C 的越界请求经 B 上升为 A 的 `input-required`（`via` 带来源、`expires_in_s` 逐跳递减、等待期间 B/C 槽位都释放），A 批准后 grant 逐跳收窄下发、C 继续；任一跳超时则整链失败且不挂住节点（第一版已做 hop/祖先校验与 child grant 派生，并有 Echo relay 原型；ACP 执行器的自动上升未实现）
 
 #### 文件交换
 
