@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { deriveChildGrant, validatePodMetadata } from "./chain.ts";
@@ -116,10 +116,33 @@ export function taskInputs(metadata: SubmitTaskInput["metadata"]): TaskInputRef[
 }
 
 /** Relative paths listed after the task text; cwd is the group workspace root (§6.7). */
-function promptWithInputs(prompt: string, taskId: string, inputs: TaskInputRef[]): string {
-  if (inputs.length === 0) return prompt;
-  const list = inputs.map((input) => `- inputs/${taskId}/${input.name}`).join("\n");
-  return `${prompt}\n\n---\n[orca-pod] Task inputs are in the current directory; they are deleted when the task ends.\n${list}`;
+function promptWithAttachments(prompt: string, taskId: string, inputs: TaskInputRef[], notes: string[]): string {
+  const sections: string[] = [];
+  if (inputs.length > 0) {
+    const list = inputs.map((input) => `- inputs/${taskId}/${input.name}`).join("\n");
+    sections.push(
+      `[orca-pod] Task inputs are in the current directory; they are deleted when the task ends.\n${list}`,
+    );
+  }
+  if (notes.length > 0) {
+    const list = notes.map((note) => `- ${note}`).join("\n");
+    sections.push(`[orca-pod] Notes from earlier tasks in this workgroup (read before you start):\n${list}`);
+  }
+  return sections.length === 0 ? prompt : `${prompt}\n\n---\n${sections.join("\n\n")}`;
+}
+
+/** Top-level files in the workgroup `notes/` directory, capped for the prompt appendix (§6.7). */
+function workspaceNotes(workspace: Workspace | null): string[] {
+  if (workspace === null) return [];
+  try {
+    return readdirSync(workspace.notes, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => `notes/${entry.name}`)
+      .sort()
+      .slice(0, 20);
+  } catch {
+    return [];
+  }
 }
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
@@ -525,7 +548,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       },
       metadata: input.metadata,
       origin_orca_node: input.originOrcaNode ?? "unknown",
-      prompt: promptWithInputs(messageText(input.message), id, inputRefs),
+      prompt: promptWithAttachments(messageText(input.message), id, inputRefs, workspaceNotes(workspace)),
       created_at: createdAt,
       since: createdAt,
       abort: new AbortController(),
@@ -551,6 +574,12 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     if (rec) return cloneView(rec.view);
     const stored = store.load(taskId);
     return stored ? cloneView(stored.view) : null;
+  }
+
+  function originOf(taskId: string): string | null {
+    const rec = tasks.get(taskId);
+    if (rec) return rec.origin_orca_node;
+    return store.load(taskId)?.origin_orca_node ?? null;
   }
 
   function resume(taskId: string, message: A2AMessage, callerOrcaNode?: string): TaskView {
@@ -733,5 +762,5 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return count;
   }
 
-  return { submit, get, resume, escalate, cancel, busy, recover };
+  return { submit, get, originOf, resume, escalate, cancel, busy, recover };
 }

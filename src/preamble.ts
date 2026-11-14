@@ -22,6 +22,8 @@ export function orchestrationPreamble(options: PreambleOptions): string | null {
   const rootFlag = options.dataRoot === undefined ? "" : ` --data-root "${options.dataRoot}"`;
   return [
     `[orca-pod] You are executing task ${options.taskId}${who}.`,
+    `Your cwd is the shared workgroup root; notes/ holds handoff notes across tasks from this workgroup.`,
+    `Read notes/STATUS.md first if it exists, and keep your notes current before you finish.`,
     `To delegate to another orca node, use the CLI instead of raw HTTP:`,
     `  ${cli} send${rootFlag} --peer <host:port> --text - --local-task ${options.taskId} --json`,
     `With --local-task, this node watches the child and parks this task when the child asks`,

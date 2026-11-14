@@ -145,6 +145,26 @@ describe("A2A task surface", () => {
     expect(fetched.status.state).toBe("canceled");
   });
 
+  it("lets only the origin cancel a task", async () => {
+    mesh = await createMesh({ orcaNodes: 3 });
+    const [origin, target, other] = mesh.orcaNodes;
+    if (!origin || !target || !other) throw new Error("mesh did not create three orca nodes");
+    const targetUrl = target.endpoint;
+    const submitted = await origin.sendTask(targetUrl, {
+      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
+      metadata: { echo: { final: { state: "hang", text: "" } } },
+    });
+    await waitForState(origin, targetUrl, submitted.id, "working");
+
+    await expect(other.cancelTask(targetUrl, submitted.id)).rejects.toMatchObject({
+      code: "not_task_origin",
+      status: 403,
+    });
+
+    const canceled = await origin.cancelTask(targetUrl, submitted.id);
+    expect(canceled.status.state).toBe("canceled");
+  });
+
   it("reports unknown tasks as 404", async () => {
     const { origin, targetUrl } = await twoNodes();
     await expect(origin.getTask(targetUrl, "01JUNKNOWN")).rejects.toMatchObject({

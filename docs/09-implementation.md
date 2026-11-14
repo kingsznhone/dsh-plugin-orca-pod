@@ -112,7 +112,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `harness.ts` | 多 orca node mesh + 可注入时钟 | 成员收敛、故障、任务往返 |
 | `plugin/` | 假 DSH host 的 smoke | 工具注册、生命周期 |
 
-实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 7 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 6 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 7 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个、dispatches 4 个、relay-auto 2 个，共 216 个、30 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
+实际跑通的测试：protocol 30 个、crypto 15 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 12 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 12 个、tracker 10 个、skill 3 个、approval 12 个、chain 12 个、headless 9 个、acp 7 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 7 个、transport 4 个、permission-mode 8 个、acceptance 4 个、ssrf 7 个、limits 6 个、dispatches 4 个、relay-auto 2 个，共 218 个、30 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖。
 
 ### 9.3 进程内多 orca node
 
@@ -221,7 +221,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `
 | Lint/format | `biome` | 一个工具，配置在根目录 |
 | CLI | `commander` | harness 与 orca node 启动参数 |
 | MIME/文件名 | `mime-types`、`sanitize-filename` | blob 下载 `Content-Type` 与 `Content-Disposition` |
-| 限流（Phase 4） | `@fastify/rate-limit` | 代理后按 IP；现在不装 |
+| 限流 | 不做（局域网自用） | 若暴露公网，在代理层（Caddy/nginx）做 |
 | SSE（Phase 4） | `fastify-sse-v2` | 只在做 `message/stream` 时引 |
 
 **Phase 0 实际依赖**：运行时只有 `fastify`（在一个包里，随包发布）；开发依赖只有 `typescript`、`vitest`、`@types/node`。表中的 `zod`、`pino`、`lowdb`、`better-sqlite3`、`commander`、`tsup`、`biome` 等是目标选型，尚未安装。

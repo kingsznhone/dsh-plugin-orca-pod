@@ -144,14 +144,20 @@ Pod gateway (local)
 - task 进入终态时删除该目录；进程重启时 `purgeInputs()` 清掉上次残留（那时任务都已被恢复逻辑标成 `failed`）；
 - 上限默认 32 个文件、512 MiB，本地 `max_input_files` / `max_input_bytes` 可调；重名直接 `409 duplicate_input_name`。
 
-**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐并 `purgeInputs()`。任务执行时把 workgroup 根作为 `ExecuteInput.workspaceDir`（executor 的 cwd），把 `state/<workgroup_id>/` 作为 `podDir`。物化、附录与清理在 `src/tasks.ts`（`materializeInputs`、`promptWithInputs`、`finish`）。
+**跨任务交接（notes/）**：`notes/` 是给**下一个任务/下一个 session** 的现场记录，不是协议字段。节点的做法不是强制格式，而是“把现场摆在任务书里”：
+
+- 建任务时列出 `notes/` 顶层文件（最多 20 个）追加到任务书附录，agent 打开就知道有哪些前情（`notes/STATUS.md`、决策、待办）；
+- headless/ACP 的 preamble 里说明 cwd 是共享 workgroup 根、开工先读 `notes/STATUS.md`、收尾更新它；
+- 同一 workgroup 多 origin 交替派任务时，靠的也是这份笔记而不是互相看不见（[§6.7](#67-工作区一份持久)）。
+
+**实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐并 `purgeInputs()`。任务执行时把 workgroup 根作为 `ExecuteInput.workspaceDir`（executor 的 cwd），把 `state/<workgroup_id>/` 作为 `podDir`。物化、附录（inputs 清单 + notes 清单）与清理在 `src/tasks.ts`（`materializeInputs`、`promptWithAttachments`、`finish`）；notes 提示在 `src/preamble.ts`。
 
 ### 6.8 目录边界
 
 - workgroup 根是 agent 的写根；`notes/`、`inputs/` 都可写。**网关状态在 cwd 之外**（`state/<workgroup_id>/`），agent 删不到 session 绑定和任务状态。
 - 所有路径进入 agent 前做规范化（大小写、分隔符、`..`、符号链接、Windows 8.3 短名），且必须在 workgroup 根之下；越界一律 `deny`。
 - Windows 长路径：启用 `\\?\` 前缀或 `LongPathsEnabled`；超过 260 字符在创建时即报错，不静默截断。
-- 不跟随 junction/symlink 出工作区；符号链接指向外部时，访问被拒并记审计。
+- 不跟随 junction/symlink 出工作区；符号链接指向外部时，访问被拒并记 warning。
 
 ### 6.9 单槽执行：一个 orca node 同一时间只做一件事
 
@@ -242,7 +248,7 @@ session_id → workspace（本 orca node 唯一的那份）
 - 配额：`max_disk_bytes`（默认 5 GiB）、`max_files`（默认 50k）；超限时任务 `failed(quota_exceeded)`，不静默丢文件。
 - 清理：工作区不按 TTL 删；只在配额压力下按“最久未使用”驱逐，并提前在 UI 标黄；`purge` 是显式动作，要求二次确认。
 - 跨平台：目录分隔符、大小写不敏感（Windows）、保留名（`CON`、`NUL`、`aux`）、尾随点/空格都要处理；路径比较统一用规范化后的形式。
-- 审计：每个任务记录 `workgroup_id`、实际 cwd（相对路径）、写入了哪些文件。
+- 记录：每个任务记录 `workgroup_id`、实际 cwd（相对路径）、写入了哪些文件。
 
 ### 6.14 HeadlessExecutor（Phase 2 真实执行器）
 
@@ -292,7 +298,7 @@ dsh --profile headless --json \
 - 取消：`AbortSignal` → 先 SIGTERM，2s 后 SIGKILL；Windows 用 `taskkill /pid <pid> /T /F` 杀整棵树（`dsh` 会拉子进程）。
 - 超时：仍由任务层 `task_ttl_s` abort；executor 只负责杀进程。
 - 结果文本：`final.text` 直接作为任务结论（走 [§6.11](06-execution.md#611-任务结果与产物) 的内联/截断规则）。
-- prompt 前置 `[orca-pod]` 编排 preamble（任务 id、本 orca node id、`orca-node` CLI 绝对路径、`publish`/`escalate`/`wait` 用法，以及 `send --local-task` 后本节点会自动挂起等待 origin 决定、agent 不必自己 `escalate`），与 AcpExecutor 共用 `src/preamble.ts`：headless 子进程也要知道自己是跨节点任务的一部分。spawn 时额外传 `ORCA_POD_PARENT_TASK=<taskId>`，agent 用 CLI `send` 派子任务时自动登记 child-link（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+- prompt 前置 `[orca-pod]` 编排 preamble（任务 id、本 orca node id、`orca-node` CLI 绝对路径、cwd 是共享 workgroup 根且 `notes/` 用于跨任务交接、`publish`/`escalate`/`wait` 用法，以及 `send --local-task` 后本节点会自动挂起等待 origin 决定、agent 不必自己 `escalate`），与 AcpExecutor 共用 `src/preamble.ts`：headless 子进程也要知道自己是跨节点任务的一部分。spawn 时额外传 `ORCA_POD_PARENT_TASK=<taskId>`，agent 用 CLI `send` 派子任务时自动登记 child-link（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 - usage：`step_end` 里的 `usage.{inputTokens,outputTokens,cacheReadTokens}` 采集成任务 `usage`。
 - 错误码：`turn_end`/`final` 的 `reason.error.code` 透传为任务 `reason`（如 `AUTH_MISSING`），没有 code 时回落 `executor_error`。
 

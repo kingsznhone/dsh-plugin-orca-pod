@@ -266,7 +266,14 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
           auth.orcaNodeId,
         );
       } else if (body.method === "tasks/cancel") {
-        result = deps.tasks.cancel(String(params["id"] ?? ""));
+        const taskId = String(params["id"] ?? "");
+        const origin = deps.tasks.originOf(taskId);
+        if (origin === null) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+        // Only the origin (or this orca node itself, e.g. local control paths) may cancel.
+        if (auth.orcaNodeId !== origin && auth.orcaNodeId !== deps.orcaNode.orca_node_id) {
+          throw new TaskError("not_task_origin", "only the task origin may cancel it");
+        }
+        result = deps.tasks.cancel(taskId);
       } else {
         throw new TaskError("unsupported", `unsupported method ${body.method}`);
       }

@@ -5,7 +5,7 @@
  * prompt as cwd-relative paths, and deletes the directory when the task ends.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -200,5 +200,28 @@ describe("task inputs", () => {
       ),
     ).toBe("input_blob_missing");
     expect(runner.busy()).toBeNull();
+  });
+
+  it("lists workspace notes from earlier tasks in the prompt appendix", async () => {
+    const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "inputs-test" }).ensure();
+    writeFileSync(join(workspace.notes, "STATUS.md"), "where the last task stopped\n");
+    const prompts: string[] = [];
+    const runner = createTaskRunner({
+      executor: {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, unknown> {
+          prompts.push(input.prompt ?? "");
+          yield { type: "completed", text: "ok" };
+        },
+      },
+      blobs: createMemoryBlobStore(),
+      workspace,
+    });
+
+    const view = runner.submit({ message: message("continue the work") });
+    await waitForTerminal(runner, view.id);
+
+    expect(prompts[0]).toContain("Notes from earlier tasks in this workgroup");
+    expect(prompts[0]).toContain("- notes/STATUS.md");
+    expect(prompts[0]).not.toContain("inputs/");
   });
 });

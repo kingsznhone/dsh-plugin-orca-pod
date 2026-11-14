@@ -46,7 +46,7 @@
 |---|---|
 | SSE | 关闭响应缓冲（Caddy 默认 `flush_interval -1`；nginx `proxy_buffering off`、`X-Accel-Buffering: no`）；读超时 ≥ 心跳间隔 × 3 |
 | 心跳路径 | 不要给 `/cluster/heartbeat` 加缓存；代理层保持 keep-alive 到上游 |
-| 转发头 | 只有来自回环代理的 `X-Forwarded-For/Proto` 才可信；orca node 默认不读这些头做鉴权 |
+| 转发头 | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`/cluster/child-link` 带任何转发头直接拒绝 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权 |
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的 |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放 |
@@ -58,8 +58,8 @@
 1. workgroup 密码是生成的强密码（不是 `123456`，不是用户名）；
 2. 监听绑 `127.0.0.1`，公网入口只有代理；
 3. `/health` 不泄漏拓扑、主机名、工作区；
-4. `/cluster/*` 有速率限制与失败计数；
-5. 审计日志已开启；
+4. `/cluster/*` 在代理层做速率限制与失败计数（插件自身不做限流）；
+5. 访问日志由前置代理留档（插件不做审计落盘，[§7.8](07-security.md#78-审计)）；
 6. 已接受“同 workgroup 的任一 orca node 可凭密码向本 orca node 派任务”这一事实（[§7.5](07-security.md#75-远程任务是不可信输入)）。
 
 ### 4.5 A2A 角色

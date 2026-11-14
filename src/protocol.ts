@@ -356,6 +356,8 @@ export interface TaskRunner {
    */
   escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: OrcaNodeId): TaskView;
   cancel(taskId: string): TaskView;
+  /** Origin of a known task, used by the gateway to authorize cancellation (§5.3). */
+  originOf(taskId: string): OrcaNodeId | null;
   /** Currently running task (single-slot, §6.9); null when idle. */
   busy(): BusyState | null;
   /** Fail tasks that were interrupted by a restart (§8.3); returns how many. */

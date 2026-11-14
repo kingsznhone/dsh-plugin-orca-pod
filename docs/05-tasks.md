@@ -26,7 +26,7 @@
 - `context_id` 把多个 task 归到同一逻辑会话；目标 orca node 把它映射到本地 DSH session，cwd 固定为本 orca node 的工作区（[§6.7](06-execution.md#67-工作区一份持久)）。
 - `idempotency_key` 作用域 = 同一 workgroup 内；目标 orca node 去重窗口默认 24h。它只防重复提交，不承担重发。
 - `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
-- `pod.hop`：任务已经跨了几跳，只作信息与审计，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。origin 建 task 时为 0；target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
+- `pod.hop`：任务已经跨了几跳，只作信息与排查，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。origin 建 task 时为 0；target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
 - `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
 - `pod.root`：这条调用树的根 task id。origin 建 task 时等于自己的 task id。
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`），target 不能放大；本机 `config.permission_mode` 是本地上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。
@@ -124,6 +124,8 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 取消后 task 置 `canceled`；若执行器已完成，返回 `completed` 并说明“取消未生效”。取消同时**吊销该 task 的 grant**（[§7.11](07-security.md#711-grant)）。
 
+**谁可以取消**：只有 task 的 origin（以及执行该 task 的本机节点自身，用于本地控制路径）。同组其他成员可以 `tasks/get` 读，但 `tasks/cancel` 返回 `403 not_task_origin`——共享 workgroup 密钥下“同组”不等于“可以互相杀任务”，取消按任务归属校验而不是按签名身份。
+
 ### 5.4 流式与隐私
 
 - ACP `session/update` 可能含 assistant message、thought、tool call、usage。
@@ -150,7 +152,7 @@ workgroup_id, session_id, artifacts, error, reason
 持久化：
 
 - **单机 SQLite**：`<data_root>/tasks.db`，WAL 模式，`synchronous=NORMAL`；
-- 表：`tasks`（状态与元数据，已实现）、`task_events`（状态变迁与错误，未实现）、`blobs`（blob_id + size + name + refs + expires_at，未实现；当前在 fs sidecar）；
+- 表：`tasks`（状态与元数据，已实现）、`dispatches`（origin 派发日志，已实现；[§8.3](08-reliability.md#83-目标重启)）、`blobs`（blob_id + size + name + refs + expires_at，未实现；当前在 fs sidecar 与 `file_blobs` 映射）；
 - 一个进程独占写；不做连接池、不做服务、不共享库；
 - 备份 = 拷贝 db（WAL 下先 checkpoint）；损坏时允许丢未落盘的最近事件，不允许静默重建；
 - 内存 store 只用于协议单测与 harness。
@@ -161,8 +163,8 @@ workgroup_id, session_id, artifacts, error, reason
 
 - 同 workgroup 的任意 orca node 凭 `task_id` 可 `tasks/get`；没有列表接口，`task_id` 就是句柄（ULID，不可枚举）。
 - origin 额外拥有交互权：`input-required` 后补发消息、`tasks/cancel`；其他 orca node 只读（不能取消、看不到 live 事件）。
-- 因此**`task_id` 泄露 = 结果泄露**。它只该出现在任务消息、审计和给人看的日志里，不要贴到公开 issue 或截图里。
-- 同组是信任域：密钥共享、orca node 身份可伪造，所以“谁能读”是约定与审计问题，不是密码学保证（[§7.1](07-security.md#71-workgroup-与密码)）。
+- 因此**`task_id` 泄露 = 结果泄露**。它只该出现在任务消息和给人看的日志里，不要贴到公开 issue 或截图里。
+- 同组是信任域：密钥共享、orca node 身份可伪造，所以“谁能读”是约定与信任问题，不是密码学保证（[§7.1](07-security.md#71-workgroup-与密码)）；取消按 task 归属校验（[§5.3](#53-取消)）。
 
 **Phase 0 实现**：`tasks/get`、`tasks/cancel` 与 `message/send` 恢复只校验 workgroup 签名，不区分 origin 与其他同组 orca node；上面“origin 额外拥有交互权、其他 orca node 只读”尚未实现。修复前应把 `task_id` 当作同组内可读写的句柄。
 
@@ -239,7 +241,7 @@ A 在 B 上跑完一段，想把后续交给 C（另一台机器、另一个模�
 - 工作区跨任务、跨 session、跨重启持久（[§6.7](06-execution.md#67-工作区一份持久)）；
 - 同一 orca node 单槽串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），所以不会有两个任务同时写同一份工作区。
 
-旧 task 天然不可变：C 的新任务和 A 的旧 task 是两个独立记录，各自的 artifacts、`updated_at` 互不影响；审计靠时间戳与 task id 还原，不需要一个指向“前一个 task”的字段。
+旧 task 天然不可变：C 的新任务和 A 的旧 task 是两个独立记录，各自的 artifacts、`updated_at` 互不影响；追溯靠时间戳与 task id 还原，不需要一个指向“前一个 task”的字段。
 
 一句话：**交接 = 共享工作区里的现场 + 一个新任务**；协议不解释“接着干”，agent 自己看现场决定。
 

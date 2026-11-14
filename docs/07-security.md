@@ -18,6 +18,7 @@ k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32
 
 - 换密码：**改过的 orca node 用新密码重启，重新 join 组成新 group**；没改的 orca node 留在旧 mesh 里，签名对不上就 401/offline，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **同组 = 同一密码学主体**：任意成员都能为任意 `orca_node_id` 生成合法签名，签名里的 id 不证明“谁在调用”。因此凡是“只有本机可以做”的能力，一律不能用签名身份判定，只能用传输层事实判定：监听在回环、没有转发头、或干脆不经过网络（本机 CLI 直写本机状态）。已落实的一例是文件 blob 登记：[§5.6](05-tasks.md#56-文件交换blob-通道) 里 `publish` 由 CLI 直写本机 SQLite，不提供 HTTP 路由——曾经的设计是 `POST /blobs/register` 加 `auth.orcaNodeId === self` 检查，那等于任何 peer 都能让目标节点读任意本机路径。要真正区分“谁”只有 per-node keypair / mTLS，本设计不做。
+- **授权按记录归属，不按签名身份**：正因为签名只证明“属于这个组”，普通读接口允许同组成员读，但写操作必须在**记录归属**上校验——`tasks/cancel` 只接受 task 的 origin（或执行它的本机节点），其他成员 `403 not_task_origin`（[§5.3](05-tasks.md#53-取消)）；`tasks/resume`、`tasks/escalate` 同理只接受 origin / 本机（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。`/cluster/child-link` 则同时要求传输层回环——它登记的是“本机任务在等某个子任务的权限”，不能让别的节点替你登记。
 
 ### 7.2 请求签名（没有 session token）
 
@@ -71,14 +72,14 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 | 公网多 orca node | Caddy/nginx 各 orca node 一套 | 证书可集中签发；注意 SSE 缓冲关闭 |
 | 零信任 | Tailscale/WireGuard | 网络层隔离，orca node 仍要密码 |
 
-`trust_proxy`：只有配置了 `127.0.0.1` 才读 `X-Forwarded-For/Proto`，否则一律用 socket 地址。
+`trust_proxy`：不读转发头做鉴权——插件既不用 `X-Forwarded-For` 判断“是谁”，也不用它判断“是不是本机”；`/cluster/child-link` 只认 socket 回环地址，带任何转发头直接 403。TLS 由前置代理终结，节点自身只监听明文 HTTP（[§4.2](04-transport.md#42-http-路由)）。
 
 ### 7.5 远程任务是不可信输入
 
 - 任务 prompt、artifact 内容、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
-- 审计记录：谁（origin_orca_node）、何时、对哪个任务/工作区、用了什么 mode、批了什么。
+- 可观测：谁（origin_orca_node）、何时、对哪个任务/工作区、用了什么 mode、批了什么——这些都留在任务记录与派发日志里（`tasks/get`、`orca-node log`），不另落一份审计文件。
 
 ### 7.6 授权矩阵
 
@@ -103,10 +104,10 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 
 ### 7.8 审计
 
-- 落盘 JSONL，按天轮转；字段：`ts, actor_node, action, target, result, task_id, grant_id`；
-- 审计文件不放在 group workspace 里；
+- **不做持久审计落盘**（局域网自用，[§10.5](10-roadmap.md#105-phase-4规模化与部署)）：任务记录、`dispatches` 派发日志与 DSH 会话记录已经能回答“谁在什么时候派了什么、结果如何”，额外一条审计通道收益低、维护成本高。
+- 排查靠现有记录：`orca-node log`（origin 派发）、`tasks/get` 的任务状态与 `reason`、插件 tracker 的通知文本；`permission_request` 全文留在任务状态里，便于事后回答“它当时要什么”。
+- 真要合规审计属于部署层外挂（代理访问日志 + DSH 会话留档），不在插件内实现。
 - 网关状态（`<data_root>/state/<workgroup_id>/`：session 绑定、任务目录）也必须在 workgroup 根之外：agent 对 cwd 有写权限，看得见就能删；放进工作区等于把会话绑定和网关状态交给被调用的 agent（[§6.7](06-execution.md#67-工作区一份持久)）。
-- `permission_request` 全文入审计（脱敏后），便于事后回答“它当时要什么”。
 
 ### 7.9 权限跟随发起 orca node
 
@@ -239,7 +240,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 - A 给 B 的 grant 表达的是 A 的意图（比如“B 可以在工作区写”），B 批准 C 写 `/etc` 不在这个意图里——B 的“同意”不是人的同意；
 - B 也没有能力替 A 扩大授权：它没有 A 的 UI、没有人类动作，自批等于把授权链悄悄放宽；
-- 唯一例外：A 明确给了 B `danger-full-access`（用户已接受该风险），或 B 本地预授权策略命中。此时 B 可自行放行，但审计记 `decided_by: "orca_node:<B>:policy"`，A 的 task 里也能看到一条“B 自动批准了 C 的请求”事件。
+- 唯一例外：A 明确给了 B `danger-full-access`（用户已接受该风险），或 B 本地预授权策略命中。此时 B 可自行放行，但任务记录里记 `decided_by: "orca_node:<B>:policy"y"`，A 的 task 里也能看到一条“B 自动批准了 C 的请求”事件。
 
 回路仍然没有反向调用，只是把同一份状态沿链上升：
 
@@ -310,7 +311,7 @@ Phase 3 先只做“逐跳上升 + 逐跳收窄”，不做 B 的自动放行；
 |---|---|
 | `deny` | artifact 里出现凭据类内容 → 拒发，任务标 `failed(credential_blocked)` |
 | `ask`（默认） | 检出凭据类内容 → 任务挂 `input-required`，origin 卡片问“是否回传”，人点 |
-| `allow` | 直接回传，仅审计 |
+| `allow` | 直接回传 |
 
 检出靠三层：文件路径模式（`*.pem`、`id_*`、`.env*`、`known_hosts`）、内容模式（私钥头、AKIA/ghp_ 前缀、长 base64 高熵串）、以及 agent 主动标注。
 

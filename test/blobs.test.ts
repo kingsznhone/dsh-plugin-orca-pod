@@ -24,6 +24,9 @@ const idleTasks: TaskRunner = {
   get() {
     return null;
   },
+  originOf() {
+    return null;
+  },
   resume() {
     throw new Error("not used");
   },
@@ -285,6 +288,9 @@ describe("a2a busy response", () => {
         throw new TaskError("orca_node_busy", "node is busy");
       },
       get() {
+        return null;
+      },
+      originOf() {
         return null;
       },
       resume() {

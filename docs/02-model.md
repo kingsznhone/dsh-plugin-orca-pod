@@ -34,7 +34,7 @@ join（一次，凭 workgroup_id + 密码）→ 拿到 target 自述 + 全量目
 
 - 对外：A2A server（接收任务）、A2A client（发起任务）、控制面端点。
 - 对内：成员观测、任务存储、LocalExecutor、工作区管理、DSH 生命周期。
-- 安全：密码派生密钥、请求签名校验、grant 执行、硬拒绝清单、审计。
+- 安全：密码派生密钥、请求签名校验、grant 执行、硬拒绝清单。
 - 可观测：`trace_id`、`task_id`、peer 状态、工作区用量、审批记录。
 
 ### 2.3 部署形态
