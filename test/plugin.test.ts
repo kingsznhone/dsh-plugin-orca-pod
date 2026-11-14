@@ -73,6 +73,10 @@ describe("pod tools", () => {
   const handle: PodHandle = {
     ready: Promise.resolve(),
     runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
+    config: { workgroup_id: "wg-a", workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] },
+    uiConfigured: true,
+    reconfigure: async () => {},
+    addPeer: async () => {},
   }
   const tracker = createTracker(() => null, { intervalMs: 60_000 })
   const tools = createPodTools(handle, tracker)

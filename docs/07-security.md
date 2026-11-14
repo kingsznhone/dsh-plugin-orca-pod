@@ -100,7 +100,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 - 允许 RFC1918、`100.64/10`、`fd00::/8`；**回环默认允许**（同机多进程是常见部署），可用 `allow_loopback_peers: false` 收紧为拒绝；公网地址需要 `allow_public_peers: true`；
 - 主机名先解析、再按解析结果判断，解析失败即拒；探测失败按 `recover_probe`（15s→30s）退避；候选探测单独计数，防止被当作端口扫描器。
 
-**实现状态（Phase 3）**：已实现。`membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/net.ts` 的 `candidateEndpointAllowed`（`test/ssrf.test.ts` 7 条覆盖私网/回环/元数据/组播/公网/主机名/非法 URL 与 origin 标记）。被拒的候选只 warning 一次、不进 online，也不会被当作在线成员。
+**实现状态（Phase 3）**：已实现。`membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/net.ts` 的 `candidateEndpointAllowed`（`test/ssrf.test.ts` 8 条覆盖私网/回环/元数据/组播/公网/主机名/非法 URL、origin 标记与 fetch 禁用端口）。被拒的候选只 warning 一次、不进 online，也不会被当作在线成员。
 
 ### 7.8 审计
 
@@ -108,6 +108,7 @@ proof = HMAC-SHA256(k, "pod-v1|" + method + "|" + path + "|" + sha256(body) + "|
 - 排查靠现有记录：`orca-node log`（origin 派发）、`tasks/get` 的任务状态与 `reason`、插件 tracker 的通知文本；`permission_request` 全文留在任务状态里，便于事后回答“它当时要什么”。
 - 真要合规审计属于部署层外挂（代理访问日志 + DSH 会话留档），不在插件内实现。
 - 网关状态（`<data_root>/state/<workgroup_id>/`：session 绑定、任务目录）也必须在 workgroup 根之外：agent 对 cwd 有写权限，看得见就能删；放进工作区等于把会话绑定和网关状态交给被调用的 agent（[§6.7](06-execution.md#67-工作区一份持久)）。
+- 面板写入的配置覆盖层 `<data_root>/ui-config.json` 与插件配置同属明文（`workgroup_password` 会在里面），只由回环闸门后的 `/orca-api/config` 写入；面板读取的配置视图永不返回密码（只给 `password_set`）。这是原型取舍：生产应把密码换成 DSH credentials 引用，让 UI 只写引用名。
 
 ### 7.9 权限跟随发起 orca node
 

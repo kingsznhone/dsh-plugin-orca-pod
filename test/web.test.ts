@@ -40,6 +40,26 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       taskView("TASK02", "input-required"),
     ],
     dispatches: () => [{ task_id: "TASK01", peer: "http://127.0.0.1:11812", state: "completed" } as DispatchEntry],
+    config: () => ({
+      configured: true,
+      workgroup_id: "wg",
+      display_name: "node one",
+      port: 11811,
+      endpoints: ["http://127.0.0.1:11811"],
+      peers: [],
+      data_root: "/data",
+      password_set: true,
+      running: true,
+      error: null,
+    }),
+    saveConfig: async (patch) => {
+      calls.push("saveConfig:" + JSON.stringify(patch));
+      return admin.config();
+    },
+    connect: async (peer) => {
+      calls.push("connect:" + peer);
+      return admin.config();
+    },
     task: async (_peer, taskId) => {
       calls.push("task:" + taskId);
       return taskView(taskId, "working");
@@ -198,6 +218,50 @@ describe("panel HTTP bridge", () => {
     expect(result.status).toBe(200);
     expect(result.body.task.id).toBe("TASK01");
     expect(result.body.artifacts[0].name).toBe("report.md");
+  });
+
+  it("includes the editable config in the state snapshot", async () => {
+    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/state` });
+    expect(result.status).toBe(200);
+    expect(result.body.config.workgroup_id).toBe("wg");
+    expect(result.body.config.password_set).toBe(true);
+  });
+
+  it("saves a config patch from the panel", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const result = await invoke(createPodApiHandler(admin), {
+      method: "POST",
+      url: `${POD_API_PREFIX}/config`,
+      body: {
+        workgroup_id: "wg",
+        workgroup_password: "next-password",
+        display_name: "renamed",
+        port: "11812",
+        endpoints: ["http://127.0.0.1:11812"],
+        peers: ["http://127.0.0.1:11813"],
+        ignored: "drop me",
+      },
+    });
+    expect(result.status).toBe(200);
+    expect(admin.calls).toEqual([
+      'saveConfig:{"workgroup_id":"wg","workgroup_password":"next-password","display_name":"renamed","port":11812,"endpoints":["http://127.0.0.1:11812"],"peers":["http://127.0.0.1:11813"]}',
+    ]);
+  });
+
+  it("connects a peer from the panel", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const handler = createPodApiHandler(admin);
+    const result = await invoke(handler, {
+      method: "POST",
+      url: `${POD_API_PREFIX}/connect`,
+      body: { peer: "192.168.1.20:11811" },
+    });
+    expect(result.status).toBe(200);
+    expect(admin.calls).toContain("connect:192.168.1.20:11811");
+
+    const missing = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/connect`, body: {} });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toMatch(/peer/);
   });
 
   it("registers one prefix route through ctx.inject and cleans it up", () => {

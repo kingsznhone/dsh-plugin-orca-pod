@@ -78,6 +78,7 @@ export function podState(admin: PodAdmin): Record<string, unknown> {
   }
   return {
     self: admin.self(),
+    config: admin.config(),
     members: admin.members(),
     tasks,
     dispatches: admin.dispatches().slice(0, 50),
@@ -117,8 +118,34 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
         sendJson(response, 200, { task: view, artifacts: admin.artifacts(view) })
         return
       }
+      if (request.method === "GET" && path === `${POD_API_PREFIX}/config`) {
+        sendJson(response, 200, admin.config())
+        return
+      }
       if (request.method === "POST") {
         const action = path.slice(POD_API_PREFIX.length + 1)
+        if (action === "config") {
+          const body = await readJsonBody(request)
+          const patch: Record<string, unknown> = {}
+          for (const key of ["workgroup_id", "workgroup_password", "display_name"]) {
+            if (typeof body[key] === "string") patch[key] = body[key]
+          }
+          if (body["port"] !== undefined) {
+            patch["port"] = typeof body["port"] === "string" ? Number(body["port"]) : body["port"]
+          }
+          for (const key of ["endpoints", "peers"]) {
+            if (Array.isArray(body[key])) {
+              patch[key] = body[key].filter((value): value is string => typeof value === "string")
+            }
+          }
+          sendJson(response, 200, await admin.saveConfig(patch))
+          return
+        }
+        if (action === "connect") {
+          const body = await readJsonBody(request)
+          sendJson(response, 200, await admin.connect(stringField(body, "peer")))
+          return
+        }
         if (action !== "approve" && action !== "deny" && action !== "cancel") {
           sendJson(response, 404, { error: "not_found" })
           return

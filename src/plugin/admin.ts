@@ -10,6 +10,7 @@
 import { readdirSync } from "node:fs"
 import { join } from "node:path"
 
+import { defaultDataRoot } from "../config.ts"
 import { permissionRequestOf } from "../protocol.ts"
 import type { DispatchEntry } from "../dispatches.ts"
 import type { PeerView, SelfRecord, TaskView } from "../protocol.ts"
@@ -38,6 +39,21 @@ export interface WorkspaceView {
   inputs_dirs: Array<{ task_id: string; files: string[] }>
 }
 
+/** Effective pod configuration as the panel may see it (never the password). */
+export interface PodConfigView {
+  /** True once the panel finished setup (an override file exists). */
+  configured: boolean
+  workgroup_id: string
+  display_name: string | null
+  port: number
+  endpoints: string[]
+  peers: string[]
+  data_root: string
+  password_set: boolean
+  running: boolean
+  error: string | null
+}
+
 /** Read-only data surface plus approval actions. */
 export interface PodAdmin {
   /** This node's own advertised record, or null while it is not running. */
@@ -53,6 +69,12 @@ export interface PodAdmin {
   cancel(peer: string, taskId: string): Promise<TaskView>
   artifacts(view: TaskView): PodArtifact[]
   workspace(): WorkspaceView | null
+  /** Effective config plus setup state; the password itself is never returned. */
+  config(): PodConfigView
+  /** Persist a panel override and restart the orca node with the merged config. */
+  saveConfig(patch: Record<string, unknown>): Promise<PodConfigView>
+  /** `join` one peer now and remember it for later starts. */
+  connect(peer: string): Promise<PodConfigView>
   /** Change notification; subscribes to both node events and tracker updates. */
   subscribe(listener: () => void): () => void
 }
@@ -79,6 +101,23 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
     const current = node()
     if (current === null) throw new Error("orca node is not running")
     return current
+  }
+
+  function configView(): PodConfigView {
+    const config = handle.config
+    const current = node()
+    return {
+      configured: handle.uiConfigured,
+      workgroup_id: config.workgroup_id,
+      display_name: config.display_name ?? null,
+      port: handle.runtime.port ?? config.port,
+      endpoints: current?.endpoints ?? [...(config.endpoints ?? [])],
+      peers: [...config.peers],
+      data_root: config.data_root ?? defaultDataRoot(),
+      password_set: config.workgroup_password.length > 0,
+      running: current !== null,
+      error: handle.runtime.error === null ? null : handle.runtime.error.message,
+    }
   }
 
   return {
@@ -138,6 +177,25 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
         }))
       return { ...paths, notes_files: notesFiles, inputs_dirs: inputsDirs }
     },
+    config() {
+      return configView()
+    },
+    async saveConfig(patch) {
+      const nextWorkgroup = typeof patch["workgroup_id"] === "string" ? patch["workgroup_id"].trim() : null
+      if (
+        nextWorkgroup !== null &&
+        nextWorkgroup !== handle.config.workgroup_id &&
+        (typeof patch["workgroup_password"] !== "string" || patch["workgroup_password"].length === 0)
+      ) {
+        throw new Error("changing the workgroup requires its password")
+      }
+      await handle.reconfigure(patch)
+      return configView()
+    },
+    async connect(peer) {
+      await handle.addPeer(normalizePeer(peer))
+      return configView()
+    },
     subscribe(listener) {
       const offNode = node()?.subscribe(listener) ?? (() => {})
       const offTracker = tracker.subscribe(listener)
@@ -147,4 +205,10 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker): PodAdmin {
       }
     },
   }
+}
+
+/** Accept `host:port` shorthand and strip one trailing slash. */
+export function normalizePeer(peer: string): string {
+  const trimmed = peer.trim().replace(/\/+$/, "")
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
 }

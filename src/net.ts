@@ -1,5 +1,5 @@
 import { lookup } from "node:dns/promises";
-import { isIPv4, isIPv6 } from "node:net";
+import { createServer, isIPv4, isIPv6 } from "node:net";
 
 /**
  * Candidate-endpoint filtering (§7.7). Endpoints an orca node learned from
@@ -76,4 +76,46 @@ export async function candidateEndpointAllowed(
   } catch {
     return false;
   }
+}
+
+/**
+ * Ports the WHATWG fetch standard forbids. `undici` (and browsers) reject a
+ * request whose URL names one of them with `fetch failed` / `bad port`, so an
+ * orca node must never advertise such a port as its dial endpoint.
+ */
+const BLOCKED_FETCH_PORTS: ReadonlySet<number> = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161,
+  179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563,
+  587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
+
+/** True when `fetch` refuses to connect to this port. */
+export function isBlockedFetchPort(port: number): boolean {
+  return BLOCKED_FETCH_PORTS.has(port);
+}
+
+/**
+ * Pick a free loopback port that `fetch` may dial.
+ *
+ * `listen(0)` lets the kernel choose, but it may choose one of the blocked
+ * ports above; peers would then fail to reach this orca node with `bad port`.
+ * The probe closes immediately; the caller listens on the returned port.
+ */
+export async function pickFreePort(): Promise<number> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    const port = address !== null && typeof address === "object" ? address.port : 0;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    if (port > 0 && !isBlockedFetchPort(port)) return port;
+  }
+  throw new Error("could not pick a free port that fetch accepts");
 }

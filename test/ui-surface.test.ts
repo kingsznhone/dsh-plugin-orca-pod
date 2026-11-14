@@ -83,6 +83,10 @@ function handleFor(node: OrcaNode): PodHandle {
       started_at: null,
       error: null,
     },
+    config: { workgroup_id: "wg-ui", workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] },
+    uiConfigured: true,
+    reconfigure: async () => {},
+    addPeer: async () => {},
   };
 }
 

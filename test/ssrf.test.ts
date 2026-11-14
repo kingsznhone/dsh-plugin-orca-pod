@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createMembership } from "../src/membership.ts";
-import { candidateEndpointAllowed } from "../src/net.ts";
+import { candidateEndpointAllowed, isBlockedFetchPort, pickFreePort } from "../src/net.ts";
 import type { PeerView } from "../src/protocol.ts";
 
 function peer(orcaNodeId: string, endpoint: string): PeerView {
@@ -55,6 +55,15 @@ describe("candidate endpoint filtering (§7.7)", () => {
   it("resolves hostnames and applies the same address policy", async () => {
     expect(await candidateEndpointAllowed("http://localhost:11811")).toBe(true);
     expect(await candidateEndpointAllowed("http://localhost:11811", { allowLoopbackPeers: false })).toBe(false);
+  });
+
+  it("never picks a port that fetch refuses to dial", async () => {
+    expect(isBlockedFetchPort(6000)).toBe(true);
+    expect(isBlockedFetchPort(6667)).toBe(true);
+    expect(isBlockedFetchPort(11811)).toBe(false);
+    const port = await pickFreePort();
+    expect(port).toBeGreaterThan(0);
+    expect(isBlockedFetchPort(port)).toBe(false);
   });
 
   it("rejects non-http schemes and malformed endpoints", async () => {

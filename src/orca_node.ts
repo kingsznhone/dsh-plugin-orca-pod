@@ -15,7 +15,7 @@ import {
 import { EchoExecutor, type LocalExecutor } from "./executor.ts";
 import { createPodEventBus, type PodEventListener } from "./events.ts";
 import { createHeadlessExecutor } from "./headless.ts";
-import { candidateEndpointAllowed } from "./net.ts";
+import { candidateEndpointAllowed, isBlockedFetchPort, pickFreePort } from "./net.ts";
 import { createAcpExecutor } from "./acp.ts";
 import { createGateway } from "./gateway.ts";
 import { createMembership, heartbeatIntervalMsFor, type MembershipClock, type MembershipTimings } from "./membership.ts";
@@ -753,7 +753,26 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     // A restart means this node no longer knows what its in-flight tasks did (§13.3).
     dispatches.markUnknown();
     childLinkStopped = false;
-    const address = await app.listen({ host: config.bind.host, port: config.bind.port });
+    // Port 0 would let the kernel hand out a port `fetch` refuses to dial (e.g.
+    // 6000); peers would then report this orca node as unreachable.
+    if (config.bind.port !== 0 && isBlockedFetchPort(config.bind.port)) {
+      throw new Error(
+        `listen port ${config.bind.port} is blocked by fetch; choose another listen port`,
+      );
+    }
+    let address = "";
+    if (config.bind.port === 0) {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          address = await app.listen({ host: config.bind.host, port: await pickFreePort() });
+          break;
+        } catch (error) {
+          if (attempt === 4) throw error;
+        }
+      }
+    } else {
+      address = await app.listen({ host: config.bind.host, port: config.bind.port });
+    }
     boundPort = Number(new URL(address).port);
     actualEndpoints = endpointsFrom(config, boundPort);
     gatewayOrcaNode.endpoints = actualEndpoints;
