@@ -242,7 +242,7 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
     name: "pod_approve",
     description:
       "Answer a remote Orca task's permission request. " +
-      "Call this after a notice says a task needs permission. decision \"allow\" asks the human in the Orca Pod UI (chat card when the session is on screen, otherwise the popup or the panel) and sends the signed grant once answered; decision \"deny\" fails the remote task with permission_denied. " +
+      "The Orca Pod UI already raises every request the tracker observes (chat card, popup or panel), so you normally do not need this tool; call it only when you are driving a task outside that UI flow. decision \"allow\" parks the request in the UI and sends the signed grant once the human answers; decision \"deny\" fails the remote task with permission_denied. " +
       "The ask blocks until the human answers. Only the task's origin can answer; other members can still read the task.",
     parameters: {
       type: "object",
