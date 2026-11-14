@@ -257,6 +257,8 @@ export function createAcpExecutor(options: AcpExecutorConfig = {}): LocalExecuto
     return connecting;
   }
 
+  const mcpServers = options.mcp_servers ?? [];
+
   async function openSession(conn: AcpConnection, key: string | null, cwd: string, podDir?: string): Promise<string> {
     if (key !== null) {
       const active = activeSessions.get(key);
@@ -267,7 +269,7 @@ export function createAcpExecutor(options: AcpExecutorConfig = {}): LocalExecuto
       const bound = bindings[key];
       if (bound !== undefined) {
         try {
-          await conn.request("session/resume", { sessionId: bound, cwd, mcpServers: [] });
+          await conn.request("session/resume", { sessionId: bound, cwd, mcpServers });
           activeSessions.set(key, bound);
           return bound;
         } catch {
@@ -275,7 +277,7 @@ export function createAcpExecutor(options: AcpExecutorConfig = {}): LocalExecuto
         }
       }
     }
-    const created = (await conn.request("session/new", { cwd, mcpServers: [] })) as { sessionId?: unknown };
+    const created = (await conn.request("session/new", { cwd, mcpServers })) as { sessionId?: unknown };
     const sessionId = typeof created.sessionId === "string" ? created.sessionId : null;
     if (sessionId === null) throw new Error("acp server returned no session id");
     if (key !== null) {

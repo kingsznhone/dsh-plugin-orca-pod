@@ -27,11 +27,21 @@ export type HeadlessExecutorConfig = {
   extra_args?: string[];
 };
 
+/** One MCP server handed to the ACP session at session/new (§6.15). */
+export type AcpMcpServer = {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+};
+
 /** ACP executor options: the `dsh --profile acp` stdio server (§6.15). */
 export type AcpExecutorConfig = {
   command?: string;
   profile?: string;
   extra_args?: string[];
+  /** MCP servers passed to session/new — how an ACP agent gets extra tools. */
+  mcp_servers?: AcpMcpServer[];
 };
 
 export type OrcaNodeConfig = {
@@ -152,6 +162,42 @@ function parseAcpConfig(value: unknown): AcpExecutorConfig | undefined {
       throw new Error("config.acp.extra_args must be a string array");
     }
     config.extra_args = extra as string[];
+  }
+  const mcpServers = record["mcp_servers"];
+  if (mcpServers !== undefined) {
+    if (!Array.isArray(mcpServers)) throw new Error("config.acp.mcp_servers must be an array");
+    config.mcp_servers = mcpServers.map((item, index) => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) {
+        throw new Error(`config.acp.mcp_servers[${index}] must be an object`);
+      }
+      const entry = item as Record<string, unknown>;
+      if (typeof entry["name"] !== "string" || entry["name"].length === 0) {
+        throw new Error(`config.acp.mcp_servers[${index}].name must be a non-empty string`);
+      }
+      if (typeof entry["command"] !== "string" || entry["command"].length === 0) {
+        throw new Error(`config.acp.mcp_servers[${index}].command must be a non-empty string`);
+      }
+      const server: AcpMcpServer = { name: entry["name"], command: entry["command"] };
+      if (entry["args"] !== undefined) {
+        if (!Array.isArray(entry["args"]) || entry["args"].some((arg) => typeof arg !== "string")) {
+          throw new Error(`config.acp.mcp_servers[${index}].args must be a string array`);
+        }
+        server.args = entry["args"] as string[];
+      }
+      if (entry["env"] !== undefined) {
+        const env = entry["env"];
+        if (typeof env !== "object" || env === null || Array.isArray(env)) {
+          throw new Error(`config.acp.mcp_servers[${index}].env must be an object`);
+        }
+        const parsed: Record<string, string> = {};
+        for (const [key, raw] of Object.entries(env)) {
+          if (typeof raw !== "string") throw new Error(`config.acp.mcp_servers[${index}].env.${key} must be a string`);
+          parsed[key] = raw;
+        }
+        server.env = parsed;
+      }
+      return server;
+    });
   }
   return config;
 }

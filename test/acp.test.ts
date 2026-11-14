@@ -24,7 +24,11 @@ function configFor(root: string, mode: string): OrcaNodeConfig {
     dataRoot: root,
     port: 0,
     executor: "acp",
-    acp: { command: process.execPath, extra_args: [FAKE_ACP, mode, join(root, "acp.log")] },
+    acp: {
+      command: process.execPath,
+      extra_args: [FAKE_ACP, mode, join(root, "acp.log")],
+      mcp_servers: [{ name: "probe", command: process.execPath, args: ["-e", ""] }],
+    },
   });
 }
 
@@ -52,12 +56,14 @@ async function waitForState(node: OrcaNode, taskId: string, wanted: readonly str
   return view;
 }
 
-async function logEntries(path: string): Promise<Array<{ method?: string; text?: string; cwd?: string }>> {
+async function logEntries(
+  path: string,
+): Promise<Array<{ method?: string; text?: string; cwd?: string; mcpServers?: number }>> {
   const text = await readFile(path, "utf8").catch(() => "");
   return text
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { method?: string; text?: string; cwd?: string });
+    .map((line) => JSON.parse(line) as { method?: string; text?: string; cwd?: string; mcpServers?: number });
 }
 
 async function waitForLog(
@@ -88,6 +94,7 @@ describe("AcpExecutor", () => {
     const entries = await logEntries(join(root, "acp.log"));
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test", "work"))).toBe(true);
+    expect(created?.mcpServers).toBe(1);
     expect(entries.find((entry) => entry.method === "session/prompt")?.text).toBe("say hi");
   }, 15_000);
 

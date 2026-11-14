@@ -327,7 +327,17 @@ cwd = group workspace 的 `work/`；每次任务一条 in-flight prompt（ACP �
 
 **会话复用**：`.pod/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
 
-**不做**：把 `message/stream` 的进度透传到 A2A 流（结论仍走 `tasks/get` 轮询）、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、多 in-flight prompt。真实 `dsh` 的 ACP 端到端还需模型凭据，暂未纳入 `npm test`。
+**给 ACP 会话装工具**：配置 `acp.mcp_servers` 会原样传给 `session/new` 的 `mcpServers` 参数（`[{ "name", "command", "args"?, "env"? }]`）。这是把额外工具（包括 orca node 的 `pod_*`）接进 ACP agent 的正式入口；当前只做透传，orca-pod 自带的 MCP bridge 尚未提供——所以 ACP 会话里还没有 `pod_send`，链式 relay 的自动上升仍靠 Echo 原型或宿主侧下发。
+
+**不做**：把 `message/stream` 的进度透传到 A2A 流（结论仍走 `tasks/get` 轮询）、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、多 in-flight prompt。
+
+**真实冒烟**（需要模型凭据，不进 `npm test`）：
+
+```
+DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
+```
+
+本机实测（2026-11-14，Windows）：`Reply with exactly the word pong` → `completed`、结论文本 `pong`、约 2.6s；`.pod/sessions.json` 写入 `acp|<origin_orca_node>|ctx-e2e-acp` 的绑定。
 
 **测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`。
 

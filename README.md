@@ -15,7 +15,7 @@ orca-pod/
 ├── cordis.patch.yml      # DSH 行：id orca-pod、name 'orca-pod'
 ├── README.md
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # 跨进程联调（cross.ts）、真实 dsh 冒烟（e2e-headless.ts）
+├── scripts/              # 跨进程联调（cross.ts）、真实 dsh 冒烟（e2e-headless.ts / e2e-acp.mjs）
 ├── src/
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── protocol.ts       # id、成员 digest、任务/peer 类型
@@ -68,7 +68,7 @@ the config afterwards.
 
 orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码会在原地重新派生共享密钥。
 
-执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）与 `extra_args`，它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。
+执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "headless" | "acp"`。`headless` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `headless`）、`permission_mode`（默认 `read-only`）、`approval_policy`（默认 `never`）与 `extra_args`，详见 [docs/06-execution.md §6.14](docs/06-execution.md#614-headlessexecutorphase-2-真实执行器)；`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.15](docs/06-execution.md#615-acpexecutorphase-23-长任务执行器)）。
 
 多跳委派也在本机 `config.json` 里：`"delegation": { "max_hop": 1 }`（0–3，默认 0，即拒绝 `hop > 0` 的子任务；`max_fanout` 预留）。超过上限返回 `400 hop_limit`，祖先回环返回 `403 ancestor_call_forbidden`。
 

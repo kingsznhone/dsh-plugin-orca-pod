@@ -101,7 +101,7 @@ function onRequest(message) {
     }
     const sessionId = `fake-${++counter}`;
     sessions.add(sessionId);
-    log({ method: "session/new", sessionId, cwd: params.cwd });
+    log({ method: "session/new", sessionId, cwd: params.cwd, mcpServers: Array.isArray(params?.mcpServers) ? params.mcpServers.length : 0 });
     respond(id, { sessionId });
     return;
   }
