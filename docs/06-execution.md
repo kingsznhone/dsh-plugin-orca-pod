@@ -24,7 +24,7 @@ interface LocalExecutor {
 
   subscribe?(taskId: string, onEvent: (e: TaskEvent) => void): () => void;
 
-  // 权限回调：目标节点策略层的唯一入口（§9.6）
+  // 权限回调：目标节点策略层的唯一入口（§7.14）
   onPermissionRequest?(
     taskId: string,
     req: PermissionRequest
@@ -109,7 +109,7 @@ Pod gateway (local)
 | 执行目录 | agent 在目标机上读写的地方 | 目标节点 | `workspace` |
 | 会话状态 | DSH session / ACP session | 目标节点 | `session` |
 
-协议层只允许出现 `workgroup_id`、`workspace.kind`（只有 `"group"`）、`context_id`，**永不出现路径**。
+协议层只允许出现 `workgroup_id`、`workspace.kind`（只有 `"group"`）、`context_id`，**永不出现路径**：绝对路径是跨机器最不可移植、最不可审计的接口。
 
 ### 6.7 工作区：一份，持久
 
@@ -169,7 +169,7 @@ session_id → workspace（本节点唯一的那份）
 
 ### 6.11 任务结果与产物
 
-任务结果分三层，不要混在一起：
+任务结果分三层，不要混在一起：结论是给人看的，`notes/` 是给下一个 session 看的；混在一起会出现多份状态副本，谁也不知道哪份对。
 
 | 层 | 走哪 | 说明 |
 |---|---|---|
@@ -206,9 +206,9 @@ session_id → workspace（本节点唯一的那份）
 
 ### 6.12 明确不做
 
-- **不做发布式目录**：`label`、`fingerprint`、`containment` 检查全部不实现。origin 只能在目标节点自动分配的工作区里跑。
+- **不做发布式目录**：`label`、`fingerprint`、`containment` 检查全部不实现。origin 只能在目标节点自动分配的工作区里跑。单槽 + 自动分配已经够用；发布真实目录会额外引入隔离、配额、清理三层复杂度。
 - **不做多任务并发 / task-subdir 隔离**：节点单槽（[§6.9](06-execution.md#69-单槽执行一个节点同一时间只做一件事)）。
-- 不做反向挂载 / SMB / NFS / 9p / 分布式 FS；
+- 不做反向挂载 / SMB / NFS / 9p / 分布式 FS：网络文件系统会把锁、延迟、大小写语义带进 agent 的失败模式；
 - 不做跨节点共享同一个 session（session 是本地的）；
 - 不做“origin 直接编辑 target 上的文件”（只能通过任务）；
 - 不做自动 git push/pull（网络与凭据是另一个问题域）；

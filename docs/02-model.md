@@ -49,7 +49,7 @@ join（一次，凭 workgroup_id + 密码）→ 拿到 target 自述 + 全量目
 ### 2.4 节点短 id
 
 - **生成时机**：插件安装/首次启用时生成一次，写入插件配置并持久化（随 profile 存放，不进 git 仓库）。
-- **格式**：6 字符，Crockford Base32 字母表 `0123456789ABCDEFGHJKMNPQRSTVWXYZ`（无 I/L/O/U，避免 1/0 混淆）。展示为 `N7K3QM`。
+- **格式**：短到能在日志和 UI 里念出来——6 字符，Crockford Base32 字母表 `0123456789ABCDEFGHJKMNPQRSTVWXYZ`（无 I/L/O/U，避免 1/0 混淆）。展示为 `N7K3QM`。
 - **可改**：UI/配置可手改成任意合法短 id（也允许小写，落库统一大写）。改完必须重启监听并向各 peer 重新发心跳（[§3.8](03-membership.md#38-id-变更冲突离开)）。
 - **持久化**：写在插件配置（如 `<profile>/plugins/pod/config.json`），含 `node_id`、`display_name`、`endpoint`、`workgroup_id`、密码引用。
 - **不是安全主体**：认证靠 workgroup 密码；短 id 只用于日志、指标、UI、任务元数据。任何人可把 id 改成 `AAAAAA`，安全性不因此变化。
@@ -97,10 +97,12 @@ Linux 节点的 `os` 形如：
 - `runtime` 与整个记录只出现在需要签名的接口里，公网匿名不可读。
 - `available_bytes` 是采集瞬间值，会变；它不进 `runtime_digest`（否则心跳每次都要拉全量）。`digest` 只覆盖稳定字段：os/cpu/memory.total/gpus/dsh/plugin/caps。
 - `workspace` 只报**用量与配额**，不含路径；真实目录由目标节点自己解析。忙闲是动态字段：`busy` 为 `null` 或 `{ "task_id", "origin_node", "since" }`，由本人写、心跳刷新；origin 的 UI 据此显示“B 正在跑 X”。
-- `endpoint` 只有一个。跨网段、公网、NAT 穿透都靠代理或 VPN 把这个地址变得可达，不靠节点自报第二个地址（[§4.3](04-transport.md#43-反向代理注意事项)）。
+- `endpoint` 只有一个：多端点会引入选路、切换和指纹不一致，收益不值这个复杂度；跨网段、公网、NAT 穿透都靠代理或 VPN 把这个地址变得可达（[§4.3](04-transport.md#43-反向代理注意事项)）。
 - 采集失败不阻塞启动：缺字段就省略，并在 `runtime.error` 里写原因。
 
 ### 2.6 runtime 采集
+
+runtime 的用途只有一个：让 origin 在派任务前判断“那台机器能不能干这个活”。
 
 | 字段 | Windows | Linux |
 |---|---|---|

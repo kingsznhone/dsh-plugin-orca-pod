@@ -10,6 +10,7 @@
 - 不开 HTTP/2：peer 调用都是短请求，HTTP/1.1 keep-alive 足够；TLS 由前置代理负责，代理到上游也走 HTTP/1.1。
 - 不监听 UNIX socket：跨机没有意义，跨用户也没必要。
 - 端口冲突：启动时检测并给出下一个可用端口的建议，写回配置，不静默改。
+- TLS 不内建：证书轮换不该成为集群协议的一部分，交给成熟的代理（[§7.4](07-security.md#74-tls-部署矩阵)）。
 
 ### 4.2 路由表
 
@@ -19,7 +20,7 @@
 | POST | `/a2a` | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`、`message/stream` | workgroup 签名 |
 | GET | `/health` | 进程存活探针（给代理/监控用） | 无鉴权，仅返回极小 JSON |
 | POST | `/blobs` | 上传文件（内容寻址，流式） | workgroup 签名 |
-| GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（受 ACL 约束）或 `/link` 换来的短期 token |
+| GET | `/blobs/{blob_id}` | 下载文件 | workgroup 签名（凭 `blob_id` 即可取）或 `/link` 换来的短期 token |
 | POST | `/cluster/join` | 引导：返回自述 + 全量目录 | workgroup 签名 |
 | POST | `/cluster/heartbeat` | 心跳 + 摘要 + hints（+ 首次的 full self） | workgroup 签名 |
 | GET | `/cluster/members` | 全量目录（自述记录数组，含忙闲） | workgroup 签名 |
@@ -29,7 +30,7 @@
 
 - `/health` 返回 `{"status":"ok","version":"0.1.0"}` 这类极小 JSON。不暴露节点 id、成员数、工作区、忙闲、错误栈。
 - **Agent Card 公开可读，但不含敏感信息**：名字、端点、skills、协议版本。runtime、忙闲、配额、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
-- 不提供 WebSocket。需要实时性时：
+- 不提供 WebSocket：一条连接一种语义，WS 会变成第二套状态机。需要实时性时：
   - 任务进度 → `/a2a` 的 `message/stream`（SSE，同一 endpoint）；
   - 成员变化 → 心跳周期（2s）已足够；UI 需要更实时就等下一次心跳。
 - Agent Card 的 `url` 指向 `/a2a`，不是根路径。
@@ -85,7 +86,7 @@
 
 - Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-节点自述记录selfrecord)）。
 - `skills` 是能力声明，不是实现；执行由 LocalExecutor + 继承的权限模式决定。
-- SDK 与 `protocolVersion` 必须 pin；不匹配 fail closed，并在日志里写清双方版本。
+- SDK 与 `protocolVersion` 必须 pin；不匹配 fail closed（半兼容的 SDK 比不兼容更难查），并在日志里写清双方版本。
 
 ### 4.7 方法与异步语义
 
@@ -96,6 +97,8 @@
 - `message/stream`：SSE 流式接收状态/artifact 事件（可选）。
 - `tasks/resubscribe`：断线后重连到已有流（可选）。
 - push notification：后置，需要 webhook 鉴权、重试、SSRF 防护。
+
+用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。
 
 **关键语义：**
 

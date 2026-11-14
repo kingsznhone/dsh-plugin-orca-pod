@@ -23,7 +23,7 @@
 **首次启用（插件安装）**
 
 ```text
-1. 生成 node_id（§6.1），写配置
+1. 生成 node_id（[§2.4](02-model.md#24-节点短-id)），写配置
 2. 采集 runtime，生成 runtime_digest
 3. 起监听（默认 127.0.0.1:41241）
 4. 若配置里已有 workgroup_id + 密码：向目录内每个已知端点后台发第一拍心跳
@@ -38,7 +38,7 @@ D（新）                                            A（已在 mesh）
   { workgroup_id, node_id, display_name, endpoint,
     self, nonce, ts, proof }
                                               ├ 校验 workgroup_id
-                                              ├ 校验 proof（§12.2）
+                                              ├ 校验 proof（§7.2）
                                               ├ 校验 ts 窗口 / nonce 未用过
                                               ├ 校验 node_id 冲突
                                               └ 记录 D（只记 D 的自述）

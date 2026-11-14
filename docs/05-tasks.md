@@ -137,7 +137,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 ### 5.5 任务存储
 
-每个节点的 task store 是它自己产生的 task 状态的唯一事实来源。
+每个节点的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个节点不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
 ```text
 task_id, context_id, origin_node, target_node,
