@@ -1,14 +1,29 @@
 import { mkdtemp, readFile } from "node:fs/promises"
+import { readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
-import { installSkill, resolveDshHome, skillMarkdown, skillPath } from "../src/plugin/skill.ts"
+import {
+  CLI_PLACEHOLDER,
+  installSkill,
+  resolveDshHome,
+  SKILL_TEMPLATE_URL,
+  skillMarkdown,
+  skillPath,
+} from "../src/plugin/skill.ts"
 
 const OPTIONS = { cliPath: "/opt/orca-pod/src/cli.ts", dataRoot: "/tmp/orca-data" }
 
 describe("orca-node skill", () => {
+  it("keeps the editable template in the repository", () => {
+    const template = readFileSync(SKILL_TEMPLATE_URL, "utf8")
+    expect(template).toContain(CLI_PLACEHOLDER)
+    expect(template).toContain("name: orca-node")
+    expect(template).toContain("## Add a machine to the mesh")
+  })
+
   it("renders frontmatter the filesystem skill provider accepts", () => {
     const markdown = skillMarkdown(OPTIONS)
     expect(markdown.startsWith("---\n")).toBe(true)
@@ -21,6 +36,7 @@ describe("orca-node skill", () => {
     expect(frontmatter).toContain("escalate")
     expect(markdown).toContain('node "/opt/orca-pod/src/cli.ts" --data-root "/tmp/orca-data"')
     expect(markdown).toContain("exit codes")
+    expect(markdown).not.toContain("{{")
   })
 
   it("installs once and rewrites only when the content changes", async () => {

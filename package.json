@@ -18,6 +18,7 @@
     "src",
     "client.js",
     "cordis.patch.yml",
+    "skills",
     "README.md"
   ],
   "bin": {

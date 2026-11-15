@@ -8,14 +8,29 @@
  * file under the user skill root (`$DSH_HOME/skills` or `~/.dsh/skills`). The
  * file is written during plugin apply, with the CLI path and data root of this
  * installation baked in; rewriting on version/path changes keeps it current.
+ *
+ * The body is versioned as plain Markdown in `skills/orca-node/SKILL.md` so it
+ * can be reviewed and edited without touching TypeScript; `{{cli}}` marks the
+ * per-install CLI invocation. DSH also discovers project roots
+ * (`<projectRoot>/.dsh/skills`, rank 100) and the user root (rank 400, this
+ * file). The user root is deliberate: task sessions run with the workgroup root
+ * as their cwd, which usually has no `.git`, so a project-local copy would only
+ * cover the repository checkout itself rather than every profile on the machine.
  */
 
+import { readFileSync } from "node:fs"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
 /** Skill name; also the directory name under the user skill root. */
 export const SKILL_NAME = "orca-node"
+
+/** Canonical skill body shipped with the bundle; `{{cli}}` is rendered per install. */
+export const SKILL_TEMPLATE_URL = new URL("../../skills/orca-node/SKILL.md", import.meta.url)
+
+/** Token in the template that receives the absolute `orca-node` CLI invocation. */
+export const CLI_PLACEHOLDER = "{{cli}}"
 
 /** Inputs baked into the installed skill body. */
 export interface SkillOptions {
@@ -43,7 +58,7 @@ export function skillPath(dshHome: string): string {
 }
 
 /**
- * Render the skill markdown (YAML frontmatter + body).
+ * Render the skill markdown (YAML frontmatter + body) from the shipped template.
  *
  * Frontmatter fields follow the DSH filesystem skill provider: `name` and
  * `description` are required, `whenToUse` is optional, and model invocation is
@@ -51,62 +66,11 @@ export function skillPath(dshHome: string): string {
  */
 export function skillMarkdown(options: SkillOptions): string {
   const cli = `node "${options.cliPath}" --data-root "${options.dataRoot}"`
-  return `---
-name: ${SKILL_NAME}
-description: Delegate work to other orca nodes in this mesh, add a machine to the mesh, check tasks you already dispatched, and escalate a blocked sub-task to its origin.
-whenToUse: When the user asks you to run something on another machine or orca node, wants to add a machine to the mesh, needs the status or result of a task you dispatched earlier, or when waiting on a sub-task returns exit code 3.
----
-
-# Orca node CLI
-
-This machine runs an orca node. \`orca-node\` talks to it over loopback, signs
-as this orca node, and does **not** listen on a port or start a second process.
-Use it whenever a task has to leave this machine.
-
-\`\`\`bash
-${cli} members --json                     # known peers: id, endpoints, state
-${cli} send --peer <host:port> --text -   # dispatch a task; text from stdin
-#   add --model <provider/model> to pick a model the target advertises (§6.15)
-${cli} wait --peer <host:port> --task <id> --local-task <this task> --timeout 120 --json
-${cli} status --peer <host:port> --task <id> --json
-${cli} escalate --peer <child:port> --task <child task> --local-task <this task> --json
-\`\`\`
-
-\`wait\` exit codes: \`0\` completed, \`1\` failed or canceled, \`2\` still
-running, \`3\` the target is waiting for a human decision.
-
-## Add a machine to the mesh
-
-Use the installer instead of inventing a protocol. On a Linux node that already
-has Node >= 22 and \`dsh\`:
-
-\`\`\`bash
-npx orca-pod install --workgroup <group> -p '<password>' \\
-  --peer http://<this-machine>:11811 --endpoint http://<linux-ip>:11811
-loginctl enable-linger $USER   # if the installer reports a user service
-\`\`\`
-
-Then from the desktop session call the \`orca_pod\` tool with
-\`method: "connect"\` and \`peer: "<linux-ip>"\`, or run
-\`${cli} members --json\` first and check whether it is already there. Finish with
-a small \`send\` round trip.
-
-Principal: the password is the join credential (same group = same password), the
-peer list is what starts the mesh, and members must be mutually reachable (same
-LAN or VPN). Do not change a remote config over the mesh and do not expose 11811
-to the public internet.
-
-## Rules
-
-- Each peer in \`members\` carries an ordered \`endpoints\` list (primary first); pass any one to other commands. A bare \`host:port\` is accepted.
-- Pass \`--local-task <this task>\` to \`wait\` so a child permission request is
-  escalated to your origin automatically; \`wait\` keeps going after the decision.
-- **Never approve your own escalation.** If \`wait\` exits \`3\`, run
-  \`escalate\` and tell the user what is blocked and why.
-- Pass \`--text -\` so the task text travels on stdin (no shell quoting).
-- Use \`--json\` whenever you need exact ids, states, or artifacts.
-- A task you dispatch is single-hop: this orca node does not forward it.
-`
+  const template = readFileSync(SKILL_TEMPLATE_URL, "utf8")
+  if (!template.includes(CLI_PLACEHOLDER)) {
+    throw new Error(`skill template ${SKILL_TEMPLATE_URL.pathname} does not contain ${CLI_PLACEHOLDER}`)
+  }
+  return template.replaceAll(CLI_PLACEHOLDER, cli)
 }
 
 /**

@@ -38,7 +38,10 @@ orca-pod/（仓库根目录）
     cli.ts            `orca-node` CLI：serve / send / status / wait / members / escalate / publish / log
     orca-pod.ts       `orca-pod` CLI：install（检查 dsh、生成配置、写 systemd unit）
     install.ts        install 计划、unit 渲染与 systemd 命令（纯函数，runner 可注入）
-    plugin/           DSH bundle：Config、apply、单个 `orca_pod` 工具（`method` 分派）、后台 tracker、admin.ts（面板数据面）、web.ts（面板同源路由）、models.ts（模型目录采集）、skill.ts（安装期技能注入）
+  skills/
+    orca-node/
+      SKILL.md        orca-node 技能模板（`{{cli}}` 占位符；apply 时渲染写入 user skill 根）
+    plugin/           DSH bundle：Config、apply、单个 `orca_pod` 工具（`method` 分派）、后台 tracker、admin.ts（面板数据面）、web.ts（面板同源路由）、models.ts（模型目录采集）、skill.ts（安装期技能注入；正文模板在仓库 `skills/orca-node/SKILL.md`，渲染 `{{cli}}`）
   client.js           DSH 客户端 bundle：设置页 + 侧栏按钮 + 停靠式浮层（轮询 /orca-api；首启向导 / 状态 / 设置三视图）
   test/               vitest 套件（protocol/crypto/membership/mesh/a2a/blobs/plugin/tracker/skill/approval/watchdog）
 ```
@@ -176,7 +179,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、`trustProxy`�
 | `plugin/web.ts` / `client.js` | 假 `PodAdmin` + 假 req/res | 状态/配置快照（含 `prompts`）、回环与转发头拒绝、approve/deny/cancel 直通、config 保存与 connect/disconnect/reset、路由注册与 `effect` 清理 |
 | `lifecycle.ts` + `plugin/admin.ts` | 临时 `data_root` 起真实 orca node（port 0） | 首启未配置→reconfigure 写 `ui-config.json` 并重启保身份、空 workgroup 时保持空闲（向导）→填好后启动、重启后加载 override、live join 持久化、失败 peer 不落盘、disconnect 后清空并落盘、reset 删除两份配置并回到向导、admin 不返回密码、换组沿用原密码、peer 归一化、`detected_endpoints` 与显示名回退 node id |
 
-`orca-pod install` 已实现：生成 `config.json`（0600、`executor: "acp"`）并写 systemd unit 常驻 `orca-node serve`；`--peer <url>`（可重复）把启动 join 目标写进 unit，`--endpoint` 覆盖广播地址；用户级 unit 在无头服务器上需要 `loginctl enable-linger $USER`（安装结束会提示）。裸 `orca-pod install` 或只带 `--dry-run` 是交互式向导（workgroup id、密码隐藏输入、监听地址与端口），**只要再带任何其他参数就进入参数分支、完全不提问**（缺少 workgroup/密码直接报错退出，适合 agent 通过 SSH 调用；密码用 `-p`/`--password` 传入，程序不读 stdin，避免 SSH 调用被挂住）；`--dry-run` 只打印计划，`--skip-dsh-check` 跳过 `dsh --version` 检查；命令不提供 web 模式（要面板的用户自己装 dsh 再从 Web UI 装插件）（`test/install.test.ts` 20 条）。实际跑通的测试：protocol 32 个、crypto 23 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 13 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 15 个、tracker 13 个、skill 3 个、approval 12 个、approval-prompts 6 个、chain 12 个、acp 9 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 7 个、acceptance 4 个、ssrf 9 个、limits 6 个、dispatches 4 个、relay-auto 2 个、endpoint 4 个、multi-endpoint 2 个、heartbeat-adaptive 5 个、heartbeat-admission 2 个、ui-surface 4 个、web 15 个、panel-config 15 个、model-selection 4 个、install 20 个，共 305 个、39 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖，面板配置/override/连接 peer 由 `test/panel-config.test.ts` 覆盖，审批 park/唤醒由 `test/approval-prompts.test.ts` 覆盖。
+`orca-pod install` 已实现：生成 `config.json`（0600、`executor: "acp"`）并写 systemd unit 常驻 `orca-node serve`；`--peer <url>`（可重复）把启动 join 目标写进 unit，`--endpoint` 覆盖广播地址；用户级 unit 在无头服务器上需要 `loginctl enable-linger $USER`（安装结束会提示）。裸 `orca-pod install` 或只带 `--dry-run` 是交互式向导（workgroup id、密码隐藏输入、监听地址与端口），**只要再带任何其他参数就进入参数分支、完全不提问**（缺少 workgroup/密码直接报错退出，适合 agent 通过 SSH 调用；密码用 `-p`/`--password` 传入，程序不读 stdin，避免 SSH 调用被挂住）；`--dry-run` 只打印计划，`--skip-dsh-check` 跳过 `dsh --version` 检查；命令不提供 web 模式（要面板的用户自己装 dsh 再从 Web UI 装插件）（`test/install.test.ts` 20 条）。实际跑通的测试：protocol 32 个、crypto 23 个、membership 5 个、mesh 1 个、a2a 8 个、blobs 13 个、blobs-fs 5 个、storage-sqlite 3 个、workspace 5 个、inputs 7 个、persistence 2 个、plugin 15 个、tracker 13 个、skill 4 个、approval 12 个、approval-prompts 6 个、chain 12 个、acp 9 个、cli 10 个、escalation 4 个、watchdog 2 个、discovery 2 个、formation 6 个、transport 4 个、permission-mode 7 个、acceptance 4 个、ssrf 9 个、limits 6 个、dispatches 4 个、relay-auto 2 个、endpoint 4 个、multi-endpoint 2 个、heartbeat-adaptive 5 个、heartbeat-admission 2 个、ui-surface 4 个、web 15 个、panel-config 15 个、model-selection 4 个、install 20 个，共 306 个、39 个测试文件（`npm test`）。gateway 与 executor 的行为由 `test/a2a.test.ts` 经真实 HTTP 覆盖，插件配置/工具注册契约由 `test/plugin.test.ts` 覆盖，orca node 重启后的持久化与恢复由 `test/persistence.test.ts` 覆盖，面板配置/override/连接 peer 由 `test/panel-config.test.ts` 覆盖，审批 park/唤醒由 `test/approval-prompts.test.ts` 覆盖。
 
 ### 9.4 进程内多 orca node
 
@@ -228,7 +231,7 @@ orca-pod/（仓库根目录）
 export function apply(ctx, config) {
   const handle = startPod(config, ctx.logger)          // 非阻塞启动，失败只记日志/状态
   const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
-  if (config.skill_injection) void installSkill({ cliPath, dataRoot })  // 幂等写 user skill
+  if (config.skill_injection) void installSkill({ cliPath, dataRoot })  // 读 skills/orca-node/SKILL.md 渲染后幂等写 user skill
   ctx.effect(() => async () => { tracker.stop(); await stopPod(handle) }, "orca-pod.orca-node")
   for (const tool of createPodTools(handle, tracker, { approval: ctx.approval })) ctx.tools.register(tool)
   // 密码：原型阶段从 patch config 读；生产应改为 ctx.credentials.readRecord('orca-pod')

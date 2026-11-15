@@ -97,7 +97,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 | `allow_public_peers` | no       | `false`                         | Allow candidate endpoints on public IPs (§7.7)                          |
 | `allow_loopback_peers` | no     | `true`                          | Set `false` to reject loopback candidate endpoints (§7.7)              |
 
-orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码 = 重建组（本机 `identity.json` 保留，节点 id 不变）。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。
+orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id` 下复用，因此 node id 跨 DSH 重启保持不变；改密码 = 重建组（本机 `identity.json` 保留，节点 id 不变）。技能文件内容含 CLI 绝对路径与 `data_root`，安装是幂等的：内容没变不重写，路径变了就覆盖。技能正文模板随包发布在 `skills/orca-node/SKILL.md`（`{{cli}}` 占位符在 apply 时渲染），因此改文案不需要改 TypeScript；`package.json` 的 `files` 包含 `skills`，`dsh plugin add` 安装后模板可用。DSH 的 `project-dsh` 根（`<projectRoot>/.dsh/skills`）只对最近含 `.git` 的目录生效，而任务会话的 cwd 是 workgroup 根，所以运行时注入选择 user 根（`$DSH_HOME/skills`，覆盖本机所有 profile）。
 
 执行器选择也在本机 `config.json` 里（origin 不能指定）：`"executor": "echo" | "acp"`（插件高级设置可切换，默认 `acp`）。`acp` 对象可配 `command`（默认 `dsh`）、`profile`（默认 `acp`）、`extra_args` 与 `mcp_servers`（原样传给 `session/new`，给 ACP 会话装额外工具），它经 ACP stdio 跑长任务并承接权限挂起（[§6.14](docs/06-execution.md#614-acpexecutorphase-23-长任务执行器)）。任务的权限模式由 `pod.permission_mode` 继承，本机 `permission_mode` 是上限、取较窄者。节点自述的模型目录（`models`/`default_model`）由插件从 DSH Host 的 `llm`/`agentDefaultModel` 服务采集；纯 CLI 节点（`orca-node serve`）可在 `config.json` 手填，任务用 `pod.model` 选择非默认模型，只有 ACP 执行器能落地（[§6.15](docs/06-execution.md#615-按任务选择模型)）。
 
