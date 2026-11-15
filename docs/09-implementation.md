@@ -252,7 +252,7 @@ harness / CLI 是第三个入口：包内 bin `orca-node`（`src/cli.ts`）有 `
 
 ### 9.6 工程约定
 
-- TypeScript、ESM、Node ≥ 22（开发机为 26 LTS）；npm（不用 pnpm；单包，`npm install` 在仓库根目录一次装齐）；vitest；`tsc --noEmit` 进 CI。
+- TypeScript、ESM、Node ≥ 24（开发机为 26）；npm（不用 pnpm；单包，`npm install` 在仓库根目录一次装齐）；vitest；`tsc --noEmit` 进 CI。
 - 构建/开发的目标选型是 `tsup` + `tsx` + `biome` + `commander` + `pino`；Phase 0 尚未安装，仓库目前只有 `typescript`、`vitest`、`@types/node`。
 - 不引入框架级 DI 容器：构造函数注入足够，装配只在 `orca_node.ts`。
 - 存储：task store 用 `node:sqlite`（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM/`better-sqlite3`）；peer store 仍是内存；blob 用内容寻址的 fs 目录 + TTL GC；工作区目录由 `workspace.ts` 管理。内存实现只给单测与 harness 用（[§5.5](05-tasks.md#55-任务存储)）。

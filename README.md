@@ -158,6 +158,6 @@ npm test            # vitest run
 
 维护注意：
 
-- 包导出 TypeScript 源码（`"exports": "./src/index.ts"`），依赖 Node ≥22 的类型剥离；若 DSH 构建以保留符号链接的方式解析 linked bundle，则需要提供编译后的 JS 入口（原型阶段不做）。
+- 包导出 TypeScript 源码（`"exports": "./src/index.ts"`），依赖 Node ≥24 的类型剥离；若 DSH 构建以保留符号链接的方式解析 linked bundle，则需要提供编译后的 JS 入口（原型阶段不做）。
 - `src/` 的依赖方向靠 review 维持：`gateway.ts` 不得 import `executor.ts` 或 `harness.ts`，只有 `orca_node.ts` 负责装配。
 - 抖动/超时类测试的窗口按心跳间隔的倍数给，不按绝对毫秒。
