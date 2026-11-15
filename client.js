@@ -104,6 +104,17 @@ window.__ModuleLoader__.load({
         colModel: "model",
         colEndpoints: "endpoints",
         colOs: "os",
+        ndOpen: "details",
+        ndTitle: "Node details",
+        ndId: "node id",
+        ndLastSeen: "last seen",
+        ndRuntime: "runtime",
+        ndDefaultModel: "default model",
+        ndModels: "available models",
+        ndNoModels: "not advertised",
+        ndBudget: "task budget",
+        ndCores: "cores",
+        ndMemory: "memory",
         colTask: "task",
         colOrigin: "origin",
         colAge: "age",
@@ -228,6 +239,17 @@ window.__ModuleLoader__.load({
         colModel: "模型",
         colEndpoints: "地址",
         colOs: "系统",
+        ndOpen: "详情",
+        ndTitle: "节点详情",
+        ndId: "节点 ID",
+        ndLastSeen: "最近心跳",
+        ndRuntime: "运行环境",
+        ndDefaultModel: "默认模型",
+        ndModels: "可用模型",
+        ndNoModels: "未上报",
+        ndBudget: "单任务预算",
+        ndCores: "逻辑核心",
+        ndMemory: "内存",
         colTask: "任务",
         colOrigin: "来源",
         colAge: "时间",
@@ -707,16 +729,36 @@ window.__ModuleLoader__.load({
 
     function Members(props) {
       const members = props.members || [];
-      if (members.length === 0) return h("div", { style: MUTED }, t("noPeers"));
+      // Offline records are dropped from the roster view entirely (§3.3): the
+      // list should read as "who I can act with right now". A suspect peer keeps
+      // its row but flags itself amber.
+      const visible = members.filter((member) => member.state !== "offline");
+      if (visible.length === 0) return h("div", { style: MUTED }, t("noPeers"));
       return h(
         Table,
-        { columns: [t("colNode"), t("colState"), t("colBusy"), t("colModel"), t("colEndpoints"), t("colOs")] },
-        members.map((member) =>
+        { columns: [t("colNode"), t("colBusy"), t("colModel"), ""] },
+        visible.map((member) =>
           h(
             Row,
-            { key: member.orca_node_id },
-            h("td", { style: CELL }, member.display_name || short(member.orca_node_id)),
-            h("td", { style: CELL }, stateBadge(member.state)),
+            {
+              key: member.orca_node_id,
+              onClick: props.onOpen ? () => props.onOpen(member) : undefined,
+              rowStyle: { cursor: props.onOpen ? "pointer" : undefined },
+            },
+            h(
+              "td",
+              {
+                style: {
+                  ...CELL,
+                  color:
+                    member.state === "suspect" || member.state === "unreachable"
+                      ? STATE_COLOR[member.state]
+                      : undefined,
+                },
+                title: member.orca_node_id + " · " + stateLabel(member.state),
+              },
+              member.display_name || short(member.orca_node_id),
+            ),
             h(
               "td",
               {
@@ -738,8 +780,22 @@ window.__ModuleLoader__.load({
                 ? member.default_model.provider + "/" + member.default_model.model
                 : "-",
             ),
-            h("td", { style: MUTED }, (member.endpoints || []).join(", ") || "-"),
-            h("td", { style: MUTED }, member.runtime && member.runtime.os ? member.runtime.os.name + " " + (member.runtime.os.version || "") : "-"),
+            h(
+              "td",
+              { style: { ...CELL, textAlign: "right" } },
+              h(
+                "button",
+                {
+                  type: "button",
+                  style: BUTTON,
+                  onClick: (event) => {
+                    event.stopPropagation();
+                    if (props.onOpen) props.onOpen(member);
+                  },
+                },
+                t("ndOpen"),
+              ),
+            ),
           ),
         ),
       );
@@ -949,6 +1005,99 @@ window.__ModuleLoader__.load({
           h("div", { style: { marginTop: 6 } }, artifacts),
           h("div", { style: { ...H2, marginTop: 16 } }, t("dtInputs")),
           h("div", { style: { marginTop: 6 } }, inputs),
+        ),
+      );
+    }
+
+    /* ----- node detail ---------------------------------------------------- */
+
+    function NodeDetail(props) {
+      const member = props.detail;
+      const runtime = member.runtime || null;
+      const models = Array.isArray(member.models) ? member.models : [];
+      const endpoints = Array.isArray(member.endpoints) ? member.endpoints : [];
+      React.useEffect(() => {
+        function onKey(event) {
+          if (event.key === "Escape") props.onClose();
+        }
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [props]);
+      function field(label, value, key) {
+        return h(
+          "div",
+          { key: key || label, style: { display: "flex", gap: 10, marginTop: 6, alignItems: "baseline" } },
+          h("div", { style: { ...MUTED, minWidth: 72 } }, label),
+          h("div", { style: { flex: 1, minWidth: 0, wordBreak: "break-word" } }, value),
+        );
+      }
+      const osText =
+        runtime && runtime.os
+          ? [runtime.os.name, runtime.os.version].filter(Boolean).join(" ") + (runtime.os.family ? " · " + runtime.os.family : "")
+          : "-";
+      const cpuText =
+        runtime && runtime.cpu ? runtime.cpu.model + " · " + String(runtime.cpu.logical_cores) + " " + t("ndCores") : "-";
+      const memoryText =
+        runtime && runtime.memory && runtime.memory.total_bytes > 0
+          ? (runtime.memory.total_bytes / 1073741824).toFixed(1) + " GiB"
+          : "-";
+      const nodeText = runtime && runtime.node ? "node " + runtime.node.version + (runtime.arch ? " · " + runtime.arch : "") : "-";
+      const defaultModel = member.default_model
+        ? member.default_model.provider +
+          "/" +
+          member.default_model.model +
+          (member.default_model.reasoning_effort ? " · " + member.default_model.reasoning_effort : "")
+        : "-";
+      const modelRows =
+        models.length === 0
+          ? [h("div", { key: "none", style: MUTED }, t("ndNoModels"))]
+          : models.map((model) =>
+              h(
+                "div",
+                { key: model.provider + "/" + model.model, style: { marginTop: 6 } },
+                h("div", { style: { fontFamily: MONO_FONT } }, model.provider + "/" + model.model),
+                model.name || model.description
+                  ? h("div", { style: { ...MUTED, fontSize: 12 } }, [model.name, model.description].filter(Boolean).join(" · "))
+                  : null,
+              ),
+            );
+      return h(
+        "div",
+        {
+          style: OVERLAY,
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) props.onClose();
+          },
+        },
+        h(
+          "div",
+          { style: { ...CARD, width: "min(620px, calc(100vw - 40px))", maxHeight: "min(82vh, 860px)" } },
+          h("button", { type: "button", style: CLOSE_BUTTON, title: t("close"), onClick: props.onClose }, "×"),
+          h("div", { style: { ...H2, marginBottom: 6 } }, t("ndTitle")),
+          field(t("colNode"), member.display_name || short(member.orca_node_id)),
+          field(t("ndId"), member.orca_node_id, "nd-id"),
+          field(t("colState"), stateLabel(member.state)),
+          field(
+            t("colBusy"),
+            member.busy
+              ? short(member.busy.task_id) + " · " + t("busyOrigin") + approvalsName(props.members || [], member.busy.origin_orca_node)
+              : t("idle"),
+            "nd-busy",
+          ),
+          field(t("ndLastSeen"), member.last_recv_at ? age(member.last_recv_at) + t("updatedSuffix") : "-"),
+          field(t("ndBudget"), member.max_task_ttl_s ? String(member.max_task_ttl_s) + " s" : "-"),
+          h("div", { style: { ...H2, marginTop: 16 } }, t("ndRuntime")),
+          field(t("colOs"), osText),
+          field("cpu", cpuText, "nd-cpu"),
+          field(t("ndMemory"), memoryText, "nd-memory"),
+          field("node", nodeText, "nd-node"),
+          h("div", { style: { ...H2, marginTop: 16 } }, t("ndModels")),
+          field(t("ndDefaultModel"), defaultModel),
+          ...modelRows,
+          h("div", { style: { ...H2, marginTop: 16 } }, t("colEndpoints")),
+          endpoints.length === 0
+            ? h("div", { style: MUTED }, "-")
+            : endpoints.map((url) => h("div", { key: url, style: { fontFamily: MONO_FONT, wordBreak: "break-all", marginTop: 4, fontSize: 12 } }, url)),
         ),
       );
     }
@@ -1285,10 +1434,11 @@ window.__ModuleLoader__.load({
       const members = Array.isArray(state.members) ? state.members : [];
       // The header button reflects the live mesh, not the remembered peer list:
       // saved peers that stop answering must read as "Connect", not "Disconnect".
-      const joined = members.length > 0;
+      const joined = members.some((member) => member.state !== "offline");
       const dispatches = Array.isArray(state.dispatches) ? state.dispatches : [];
       const inputsDirs = state.workspace && Array.isArray(state.workspace.inputs_dirs) ? state.workspace.inputs_dirs : [];
       const [detail, setDetail] = React.useState(null);
+      const [nodeDetail, setNodeDetail] = React.useState(null);
 
       function openDetail(task) {
         const artifacts = state.artifacts && Array.isArray(state.artifacts[task.id]) ? state.artifacts[task.id] : [];
@@ -1384,10 +1534,11 @@ window.__ModuleLoader__.load({
           : null,
         h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, busy: props.busy, onAct: props.onAct })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct, onOpen: openDetail })),
-        h("div", { style: SECTION }, h("div", { style: H2 }, t("members")), h(Members, { members: state.members })),
+        h("div", { style: SECTION }, h("div", { style: H2 }, t("members")), h(Members, { members: state.members, onOpen: setNodeDetail })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("workspace")), h(Workspace, { workspace: state.workspace })),
         h("div", { style: { ...SECTION, color: "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px" } }, t("updated") + age(state.now) + t("updatedSuffix")),
         detail ? h(TaskDetail, { detail, members, onClose: () => setDetail(null) }) : null,
+        nodeDetail ? h(NodeDetail, { detail: nodeDetail, members, onClose: () => setNodeDetail(null) }) : null,
       );
     }
 
@@ -1528,13 +1679,16 @@ window.__ModuleLoader__.load({
       // the mesh has peers, amber while a human decision is waiting, grey otherwise.
       const { state } = usePodState();
       const members = state && Array.isArray(state.members) ? state.members : [];
+      // Only reachable peers count as "connected": offline records stay in the
+      // roster snapshot but must not keep the light green.
+      const reachable = members.filter((member) => member.state !== "offline");
       const approvals = state && Array.isArray(state.approvals) ? state.approvals : [];
       const prompts = state && Array.isArray(state.prompts) ? state.prompts : [];
       const pending = approvals.length + prompts.length;
       const color =
         pending > 0
           ? "var(--dsw-alias-state-warn-primary)"
-          : members.length > 0
+          : reachable.length > 0
             ? "var(--dsw-alias-state-success-primary)"
             : "var(--dsw-alias-label-secondary)";
       const title = pending > 0 ? t("nav") + " · " + pending + " " + t("pendingApprovals") : t("nav");
