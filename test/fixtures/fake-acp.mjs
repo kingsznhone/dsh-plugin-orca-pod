@@ -8,8 +8,12 @@
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-const mode = process.argv[2] ?? "ok";
-const logFile = process.argv[3] ?? null;
+// Skip trailing option-looking args the executor appends (e.g. `--profile acp`):
+// without this guard argv[3] would become a log path literally named "--profile".
+const rawMode = process.argv[2] ?? "ok";
+const mode = rawMode.startsWith("-") ? "ok" : rawMode;
+const rawLog = process.argv[3] ?? null;
+const logFile = rawLog !== null && !rawLog.startsWith("-") ? rawLog : null;
 const sessions = new Set();
 let counter = 0;
 let permissionSeq = 1000;

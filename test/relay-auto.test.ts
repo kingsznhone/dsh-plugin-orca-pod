@@ -61,10 +61,18 @@ describe("automatic chain ascent (7.12)", () => {
   it("parks the parent task when a linked child asks for permission, then resumes the child on approval", async () => {
     const root = await makeNode();
     const leaf = await makeNode();
+    // The ACP child receives `--profile acp` after our extra args, so give the
+    // fake server an explicit log path; otherwise it appends its NDJSON log to
+    // a file literally named "--profile" in the workspace.
+    const acpRoot = mkdtempSync(join(tmpdir(), "orca-relay-acp-"));
+    roots.push(acpRoot);
     // The middle node's local task stays "working" while it delegates, like an
     // agent that keeps thinking after dispatching a child (§7.12).
     const middle = await makeNode(
-      createAcpExecutor({ command: process.execPath, extra_args: [FAKE_ACP, "hang"] }),
+      createAcpExecutor({
+        command: process.execPath,
+        extra_args: [FAKE_ACP, "hang", join(acpRoot, "acp.log")],
+      }),
     );
 
     const parentView = await root.sendTask(middle.endpoints[0]!, {
