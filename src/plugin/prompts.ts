@@ -21,6 +21,8 @@ export interface ApprovalPrompt {
   request_id: string
   tool: string
   requested: unknown
+  /** Full request so the UI can show the relay chain and the real requester (§7.12). */
+  request: PermissionRequest
   agent_id: string
   created_at: string
 }
@@ -104,6 +106,7 @@ export function createApprovalPrompts(now: () => number = Date.now): ApprovalPro
       request_id: input.request.request_id,
       tool: input.request.tool,
       requested: input.request.requested,
+      request: input.request,
       agent_id: input.agent_id,
       created_at: new Date(now()).toISOString(),
     }

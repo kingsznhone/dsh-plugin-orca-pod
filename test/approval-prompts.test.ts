@@ -113,6 +113,7 @@ describe("approval prompts", () => {
     const prompts = createApprovalPrompts()
     const pending = prompts.request({ peer: PEER, task_id: TASK, request: REQUEST, agent_id: "session-1" })
     expect(prompts.list()).toEqual([pending.prompt])
+    expect(prompts.list()[0]!.request).toBe(REQUEST)
     expect(prompts.resolve(PEER, TASK, "allow")).toBe(true)
     await expect(pending.wait()).resolves.toBe("allow")
     expect(prompts.list()).toEqual([])

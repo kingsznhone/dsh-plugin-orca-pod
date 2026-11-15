@@ -1997,7 +1997,13 @@ window.__ModuleLoader__.load({
     /** One parked approve prompt; the dock and the popup share it. */
     function PromptCard(props) {
       const prompt = props.prompt;
-      const request = prompt.request || {};
+      // The tracker-parked prompt carries the flat fields; the panel approvals
+      // carry the full request. Fall back to the latter so the chat card can show
+      // the relay chain without a Host restart.
+      const parked = (props.approvals || []).find(
+        (item) => item && item.task_id === prompt.task_id && item.peer === prompt.peer,
+      );
+      const request = prompt.request || (parked && parked.request) || {};
       const tool = request.tool || prompt.tool || "";
       const requested = describeRequested(request.requested);
       const meta = prompt.peer + " · " + t("apTask") + " " + prompt.task_id;
@@ -2087,7 +2093,7 @@ window.__ModuleLoader__.load({
       const prompts = (state && state.prompts) || [];
       const mine = sessionId ? prompts.filter((prompt) => prompt.agent_id === sessionId) : [];
       if (mine.length === 0) return null;
-      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, self: state && state.self, busy, onAct: act })));
+      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, self: state && state.self, approvals: state && state.approvals, busy, onAct: act })));
     }
 
     /** Frame-wide popup: prompts parked by sessions that are not on screen. */
@@ -2100,7 +2106,7 @@ window.__ModuleLoader__.load({
       return h(
         "div",
         { style: POPUP_WRAP },
-        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, self: state && state.self, busy, onAct: act, background: true })),
+        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, self: state && state.self, approvals: state && state.approvals, busy, onAct: act, background: true })),
       );
     }
 
