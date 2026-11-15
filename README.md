@@ -60,7 +60,7 @@ the config afterwards.
 
 在没有桌面的 Linux 机器上，`npx orca-pod install` 会把本机的 orca-pod 主机节点注册成 systemd 服务，常驻 `orca-node serve`（不需要浏览器或 dsh web）。它不做“模式选择”：要面板的用户自己装 DeepSeek Harness，再从它的 Web UI 里安装本插件；`install` 只负责 headless 宿主。
 
-直接运行 `orca-pod install` 会进入交互式设置，询问 workgroup id、密码（隐藏输入）、监听地址与端口；也可以把答案全部作为参数传入，适合让 agent 通过 SSH 安装（`--non-interactive` 下缺答案会直接失败而不是等待输入）。密码建议用 `--password-stdin` 传入，避免出现在 shell 历史和进程参数里。
+直接运行 `orca-pod install`（或只带 `--dry-run`）会进入交互式设置，询问 workgroup id、密码（隐藏输入）、监听地址与端口。**只要再带任何其他参数**，install 就进入参数分支、完全不提问：所有必填答案都要通过参数给出（缺少 workgroup/密码会直接报错退出），适合让 agent 通过 SSH 安装。密码用 `-p`/`--password <文本>` 传入；程序不读 stdin，避免 agent 的 SSH 调用被挂住或等待输入。
 
 `install` 会检查 `dsh --version`、生成 `<data_root>/config.json`（0600、默认 `executor: "acp"`）、写 unit 并 `enable --now`；`--dry-run` 只打印计划，`--system` 装到系统级、默认装到用户级 systemd，`--skip-dsh-check` 跳过 dsh 检查。
 
@@ -68,14 +68,15 @@ the config afterwards.
 # 交互式（终端里运行）
 npx orca-pod install
 
-# 全部参数化（agent 在 SSH 上安装时推荐）
-npx orca-pod install --workgroup orca-demo --password-stdin < secret.txt --non-interactive
+# 全参数（agent 在 SSH 上安装时推荐；不会提问）
+npx orca-pod install --workgroup orca-demo -p 'secret'
 
 # 先看会写什么、执行什么
-npx orca-pod install --dry-run --workgroup orca-demo --password-stdin < secret.txt
+npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 ```
 
 节点只监听节点端口（默认 11811）；不要通过代理暴露 `/cluster/child-link` 与 `/cluster/task`（它们只接受回环请求）。
+
 
 
 ## 配置

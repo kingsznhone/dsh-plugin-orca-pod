@@ -21,6 +21,7 @@ import {
   type InstallOptions,
   type PromptQuestion,
 } from "../src/install.ts";
+import { isInteractiveInvocation, main, parseArguments } from "../src/orca-pod.ts";
 
 const roots: string[] = [];
 
@@ -237,5 +238,63 @@ describe("service installation", () => {
     });
     expect(result.commands).toEqual([]);
     expect(commands).toEqual([]);
+  });
+});
+
+describe("install invocation", () => {
+  it("treats only a bare install or --dry-run as interactive", () => {
+    expect(isInteractiveInvocation(parseArguments(["install"]))).toBe(true);
+    expect(isInteractiveInvocation(parseArguments(["install", "--dry-run"]))).toBe(true);
+    expect(isInteractiveInvocation(parseArguments(["install", "--workgroup", "lab"]))).toBe(false);
+    expect(isInteractiveInvocation(parseArguments(["install", "--no-start"]))).toBe(false);
+  });
+
+  it("accepts -p as the password flag", () => {
+    expect(parseArguments(["install", "-p", "lab-secret"]).values.get("password")).toEqual(["lab-secret"]);
+  });
+
+  it("fails a flag-driven install that lacks required answers", async () => {
+    const root = await tempRoot();
+    const errors: string[] = [];
+    const code = await main(["install", "--dry-run", "--data-root", join(root, "data")], {
+      environment: environment(root),
+      write: () => undefined,
+      writeError: (text) => errors.push(text),
+    });
+    expect(code).toBe(1);
+    expect(errors.join("\n")).toContain("--workgroup");
+    expect(errors.join("\n")).not.toContain("interactively?");
+  });
+
+  it("refuses to prompt without a terminal", async () => {
+    const root = await tempRoot();
+    const errors: string[] = [];
+    const code = await main(["install", "--dry-run"], {
+      environment: environment(root),
+      canPrompt: false,
+      write: () => undefined,
+      writeError: (text) => errors.push(text),
+    });
+    expect(code).toBe(1);
+    expect(errors.join("\n")).toContain("needs a terminal");
+  });
+
+  it("asks the four setup questions for a bare dry-run", async () => {
+    const root = await tempRoot();
+    const output: string[] = [];
+    const asked: string[] = [];
+    const answers: Record<string, string> = { workgroup: "lab", password: "lab-secret", "bind-host": "", port: "" };
+    const code = await main(["install", "--dry-run"], {
+      environment: environment(root),
+      write: (text) => output.push(text),
+      prompt: async (question: PromptQuestion) => {
+        asked.push(question.option);
+        return answers[question.option] ?? "";
+      },
+    });
+    expect(code).toBe(0);
+    expect(asked).toEqual(["workgroup", "password", "bind-host", "port"]);
+    expect(output.join("\n")).toContain("[Unit]");
+    expect(output.join("\n")).toContain("listen:    [::]:11811");
   });
 });

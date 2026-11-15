@@ -7,11 +7,16 @@
  * DeepSeek Harness themselves and add the plugin from its web UI; this command
  * deliberately has no `web` mode.
  *
+ * Invocation has two shapes:
+ *  - `orca-pod install` or `orca-pod install --dry-run`: an interactive setup
+ *    asks for the workgroup id, password, listen address and port;
+ *  - any other option makes it fully flag-driven: missing required answers fail
+ *    immediately, which is what an agent installing over SSH needs.
+ *
  * Planning and rendering live in `src/install.ts`; this file owns argument
  * parsing, the interactive readline session and console output.
  */
 
-import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
@@ -33,14 +38,16 @@ const USAGE = `Usage: orca-pod install [options]
 
 Register this machine's orca-pod host node as a systemd service. The unit runs
 \`orca-node serve\`, so the node keeps listening without a browser or desktop app.
-Run it without flags in a terminal for an interactive setup, or pass every answer
-as a flag (recommended when an agent installs over SSH): then install is fully
-non-interactive.
+
+Run \`orca-pod install\` (or \`orca-pod install --dry-run\`) in a terminal for the
+interactive setup. Passing any other option makes install fully flag-driven and
+it never prompts: pass every required answer, which is what an agent installing
+over SSH should do.
 
 Options:
+  -p, --password <secret>
+                        Workgroup password
   --workgroup <id>      Workgroup id
-  --password <secret>   Workgroup password (prefer --password-stdin on shared shells)
-  --password-stdin      Read the workgroup password from stdin
   --data-root <path>    Node data directory (default: ~/.orca-pod)
   --bind-host <addr>    Listen address (default: ::, all interfaces)
   --port <number>       Listen port (default: 11811)
@@ -51,21 +58,22 @@ Options:
   --no-start            Write the unit but do not enable/start it
   --force               Rewrite an existing unit and node config
   --dry-run             Print the plan without writing anything
-  --non-interactive     Fail instead of prompting when answers are missing
   --skip-dsh-check      Do not require \`dsh --version\` to succeed
   -h, --help            Show this help
 
 Examples:
   npx orca-pod install
-  npx orca-pod install --workgroup lab --password-stdin < secret.txt --non-interactive
-  sudo npx orca-pod install --system --workgroup lab --password-stdin < secret.txt
-  npx orca-pod install --dry-run --workgroup lab --password '...'
+  npx orca-pod install --workgroup lab --password 'secret'
+  sudo npx orca-pod install --system --workgroup lab --password 'secret'
+  npx orca-pod install --dry-run --workgroup lab --password 'secret'
 `;
 
 interface ParsedArguments {
   command: string | null;
   values: Map<string, string[]>;
   booleans: Set<string>;
+  /** Options the caller supplied, excluding `--dry-run` and help. */
+  explicit: Set<string>;
 }
 
 const VALUE_FLAGS = new Set([
@@ -85,26 +93,42 @@ const BOOLEAN_FLAGS = new Set([
   "no-start",
   "force",
   "dry-run",
-  "non-interactive",
-  "password-stdin",
   "skip-dsh-check",
   "help",
 ]);
 
+/** Options that do not turn install into the flag-driven branch. */
+const INTERACTIVE_NEUTRAL = new Set(["dry-run", "help"]);
+
 export function parseArguments(argv: string[]): ParsedArguments {
   const values = new Map<string, string[]>();
   const booleans = new Set<string>();
+  const explicit = new Set<string>();
   let command: string | null = null;
+  const record = (name: string): void => {
+    if (!INTERACTIVE_NEUTRAL.has(name)) explicit.add(name);
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
     if (token === "-h" || token === "--help") {
       booleans.add("help");
       continue;
     }
+    if (token === "-p") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error("-p needs a value");
+      const list = values.get("password") ?? [];
+      list.push(value);
+      values.set("password", list);
+      record("password");
+      index += 1;
+      continue;
+    }
     if (token.startsWith("--")) {
       const name = token.slice(2);
       if (BOOLEAN_FLAGS.has(name)) {
         booleans.add(name);
+        record(name);
         continue;
       }
       if (VALUE_FLAGS.has(name)) {
@@ -115,6 +139,7 @@ export function parseArguments(argv: string[]): ParsedArguments {
         const list = values.get(name) ?? [];
         list.push(value);
         values.set(name, list);
+        record(name);
         index += 1;
         continue;
       }
@@ -126,7 +151,12 @@ export function parseArguments(argv: string[]): ParsedArguments {
     }
     throw new Error(`unexpected argument ${token}`);
   }
-  return { command, values, booleans };
+  return { command, values, booleans, explicit };
+}
+
+/** True only for `install` (plus `--dry-run`/help), i.e. no setup flags. */
+export function isInteractiveInvocation(parsed: ParsedArguments): boolean {
+  return parsed.explicit.size === 0;
 }
 
 function first(parsed: ParsedArguments, name: string): string | undefined {
@@ -144,12 +174,10 @@ function numberFlag(parsed: ParsedArguments, name: string): number | undefined {
 }
 
 export interface MainDeps {
-  /** Defaults to `process.stdin.isTTY`. */
-  interactive?: boolean;
   /** Defaults to a readline session on stdin/stdout. */
   prompt?: PromptFn;
-  /** Defaults to reading stdin as UTF-8 (for --password-stdin). */
-  readStdin?: () => string;
+  /** Defaults to `process.stdin.isTTY`; false never prompts (SSH without -t). */
+  canPrompt?: boolean;
   environment?: Partial<InstallEnvironment>;
   write?: (text: string) => void;
   writeError?: (text: string) => void;
@@ -184,7 +212,7 @@ function missingAnswerFlags(questions: readonly PromptQuestion[]): string {
   const flags: string[] = [];
   for (const question of questions) {
     if (question.option === "workgroup") flags.push("--workgroup");
-    else if (question.option === "password") flags.push("--password or --password-stdin");
+    else if (question.option === "password") flags.push("--password");
     else if (question.option === "bind-host") flags.push("--bind-host");
     else if (question.option === "port") flags.push("--port");
   }
@@ -204,8 +232,6 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     return 2;
   }
 
-  const readStdin = deps.readStdin ?? (() => readFileSync(0, "utf8"));
-  const passwordFromStdin = parsed.booleans.has("password-stdin") ? readStdin().trim() : undefined;
   const dataRoot = first(parsed, "data-root");
   const options: InstallOptions = {
     system: parsed.booleans.has("system"),
@@ -215,7 +241,6 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     ...(first(parsed, "service-name") === undefined ? {} : { serviceName: first(parsed, "service-name")! }),
     ...(first(parsed, "workgroup") === undefined ? {} : { workgroupId: first(parsed, "workgroup")! }),
     ...(first(parsed, "password") === undefined ? {} : { password: first(parsed, "password")! }),
-    ...(passwordFromStdin === undefined || passwordFromStdin === "" ? {} : { password: passwordFromStdin }),
     ...(first(parsed, "display-name") === undefined ? {} : { displayName: first(parsed, "display-name")! }),
     ...(first(parsed, "bind-host") === undefined ? {} : { bindHost: first(parsed, "bind-host")! }),
     ...(numberFlag(parsed, "port") === undefined ? {} : { port: numberFlag(parsed, "port")! }),
@@ -228,13 +253,18 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   });
   const plan = planInstall(options, environment);
 
-  const interactive = deps.interactive ?? process.stdin.isTTY === true;
   let answers: InstallOptions = options;
+  const interactive = isInteractiveInvocation(parsed);
+  const canPrompt = deps.canPrompt ?? (deps.prompt !== undefined || process.stdin.isTTY === true);
   const questions = installQuestions(plan, answers);
   if (questions.length > 0) {
-    if (deps.interactive === false || !interactive || parsed.booleans.has("non-interactive")) {
+    if (!interactive || !canPrompt) {
       writeError(`install needs answers for a new node config: ${missingAnswerFlags(questions)}.`);
-      writeError("Pass them as flags (with --non-interactive for agents), or run install in a terminal for the interactive setup.");
+      if (!interactive) {
+        writeError("Pass them as flags (for example --workgroup lab --password 'secret'); running bare `orca-pod install` would ask interactively.");
+      } else {
+        writeError("The interactive setup needs a terminal; pass the answers as flags (for example --workgroup lab --password 'secret').");
+      }
       return 1;
     }
     answers = await promptForInstall(plan, answers, deps.prompt ?? defaultPrompt());
