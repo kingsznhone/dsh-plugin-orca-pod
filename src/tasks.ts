@@ -549,6 +549,20 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     }
   }
 
+  /**
+   * The task view tells every reader which node created the task, so the panel
+   * can show its origin without a second lookup. `rec.metadata` stays exactly
+   * what the caller sent; only the returned/stored view gets the extra key.
+   */
+  function viewMetadataWithOrigin(
+    metadata: Record<string, unknown> | undefined,
+    origin: string,
+  ): Record<string, unknown> {
+    const base = metadata ?? {};
+    const pod = (base["pod"] as Record<string, unknown> | undefined) ?? {};
+    return { ...base, pod: { ...pod, origin } };
+  }
+
   function submit(input: SubmitTaskInput): TaskView {
     if (activeTaskId !== null) throw new TaskError("orca_node_busy", "orca node is busy with another task");
     validatePodMetadata(input.metadata, selfOrcaNodeId);
@@ -574,7 +588,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         id,
         contextId,
         status: { state: "submitted", timestamp: createdAt },
-        metadata: input.metadata ?? {},
+        metadata: viewMetadataWithOrigin(input.metadata, input.originOrcaNode ?? selfOrcaNodeId),
       },
       metadata: input.metadata,
       origin_orca_node: input.originOrcaNode ?? "unknown",

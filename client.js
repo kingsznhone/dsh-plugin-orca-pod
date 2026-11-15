@@ -137,6 +137,7 @@ window.__ModuleLoader__.load({
         dtUsage: "usage",
         dtReason: "reason",
         dtMessage: "message",
+        dtOrigin: "origin",
         dtTimeline: "timeline",
         dtCreated: "created",
         dtModel: "model",
@@ -276,6 +277,7 @@ window.__ModuleLoader__.load({
         dtUsage: "用量",
         dtReason: "原因",
         dtMessage: "消息",
+        dtOrigin: "来源",
         dtTimeline: "时间线",
         dtCreated: "创建",
         dtModel: "模型",
@@ -1712,13 +1714,17 @@ window.__ModuleLoader__.load({
           "div",
           { style: { display: "flex", alignItems: "center", gap: 12, paddingRight: 26 } },
           h("div", { style: TITLE }, t("nav")),
-          h("div", { style: { ...MUTED, fontFamily: MONO_FONT }, title: self ? self.orca_node_id : undefined }, self ? short(self.orca_node_id) : t("nodeNotRunning")),
-          self ? stateBadge(self.state) : null,
           h("div", { style: { flex: 1 } }),
           connectionControl,
           h("button", { type: "button", style: ICON_BUTTON, title: t("settings"), onClick: props.onOpenSettings }, "⚙"),
         ),
-        h("div", { style: { ...MUTED, marginTop: 2 } }, t("workgroup") + " " + (config.workgroup_id || (self ? self.workgroup_id : "-"))),
+        h(
+          "div",
+          { style: { ...MUTED, marginTop: 2 }, title: self ? self.orca_node_id : undefined },
+          (self ? self.display_name || short(self.orca_node_id) : t("nodeNotRunning")) +
+            " @ " +
+            (config.workgroup_id || (self ? self.workgroup_id : "-")),
+        ),
         self && self.busy
           ? h(
               "div",
@@ -1772,7 +1778,7 @@ window.__ModuleLoader__.load({
         h("div", { style: SECTION }, h("div", { style: H2 }, t("workspace")), h(Workspace, { workspace: state.workspace })),
         h("div", { style: { ...SECTION, color: "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px" } }, t("updated") + age(state.now) + t("updatedSuffix")),
         allOpen ? h(AllTasks, { data: allData, error: allError, members, busy: props.busy, onAct: props.onAct, onOpenTask: openAllTask, onOpenDispatch: (dispatch) => openDispatch(dispatch, true), onClose: () => setAllOpen(false) }) : null,
-        detail ? h(TaskDetail, { detail, members, onClose: () => setDetail(null) }) : null,
+        detail ? h(TaskDetail, { detail, members: self ? [self].concat(members) : members, onClose: () => setDetail(null) }) : null,
         nodeDetail ? h(NodeDetail, { detail: nodeDetail, members, onClose: () => setNodeDetail(null) }) : null,
       );
     }
