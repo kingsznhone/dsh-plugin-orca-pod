@@ -52,6 +52,7 @@ Options:
   --bind-host <addr>    Listen address (default: ::, all interfaces)
   --port <number>       Listen port (default: 11811)
   --endpoint <url>      Advertised endpoint; repeatable
+  --peer <url>          Peer to join at startup; repeatable
   --display-name <name> Human-readable node name
   --service-name <name> systemd unit name (default: orca-pod)
   --system              Install a system-wide unit under /etc/systemd/system
@@ -83,6 +84,7 @@ const VALUE_FLAGS = new Set([
   "bind-host",
   "port",
   "endpoint",
+  "peer",
   "display-name",
   "service-name",
   "dsh-bin",
@@ -245,6 +247,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     ...(first(parsed, "bind-host") === undefined ? {} : { bindHost: first(parsed, "bind-host")! }),
     ...(numberFlag(parsed, "port") === undefined ? {} : { port: numberFlag(parsed, "port")! }),
     ...(parsed.values.get("endpoint") === undefined ? {} : { endpoints: [...parsed.values.get("endpoint")!] }),
+    ...(parsed.values.get("peer") === undefined ? {} : { peers: [...parsed.values.get("peer")!] }),
   };
   const environment = resolveEnvironment({
     ...(first(parsed, "dsh-bin") === undefined ? {} : { dshBin: first(parsed, "dsh-bin")! }),
@@ -313,6 +316,11 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     for (const command of resolvedPlan.commands) write(`  ${command.join(" ")}`);
   } else {
     write(`orca-pod: ${resolvedPlan.serviceName} enabled and started`);
+  }
+  if (!resolvedPlan.system) {
+    write(
+      "orca-pod: note: on a headless server run `loginctl enable-linger $USER` so this user service keeps running after logout.",
+    );
   }
   return 0;
 }

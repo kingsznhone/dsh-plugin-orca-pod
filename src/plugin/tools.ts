@@ -55,13 +55,17 @@ function requiredString(args: Record<string, unknown>, key: string): string {
   return value.trim()
 }
 
-/** Accept `http://host:port` as well as a bare `host:port` endpoint. */
+/** Accept `http://host:port` as well as a bare `host` or `host:port` endpoint. */
 function normalizePeer(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error("peer must be a non-empty string holding the peer endpoint URL")
   }
   const raw = value.trim()
-  const candidate = /^https?:\/\//i.test(raw) ? raw : /^[^\s/]+:\d+$/.test(raw) ? `http://${raw}` : raw
+  const candidate = /^https?:\/\//i.test(raw)
+    ? raw
+    : /:[0-9]+$/.test(raw)
+      ? `http://${raw}`
+      : `http://${raw}:11811`
   if (!isHttpEndpoint(candidate)) {
     throw new Error("peer must be an http(s) URL such as http://127.0.0.1:11811")
   }
@@ -369,5 +373,42 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
     },
   }
 
-  return [send, status, cancel, approve, members]
+  const connect: ToolDefinition = {
+    name: "pod_connect",
+    description:
+      "Join another Orca node into this mesh. Use this when the user wants to connect a peer that is not in pod_members yet, " +
+      "for example a server that just ran `orca-pod install`. The peer must be configured for the same workgroup; this call " +
+      "joins it once, remembers the peer so this node rejoins it on restart, and returns the refreshed member list. " +
+      "Bare hosts and host:port are accepted; the port defaults to 11811.",
+    parameters: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Peer endpoint URL, e.g. http://192.168.1.20:11811 (bare host or host:port is accepted).",
+        },
+      },
+      required: ["peer"],
+      additionalProperties: false,
+    },
+    output: { schema: OUTPUT_SCHEMA, render: renderJson },
+    async execute(args) {
+      const record = asRecord(args)
+      const peer = normalizePeer(record["peer"])
+      await requireNode(handle)
+      try {
+        await handle.addPeer(peer)
+      } catch (error) {
+        throw describeError("pod_connect", error)
+      }
+      const orcaNode = await requireNode(handle)
+      return {
+        peer,
+        members: orcaNode.members().map(peerSummary),
+        members_digest: orcaNode.membersDigest(),
+      }
+    },
+  }
+
+  return [send, status, cancel, approve, members, connect]
 }

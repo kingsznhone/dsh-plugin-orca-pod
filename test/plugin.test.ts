@@ -89,13 +89,14 @@ describe("pod tools", () => {
   const tracker = createTracker(() => null, { intervalMs: 60_000 })
   const tools = createPodTools(handle, tracker)
 
-  it("registers the five pod tools", () => {
+  it("registers the six pod tools", () => {
     expect(tools.map((candidate) => candidate.name)).toEqual([
       "pod_send",
       "pod_status",
       "pod_cancel",
       "pod_approve",
       "pod_members",
+      "pod_connect",
     ])
   })
 
@@ -132,5 +133,41 @@ describe("pod tools", () => {
       /orca node is not running/,
     )
     await expect(tool(tools, "pod_members").execute({})).rejects.toThrow(/orca node is not running/)
+    await expect(tool(tools, "pod_connect").execute({ peer: "127.0.0.1:11811" })).rejects.toThrow(
+      /orca node is not running/,
+    )
+  })
+
+  it("validates the pod_connect peer before touching the orca node", async () => {
+    await expect(tool(tools, "pod_connect").execute({})).rejects.toThrow(/peer/)
+    await expect(tool(tools, "pod_connect").execute({ peer: "not a url" })).rejects.toThrow(/http/)
+  })
+
+  it("joins a peer and returns the refreshed members", async () => {
+    const seen: string[] = []
+    const fakeNode = {
+      members: () => [],
+      membersDigest: () => "digest",
+    } as unknown as import("../src/orca_node.ts").OrcaNode
+    const handleForConnect = {
+      ready: Promise.resolve(),
+      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
+      config: { workgroup_id: "wg-a", workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] },
+      uiConfigured: true,
+      reconfigure: async () => {},
+      addPeer: async (peer: string) => {
+        seen.push(peer)
+      },
+      disconnect: async () => {},
+      reset: async () => {},
+    } as unknown as PodHandle
+    const connectTools = createPodTools(handleForConnect, tracker)
+    const result = await tool(connectTools, "pod_connect").execute({ peer: "192.168.1.20" })
+    expect(seen).toEqual(["http://192.168.1.20:11811"])
+    expect(result).toEqual({
+      peer: "http://192.168.1.20:11811",
+      members: [],
+      members_digest: "digest",
+    })
   })
 })

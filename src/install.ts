@@ -32,6 +32,8 @@ export interface InstallOptions {
   password?: string;
   endpoints?: string[];
   displayName?: string;
+  /** Peers the service unit joins on startup (`serve --peer ...`). */
+  peers?: string[];
   /** Path to the `dsh` executable; defaults to `dsh` on PATH. */
   dshBin?: string;
   /** Path to the `node` executable used by the unit. */
@@ -104,7 +106,14 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
     unitPath,
     dataRoot,
     configPath: config,
-    execStart: [env.nodeBin, env.packageEntry, "serve", "--config", config],
+    execStart: [
+      env.nodeBin,
+      env.packageEntry,
+      "serve",
+      "--config",
+      config,
+      ...(options.peers ?? []).flatMap((peer) => ["--peer", peer]),
+    ],
     commands: [
       [...systemctl, "daemon-reload"],
       [...systemctl, "enable", "--now", serviceName],

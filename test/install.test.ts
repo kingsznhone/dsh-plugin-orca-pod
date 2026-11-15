@@ -79,6 +79,30 @@ describe("install plan", () => {
     expect(unit).toContain(`ExecStart=${plan.execStart.map(systemdQuote).join(" ")}`);
   });
 
+  it("joins the given peers from the service unit", () => {
+    const env = environment("/home/u");
+    const dataRoot = "/srv/orca-pod";
+    const plan = planInstall(
+      hostOptions({
+        dataRoot,
+        peers: ["http://192.168.86.152:11811", "http://192.168.86.252:11811"],
+      }),
+      env,
+    );
+    expect(plan.execStart).toEqual([
+      "/usr/bin/node",
+      "/opt/orca-pod/src/cli.ts",
+      "serve",
+      "--config",
+      join(dataRoot, "config.json"),
+      "--peer",
+      "http://192.168.86.152:11811",
+      "--peer",
+      "http://192.168.86.252:11811",
+    ]);
+    expect(renderUnit(plan)).toContain("ExecStart=");
+  });
+
   it("plans a system service under /etc/systemd/system", () => {
     const plan = planInstall(hostOptions({ system: true, serviceName: "org.example.orca" }), environment("/home/u"));
     expect(plan.unitPath).toBe(join("/etc/systemd/system", "org.example.orca.service"));
@@ -251,6 +275,18 @@ describe("install invocation", () => {
 
   it("accepts -p as the password flag", () => {
     expect(parseArguments(["install", "-p", "lab-secret"]).values.get("password")).toEqual(["lab-secret"]);
+  });
+
+  it("accepts repeated --peer flags for startup joins", () => {
+    const parsed = parseArguments([
+      "install",
+      "--peer",
+      "http://192.168.86.152:11811",
+      "--peer",
+      "http://192.168.86.252:11811",
+    ]);
+    expect(parsed.values.get("peer")).toEqual(["http://192.168.86.152:11811", "http://192.168.86.252:11811"]);
+    expect(isInteractiveInvocation(parsed)).toBe(false);
   });
 
   it("fails a flag-driven install that lacks required answers", async () => {
