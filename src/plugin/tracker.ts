@@ -128,12 +128,16 @@ export function permissionNoticeLine(request: PermissionRequest, peer: string): 
 
 /** One terminal task reduced to the line shown to the agent. */
 export function taskNoticeLine(view: TaskView, peer: string): string {
-  const state = view.status.state
-  const parts = [`task ${view.id} on ${peer} is ${state}`]
   const text = view.status.message?.parts
     ?.map((part) => (part.kind === "text" ? part.text : ""))
     .join(" ")
     .trim()
+  // A peer that cannot be reached ends its own task as completed with a
+  // "BLOCKED:" report (§6.14); surface that to the origin instead of claiming
+  // the work itself finished.
+  const blocked = text !== undefined && /^BLOCKED\b/i.test(text)
+  const state = blocked && view.status.state === "completed" ? "completed with a blocker report" : view.status.state
+  const parts = [`task ${view.id} on ${peer} is ${state}`]
   if (text) parts.push(`result: ${text}`)
   if (view.artifacts && view.artifacts.length > 0) {
     parts.push(`artifacts: ${view.artifacts.map((artifact) => `${artifact.name} (${artifact.artifactId})`).join(", ")}`)

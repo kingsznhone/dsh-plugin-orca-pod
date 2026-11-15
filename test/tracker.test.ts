@@ -103,6 +103,15 @@ describe("task notice", () => {
     expect(line).toContain("result: all green")
     expect(line).toContain("report.txt (abc123)")
   })
+
+  it("surfaces a completed task that reports a blocker", () => {
+    const line = taskNoticeLine(
+      taskView("01BLOCK", "completed", "BLOCKED: node-c unreachable; rerun after it recovers"),
+      "http://127.0.0.1:11811",
+    )
+    expect(line).toContain("completed with a blocker report")
+    expect(line).toContain("BLOCKED: node-c unreachable")
+  })
 })
 
 describe("createTracker", () => {
