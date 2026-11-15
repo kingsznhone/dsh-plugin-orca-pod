@@ -1929,15 +1929,13 @@ window.__ModuleLoader__.load({
     /** Compact tag for the approval chain; hover/click opens the hops as a vertical stack. */
     function ChainBadge(props) {
       const entries = props.entries || [];
-      const [hover, setHover] = React.useState(false);
       const [pinned, setPinned] = React.useState(false);
       if (entries.length < 2) return null;
       return h(
         "span",
         {
-          style: { position: "relative", display: "inline-flex", minWidth: 0 },
-          onMouseEnter: () => setHover(true),
-          onMouseLeave: () => setHover(false),
+          className: NS + "-chain",
+          "data-open": pinned ? "true" : "false",
         },
         h(
           "button",
@@ -1967,41 +1965,28 @@ window.__ModuleLoader__.load({
           t("apChainTag"),
           h("span", { style: { fontSize: 10, lineHeight: "10px" } }, "▾"),
         ),
-        hover || pinned
-          ? h(
-              "div",
-              {
-                style: {
-                  position: "absolute",
-                  top: "100%",
-                  left: 0,
-                  // Padding bridges the visual gap: moving the pointer from the tag
-                  // into the card stays inside the hover target.
-                  paddingTop: 6,
-                  zIndex: 1002,
-                },
-                onClick: (event) => event.stopPropagation(),
+        h(
+          "div",
+          { className: NS + "-chain-popover", onClick: (event) => event.stopPropagation() },
+          h(
+            "div",
+            {
+              style: {
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                minWidth: 200,
+                padding: "10px 12px",
+                background: "var(--dsw-alias-bg-layer-1)",
+                border: "1px solid var(--dsw-alias-border-l1)",
+                borderRadius: "var(--dsw-radius-md, 10px)",
+                boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
               },
-              h(
-                "div",
-                {
-                  style: {
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
-                    minWidth: 200,
-                    padding: "10px 12px",
-                    background: "var(--dsw-alias-bg-layer-1)",
-                    border: "1px solid var(--dsw-alias-border-l1)",
-                    borderRadius: "var(--dsw-radius-md, 10px)",
-                    boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
-                  },
-                },
-                h("div", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apChain")),
-                h(ChainFlow, { entries }),
-              ),
-            )
-          : null,
+            },
+            h("div", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apChain")),
+            h(ChainFlow, { entries }),
+          ),
+        ),
       );
     }
 
@@ -2211,6 +2196,21 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** One-shot stylesheet: CSS hover keeps the popover open across UI polls. */
+    function ensureChainStyle() {
+      if (typeof document === "undefined" || !document.head) return;
+      const id = NS + "-chain-style";
+      if (document.getElementById(id)) return;
+      const style = document.createElement("style");
+      style.id = id;
+      style.textContent =
+        "." + NS + "-chain{position:relative;display:inline-flex;min-width:0}" +
+        "." + NS + "-chain-popover{display:none;position:absolute;top:100%;left:0;padding-top:6px;z-index:1002}" +
+        "." + NS + "-chain:hover ." + NS + "-chain-popover," +
+        "." + NS + '-chain[data-open="true"] .' + NS + "-chain-popover{display:block}";
+      document.head.appendChild(style);
+    }
+
     /** Locale face used for Chinese/English selection (hard `locale` dependency). */
     function resolveLocaleFace(ctx) {
       try {
@@ -2232,6 +2232,7 @@ window.__ModuleLoader__.load({
     /** Register a settings page, a sidebar entry and the floating panel. */
     function apply(ctx) {
       localeFace = resolveLocaleFace(ctx);
+      ensureChainStyle();
       ctx.slots.inject("settings.section", () =>
         ctx.slots.register({ name: "settings.section", id: NS, order: 60, label: () => t("nav") }, Panel),
       );
