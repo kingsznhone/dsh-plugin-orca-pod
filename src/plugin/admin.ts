@@ -258,15 +258,8 @@ export function createPodAdmin(
         // the field to keep the current one.
         throw new Error("a workgroup password is required; a passwordless mesh is not supported")
       }
-      const nextWorkgroup =
-        typeof patch["workgroup_id"] === "string" ? patch["workgroup_id"].trim().toLowerCase() : null
-      if (
-        nextWorkgroup !== null &&
-        nextWorkgroup !== handle.config.workgroup_id &&
-        rawPassword === undefined
-      ) {
-        throw new Error("changing the workgroup requires its password")
-      }
+      // Switching workgroups reuses the current password unless the panel sends a
+      // new one: the password is a local secret, not a claim tied to one group.
       await handle.reconfigure(patch)
       return configView()
     },

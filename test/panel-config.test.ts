@@ -256,15 +256,22 @@ describe("panel admin configuration", () => {
     }
   });
 
-  it("requires the password when the panel switches workgroup", async () => {
+  it("switches the workgroup with the existing password", async () => {
     const root = await tempRoot("orca-panel-");
     const handle = startPod(baseConfig(root), logger);
     await handle.ready;
     try {
       const admin = adminFor(handle);
-      await expect(admin.saveConfig({ workgroup_id: "wg-other" })).rejects.toThrow(
-        /requires its password/,
-      );
+      const firstId = handle.runtime.orcaNode!.self().orca_node_id;
+
+      const view = await admin.saveConfig({ workgroup_id: "wg-other" });
+
+      expect(view.workgroup_id).toBe("wg-other");
+      expect(view.password_set).toBe(true);
+      expect(handle.config.workgroup_password).toBe("panel-password");
+      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
+      const stored = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
+      expect(stored["workgroup_id"]).toBe("wg-other");
     } finally {
       await stopPod(handle, logger);
     }
