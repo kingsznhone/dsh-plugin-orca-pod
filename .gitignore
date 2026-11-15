@@ -21,3 +21,7 @@ Thumbs.db
 .idea/
 .vscode/
 .tmp/
+
+# 本地安装的 skill 根（安装目标，不进仓库）
+.agents/
+.dsh/

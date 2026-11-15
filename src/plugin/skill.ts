@@ -2,17 +2,18 @@
  * Installable DSH skill that teaches any session on this machine how to drive
  * the `orca-node` CLI.
  *
- * The skill is a standard Agent Skill bundle in
- * `.agents/skills/orca-node/` (`SKILL.md` plus `references/`); that directory is
- * also the cross-agent project root DSH reads at rank 200, so checkouts of this
- * repository discover it without installing anything.
+ * The skill is a standard Agent Skill bundle in `skills/orca-node/`
+ * (`SKILL.md` plus `references/`) that ships with the npm package. Local skill
+ * roots such as `.agents/skills`, `.dsh/skills` and `$DSH_HOME/skills` are
+ * install targets, not repository content (`.agents/` and `.dsh/` are
+ * git-ignored here).
  *
  * The bundle itself only registers tools inside the DSH host process it runs
  * in. The ACP executor and CLI sessions start *other* `dsh` subprocesses (other
- * profiles), so the only portable way to hand them a capability is a skill
- * file under the user skill root (`$DSH_HOME/skills` or `~/.dsh/skills`). That
- * copy is optional (`skill_injection`, off by default) and byte-identical to
- * the repository bundle; sessions spawned by the bundle also receive
+ * profiles), so the portable way to hand them a capability is a skill file
+ * under the user skill root (`$DSH_HOME/skills` or `~/.dsh/skills`). That copy
+ * is optional (`skill_injection`, off by default) and byte-identical to the
+ * repository bundle; sessions spawned by the bundle also receive
  * `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT` in their environment, which the skill
  * prefers over the bare `orca-node` command.
  *
@@ -33,11 +34,11 @@ export const SKILL_NAME = "orca-node"
 
 /** Canonical skill bundle shipped with the bundle (and this repository). */
 export const SKILL_SOURCE_DIR = fileURLToPath(
-  new URL("../../.agents/skills/orca-node/", import.meta.url),
+  new URL("../../skills/orca-node/", import.meta.url),
 )
 
 /** Canonical `SKILL.md` entry of the bundle. */
-export const SKILL_SOURCE_URL = new URL("../../.agents/skills/orca-node/SKILL.md", import.meta.url)
+export const SKILL_SOURCE_URL = new URL("../../skills/orca-node/SKILL.md", import.meta.url)
 
 /** One installed skill file; `written` is false when the content was already current. */
 export interface InstalledSkill {

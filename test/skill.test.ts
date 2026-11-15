@@ -15,7 +15,7 @@ import {
 } from "../src/plugin/skill.ts"
 
 describe("orca-node skill bundle", () => {
-  it("ships a standard bundle in .agents/skills", () => {
+  it("ships a standard skill bundle under skills/", () => {
     const markdown = readFileSync(SKILL_SOURCE_URL, "utf8")
     expect(markdown.startsWith("---\n")).toBe(true)
     expect(markdown).toContain("name: orca-node")

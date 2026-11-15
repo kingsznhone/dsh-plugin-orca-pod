@@ -38,7 +38,7 @@ export interface Config {
   /**
    * Install a copy of the standard `orca-node` skill under `$DSH_HOME/skills`
    * for every DSH profile on this machine; off by default. The bundle itself
-   * ships a valid skill at `.agents/skills/orca-node/`, and ACP/CLI sessions
+   * ships a valid skill at `skills/orca-node/`, and ACP/CLI sessions
    * receive `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT` from the executor regardless.
    */
   skill_injection: boolean

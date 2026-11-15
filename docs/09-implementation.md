@@ -38,8 +38,8 @@ orca-pod/（仓库根目录）
     cli.ts            `orca-node` CLI：serve / send / status / wait / members / escalate / publish / log
     orca-pod.ts       `orca-pod` CLI：install（检查 dsh、生成配置、写 systemd unit）
     install.ts        install 计划、unit 渲染与 systemd 命令（纯函数，runner 可注入）
-  .agents/skills/orca-node/
-    SKILL.md        标准 skill 入口（随包发布；DSH project-agents 根 rank 200）
+  skills/orca-node/
+    SKILL.md        标准 skill 入口（随包发布；安装到本地 skill 根后由 DSH 发现）
     references/add-machine.md  加机器到 mesh 的命令与前置条件
     plugin/           DSH bundle：Config、apply、单个 `orca_pod` 工具（`method` 分派）、后台 tracker、admin.ts（面板数据面）、web.ts（面板同源路由）、models.ts（模型目录采集）、skill.ts（可选把标准 skill bundle 复制到 user 根；`skill_injection` 默认关）
   client.js           DSH 客户端 bundle：设置页 + 侧栏按钮 + 停靠式浮层（轮询 /orca-api；首启向导 / 状态 / 设置三视图）
@@ -72,7 +72,7 @@ orca-pod/（仓库根目录）
 | `orca_node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器；origin 日志 upsert 与 child-link 轮询（自动上升）；`listTasks`/`subscribe`/`blobLink`/`workspacePaths` 供面板读 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）、`waitFor`；mesh/A2A/discovery/formation/transport 测试 |
 | `harness-run.ts` | 已实现 | 真实进程 smoke：两个 `orca-node serve`、`--peer` 引导 join、CLI members 收敛、Echo 任务到终态、清理临时目录 |
-| `plugin/` | 部分实现 | `apply` 启动 orca node、注册单个 `orca_pod` 工具（`method` 分派 send/status/cancel/approve/members/connect）；后台 tracker 轮询终态并 `inject`/`followup`；权限请求由 tracker 直接 park 进 `prompts` 注册表（`onPermission`），原始请求文本不进入对话，UI 三通道（会话聊天卡/后台弹窗/面板）作答、无超时；`admin.ts` 提供面板数据面（成员/任务/审批/工作区/产物直链，审批不经模型）；`web.ts` 在 DSH web 同源注册 `/orca-api`（仅回环）；`lifecycle.ts` 支持 UI 保存配置与重启（`<data_root>/ui-config.json` 覆盖层）和 UI 直连 peer；`client.js` 是注册设置页/侧栏按钮/停靠浮层的客户端 bundle；标准 skill bundle 在 `.agents/skills/orca-node/`，可选 `skill_injection` 复制到 user 根；credentials 读取未做 |
+| `plugin/` | 部分实现 | `apply` 启动 orca node、注册单个 `orca_pod` 工具（`method` 分派 send/status/cancel/approve/members/connect）；后台 tracker 轮询终态并 `inject`/`followup`；权限请求由 tracker 直接 park 进 `prompts` 注册表（`onPermission`），原始请求文本不进入对话，UI 三通道（会话聊天卡/后台弹窗/面板）作答、无超时；`admin.ts` 提供面板数据面（成员/任务/审批/工作区/产物直链，审批不经模型）；`web.ts` 在 DSH web 同源注册 `/orca-api`（仅回环）；`lifecycle.ts` 支持 UI 保存配置与重启（`<data_root>/ui-config.json` 覆盖层）和 UI 直连 peer；`client.js` 是注册设置页/侧栏按钮/停靠浮层的客户端 bundle；标准 skill bundle 在 `skills/orca-node/`，可选 `skill_injection` 复制到 user 根；credentials 读取未做 |
 | `ui`（独立前端） | 未开始 | 目前面板是 DSH Settings 里的一页；将来若要独立窗口/路由，仍放在同一包内（`src/ui/` 或独立 client 入口），发布物不增加依赖 |
 
 “已实现”指当前可运行、有测试或用例覆盖；未列出的目标能力属于后续里程碑。
@@ -231,7 +231,7 @@ orca-pod/（仓库根目录）
 export function apply(ctx, config) {
   const handle = startPod(config, ctx.logger)          // 非阻塞启动，失败只记日志/状态
   const tracker = createTracker(() => handle.runtime.orcaNode, { logger })
-  if (config.skill_injection) void installSkill()  // 标准 .agents/skills/orca-node bundle 幂等复制到 user 根（默认关）
+  if (config.skill_injection) void installSkill()  // 标准 skills/orca-node bundle 幂等复制到 user 根（默认关）
   ctx.effect(() => async () => { tracker.stop(); await stopPod(handle) }, "orca-pod.orca-node")
   for (const tool of createPodTools(handle, tracker, { approval: ctx.approval })) ctx.tools.register(tool)
   // 密码：原型阶段从 patch config 读；生产应改为 ctx.credentials.readRecord('orca-pod')
