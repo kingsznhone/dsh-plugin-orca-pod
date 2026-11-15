@@ -1586,6 +1586,18 @@ window.__ModuleLoader__.load({
             artifacts: fetched.artifacts && typeof fetched.artifacts === "object" ? fetched.artifacts : {},
           });
         } catch (err) {
+          // Older host builds do not expose /orca-api/tasks yet; the polled
+          // snapshot still carries the newest local tasks and dispatches.
+          const snapshotTasks = Array.isArray(state.tasks) ? state.tasks : [];
+          const snapshotDispatches = Array.isArray(dispatches) ? dispatches : [];
+          if (snapshotTasks.length > 0 || snapshotDispatches.length > 0) {
+            setAllData({
+              tasks: snapshotTasks,
+              dispatches: snapshotDispatches,
+              artifacts: state.artifacts && typeof state.artifacts === "object" ? state.artifacts : {},
+            });
+            return;
+          }
           setDetailError(t("dtLoadFailed") + messageOf(err));
           setAllOpen(false);
         }
