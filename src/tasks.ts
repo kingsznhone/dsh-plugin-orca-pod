@@ -771,6 +771,19 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     }
     const rec = tasks.get(taskId);
     if (!rec) throw new TaskError("task_not_found", `unknown task ${taskId}`);
+    // The automatic child watcher may have parked this task between the caller's
+    // read and this call. Repeating the same escalation is a no-op, not a race
+    // the caller has to retry (§7.12).
+    const parked = rec.pending_escalation;
+    if (
+      parked !== null &&
+      typeof relay.task_id === "string" &&
+      typeof relay.peer === "string" &&
+      parked.task_id === relay.task_id &&
+      parked.peer.replace(/\/+$/, "") === relay.peer.replace(/\/+$/, "")
+    ) {
+      return cloneView(rec.view);
+    }
     if (rec.view.status.state !== "working") {
       throw new TaskError("bad_request", "only a running task can escalate");
     }

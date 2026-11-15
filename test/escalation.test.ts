@@ -122,6 +122,19 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
     expect(permissionRequestOf(childDone)).toBeNull();
   });
 
+  it("treats a repeated escalation as a no-op", async () => {
+    const { b, c, parentId, childId } = await scenario();
+    const childRequest = permissionRequestOf(await b.getTask(c.endpoints[0]!, childId));
+    expect(childRequest).not.toBeNull();
+    const relay = { peer: c.endpoints[0]!, task_id: childId, request: childRequest! };
+    const first = await b.escalateTask(b.endpoints[0]!, parentId, relay);
+    expect(first.status.state).toBe("input-required");
+
+    const again = await b.escalateTask(b.endpoints[0]!, parentId, relay);
+    expect(again.status.state).toBe("input-required");
+    expect(permissionRequestOf(again)?.request_id).toBe(permissionRequestOf(first)?.request_id);
+  });
+
   it("propagates a denial down to the child", async () => {
     const { a, b, c, parentId, childId } = await scenario();
     const childRequest = permissionRequestOf(await b.getTask(c.endpoints[0]!, childId));
