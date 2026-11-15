@@ -203,15 +203,27 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
           // A suspended permission request is surfaced once; the task stays
           // tracked until it finishes or the request changes. When the host can
           // park it in the UI, the raw request text never enters the chat.
+          const changed = request.request_id !== entry.seenRequest
           const parkedByTool = options.isPromptParked?.(entry.peer, entry.taskId) === true
-          const parkedByTracker =
-            options.onPermission?.({ peer: entry.peer, taskId: entry.taskId, request, view, agentId: entry.agent.id }) ===
-            true
-          const parked = parkedByTool || parkedByTracker
-          if (parked) dropPermissionNotices(entry.peer, entry.taskId)
-          if (request.request_id !== entry.seenRequest) {
+          let parkedByTracker = false
+          if (parkedByTool) {
+            // The `orca_pod` approve call already owns the prompt; re-parking it
+            // would settle that waiter and turn the model's approval into a denial.
+            dropPermissionNotices(entry.peer, entry.taskId)
+          } else if (changed) {
+            parkedByTracker =
+              options.onPermission?.({
+                peer: entry.peer,
+                taskId: entry.taskId,
+                request,
+                view,
+                agentId: entry.agent.id,
+              }) === true
+            if (parkedByTracker) dropPermissionNotices(entry.peer, entry.taskId)
+          }
+          if (changed) {
             entry.seenRequest = request.request_id
-            if (!parked) {
+            if (!parkedByTool && !parkedByTracker) {
               finished.push({ ...entry, kind: "permission", view, request })
               scheduleFlush()
             }

@@ -241,6 +241,36 @@ describe("createTracker", () => {
     tracker.stop()
   })
 
+  it("parks once per request id and leaves a tool-parked prompt alone", async () => {
+    const agent = new FakeAgent()
+    const views = new Map([["01TASK", permissionView("01TASK", "req-1")]])
+    const parked: string[] = []
+    let toolParked = false
+    const tracker = createTracker(() => fakeNode(views), {
+      ...fast,
+      isPromptParked: () => toolParked,
+      onPermission: ({ request }) => {
+        parked.push(request.request_id)
+        return true
+      },
+    })
+    tracker.track(agent, "http://peer:11811", "01TASK")
+
+    await waitFor(() => parked.length === 1)
+    // Several polls follow while the task stays suspended; the same request must
+    // not be re-parked (that would remount the UI card every second).
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(parked).toHaveLength(1)
+
+    // Once an `orca_pod` approve call owns the prompt, the tracker must not park
+    // a new request: that would settle the approve waiter and deny the task.
+    toolParked = true
+    views.set("01TASK", permissionView("01TASK", "req-2"))
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(parked).toHaveLength(1)
+    tracker.stop()
+  })
+
   it("parks a permission request with onPermission instead of injecting a notice", async () => {
     const agent = new FakeAgent()
     agent.status = "running"

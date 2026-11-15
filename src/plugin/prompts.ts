@@ -76,6 +76,8 @@ export function createApprovalPrompts(now: () => number = Date.now): ApprovalPro
   const waiters = new Map<
     string,
     {
+      /** `request` waits on an `orca_pod` approve call; `park` is tracker-owned. */
+      kind: "request" | "park"
       prompt: ApprovalPrompt
       settle: (decision: PromptDecision | null) => void
       onDecision?: (decision: PromptDecision) => Promise<unknown> | unknown
@@ -121,7 +123,7 @@ export function createApprovalPrompts(now: () => number = Date.now): ApprovalPro
       })
       const key = keyOf(prompt.peer, prompt.task_id)
       waiters.get(key)?.settle(null)
-      waiters.set(key, { prompt, settle })
+      waiters.set(key, { kind: "request", prompt, settle })
       notify()
       return {
         prompt,
@@ -136,10 +138,18 @@ export function createApprovalPrompts(now: () => number = Date.now): ApprovalPro
       }
     },
     park(input) {
+      const key = keyOf(input.peer, input.task_id)
+      const existing = waiters.get(key)
+      // The tracker polls once per second while a task stays suspended. The same
+      // request must keep the same prompt (stable id and created_at) and must not
+      // displace an `orca_pod` approve call that is already waiting for the UI.
+      if (existing !== undefined && existing.prompt.request_id === input.request.request_id) {
+        if (existing.kind === "park") existing.onDecision = input.onDecision
+        return existing.prompt
+      }
       const prompt = makePrompt(input)
-      const key = keyOf(prompt.peer, prompt.task_id)
-      waiters.get(key)?.settle(null)
-      waiters.set(key, { prompt, settle: () => {}, onDecision: input.onDecision })
+      existing?.settle(null)
+      waiters.set(key, { kind: "park", prompt, settle: () => {}, onDecision: input.onDecision })
       notify()
       return prompt
     },

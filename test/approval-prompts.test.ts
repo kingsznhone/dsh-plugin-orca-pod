@@ -178,6 +178,44 @@ describe("approval prompts", () => {
     expect(node.denied).toBe(1)
   })
 
+  it("keeps one prompt per request id and never settles a waiting approve call", async () => {
+    const prompts = createApprovalPrompts()
+    const waiting = prompts.request({ peer: PEER, task_id: TASK, request: REQUEST, agent_id: "session-1" })
+    const parked = prompts.park({
+      peer: PEER,
+      task_id: TASK,
+      request: REQUEST,
+      agent_id: "session-1",
+      onDecision: () => {},
+    })
+    // The tracker's poll reuses the approve call's prompt instead of replacing
+    // it, so the waiting tool is answered (not cancelled) by the UI.
+    expect(parked.id).toBe(waiting.prompt.id)
+    expect(prompts.list()).toHaveLength(1)
+    expect(prompts.resolve(PEER, TASK, "allow")).toBe(true)
+    await expect(waiting.wait()).resolves.toBe("allow")
+
+    const first = prompts.park({ peer: PEER, task_id: TASK, request: REQUEST, agent_id: "a", onDecision: () => {} })
+    const second = prompts.park({ peer: PEER, task_id: TASK, request: REQUEST, agent_id: "a", onDecision: () => {} })
+    expect(second.id).toBe(first.id)
+    expect(second.created_at).toBe(first.created_at)
+    expect(prompts.list()).toEqual([first])
+  })
+
+  it("replaces the parked prompt when the request id changes", async () => {
+    const prompts = createApprovalPrompts()
+    const first = prompts.park({ peer: PEER, task_id: TASK, request: REQUEST, agent_id: "a", onDecision: () => {} })
+    const second = prompts.park({
+      peer: PEER,
+      task_id: TASK,
+      request: { ...REQUEST, request_id: "req-2" },
+      agent_id: "a",
+      onDecision: () => {},
+    })
+    expect(second.id).not.toBe(first.id)
+    expect(prompts.list()).toEqual([second])
+  })
+
   it("runs the decision handler of a tracker-parked approval", async () => {
     const prompts = createApprovalPrompts()
     const decisions: string[] = []
