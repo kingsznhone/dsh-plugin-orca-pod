@@ -84,6 +84,12 @@ export interface AgentNotice {
 export interface ToolAgent {
   readonly id: string
   readonly status: "idle" | "running"
+  /**
+   * Live session behind the agent. DSH passes the full Agent instance here, so
+   * the optional session lets the bundle read that session's permission preset
+   * (§7.10) without an extra registration-time service.
+   */
+  readonly session?: unknown
   inject(message: AgentNotice): void
   followup(message: AgentNotice): void
 }
@@ -112,6 +118,26 @@ export interface ApprovalRequest {
 /** DSH approval service: asks the human through the host's approval card. */
 export interface ApprovalService {
   request(req: ApprovalRequest): Promise<ApprovalOutcome>
+}
+
+/**
+ * One session's effective permission knobs, as projected by DSH's
+ * `permissionPresets` service. `sandbox` uses the same three values as the
+ * orca node permission mode, so a task inherits it verbatim (§7.10).
+ */
+export interface PermissionKnobs {
+  readonly sandbox?: string | null
+  readonly approval?: string | null
+  readonly preset?: string | null
+}
+
+/**
+ * Read-only slice of DSH's `permissionPresets` service. The service resolves
+ * per-session preset names and their sandbox/approval bundles; the bundle only
+ * needs the projected knobs.
+ */
+export interface PermissionPresetsService {
+  permissionState(session: unknown): PermissionKnobs
 }
 
 /** Cordis plugin context subset available to a host-side bundle. */

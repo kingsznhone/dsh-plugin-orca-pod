@@ -12,7 +12,9 @@ import { createPodAdmin } from "./admin.ts"
 import { createApprovalPrompts } from "./prompts.ts"
 import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
-import type { HostContext, HostLogger, StandardSchemaV1 } from "./dsh.ts"
+import type { HostContext, HostLogger, PermissionPresetsService, StandardSchemaV1, ToolExecution } from "./dsh.ts"
+import { isPermissionMode } from "../protocol.ts"
+import type { PermissionMode } from "../protocol.ts"
 import { startPod, stopPod } from "./lifecycle.ts"
 import { discoverModelCatalog, type ModelCatalog } from "./models.ts"
 import { installSkill } from "./skill.ts"
@@ -55,6 +57,28 @@ function optionalService<T>(ctx: HostContext, name: string): T | undefined {
   }
   try {
     return (ctx as unknown as Record<string, unknown>)[name] as T | undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Read the dispatching session's sandbox mode (§7.10). DSH's permission
+ * presets project a `SandboxMode` (`read-only`/`workspace-write`/
+ * `danger-full-access`) whose values match the orca node permission modes
+ * exactly, so a task inherits the session setting verbatim. A missing service
+ * or session leaves the mode undefined and the target's own default applies.
+ */
+export function sessionSandboxMode(
+  presets: PermissionPresetsService | undefined,
+  exec: ToolExecution | undefined,
+): PermissionMode | undefined {
+  if (presets === undefined) return undefined
+  const session = exec?.agent?.session
+  if (session === undefined) return undefined
+  try {
+    const sandbox = presets.permissionState(session).sandbox
+    return isPermissionMode(sandbox) ? sandbox : undefined
   } catch {
     return undefined
   }
@@ -156,9 +180,11 @@ export function apply(ctx: HostContext, config: Config): void {
   const admin = createPodAdmin(handle, tracker, { prompts })
   registerPodWeb(ctx, admin, logger)
 
+  const permissionPresets = optionalService<PermissionPresetsService>(ctx, "permissionPresets")
   for (const tool of createPodTools(handle, tracker, {
     approval: optionalService(ctx, "approval"),
     prompts,
+    sessionPermissionMode: (exec) => sessionSandboxMode(permissionPresets, exec),
   })) {
     try {
       ctx.tools.register(tool)

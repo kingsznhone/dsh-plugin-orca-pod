@@ -149,6 +149,67 @@ describe("orca_pod tool", () => {
     )
   })
 
+  it("inherits the dispatching session's permission mode when send omits one", async () => {
+    const sent: unknown[] = []
+    const fakeNode = {
+      sendTask: async (_peer: string, input: unknown) => {
+        sent.push(input)
+        return { id: "task-1", status: { state: "submitted" } }
+      },
+    } as unknown as import("../src/orca_node.ts").OrcaNode
+    const handleForSend = {
+      ready: Promise.resolve(),
+      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
+      config: { workgroup_id: "wg-a", workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] },
+      uiConfigured: true,
+      reconfigure: async () => {},
+      addPeer: async () => {},
+      disconnect: async () => {},
+      reset: async () => {},
+    } as unknown as PodHandle
+    const sendTools = createPodTools(handleForSend, tracker, {
+      sessionPermissionMode: (exec) => (exec?.agent?.session === undefined ? undefined : "workspace-write"),
+    })
+    const agent = {
+      id: "session-1",
+      status: "running" as const,
+      session: {},
+      inject: () => {},
+      followup: () => {},
+    }
+    await tool(sendTools).execute({ method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent })
+    const inherited = sent[0] as { metadata?: { pod?: Record<string, unknown> } }
+    expect(inherited.metadata?.pod?.["permission_mode"]).toBe("workspace-write")
+
+    await tool(sendTools).execute(
+      { method: "send", peer: "http://127.0.0.1:11811", text: "hi", permission_mode: "read-only" },
+      { agent },
+    )
+    const explicit = sent[1] as { metadata?: { pod?: Record<string, unknown> } }
+    expect(explicit.metadata?.pod?.["permission_mode"]).toBe("read-only")
+  })
+
+  it("reads sandbox modes from the session's permission preset", () => {
+    const session = {}
+    const agent = {
+      id: "session-1",
+      status: "running" as const,
+      session,
+      inject: () => {},
+      followup: () => {},
+    }
+    const presets = {
+      permissionState: (target: unknown) =>
+        target === session ? { sandbox: "danger-full-access", approval: "never", preset: "auto" } : {},
+    }
+    expect(plugin.sessionSandboxMode(presets, { agent })).toBe("danger-full-access")
+    expect(plugin.sessionSandboxMode(undefined, { agent })).toBeUndefined()
+    expect(plugin.sessionSandboxMode(presets, undefined)).toBeUndefined()
+    expect(
+      plugin.sessionSandboxMode({ permissionState: () => ({ sandbox: "custom" }) }, { agent }),
+    ).toBeUndefined()
+  })
+
   it("joins a peer and returns the refreshed members", async () => {
     const seen: string[] = []
     const fakeNode = {

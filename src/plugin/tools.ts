@@ -9,7 +9,7 @@
 
 import { isHttpEndpoint, isTerminal, parseModelSpec, permissionRequestOf } from "../protocol.ts"
 import type { PermissionRequest } from "../protocol.ts"
-import type { A2AMessage, PeerView, SubmitTaskInput } from "../protocol.ts"
+import type { A2AMessage, PeerView, PermissionMode, SubmitTaskInput } from "../protocol.ts"
 import type { OrcaNode } from "../orca_node.ts"
 
 import type { ApprovalService, ContentBlock, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts"
@@ -137,6 +137,12 @@ export interface PodToolOptions {
    * DSH approval card is only used when no UI channel is attached.
    */
   prompts?: ApprovalPrompts
+  /**
+   * Reads the dispatching session's sandbox mode (§7.10). The send method uses
+   * it when the caller passes no explicit `permission_mode`, so a task never
+   * runs wider than the session that dispatched it.
+   */
+  sessionPermissionMode?(exec: ToolExecution | undefined): PermissionMode | undefined
 }
 
 async function runSend(
@@ -144,11 +150,13 @@ async function runSend(
   tracker: Tracker,
   args: Record<string, unknown>,
   exec: ToolExecution | undefined,
+  options: PodToolOptions,
 ): Promise<unknown> {
   const peer = normalizePeer(args["peer"])
   const text = requiredString(args, "text")
   const echo = optionalEchoScript(args)
-  const permissionMode = typeof args["permission_mode"] === "string" ? args["permission_mode"] : undefined
+  const explicitMode = typeof args["permission_mode"] === "string" ? args["permission_mode"] : undefined
+  const permissionMode = explicitMode ?? options.sessionPermissionMode?.(exec)
   const rawModel = args["model"]
   if (rawModel !== undefined && typeof rawModel !== "string") {
     throw new Error("model must be a provider/model string")
@@ -320,7 +328,7 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
           type: "string",
           enum: ["read-only", "workspace-write", "danger-full-access"],
           description:
-            "send: origin session permission mode; the target caps it by its own policy and never runs above it (§7.10).",
+            "send: explicit permission mode; when omitted the dispatching session's sandbox mode is inherited. The target caps it by its own policy and never runs above it (§7.10).",
         },
         model: {
           type: "string",
@@ -342,7 +350,7 @@ export function createPodTools(handle: PodHandle, tracker: Tracker, options: Pod
       try {
         switch (method) {
           case "send":
-            return await runSend(handle, tracker, record, exec)
+            return await runSend(handle, tracker, record, exec, options)
           case "status":
             return await runStatus(handle, record)
           case "cancel":

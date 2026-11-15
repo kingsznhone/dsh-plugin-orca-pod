@@ -122,7 +122,7 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 | `members` | —                                                  | `{self, members, members_digest}` with id/name/endpoints/state  |
 | `connect` | `peer`                                             | Joins a peer into the mesh, remembers it for restart, returns the refreshed members |
 
-每次调用都带 `method`；`peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`（端口默认 11811）。`send` 的可选 `echo` 会作为 `metadata.echo` 转发确定性脚本（测试用；默认任务本身就会回显）。
+每次调用都带 `method`；`peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`（端口默认 11811）。`send` 的可选 `echo` 会作为 `metadata.echo` 转发确定性脚本（测试用；默认任务本身就会回显）。`send` 不给 `permission_mode` 时会自动继承当前会话的权限模式（DSH 的 `permissionPresets` 投影），显式传入则覆盖但仍受 target 本地上限收窄（[§7.10](docs/07-security.md#710-权限模式继承)）。
 
 ## CLI
 
