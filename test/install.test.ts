@@ -21,7 +21,7 @@ import {
   type InstallOptions,
   type PromptQuestion,
 } from "../src/install.ts";
-import { isInteractiveInvocation, main, parseArguments } from "../src/orca-pod.ts";
+import { isInteractiveInvocation, main, parseArguments } from "../src/orca_pod.ts";
 
 const roots: string[] = [];
 

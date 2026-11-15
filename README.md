@@ -29,12 +29,12 @@ orca-pod/
 │   ├── executor.ts       # LocalExecutor 契约 + EchoExecutor
 │   ├── acp.ts            # AcpExecutor（dsh --profile acp stdio：流式、权限、session）
 │   ├── process.ts        # 子进程公共件（Windows shim 解析、killTree）
-│   ├── session-store.ts  # state/<workgroup_id>/sessions.json（origin+context → session）
+│   ├── session_store.ts  # state/<workgroup_id>/sessions.json（origin+context → session）
 │   ├── tasks.ts          # 单槽任务运行器
 │   ├── orca_node.ts      # createOrcaNode：装配 gateway、tasks、membership
 │   ├── harness.ts        # 测试用进程内多 orca node
 │   ├── cli.ts            # `orca-node` CLI：serve / send / status / wait / members
-│   ├── orca-pod.ts       # `orca-pod` bin：install（systemd 安装）
+│   ├── orca_pod.ts       # `orca-pod` bin：install（systemd 安装）
 │   ├── install.ts        # install 计划、unit 渲染、守护进程命令（纯函数）
 │   └── plugin/           # DSH bundle：Config、apply(ctx, config)、tools
 └── test/                 # vitest 套件

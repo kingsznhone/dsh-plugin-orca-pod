@@ -19,7 +19,7 @@ orca-pod/（仓库根目录）
     config.ts         配置校验、默认值、身份注入、JSON 读写
     storage.ts        PeerStore / TaskStore 接口 + 内存实现（+ 重导出 blobs）
     blobs.ts          内容寻址 blob store（内存 + fs，含 TTL GC，流式上传/下载）
-    blob-files.ts     本地文件 blob 映射（CLI 登记，网关按签名 URL 流式读取）
+    blob_files.ts     本地文件 blob 映射（CLI 登记，网关按签名 URL 流式读取）
     dispatches.ts     origin 侧派发日志（派给谁、最后知道什么；重启标 unknown）
     events.ts         进程内变更事件总线（task / members / dispatch），面板订阅用
     sqlite.ts         TaskStore、file_blobs 与 dispatches 的 node:sqlite 实现（WAL，单进程写）
@@ -30,13 +30,13 @@ orca-pod/（仓库根目录）
     acp.ts            AcpExecutor（dsh acp stdio：流式事件、权限挂起、session resume、按任务选模型）
     process.ts        子进程公共件：命令解析（Windows shim）、killTree、abort 错误
     preamble.ts       编排 preamble（task id、CLI 路径、send/wait/escalate/publish 用法）
-    session-store.ts  `state/<workgroup_id>/sessions.json` 读写（按 origin+context 绑 ACP session）
+    session_store.ts  `state/<workgroup_id>/sessions.json` 读写（按 origin+context 绑 ACP session）
     tasks.ts          单槽任务运行器
     orca_node.ts      组合根：一个进程 = 一个 orca node
     harness.ts        进程内多 orca node + `waitFor` 断言 helper，测试用
-    harness-run.ts    真实进程 smoke test（`npm run harness`：两个 serve、join、任务往返）
+    harness_run.ts    真实进程 smoke test（`npm run harness`：两个 serve、join、任务往返）
     cli.ts            `orca-node` CLI：serve / send / status / wait / members / escalate / publish / log
-    orca-pod.ts       `orca-pod` CLI：install（检查 dsh、生成配置、写 systemd unit）
+    orca_pod.ts       `orca-pod` CLI：install（检查 dsh、生成配置、写 systemd unit）
     install.ts        install 计划、unit 渲染与 systemd 命令（纯函数，runner 可注入）
   skills/orca-node/
     SKILL.md        标准 skill 入口（随包发布；安装到本地 skill 根后由 DSH 发现）
@@ -61,17 +61,17 @@ orca-pod/（仓库根目录）
 | `gateway.ts` | 已实现 | `/health`、Agent Card、`/a2a`、`/cluster/*`、`/blobs`（上传/下载/直链） |
 | `executor.ts` | 已实现 | `LocalExecutor` 事件流接口 + EchoExecutor；真实实现只有 `acp.ts` |
 | `acp.ts` | 已实现 | `dsh --profile acp` stdio（NDJSON JSON-RPC）：initialize/session/prompt/update/permission/cancel，权限挂起映射为 `input-required`，grant 回 allow-once；按任务选模型走 `session/set_config_option`（`model`，可选 `reasoning_effort`），失败 `failed(model_unavailable)` |
-| `process.ts` / `session-store.ts` | 已实现 | Windows `.cmd` shim 解析、进程树终止；`state/<workgroup_id>/sessions.json` 原子读写 |
+| `process.ts` / `session_store.ts` | 已实现 | Windows `.cmd` shim 解析、进程树终止；`state/<workgroup_id>/sessions.json` 原子读写 |
 | `install.ts` | 已实现 | `orca-pod install` 的主机形态：生成配置、渲染 systemd unit、检查 `dsh --version`、交互式答案（`installQuestions`/`promptForInstall`）与执行 `daemon-reload`/`enable --now`（runner 可注入） |
-| `orca-pod.ts` | 已实现 | `orca-pod` bin：`install` 子命令；裸 `install` 或仅带 `--dry-run` 是交互式向导，带任何其他参数即进入参数分支、完全不提问（`-p`/`--password`、`--workgroup`、`--dry-run`、`--system`、`--force`、`--skip-dsh-check`） |
+| `orca_pod.ts` | 已实现 | `orca-pod` bin：`install` 子命令；裸 `install` 或仅带 `--dry-run` 是交互式向导，带任何其他参数即进入参数分支、完全不提问（`-p`/`--password`、`--workgroup`、`--dry-run`、`--system`、`--force`、`--skip-dsh-check`） |
 | `tasks.ts` | 已实现 | 单槽状态机；inputs 物化/附录/终态清理、硬 TTL、简报截断、usage/错误码；TaskStore 可注入（默认内存，CLI/插件用 SQLite），启动时把非终态标 `failed(node_restart)` |
-| `blob-files.ts` | 已实现 | 本地文件 sha256→路径映射（SQLite 持久化），`GET /blobs/:id` 按映射流式读取 |
+| `blob_files.ts` | 已实现 | 本地文件 sha256→路径映射（SQLite 持久化），`GET /blobs/:id` 按映射流式读取 |
 | `dispatches.ts` | 已实现 | origin 侧派发日志（`dispatches` 表）：记录 peer/状态/父任务链接，重启把非终态标 `unknown`，`orca-node log` 可读 |
 | `events.ts` | 已实现 | 进程内事件总线：`task`（每次状态变更）、`members`（名单/状态/busy/模型目录变化，按签名去重）、`dispatch`（派发落库）；listener 抛错被隔离 |
 | `plugin/models.ts` | 已实现 | 从 DSH Host 的 `llm`（providers × listModels）与 `agentDefaultModel.currentSelection()` 采集模型目录；坏 provider 只 warn；结果经 `setModelCatalog` 写进 self record；纯 CLI 节点用 config 手填 |
 | `orca_node.ts` | 已实现 | 组合根；启动/停止心跳循环，装配 PeerStore 门面与任务运行器；origin 日志 upsert 与 child-link 轮询（自动上升）；`listTasks`/`subscribe`/`blobLink`/`workspacePaths` 供面板读 |
 | `harness.ts` | 已实现 | `createMesh`、`joinRoster`（按目录 best-effort 加入）、`waitFor`；mesh/A2A/discovery/formation/transport 测试 |
-| `harness-run.ts` | 已实现 | 真实进程 smoke：两个 `orca-node serve`、`--peer` 引导 join、CLI members 收敛、Echo 任务到终态、清理临时目录 |
+| `harness_run.ts` | 已实现 | 真实进程 smoke：两个 `orca-node serve`、`--peer` 引导 join、CLI members 收敛、Echo 任务到终态、清理临时目录 |
 | `plugin/` | 部分实现 | `apply` 启动 orca node、注册单个 `orca_pod` 工具（`method` 分派 send/status/cancel/approve/members/connect）；后台 tracker 轮询终态并 `inject`/`followup`；权限请求由 tracker 直接 park 进 `prompts` 注册表（`onPermission`），原始请求文本不进入对话，UI 三通道（会话聊天卡/后台弹窗/面板）作答、无超时；`admin.ts` 提供面板数据面（成员/任务/审批/工作区/产物直链，审批不经模型）；`web.ts` 在 DSH web 同源注册 `/orca-api`（仅回环）；`lifecycle.ts` 支持 UI 保存配置与重启（`<data_root>/ui-config.json` 覆盖层）和 UI 直连 peer；`client.js` 是注册设置页/侧栏按钮/停靠浮层的客户端 bundle；标准 skill bundle 在 `skills/orca-node/`，可选 `skill_injection` 复制到 user 根；credentials 读取未做 |
 | `ui`（独立前端） | 未开始 | 目前面板是 DSH Settings 里的一页；将来若要独立窗口/路由，仍放在同一包内（`src/ui/` 或独立 client 入口），发布物不增加依赖 |
 
@@ -91,7 +91,7 @@ gateway   ← orca_node   （gateway 只依赖 protocol + storage 接口，不 i
 executor  ← tasks, acp
 acp       ← orca_node   （AcpExecutor 只依赖 executor 的接口）
 process   ← acp   （命令解析与杀进程树，不知道 ACP 协议）
-session-store ← acp   （只读写 state/<workgroup_id>/sessions.json）
+session_store ← acp   （只读写 state/<workgroup_id>/sessions.json）
 install   ← orca-pod   （只依赖 config.ts 的 createOrcaNodeConfig；不 import gateway/executor）
 tasks     ← orca_node
 orca_node ← harness, plugin

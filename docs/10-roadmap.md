@@ -32,7 +32,7 @@
 
 - 已实现：自适应心跳（`N` 秒，夹 2–10s，±10% 抖动）、双向看门狗（1 拍 suspect、3 拍 offline）、单调时钟、`suspect(unreachable)`、offline 探测退避（15s→30s）、墓碑与 `record_ttl` 修剪、摘要差异回目录（候选端点）与 404 重 join；只有 `online` 接受新任务（`peer_not_online`）。
 - 测试：`membership.test.ts`（注入时钟 5 条）、`watchdog.test.ts`（三个 orca node 收敛、停 orca node→offline→修剪，2 条）、`discovery.test.ts`（心跳 404 重 join、四个 orca node 分半收敛，2 条）、`formation.test.ts`（并发加入、交错 join 幂等、死目录条目仍收敛、重启重认、10 个 orca node、404 重 join 不放大，7 条）、`transport.test.ts`（随机延迟、丢包恢复、单向出站失败、短暂全断，4 条）。
-- 已实现：`waitFor` 断言 helper（`src/harness.ts` 导出，超时信息带 label）、真实进程 `npm run harness`（`src/harness-run.ts`：两个 `orca-node serve`、`--peer` 启动即 join、CLI members 收敛、Echo 任务到终态、临时数据根清理）。
+- 已实现：`waitFor` 断言 helper（`src/harness.ts` 导出，超时信息带 label）、真实进程 `npm run harness`（`src/harness_run.ts`：两个 `orca-node serve`、`--peer` 启动即 join、CLI members 收敛、Echo 任务到终态、临时数据根清理）。
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
@@ -178,7 +178,7 @@
 
 1. **仓库骨架**：单包（根 src/ + 	est/）、tsconfig/vitest、CI（只跑进程内测试）。
 2. **node core（无 UI）**：protocol/crypto/storage/gateway/node + EchoExecutor；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单 orca node。
-3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `npm run harness` 起两个真实进程和 socket（`src/harness-run.ts`）；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
+3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `npm run harness` 起两个真实进程和 socket（`src/harness_run.ts`）；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
 4. **Echo 行为与回调**：按 10.6 的“Echo 脚本”“三台 orca node”逐条跑；挂起/恢复/取消/TTL/blob 在这一层定死，后面的执行器只换实现、不换协议。
 5. **真实执行器**：ACP（ACP stdio）→ AcpExecutor；cwd 是工作区、context→session 绑定、取消、`input-required` 映射。放在插件之前，是为了让“协议正确”和“DSH 集成正确”分两次验证，不同时调两个未知量。
 6. **DSH 插件**：`apply` 启动 orca node、注册工具、后台 tracker、inject/followup、审批卡片与状态卡片。先在单机两个 DSH 实例之间跑通（不同端口、不同 profile）。

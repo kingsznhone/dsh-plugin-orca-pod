@@ -23,7 +23,7 @@
   ],
   "bin": {
     "orca-node": "./src/cli.ts",
-    "orca-pod": "./src/orca-pod.ts"
+    "orca-pod": "./src/orca_pod.ts"
   },
   "dsh": {
     "bundle": {
@@ -37,7 +37,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "harness": "node --no-warnings src/harness-run.ts"
+    "harness": "node --no-warnings src/harness_run.ts"
   },
   "dependencies": {
     "fastify": "^5.12.8"

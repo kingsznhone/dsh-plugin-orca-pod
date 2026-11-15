@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { FileBlob, FileBlobStore } from "./blob-files.ts";
+import type { FileBlob, FileBlobStore } from "./blob_files.ts";
 import { TERMINAL_TASK_STATES, type DispatchEntry, type DispatchStore } from "./dispatches.ts";
 import type { PersistedTask, TaskStore } from "./storage.ts";
 

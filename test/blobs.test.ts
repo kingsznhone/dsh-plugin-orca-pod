@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/crypto.ts";
-import { createFileBlobRegistry, type FileBlobRegistry } from "../src/blob-files.ts";
+import { createFileBlobRegistry, type FileBlobRegistry } from "../src/blob_files.ts";
 import { TaskError, type BusyState, type TaskRunner } from "../src/protocol.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/identity.ts";
 import { createSqliteFileBlobStore } from "../src/sqlite.ts";

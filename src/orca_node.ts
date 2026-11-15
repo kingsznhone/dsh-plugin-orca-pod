@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { childPodMetadata, deriveChildGrant } from "./chain.ts";
-import { createFileBlobRegistry, type FileBlobStore } from "./blob-files.ts";
+import { createFileBlobRegistry, type FileBlobStore } from "./blob_files.ts";
 import { buildAuthHeader, blobLinkSignature, buildHeartbeatProof, buildJoinProof, NonceCache, signGrant } from "./crypto.ts";
 import {
   createMemoryDispatchStore,

@@ -44,7 +44,7 @@ import {
 import { validateModelOffers } from "./config.ts";
 import { DEFAULT_BLOB_TTL_S } from "./blobs.ts";
 import { BlobTooLargeError, type BlobStore, type PeerStore } from "./storage.ts";
-import { createFileBlobRegistry, type FileBlobRegistry } from "./blob-files.ts";
+import { createFileBlobRegistry, type FileBlobRegistry } from "./blob_files.ts";
 import type { NodeIdentity } from "./identity.ts";
 
 export type GatewayOrcaNode = {

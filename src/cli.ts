@@ -5,7 +5,7 @@ import { join, basename } from "node:path";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 
-import { createFileBlobRegistry } from "./blob-files.ts";
+import { createFileBlobRegistry } from "./blob_files.ts";
 import { configPath, defaultDataRoot, endpointWriteback, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
 import { loadIdentity, type NodeIdentity } from "./identity.ts";

@@ -9,7 +9,7 @@ export * from "./crypto.ts";
 export * from "./chain.ts";
 export * from "./config.ts";
 export * from "./storage.ts";
-export * from "./blob-files.ts";
+export * from "./blob_files.ts";
 export * from "./sqlite.ts";
 export * from "./workspace.ts";
 export * from "./gateway.ts";

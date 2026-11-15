@@ -13,7 +13,7 @@ import type { PermissionMode } from "./protocol.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import { KILL_GRACE_MS, abortError, isCmdShim, killTree, quoteForCmd, resolveCommand } from "./process.ts";
 import { orchestrationPreamble, withPreamble } from "./preamble.ts";
-import { readSessions, writeSessions } from "./session-store.ts";
+import { readSessions, writeSessions } from "./session_store.ts";
 
 const STDERR_TAIL = 4096;
 
