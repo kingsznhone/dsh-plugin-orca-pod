@@ -130,8 +130,8 @@ describe("AcpExecutor", () => {
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");
     // The preamble tells the ACP agent how to reach the CLI for delegation.
+    expect(promptText).toContain("ORCA_POD_CLI");
     expect(promptText).toContain("--data-root");
-    expect(promptText).toContain("send --data-root");
   }, 15_000);
 
   it("suspends for a permission request and continues after the origin approves", async () => {

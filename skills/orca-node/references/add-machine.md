@@ -10,8 +10,9 @@ loginctl enable-linger $USER   # if the installer reports a user service
 ```
 
 Then from the desktop session call the `orca_pod` tool with
-`method: "connect"` and `peer: "<linux-ip>"`, or run `orca-node members --json`
-first and check whether it is already there. Finish with a small `send` round
+`method: "connect"` and `peer: "<linux-ip>"`, or run the CLI's `members --json`
+first and check whether it is already there (see [../SKILL.md](../SKILL.md) for
+the exact command in the current session). Finish with a small `send` round
 trip.
 
 Principal: the password is the join credential (same group = same password), the

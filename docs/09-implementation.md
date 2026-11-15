@@ -29,7 +29,7 @@ orca-pod/（仓库根目录）
     executor.ts       LocalExecutor 接口 + EchoExecutor
     acp.ts            AcpExecutor（dsh acp stdio：流式事件、权限挂起、session resume、按任务选模型）
     process.ts        子进程公共件：命令解析（Windows shim）、killTree、abort 错误
-    preamble.ts       编排 preamble（task id、CLI 路径、send/wait/escalate/publish 用法）
+    preamble.ts       编排 preamble（task id、ORCA_POD_CLI/ORCA_POD_DATA_ROOT 与路径兜底、send/wait/escalate/publish 用法）
     session_store.ts  `state/<workgroup_id>/sessions.json` 读写（按 origin+context 绑 ACP session）
     tasks.ts          单槽任务运行器
     orca_node.ts      组合根：一个进程 = 一个 orca node

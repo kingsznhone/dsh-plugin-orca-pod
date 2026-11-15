@@ -10,26 +10,25 @@ This machine runs an orca node. `orca-node` talks to it over loopback, signs as
 this orca node, and does **not** listen on a port or start a second process. Use
 it whenever a task has to leave this machine.
 
-Sessions spawned by the Orca Pod bundle (ACP and CLI executors) get
-`ORCA_POD_CLI` and `ORCA_POD_DATA_ROOT` in their environment. When those are
-set, invoke the CLI through them:
+Sessions spawned by the Orca Pod bundle (ACP executor) export
+`ORCA_POD_CLI` (path to the CLI entry) and `ORCA_POD_DATA_ROOT` in their
+environment. Prefer them; the examples below use that form:
 
 ```bash
 node "$ORCA_POD_CLI" --data-root "$ORCA_POD_DATA_ROOT" members --json
-```
-
-Otherwise use the `orca-node` command installed by the package; the examples
-below use that form:
-
-```bash
-orca-node members --json                     # known peers: id, endpoints, state
-orca-node send --peer <host:port> --text -   # dispatch a task; text from stdin
+#   known peers: id, endpoints, state
+node "$ORCA_POD_CLI" --data-root "$ORCA_POD_DATA_ROOT" send --peer <host:port> --text -
+#   dispatch a task; text from stdin
 #   add --model <provider/model> to pick a model the target advertises (§6.15);
 #   add --reasoning-effort <off|low|high|max> to override its local default effort.
-orca-node wait --peer <host:port> --task <id> --local-task <this task> --timeout 120 --json
-orca-node status --peer <host:port> --task <id> --json
-orca-node escalate --peer <child:port> --task <child task> --local-task <this task> --json
+node "$ORCA_POD_CLI" --data-root "$ORCA_POD_DATA_ROOT" wait --peer <host:port> --task <id> --local-task <this task> --timeout 120 --json
+node "$ORCA_POD_CLI" --data-root "$ORCA_POD_DATA_ROOT" status --peer <host:port> --task <id> --json
+node "$ORCA_POD_CLI" --data-root "$ORCA_POD_DATA_ROOT" escalate --peer <child:port> --task <child task> --local-task <this task> --json
 ```
+
+When those variables are unset (you are not in a spawned session), drop the
+`node "$ORCA_POD_CLI" --data-root "$ORCA_POD_DATA_ROOT"` prefix and use the
+package's `orca-node` command instead.
 
 `wait` exit codes: `0` completed, `1` failed or canceled, `2` still
 running, `3` the target is waiting for a human decision.
