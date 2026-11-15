@@ -1926,16 +1926,89 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // The chat dock re-renders on every state poll, which used to clear a hover
+    // state kept in the component tree about a second after the popover opened.
+    // Keep "which chain is open" in a module-level store instead: a re-mounted
+    // badge reads it back and the popover stays put until the pointer leaves.
+    const chainPopover = { key: null, pinned: false, timer: null, listeners: new Set() };
+
+    function chainNotify() {
+      for (const listener of chainPopover.listeners) {
+        try {
+          listener();
+        } catch {
+          /* a listener went away */
+        }
+      }
+    }
+
+    function chainShow(key) {
+      if (chainPopover.timer !== null) {
+        clearTimeout(chainPopover.timer);
+        chainPopover.timer = null;
+      }
+      chainPopover.key = key;
+      chainNotify();
+    }
+
+    function chainHide(force) {
+      if (chainPopover.timer !== null) {
+        clearTimeout(chainPopover.timer);
+        chainPopover.timer = null;
+      }
+      if (chainPopover.pinned && !force) return;
+      chainPopover.key = null;
+      chainPopover.pinned = false;
+      chainNotify();
+    }
+
+    /** Short grace period so the pointer can cross the gap into the popover. */
+    function chainLeaveSoon() {
+      if (chainPopover.pinned) return;
+      if (chainPopover.timer !== null) clearTimeout(chainPopover.timer);
+      chainPopover.timer = setTimeout(() => {
+        chainPopover.timer = null;
+        if (!chainPopover.pinned) {
+          chainPopover.key = null;
+          chainNotify();
+        }
+      }, 250);
+    }
+
+    function chainToggle(key) {
+      if (chainPopover.pinned && chainPopover.key === key) {
+        chainHide(true);
+        return;
+      }
+      chainPopover.pinned = true;
+      chainShow(key);
+    }
+
+    function useChainOpen(key) {
+      const [open, setOpen] = React.useState(() => chainPopover.key === key);
+      React.useEffect(() => {
+        const update = () => setOpen(chainPopover.key === key);
+        chainPopover.listeners.add(update);
+        return () => {
+          chainPopover.listeners.delete(update);
+        };
+      }, [key]);
+      return open;
+    }
+
     /** Compact tag for the approval chain; hover/click opens the hops as a vertical stack. */
     function ChainBadge(props) {
       const entries = props.entries || [];
-      const [pinned, setPinned] = React.useState(false);
+      const key = entries.map((entry) => entry.name + (entry.self ? "*" : "")).join(">");
+      const open = useChainOpen(key);
       if (entries.length < 2) return null;
       return h(
         "span",
         {
           className: NS + "-chain",
-          "data-open": pinned ? "true" : "false",
+          "data-open": chainPopover.pinned && chainPopover.key === key ? "true" : "false",
+          onMouseEnter: () => chainShow(key),
+          onMouseLeave: chainLeaveSoon,
         },
         h(
           "button",
@@ -1959,7 +2032,7 @@ window.__ModuleLoader__.load({
             },
             onClick: (event) => {
               event.stopPropagation();
-              setPinned((value) => !value);
+              chainToggle(key);
             },
           },
           t("apChainTag"),
@@ -1967,7 +2040,13 @@ window.__ModuleLoader__.load({
         ),
         h(
           "div",
-          { className: NS + "-chain-popover", onClick: (event) => event.stopPropagation() },
+          {
+            className: NS + "-chain-popover",
+            style: { display: open ? "block" : "none" },
+            onMouseEnter: () => chainShow(key),
+            onMouseLeave: chainLeaveSoon,
+            onClick: (event) => event.stopPropagation(),
+          },
           h(
             "div",
             {
