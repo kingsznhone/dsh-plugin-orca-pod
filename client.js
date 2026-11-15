@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
         deny: "deny",
         apTitle: "Permission needed",
       apTitleNamed: "Node {name} requests permission",
+        apTitleTask: "Task {task} requests permission",
         apChain: "path: ",
         apChainTag: "approval path",
         apChainHint: "hover or click to see the approval path",
@@ -241,6 +242,7 @@ window.__ModuleLoader__.load({
         deny: "拒绝",
         apTitle: "需要权限决策",
       apTitleNamed: "节点 {name} 请求授权",
+        apTitleTask: "任务 {task} 请求授权",
         apChain: "来源链：",
         apChainTag: "申请链路",
         apChainHint: "悬浮或点击查看申请链路",
@@ -1905,16 +1907,16 @@ window.__ModuleLoader__.load({
                 h(
                   "span",
                   { style: { width: 8, display: "flex", flexDirection: "column", alignItems: "center" } },
-                  h("span", { style: { width: 1, height: 7, background: lineColor } }),
                   h("span", {
                     style: {
                       width: 0,
                       height: 0,
                       borderLeft: "3.5px solid transparent",
                       borderRight: "3.5px solid transparent",
-                      borderTop: "4.5px solid " + arrowColor,
+                      borderBottom: "4.5px solid " + arrowColor,
                     },
                   }),
+                  h("span", { style: { width: 1, height: 7, background: lineColor } }),
                 ),
               ),
             );
@@ -2006,13 +2008,12 @@ window.__ModuleLoader__.load({
       const request = prompt.request || (parked && parked.request) || {};
       const tool = request.tool || prompt.tool || "";
       const requested = describeRequested(request.requested);
-      const meta = prompt.peer + " · " + t("apTask") + " " + prompt.task_id;
       // Relayed requests carry the leaf-first requester chain in upstream; prefer
       // the leaf so the human sees who actually needs the permission, not just the
       // hop that forwarded it (§7.12).
       const chainEntries = permissionChainEntries(request, props.members, props.self);
       const leafName = chainEntries.length === 0 ? null : chainEntries[chainEntries.length - 1].name;
-      const title = props.background ? t("apBackground") : leafName === null ? t("apTitle") : tFormat("apTitleNamed", { name: leafName });
+      const title = props.background ? t("apBackground") : tFormat("apTitleTask", { task: short(prompt.task_id) });
       return h(
         "div",
         { style: props.background ? APPROVAL_POPUP_CARD : APPROVAL_DOCK_CARD },
@@ -2038,11 +2039,6 @@ window.__ModuleLoader__.load({
           },
           t("from") + (leafName === null ? "-" : leafName),
           h(ChainBadge, { entries: chainEntries }),
-        ),
-        h(
-          "div",
-          { style: { ...MUTED, padding: 0, whiteSpace: "normal", fontSize: 12, lineHeight: "18px" } },
-          meta,
         ),
         h(
           "div",
