@@ -2006,7 +2006,6 @@ window.__ModuleLoader__.load({
       // hop that forwarded it (§7.12).
       const chainEntries = permissionChainEntries(request, props.members, props.self);
       const leafName = chainEntries.length === 0 ? null : chainEntries[chainEntries.length - 1].name;
-      const showChain = chainEntries.length > 1;
       const title = props.background ? t("apBackground") : leafName === null ? t("apTitle") : tFormat("apTitleNamed", { name: leafName });
       return h(
         "div",
@@ -2016,24 +2015,29 @@ window.__ModuleLoader__.load({
           { style: { fontFamily: FONT_FAMILY, fontSize: 14, fontWeight: 600, lineHeight: "22px" } },
           title,
         ),
-        h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, meta),
-        showChain
-          ? h(
-              "div",
-              {
-                style: {
-                  ...MUTED,
-                  padding: 0,
-                  whiteSpace: "normal",
-                  display: "flex",
-                  gap: 6,
-                  alignItems: "center",
-                  flexWrap: "wrap",
-                },
-              },
-              h(ChainBadge, { entries: chainEntries }),
-            )
-          : null,
+        // Same layout as the panel row: who is asking, plus a tag that opens the
+        // full approval path on hover or click (§7.12).
+        h(
+          "div",
+          {
+            style: {
+              ...MUTED,
+              padding: 0,
+              whiteSpace: "normal",
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              flexWrap: "wrap",
+            },
+          },
+          t("from") + (leafName === null ? "-" : leafName),
+          h(ChainBadge, { entries: chainEntries }),
+        ),
+        h(
+          "div",
+          { style: { ...MUTED, padding: 0, whiteSpace: "normal", fontSize: 12, lineHeight: "18px" } },
+          meta,
+        ),
         h(
           "div",
           { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "20px", marginTop: 4, whiteSpace: "normal" } },
