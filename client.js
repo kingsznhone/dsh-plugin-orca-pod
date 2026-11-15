@@ -137,6 +137,7 @@ window.__ModuleLoader__.load({
         dtTimeline: "timeline",
         dtCreated: "created",
         dtModel: "model",
+        dtLoadFailed: "cannot load the task: ",
         stateOnline: "online",
         stateSuspect: "suspect",
         stateUnreachable: "unreachable",
@@ -272,6 +273,7 @@ window.__ModuleLoader__.load({
         dtTimeline: "时间线",
         dtCreated: "创建",
         dtModel: "模型",
+        dtLoadFailed: "读取任务失败：",
         stateOnline: "在线",
         stateSuspect: "可疑",
         stateUnreachable: "不可达",
@@ -626,6 +628,16 @@ window.__ModuleLoader__.load({
       return Math.round(s / 3600) + "h";
     }
 
+    /** Compact peer label for a dispatch row: the advertised host, not the whole URL. */
+    function peerHost(peer) {
+      if (typeof peer !== "string" || peer.length === 0) return "-";
+      try {
+        return new URL(peer).host;
+      } catch {
+        return peer;
+      }
+    }
+
     async function api(path, init) {
       const response = await fetch(path, init);
       const body = await response.json().catch(() => ({}));
@@ -823,11 +835,57 @@ window.__ModuleLoader__.load({
 
     function Tasks(props) {
       const tasks = props.tasks || [];
-      if (tasks.length === 0) return h("div", { style: MUTED }, t("noTasks"));
+      const dispatches = props.dispatches || [];
+      const localIds = new Set(tasks.map((task) => task.id));
+      // "Recent tasks" is what the human did from this panel: both tasks this
+      // node runs locally and the tasks it dispatched to peers (the origin log).
+      const entries = [
+        ...tasks.map((task) => ({ kind: "local", id: task.id, at: task.status ? task.status.timestamp : null, task })),
+        ...dispatches
+          .filter((dispatch) => !localIds.has(dispatch.task_id))
+          .map((dispatch) => ({ kind: "dispatch", id: dispatch.task_id, at: dispatch.updated_at, dispatch })),
+      ].sort((left, right) => String(right.at || "").localeCompare(String(left.at || "")));
+      if (entries.length === 0) return h("div", { style: MUTED }, t("noTasks"));
       return h(
         Table,
         { columns: [t("colTask"), t("colState"), t("colOrigin"), t("colAge"), t("colArtifacts"), ""] },
-        tasks.map((task) => {
+        entries.map((entry) => {
+          if (entry.kind === "dispatch") {
+            const dispatch = entry.dispatch;
+            const running =
+              dispatch.state === "working" || dispatch.state === "submitted" || dispatch.state === "input-required";
+            return h(
+              Row,
+              {
+                key: "dispatch-" + entry.id,
+                onClick: props.onOpenDispatch ? () => props.onOpenDispatch(dispatch) : undefined,
+              },
+              h("td", { style: { ...CELL, fontFamily: MONO_FONT } }, short(entry.id)),
+              h("td", { style: CELL }, taskStateLabel(dispatch.state || "-")),
+              h("td", { style: MUTED, title: dispatch.peer }, "→ " + peerHost(dispatch.peer)),
+              h("td", { style: MUTED }, age(dispatch.updated_at)),
+              h("td", { style: CELL }, "-"),
+              h(
+                "td",
+                { style: CELL },
+                running
+                  ? h(
+                      "button",
+                      {
+                        style: DANGER,
+                        disabled: props.busy,
+                        onClick: (event) => {
+                          if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+                          return props.onAct("cancel", { peer: dispatch.peer, task_id: dispatch.task_id });
+                        },
+                      },
+                      t("cancel"),
+                    )
+                  : null,
+              ),
+            );
+          }
+          const task = entry.task;
           const running = task.status && (task.status.state === "working" || task.status.state === "submitted" || task.status.state === "input-required");
           const links = props.artifacts && props.artifacts[task.id] ? props.artifacts[task.id] : [];
           return h(
@@ -1439,12 +1497,33 @@ window.__ModuleLoader__.load({
       const inputsDirs = state.workspace && Array.isArray(state.workspace.inputs_dirs) ? state.workspace.inputs_dirs : [];
       const [detail, setDetail] = React.useState(null);
       const [nodeDetail, setNodeDetail] = React.useState(null);
+      const [detailError, setDetailError] = React.useState(null);
 
       function openDetail(task) {
         const artifacts = state.artifacts && Array.isArray(state.artifacts[task.id]) ? state.artifacts[task.id] : [];
         const dispatch = dispatches.find((entry) => entry.task_id === task.id) || null;
         const inputsDir = inputsDirs.find((dir) => dir.task_id === task.id);
+        setDetailError(null);
         setDetail({ task, artifacts, dispatch, inputs: inputsDir ? inputsDir.files : [] });
+      }
+
+      // A task this node dispatched lives on the peer: fetch it on demand; the
+      // origin only keeps its own dispatch record.
+      async function openDispatch(dispatch) {
+        setDetailError(null);
+        try {
+          const fetched = await api(
+            "/orca-api/task?peer=" + encodeURIComponent(dispatch.peer) + "&task=" + encodeURIComponent(dispatch.task_id),
+          );
+          setDetail({
+            task: fetched.task,
+            artifacts: Array.isArray(fetched.artifacts) ? fetched.artifacts : [],
+            dispatch,
+            inputs: [],
+          });
+        } catch (err) {
+          setDetailError(t("dtLoadFailed") + messageOf(err));
+        }
       }
 
       // Accepts a bare host/IP, host:port, or a full http(s) URL.
@@ -1511,6 +1590,7 @@ window.__ModuleLoader__.load({
           : null,
         props.error ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, props.error) : null,
         connectError ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, connectError) : null,
+        detailError ? h("div", { style: { marginTop: 8, ...MUTED, color: "var(--dsw-alias-state-error-primary)" } }, detailError) : null,
         !joined ? h("div", { style: { ...MUTED, marginTop: 6 } }, t("notJoined")) : null,
         !joined && connectOpen
           ? h(
@@ -1533,7 +1613,7 @@ window.__ModuleLoader__.load({
             )
           : null,
         h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, busy: props.busy, onAct: props.onAct })),
-        h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct, onOpen: openDetail })),
+        h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, dispatches: dispatches, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct, onOpen: openDetail, onOpenDispatch: openDispatch })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("members")), h(Members, { members: state.members, onOpen: setNodeDetail })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("workspace")), h(Workspace, { workspace: state.workspace })),
         h("div", { style: { ...SECTION, color: "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px" } }, t("updated") + age(state.now) + t("updatedSuffix")),
