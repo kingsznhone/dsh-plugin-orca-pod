@@ -93,6 +93,21 @@ describe("orca-node CLI", () => {
     expect(existsSync(join(root, "blobs", sha.slice(0, 2), sha))).toBe(true);
   });
 
+  it("sends an --echo script as task metadata", async () => {
+    const script = JSON.stringify({
+      steps: [],
+      final: { state: "completed", text: "from echo flag" },
+    });
+    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "scripted", "--echo", script, "--json"]);
+    expect(sent.code).toBe(0);
+    const created = JSON.parse(sent.stdout) as { id: string };
+    const waited = await runCli(["wait", "--data-root", root, "--peer", endpoint, "--task", created.id, "--timeout", "5", "--json"]);
+    expect(waited.code).toBe(0);
+    const view = JSON.parse(waited.stdout) as { status: { state: string; message?: { parts: Array<{ text?: string }> } } };
+    expect(view.status.state).toBe("completed");
+    expect(view.status.message?.parts[0]?.text).toBe("from echo flag");
+  });
+
   it("returns 3 when the task needs permission", async () => {
     const script = JSON.stringify({
       echo: {

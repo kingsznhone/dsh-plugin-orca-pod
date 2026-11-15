@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import { createFileBlobRegistry } from "./blob_files.ts";
 import { configPath, defaultDataRoot, endpointWriteback, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
+import { echoScriptFrom } from "./executor.ts";
 import { loadIdentity, type NodeIdentity } from "./identity.ts";
 import { createOrcaNode, createPersistentStorage, joinRoster } from "./index.ts";
 import type { A2AMessage, MembersResponse, TaskRelay, TaskView } from "./protocol.ts";
@@ -18,7 +19,7 @@ const USAGE = `orca-node
 
 Usage:
   orca-node serve   --config <path> [--peer <url>]        start an orca node from a config file
-  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--json]
+  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
@@ -302,6 +303,18 @@ async function send(args: string[]): Promise<number> {
     // Effort-only override: the target keeps its local model and changes only
     // the reasoning effort (§6.15).
     pod["reasoning_effort"] = reasoningFlag;
+  }
+  const echoFlag = flag(flags, "echo");
+  if (echoFlag !== undefined) {
+    let script: unknown;
+    try {
+      script = JSON.parse(echoFlag);
+    } catch {
+      throw new Error("--echo must be a JSON object");
+    }
+    // Validate through the executor's own parser so a bad script fails on the
+    // dispatching side instead of as an executor error on the target (§6.14).
+    metadata = { ...(metadata ?? {}), echo: echoScriptFrom({ echo: script }) };
   }
   const uploads: Array<{ blob_id: string; size: number; name: string }> = [];
   const seen = new Set<string>();
