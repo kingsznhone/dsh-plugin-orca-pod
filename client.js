@@ -94,6 +94,7 @@ window.__ModuleLoader__.load({
         apTitle: "Permission needed",
       apTitleNamed: "Node {name} requests permission",
         apChain: "path: ",
+        apSelf: "this node",
         apBackground: "A background task needs permission",
         apWants: "wants to run",
         apTask: "task",
@@ -239,6 +240,7 @@ window.__ModuleLoader__.load({
         apTitle: "需要权限决策",
       apTitleNamed: "节点 {name} 请求授权",
         apChain: "来源链：",
+        apSelf: "本机",
         apBackground: "后台任务请求权限",
         apWants: "请求执行",
         apTask: "任务",
@@ -854,15 +856,22 @@ window.__ModuleLoader__.load({
         "div",
         null,
         approvals.map((item) => {
-          const chain = permissionChainNames(item.request, props.members);
-          const leaf = chain.length > 0 ? chain[0] : approvalsName(props.members, item.request && item.request.requested_by);
-          const chainLine = chain.length > 1 ? " · " + t("apChain") + chain.join(" → ") : "";
+          const entries = permissionChainEntries(item.request, props.members, props.self);
+          const leaf =
+            entries.length > 0
+              ? entries[entries.length - 1].name
+              : approvalsName(props.members, item.request && item.request.requested_by);
           return h(
             "div",
             { key: item.task_id, style: { display: "flex", gap: 8, alignItems: "center", margin: "4px 0" } },
             h("span", { style: CELL }, short(item.task_id)),
             h("span", { style: MUTED }, item.request && item.request.tool ? item.request.tool : t("tool")),
-            h("span", { style: MUTED }, t("from") + leaf + chainLine),
+            h(
+              "span",
+              { style: { ...MUTED, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", minWidth: 0 } },
+              t("from") + leaf,
+              h(ChainBadge, { entries }),
+            ),
             h("button", { style: BUTTON, disabled: props.busy, onClick: () => props.onAct("approve", { peer: item.peer, task_id: item.task_id }) }, t("approve")),
             h("button", { style: DANGER, disabled: props.busy, onClick: () => props.onAct("deny", { peer: item.peer, task_id: item.task_id }) }, t("deny")),
           );
@@ -1799,7 +1808,7 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, busy: props.busy, onAct: props.onAct })),
+        h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, self: state.self, busy: props.busy, onAct: props.onAct })),
         h(
           "div",
           { style: SECTION },
@@ -1834,6 +1843,133 @@ window.__ModuleLoader__.load({
       return text.length > 160 ? text.slice(0, 157) + "…" : text;
     }
 
+    /**
+     * Root-to-leaf approval chain: this node first, then each hop down to the node
+     * that actually needs the permission. Long chains stay out of the row text and
+     * open as a vertical stack on hover or click (§7.12).
+     */
+    function permissionChainEntries(request, members, self) {
+      const names = permissionChainNames(request, members);
+      const entries = [];
+      if (self && typeof self.orca_node_id === "string" && self.orca_node_id.length > 0) {
+        entries.push({ name: self.display_name || short(self.orca_node_id), self: true });
+      }
+      for (const name of names.slice().reverse()) {
+        if (entries.length > 0 && entries[entries.length - 1].name === name) continue;
+        entries.push({ name });
+      }
+      return entries;
+    }
+
+    function ChainFlow(props) {
+      const entries = props.entries || [];
+      return h(
+        "div",
+        {
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            paddingLeft: 10,
+            borderLeft: "1px dashed var(--dsw-alias-border-l1)",
+          },
+        },
+        entries.map((entry, index) => {
+          const last = index === entries.length - 1;
+          return h(
+            "div",
+            { key: String(index), style: { display: "flex", alignItems: "center", gap: 6, padding: "2px 0" } },
+            h("span", {
+              style: {
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                flex: "0 0 auto",
+                background: last
+                  ? "var(--dsw-alias-state-warn-primary)"
+                  : "var(--dsw-alias-label-secondary)",
+              },
+            }),
+            h(
+              "span",
+              { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "18px", fontWeight: last ? 600 : 400 } },
+              entry.name,
+            ),
+            entry.self ? h("span", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apSelf")) : null,
+          );
+        }),
+      );
+    }
+
+    /** Inline chain text; hover/click opens the hops as a vertical A → B → C stack. */
+    function ChainBadge(props) {
+      const entries = props.entries || [];
+      const [hover, setHover] = React.useState(false);
+      const [pinned, setPinned] = React.useState(false);
+      if (entries.length < 2) return null;
+      const text = entries.map((entry) => entry.name).join(" → ");
+      return h(
+        "span",
+        {
+          style: { position: "relative", display: "inline-flex", minWidth: 0, maxWidth: 220 },
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+        },
+        h(
+          "button",
+          {
+            type: "button",
+            title: text,
+            style: {
+              ...MUTED,
+              padding: 0,
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              maxWidth: 220,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              textAlign: "left",
+              fontFamily: "inherit",
+              fontSize: "inherit",
+            },
+            onClick: (event) => {
+              event.stopPropagation();
+              setPinned((value) => !value);
+            },
+          },
+          text,
+        ),
+        hover || pinned
+          ? h(
+              "div",
+              {
+                style: {
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  marginTop: 6,
+                  zIndex: 1002,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  minWidth: 200,
+                  padding: "10px 12px",
+                  background: "var(--dsw-alias-bg-layer-1)",
+                  border: "1px solid var(--dsw-alias-border-l1)",
+                  borderRadius: "var(--dsw-radius-md, 10px)",
+                  boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
+                },
+                onClick: (event) => event.stopPropagation(),
+              },
+              h("div", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apChain")),
+              h(ChainFlow, { entries }),
+            )
+          : null,
+      );
+    }
+
     /** One parked approve prompt; the dock and the popup share it. */
     function PromptCard(props) {
       const prompt = props.prompt;
@@ -1844,9 +1980,9 @@ window.__ModuleLoader__.load({
       // Relayed requests carry the leaf-first requester chain in upstream; prefer
       // the leaf so the human sees who actually needs the permission, not just the
       // hop that forwarded it (§7.12).
-      const chainNames = permissionChainNames(request, props.members);
-      const leafName = chainNames.length === 0 ? null : chainNames[0];
-      const chainLine = chainNames.length > 1 ? t("apChain") + chainNames.join(" → ") : null;
+      const chainEntries = permissionChainEntries(request, props.members, props.self);
+      const leafName = chainEntries.length === 0 ? null : chainEntries[chainEntries.length - 1].name;
+      const showChain = chainEntries.length > 1;
       const title = props.background ? t("apBackground") : leafName === null ? t("apTitle") : tFormat("apTitleNamed", { name: leafName });
       return h(
         "div",
@@ -1857,7 +1993,24 @@ window.__ModuleLoader__.load({
           title,
         ),
         h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, meta),
-        chainLine === null ? null : h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, chainLine),
+        showChain
+          ? h(
+              "div",
+              {
+                style: {
+                  ...MUTED,
+                  padding: 0,
+                  whiteSpace: "normal",
+                  display: "flex",
+                  gap: 6,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                },
+              },
+              t("apChain"),
+              h(ChainBadge, { entries: chainEntries }),
+            )
+          : null,
         h(
           "div",
           { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "20px", marginTop: 4, whiteSpace: "normal" } },
@@ -1907,7 +2060,7 @@ window.__ModuleLoader__.load({
       const prompts = (state && state.prompts) || [];
       const mine = sessionId ? prompts.filter((prompt) => prompt.agent_id === sessionId) : [];
       if (mine.length === 0) return null;
-      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, busy, onAct: act })));
+      return h("div", { style: DOCK_WRAP }, mine.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, self: state && state.self, busy, onAct: act })));
     }
 
     /** Frame-wide popup: prompts parked by sessions that are not on screen. */
@@ -1920,7 +2073,7 @@ window.__ModuleLoader__.load({
       return h(
         "div",
         { style: POPUP_WRAP },
-        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, busy, onAct: act, background: true })),
+        background.map((prompt) => h(PromptCard, { key: prompt.id, prompt, members: state && state.members, self: state && state.self, busy, onAct: act, background: true })),
       );
     }
 
