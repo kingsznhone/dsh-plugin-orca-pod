@@ -1975,22 +1975,31 @@ window.__ModuleLoader__.load({
                   position: "absolute",
                   top: "100%",
                   left: 0,
-                  marginTop: 6,
+                  // Padding bridges the visual gap: moving the pointer from the tag
+                  // into the card stays inside the hover target.
+                  paddingTop: 6,
                   zIndex: 1002,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  minWidth: 200,
-                  padding: "10px 12px",
-                  background: "var(--dsw-alias-bg-layer-1)",
-                  border: "1px solid var(--dsw-alias-border-l1)",
-                  borderRadius: "var(--dsw-radius-md, 10px)",
-                  boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
                 },
                 onClick: (event) => event.stopPropagation(),
               },
-              h("div", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apChain")),
-              h(ChainFlow, { entries }),
+              h(
+                "div",
+                {
+                  style: {
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    minWidth: 200,
+                    padding: "10px 12px",
+                    background: "var(--dsw-alias-bg-layer-1)",
+                    border: "1px solid var(--dsw-alias-border-l1)",
+                    borderRadius: "var(--dsw-radius-md, 10px)",
+                    boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
+                  },
+                },
+                h("div", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apChain")),
+                h(ChainFlow, { entries }),
+              ),
             )
           : null,
       );
