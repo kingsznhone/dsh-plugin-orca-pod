@@ -132,6 +132,8 @@ describe("AcpExecutor", () => {
     // The preamble tells the ACP agent how to reach the CLI for delegation.
     expect(promptText).toContain("ORCA_POD_CLI");
     expect(promptText).toContain("--data-root");
+    // A required peer going offline must end the task with a blocker report.
+    expect(promptText).toContain("offline");
   }, 15_000);
 
   it("suspends for a permission request and continues after the origin approves", async () => {
