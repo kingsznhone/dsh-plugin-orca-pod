@@ -259,6 +259,13 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
   const profile = options.profile ?? "acp";
   const extraArgs = options.extra_args ?? [];
 
+  /** Sessions spawned by this executor get the CLI path for the orca-node skill. */
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ORCA_POD_CLI: CLI_PATH,
+    ...(options.data_root === undefined ? {} : { ORCA_POD_DATA_ROOT: options.data_root }),
+  };
+
   let connection: AcpConnection | null = null;
   let connecting: Promise<AcpConnection> | null = null;
   const activeSessions = new Map<string, string>();
@@ -270,12 +277,14 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
     const child = viaCmd
       ? spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${[quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ")}"`], {
           cwd,
+          env: childEnv,
           windowsHide: true,
           windowsVerbatimArguments: true,
           stdio: ["pipe", "pipe", "pipe"],
         })
       : spawn(resolved, args, {
           cwd,
+          env: childEnv,
           windowsHide: true,
           stdio: ["pipe", "pipe", "pipe"],
           ...(process.platform === "win32" ? {} : { detached: true }),

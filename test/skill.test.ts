@@ -1,57 +1,55 @@
 import { mkdtemp, readFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
 import {
-  CLI_PLACEHOLDER,
   installSkill,
   resolveDshHome,
-  SKILL_TEMPLATE_URL,
-  skillMarkdown,
+  SKILL_SOURCE_DIR,
+  SKILL_SOURCE_URL,
+  skillBundle,
   skillPath,
 } from "../src/plugin/skill.ts"
 
-const OPTIONS = { cliPath: "/opt/orca-pod/src/cli.ts", dataRoot: "/tmp/orca-data" }
-
-describe("orca-node skill", () => {
-  it("keeps the editable template in the repository", () => {
-    const template = readFileSync(SKILL_TEMPLATE_URL, "utf8")
-    expect(template).toContain(CLI_PLACEHOLDER)
-    expect(template).toContain("name: orca-node")
-    expect(template).toContain("## Add a machine to the mesh")
-  })
-
-  it("renders frontmatter the filesystem skill provider accepts", () => {
-    const markdown = skillMarkdown(OPTIONS)
+describe("orca-node skill bundle", () => {
+  it("ships a standard bundle in .agents/skills", () => {
+    const markdown = readFileSync(SKILL_SOURCE_URL, "utf8")
     expect(markdown.startsWith("---\n")).toBe(true)
-    const closing = markdown.indexOf("\n---\n", 4)
-    expect(closing).toBeGreaterThan(0)
-    const frontmatter = markdown.slice(4, closing)
-    expect(frontmatter).toContain("name: orca-node")
-    expect(frontmatter).toContain("description: ")
-    expect(frontmatter).toContain("whenToUse: ")
-    expect(frontmatter).toContain("escalate")
-    expect(markdown).toContain('node "/opt/orca-pod/src/cli.ts" --data-root "/tmp/orca-data"')
-    expect(markdown).toContain("exit codes")
+    expect(markdown).toContain("name: orca-node")
+    expect(markdown).toContain("description: ")
+    expect(markdown).toContain("whenToUse: ")
     expect(markdown).not.toContain("{{")
+    expect(basename(SKILL_SOURCE_DIR)).toBe("orca-node")
+    expect(readFileSync(join(SKILL_SOURCE_DIR, "references", "add-machine.md"), "utf8")).toContain(
+      "npx orca-pod install",
+    )
   })
 
-  it("installs once and rewrites only when the content changes", async () => {
+  it("reads SKILL.md plus references as the installable bundle", () => {
+    const files = skillBundle()
+    expect(files.map((file) => file.relative).sort()).toEqual([
+      "SKILL.md",
+      "references/add-machine.md",
+    ])
+    for (const file of files) expect(file.content.length).toBeGreaterThan(0)
+  })
+
+  it("installs the bundle under the DSH user home and is idempotent", async () => {
     const home = await mkdtemp(join(tmpdir(), "orca-skill-"))
-    const first = await installSkill(OPTIONS, home)
+    const first = await installSkill(home)
     expect(first.written).toBe(true)
     expect(first.path).toBe(skillPath(home))
-    expect(await readFile(first.path, "utf8")).toContain(OPTIONS.cliPath)
 
-    const second = await installSkill(OPTIONS, home)
+    for (const file of skillBundle()) {
+      const installed = join(dirname(first.path), file.relative)
+      expect(await readFile(installed, "utf8")).toBe(file.content)
+    }
+
+    const second = await installSkill(home)
     expect(second.written).toBe(false)
-
-    const moved = await installSkill({ ...OPTIONS, cliPath: "/other/cli.ts" }, home)
-    expect(moved.written).toBe(true)
-    expect(await readFile(moved.path, "utf8")).toContain("/other/cli.ts")
   })
 
   it("resolves DSH_HOME before the default home", () => {

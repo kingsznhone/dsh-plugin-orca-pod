@@ -36,8 +36,10 @@ export interface Config {
   /** Directory for the persisted orca node config; defaults to `defaultDataRoot()`. */
   data_root?: string
   /**
-   * Install the `orca-node` skill under `$DSH_HOME/skills` so headless/ACP
-   * sessions on this machine can drive the CLI; defaults to true.
+   * Install a copy of the standard `orca-node` skill under `$DSH_HOME/skills`
+   * for every DSH profile on this machine; off by default. The bundle itself
+   * ships a valid skill at `.agents/skills/orca-node/`, and ACP/CLI sessions
+   * receive `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT` from the executor regardless.
    */
   skill_injection: boolean
   /**
@@ -193,7 +195,7 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
-  let skill_injection = true
+  let skill_injection = false
   const skillInjectionRaw = value["skill_injection"]
   if (skillInjectionRaw !== undefined) {
     if (typeof skillInjectionRaw !== "boolean") {

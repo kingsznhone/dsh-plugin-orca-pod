@@ -15,7 +15,7 @@ function tool(result: ReturnType<typeof createPodTools>) {
 describe("plugin config", () => {
   it("applies defaults and keeps optional fields absent", () => {
     const config = validateConfigInput({ workgroup_id: "wg-a", workgroup_password: "pw" })
-    expect(config).toEqual({ workgroup_id: "wg-a", workgroup_password: "pw", port: 11811, skill_injection: true, peers: [] })
+    expect(config).toEqual({ workgroup_id: "wg-a", workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] })
   })
 
   it("keeps explicit values", () => {
@@ -40,7 +40,7 @@ describe("plugin config", () => {
       workgroup_id: "",
       workgroup_password: "",
       port: 11811,
-      skill_injection: true,
+      skill_injection: false,
       peers: [],
     })
   })

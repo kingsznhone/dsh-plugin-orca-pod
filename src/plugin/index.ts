@@ -7,9 +7,7 @@
  * only created inside `apply`.
  */
 
-import { fileURLToPath } from "node:url"
 
-import { defaultDataRoot } from "../config.ts"
 import { createPodAdmin } from "./admin.ts"
 import { createApprovalPrompts } from "./prompts.ts"
 import { createConfigSchema } from "./config.ts"
@@ -128,13 +126,12 @@ export function apply(ctx: HostContext, config: Config): void {
     },
   })
 
-  // Headless and ACP executors run in their own `dsh` subprocesses and cannot
-  // see this host's tools, so the CLI is handed to them as a user skill.
-  // Installation is idempotent: the file is rewritten only when stale.
+  // ACP and CLI executors run in their own `dsh` subprocesses and cannot see
+  // this host's tools; they get ORCA_POD_CLI/ORCA_POD_DATA_ROOT in their
+  // environment instead. The skill bundle also ships in the package, so a
+  // user-root copy is optional (off by default) and install is idempotent.
   if (config.skill_injection) {
-    const cliPath = fileURLToPath(new URL("../cli.ts", import.meta.url))
-    const dataRoot = config.data_root ?? defaultDataRoot()
-    void installSkill({ cliPath, dataRoot }).then(
+    void installSkill().then(
       (installed) => {
         if (installed.written) logger.info(`orca-pod: installed skill at ${installed.path}`)
       },
