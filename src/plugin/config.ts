@@ -66,6 +66,8 @@ export interface Config {
   allow_loopback_peers?: boolean
   /** Local ceiling for tasks this orca node runs (§7.10). */
   permission_mode?: PermissionMode
+  /** Default reasoning effort this node's ACP sessions use; empty means provider default (§6.15). */
+  default_reasoning_effort?: string
   /**
    * Executor the host node runs tasks with: `acp` (default) drives a real DSH
    * ACP session; `echo` is the debugging script machine (§6.2).
@@ -258,6 +260,16 @@ export function validateConfigInput(value: unknown): Config {
     }
   }
 
+  let default_reasoning_effort: string | undefined
+  const defaultEffortRaw = value["default_reasoning_effort"]
+  if (defaultEffortRaw !== undefined && defaultEffortRaw !== null) {
+    if (typeof defaultEffortRaw !== "string" || defaultEffortRaw.trim().length === 0) {
+      issues.push({ path: ["default_reasoning_effort"], message: "must be a non-empty string" })
+    } else {
+      default_reasoning_effort = defaultEffortRaw
+    }
+  }
+
   if (issues.length > 0) throw new ConfigValidationError(issues)
 
   const config: Config = { workgroup_id, workgroup_password, port, skill_injection, peers }
@@ -273,6 +285,7 @@ export function validateConfigInput(value: unknown): Config {
   if (allow_public_peers !== undefined) config.allow_public_peers = allow_public_peers
   if (allow_loopback_peers !== undefined) config.allow_loopback_peers = allow_loopback_peers
   if (permission_mode !== undefined) config.permission_mode = permission_mode
+  if (default_reasoning_effort !== undefined) config.default_reasoning_effort = default_reasoning_effort
   if (executor !== undefined) config.executor = executor
   return config
 }

@@ -36,7 +36,7 @@
 D（新）                                            A（已在 mesh）
   POST http://A:11811/cluster/join
   { workgroup_id, orca_node_id, display_name, endpoints,
-    models, default_model,
+    models, default_model, default_reasoning_effort,
     self, nonce, ts, proof }            # proof = 密码派生 HMAC，仅准入
                                               ├ 校验 workgroup_id
                                               ├ 校验 proof（密码派生 HMAC，仅准入）
@@ -59,7 +59,7 @@ D（新）                                            A（已在 mesh）
 - **幂等**：同一 `orca_node_id` 重复 join / 重复心跳，端点相同即成功，不重复写表。
 - **自动接受**：workgroup 密码正确即接受。想被通知可开 `notify_only`（只发本地通知，不阻塞）。默认自动接受。
 - **拒绝**：`401` 用统一文案（不区分“workgroup 不对”和“密码不对”）；`409` 只给 id 冲突（需要人改名，必须可诊断）。
-- **模型目录随自述登记**：join 与首个心跳里的 `models`/`default_model` 一并写进成员记录；目录变化会改变 `members_digest`，对端下一拍心跳顺势拉全量。模型清单只对同组成员可见，不进公开 Agent Card（[§6.15](06-execution.md#615-按任务选择模型)）。
+- **模型目录随自述登记**：join 与首个心跳里的 `models`/`default_model`/`default_reasoning_effort` 一并写进成员记录；目录变化会改变 `members_digest`，对端下一拍心跳顺势拉全量。模型清单只对同组成员可见，不进公开 Agent Card（[§6.15](06-execution.md#615-按任务选择模型)）。
 
 ### 3.3 心跳与双向看门狗
 

@@ -91,6 +91,7 @@ describe("panel override lifecycle", () => {
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
+        default_reasoning_effort: "max",
         executor: "echo",
       });
 
@@ -103,6 +104,7 @@ describe("panel override lifecycle", () => {
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
+        default_reasoning_effort: "max",
         executor: "echo",
       });
       expect(handle.runtime.error).toBeNull();
@@ -113,15 +115,18 @@ describe("panel override lifecycle", () => {
       expect(nodeConfig["task_timeout_s"]).toBe(120);
       expect(nodeConfig["max_input_bytes"]).toBe(1048576);
       expect(nodeConfig["permission_mode"]).toBe("workspace-write");
+      expect(nodeConfig["default_reasoning_effort"]).toBe("max");
       expect(nodeConfig["executor"]).toBe("echo");
 
       // Clearing a field removes it from the override and the persisted config,
       // so the local default applies again instead of a stale stored value.
-      const cleared = await admin.saveConfig({ task_timeout_s: null, executor: null });
+      const cleared = await admin.saveConfig({ task_timeout_s: null, default_reasoning_effort: null, executor: null });
       expect(cleared.advanced.task_timeout_s).toBeNull();
+      expect(cleared.advanced.default_reasoning_effort).toBeNull();
       expect(cleared.advanced.executor).toBeNull();
       const clearedConfig = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
       expect(clearedConfig["task_timeout_s"]).toBeUndefined();
+      expect(clearedConfig["default_reasoning_effort"]).toBeUndefined();
       // Clearing the executor falls back to the plugin default (acp), which is
       // written back so the persisted node config never loses it.
       expect(clearedConfig["executor"]).toBe("acp");

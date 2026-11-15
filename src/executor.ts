@@ -54,6 +54,8 @@ export type ExecuteInput = {
   permissionMode?: PermissionMode;
   /** Model route this task asks the executor to use; only ACP applies it (§6.15). */
   model?: ModelSelection;
+  /** Reasoning effort for that route; only ACP applies it (§6.15). */
+  reasoningEffort?: string;
   metadata?: Record<string, unknown>;
 };
 

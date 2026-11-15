@@ -62,6 +62,12 @@ export type ModelSelection = {
   reasoning_effort?: string;
 };
 
+/**
+ * One reasoning-effort value a provider offers (`off`, `low`, `high`, `max`
+ * today; treated as an opaque string so a provider can add values).
+ */
+export type ReasoningEffort = string;
+
 export type PeerView = {
   orca_node_id: OrcaNodeId;
   display_name: string;
@@ -78,6 +84,8 @@ export type PeerView = {
   models?: ModelOffer[];
   /** The model an ACP session uses when a task does not name one (§6.15). */
   default_model?: ModelSelection | null;
+  /** Reasoning effort an ACP session uses when a task does not name one (§6.15). */
+  default_reasoning_effort?: ReasoningEffort | null;
 };
 
 export type SelfRecord = PeerView & {
@@ -94,6 +102,7 @@ export type JoinRequest = {
   max_task_ttl_s?: number;
   models?: ModelOffer[];
   default_model?: ModelSelection | null;
+  default_reasoning_effort?: ReasoningEffort | null;
 };
 
 export type JoinResponse = {
@@ -319,6 +328,25 @@ export function modelSelectionOf(metadata: Record<string, unknown> | undefined):
   return isModelSelection(selection) ? selection : undefined;
 }
 
+/** True when `value` is a usable reasoning-effort selector (§6.15). */
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Read `metadata.pod.reasoning_effort` (or a model-pinned effort), if valid (§6.15). */
+export function reasoningEffortOf(
+  metadata: Record<string, unknown> | undefined,
+): ReasoningEffort | undefined {
+  const pod = metadata?.["pod"];
+  if (typeof pod !== "object" || pod === null) return undefined;
+  const record = pod as Record<string, unknown>;
+  const direct = record["reasoning_effort"];
+  if (isReasoningEffort(direct)) return direct;
+  const selection = record["model"];
+  if (!isModelSelection(selection)) return undefined;
+  return isReasoningEffort(selection.reasoning_effort) ? selection.reasoning_effort : undefined;
+}
+
 export type PodTaskMetadata = {
   hop?: number;
   chain?: string[];
@@ -327,6 +355,8 @@ export type PodTaskMetadata = {
   permission_mode?: PermissionMode;
   /** Model route the target's ACP executor should select for this task (§6.15). */
   model?: ModelSelection;
+  /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
+  reasoning_effort?: ReasoningEffort;
   idempotency_key?: string;
   task_ttl_s?: number;
   grant_id?: string;

@@ -493,6 +493,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     const peerTtl = body["max_task_ttl_s"];
     let modelOffers: ModelOffer[] | undefined;
     let defaultModel: ModelSelection | null | undefined;
+    let defaultReasoningEffort: string | null | undefined;
     try {
       const rawModels = body["models"];
       if (rawModels !== undefined) modelOffers = validateModelOffers(rawModels);
@@ -501,6 +502,14 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       else if (rawDefault !== undefined) {
         if (!isModelSelection(rawDefault)) throw new Error("default_model must name a provider and model");
         defaultModel = rawDefault;
+      }
+      const rawEffort = body["default_reasoning_effort"];
+      if (rawEffort === null) defaultReasoningEffort = null;
+      else if (rawEffort !== undefined) {
+        if (typeof rawEffort !== "string" || rawEffort.trim().length === 0) {
+          throw new Error("default_reasoning_effort must be a non-empty string");
+        }
+        defaultReasoningEffort = rawEffort;
       }
     } catch (error) {
       return badRequest(reply, error instanceof Error ? error.message : String(error));
@@ -520,6 +529,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
         : {}),
       ...(modelOffers !== undefined ? { models: modelOffers } : {}),
       ...(defaultModel !== undefined ? { default_model: defaultModel } : {}),
+      ...(defaultReasoningEffort !== undefined ? { default_reasoning_effort: defaultReasoningEffort } : {}),
     });
 
         const { self, digest } = membership(deps);

@@ -154,6 +154,9 @@ async function runSend(
     throw new Error("model must be a provider/model string")
   }
   const reasoningEffort = typeof args["reasoning_effort"] === "string" ? args["reasoning_effort"] : undefined
+  if (reasoningEffort !== undefined && reasoningEffort.trim().length === 0) {
+    throw new Error("reasoning_effort must be a non-empty string")
+  }
   const model = rawModel === undefined ? null : parseModelSpec(rawModel, reasoningEffort)
   if (rawModel !== undefined && model === null) {
     throw new Error("model must be a provider/model string")
@@ -163,6 +166,7 @@ async function runSend(
   const pod: Record<string, unknown> = {
     ...(permissionMode === undefined ? {} : { permission_mode: permissionMode }),
     ...(model === null ? {} : { model }),
+    ...(model === null && reasoningEffort !== undefined ? { reasoning_effort: reasoningEffort } : {}),
   }
   const metadata: Record<string, unknown> = {
     ...(echo === undefined ? {} : { echo }),

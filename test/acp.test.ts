@@ -17,8 +17,8 @@ afterEach(async () => {
   for (const node of LIVE.splice(0)) await node.stop();
 });
 
-function configFor(root: string, mode: string): OrcaNodeConfig {
-  return createOrcaNodeConfig({
+function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): OrcaNodeConfig {
+  const config = createOrcaNodeConfig({
     workgroupId: "acp-test",
     password: "correct horse",
     dataRoot: root,
@@ -30,6 +30,7 @@ function configFor(root: string, mode: string): OrcaNodeConfig {
       mcp_servers: [{ name: "probe", command: process.execPath, args: ["-e", ""] }],
     },
   });
+  return { ...config, ...overrides };
 }
 
 function echoConfigFor(root: string): OrcaNodeConfig {
@@ -77,12 +78,24 @@ async function waitForRemoteState(
 
 async function logEntries(
   path: string,
-): Promise<Array<{ method?: string; text?: string; cwd?: string; mcpServers?: number }>> {
+): Promise<
+  Array<{ method?: string; text?: string; cwd?: string; mcpServers?: number; configId?: string; value?: string }>
+> {
   const text = await readFile(path, "utf8").catch(() => "");
   return text
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { method?: string; text?: string; cwd?: string; mcpServers?: number });
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          method?: string;
+          text?: string;
+          cwd?: string;
+          mcpServers?: number;
+          configId?: string;
+          value?: string;
+        },
+    );
 }
 
 async function waitForLog(
@@ -186,6 +199,48 @@ describe("AcpExecutor", () => {
     const entry = entries[selected] as { configId?: string; value?: string };
     expect(entry.configId).toBe("model");
     expect(entry.value).toBe(JSON.stringify(["deepseek", "deepseek-v4-pro"]));
+  }, 15_000);
+
+  it("uses the node default reasoning effort when the task does not ask", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: "max" }));
+    const submitted = await send(node, "use the node default effort");
+    await waitForState(node, submitted.id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    const effort = entries.find(
+      (entry) => entry.method === "session/set_config_option" && entry.configId === "reasoning_effort",
+    );
+    expect(effort?.value).toBe("max");
+    expect(
+      entries.some((entry) => entry.method === "session/set_config_option" && entry.configId === "model"),
+    ).toBe(false);
+  }, 15_000);
+
+  it("lets the task override the node default reasoning effort", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: "high" }));
+    const submitted = await node.sendTask(node.endpoints[0]!, {
+      message: { role: "user", parts: [{ kind: "text", text: "use the requested effort" }], contextId: "ctx-effort" },
+      metadata: { pod: { reasoning_effort: "max" } },
+    });
+    await waitForState(node, submitted.id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    const effort = entries.find(
+      (entry) => entry.method === "session/set_config_option" && entry.configId === "reasoning_effort",
+    );
+    expect(effort?.value).toBe("max");
+  }, 15_000);
+
+  it("clears the reasoning effort when neither the node nor the task sets one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok"));
+    const submitted = await send(node, "provider default effort");
+    await waitForState(node, submitted.id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    const effort = entries.find(
+      (entry) => entry.method === "session/set_config_option" && entry.configId === "reasoning_effort",
+    );
+    expect(effort?.value).toBe("");
   }, 15_000);
 
   it("fails the task when the target rejects the requested model", async () => {

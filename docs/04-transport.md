@@ -103,7 +103,7 @@
 
 要求：
 
-- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime、模型目录。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。`max_task_ttl_s` 是公开的调度预算，不是敏感信息，放在 Card 里让 origin 在派任务前就能拆解；`models`/`default_model` 只对同组成员可见（[§6.15](06-execution.md#615-按任务选择模型)）。
+- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime、模型目录。读取它不需要签名；敏感信息只在签名的 `/cluster/members`（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。`max_task_ttl_s` 是公开的调度预算，不是敏感信息，放在 Card 里让 origin 在派任务前就能拆解；`models`/`default_model`/`default_reasoning_effort` 只对同组成员可见（[§6.15](06-execution.md#615-按任务选择模型)）。
 - `skills` 是能力声明，不是实现；执行由 LocalExecutor + 继承的权限模式决定。
 - SDK 与 `protocolVersion` 必须 pin；不匹配 fail closed（半兼容的 SDK 比不兼容更难查），并在日志里写清双方版本。
 

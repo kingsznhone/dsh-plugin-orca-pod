@@ -172,6 +172,10 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
           }
           if (body["permission_mode"] === null) patch["permission_mode"] = null
           else if (typeof body["permission_mode"] === "string") patch["permission_mode"] = body["permission_mode"]
+          if (body["default_reasoning_effort"] === null) patch["default_reasoning_effort"] = null
+          else if (typeof body["default_reasoning_effort"] === "string" && body["default_reasoning_effort"].length > 0) {
+            patch["default_reasoning_effort"] = body["default_reasoning_effort"]
+          }
           if (body["executor"] === null) patch["executor"] = null
           else if (body["executor"] === "echo" || body["executor"] === "acp") patch["executor"] = body["executor"]
           sendJson(response, 200, await admin.saveConfig(patch))

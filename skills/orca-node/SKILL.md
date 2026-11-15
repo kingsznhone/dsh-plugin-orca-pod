@@ -24,7 +24,8 @@ below use that form:
 ```bash
 orca-node members --json                     # known peers: id, endpoints, state
 orca-node send --peer <host:port> --text -   # dispatch a task; text from stdin
-#   add --model <provider/model> to pick a model the target advertises (§6.15)
+#   add --model <provider/model> to pick a model the target advertises (§6.15);
+#   add --reasoning-effort <off|low|high|max> to override its local default effort.
 orca-node wait --peer <host:port> --task <id> --local-task <this task> --timeout 120 --json
 orca-node status --peer <host:port> --task <id> --json
 orca-node escalate --peer <child:port> --task <child task> --local-task <this task> --json

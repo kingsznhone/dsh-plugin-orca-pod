@@ -56,6 +56,21 @@ describe("model catalog", () => {
     });
     expect(() => validateModelSelection({ provider: "p" })).toThrow();
     expect(() => validateModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toThrow();
+    const configured = createOrcaNodeConfig({
+      workgroupId: "wg",
+      password: "pw",
+      dataRoot: join(tmpdir(), "orca-model-config"),
+      defaultReasoningEffort: "max",
+    });
+    expect(configured.default_reasoning_effort).toBe("max");
+    expect(() =>
+      createOrcaNodeConfig({
+        workgroupId: "wg",
+        password: "pw",
+        dataRoot: join(tmpdir(), "orca-model-config"),
+        defaultReasoningEffort: "",
+      }),
+    ).toThrow();
   });
 
   it("advertises the catalog on join and in the peer directory", async () => {
@@ -67,15 +82,18 @@ describe("model catalog", () => {
     const b = await startNode({
       models: [{ provider: "deepseek", model: "deepseek-flash" }],
       defaultModel: { provider: "deepseek", model: "deepseek-flash" },
+      defaultReasoningEffort: "max",
     });
     await b.join(a.endpoints[0]!);
     const peer = await until(() => a.members().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
     expect(peer.models).toHaveLength(1);
     expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
     expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash" });
+    expect(peer.default_reasoning_effort).toBe("max");
     // The join response carries the directory, so b sees a's catalog too.
     const seenByB = await until(() => b.members().find((member) => member.orca_node_id === a.orcaNodeId) ?? null);
     expect(seenByB.models).toHaveLength(2);
+    expect(seenByB.default_reasoning_effort).toBeNull();
   });
 
   it("fails a task that asks for a model when the executor cannot select one", async () => {
@@ -83,6 +101,22 @@ describe("model catalog", () => {
     const submitted = await node.sendTask(node.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "select a model" }] },
       metadata: { pod: { model: { provider: "deepseek", model: "deepseek-flash" } } },
+    });
+    const deadline = Date.now() + 5_000;
+    let task = await node.getTask(node.endpoints[0]!, submitted.id);
+    while (task.status.state !== "failed" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      task = await node.getTask(node.endpoints[0]!, submitted.id);
+    }
+    expect(task.status.state).toBe("failed");
+    expect(task.status.reason).toBe("model_unsupported");
+  });
+
+  it("fails a task that asks for a reasoning effort when the executor cannot select one", async () => {
+    const node = await startNode({});
+    const submitted = await node.sendTask(node.endpoints[0]!, {
+      message: { role: "user", parts: [{ kind: "text", text: "select an effort" }] },
+      metadata: { pod: { reasoning_effort: "max" } },
     });
     const deadline = Date.now() + 5_000;
     let task = await node.getTask(node.endpoints[0]!, submitted.id);

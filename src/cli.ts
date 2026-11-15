@@ -299,7 +299,9 @@ async function send(args: string[]): Promise<number> {
     if (selection === null) throw new Error("--model must be a provider/model pair, e.g. deepseek/deepseek-flash");
     pod["model"] = selection;
   } else if (reasoningFlag !== undefined) {
-    throw new Error("--reasoning-effort requires --model");
+    // Effort-only override: the target keeps its local model and changes only
+    // the reasoning effort (§6.15).
+    pod["reasoning_effort"] = reasoningFlag;
   }
   const uploads: Array<{ blob_id: string; size: number; name: string }> = [];
   const seen = new Set<string>();

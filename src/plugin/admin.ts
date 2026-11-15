@@ -51,6 +51,7 @@ export interface PodAdvancedConfig {
   allow_public_peers: boolean | null
   allow_loopback_peers: boolean | null
   permission_mode: PermissionMode | null
+  default_reasoning_effort: string | null
   executor: "echo" | "acp" | null
 }
 
@@ -170,7 +171,8 @@ export function createPodAdmin(
         allow_public_peers: config.allow_public_peers ?? null,
         allow_loopback_peers: config.allow_loopback_peers ?? null,
         permission_mode: config.permission_mode ?? null,
-    executor: config.executor ?? null,
+        default_reasoning_effort: config.default_reasoning_effort ?? null,
+        executor: config.executor ?? null,
       },
       password_set: config.workgroup_password.length > 0,
       running: current !== null,

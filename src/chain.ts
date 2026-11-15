@@ -5,6 +5,7 @@ import {
   TaskError,
   isModelSelection,
   isPermissionMode,
+  isReasoningEffort,
   type Grant,
   type PermissionRequest,
   type PodTaskMetadata,
@@ -70,6 +71,10 @@ export function validatePodMetadata(
       "pod.model must name a provider, model and optional reasoning_effort",
     );
   }
+  const reasoningEffort = pod["reasoning_effort"];
+  if (reasoningEffort !== undefined && !isReasoningEffort(reasoningEffort)) {
+    throw new TaskError("bad_request", "pod.reasoning_effort must be a non-empty string");
+  }
   const path = (chain as string[] | undefined) ?? [];
   if (path.includes(selfOrcaNodeId)) {
     throw new TaskError(
@@ -81,6 +86,7 @@ export function validatePodMetadata(
   if (typeof root === "string") normalized.root = root;
   if (isPermissionMode(permissionMode)) normalized.permission_mode = permissionMode;
   if (isModelSelection(model)) normalized.model = model;
+  if (isReasoningEffort(reasoningEffort)) normalized.reasoning_effort = reasoningEffort;
   return normalized;
 }
 

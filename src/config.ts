@@ -7,6 +7,7 @@ import {
   DEFAULT_PORT,
   isModelSelection,
   isPermissionMode,
+  isReasoningEffort,
   isWorkgroupId,
   normalizeEndpoints,
   type ModelOffer,
@@ -72,6 +73,8 @@ export type OrcaNodeConfig = {
   models?: ModelOffer[];
   /** Default ACP session model when a task names none; usually the DSH default (§6.15). */
   default_model?: ModelSelection;
+  /** Default reasoning effort when a task names none; empty means the provider default (§6.15). */
+  default_reasoning_effort?: string;
 };
 
 export type CreateOrcaNodeConfigOptions = {
@@ -99,6 +102,8 @@ export type CreateOrcaNodeConfigOptions = {
   models?: ModelOffer[];
   /** Default ACP session model advertised to peers (§6.15). */
   defaultModel?: ModelSelection;
+  /** Default reasoning effort advertised to peers; empty means the provider default (§6.15). */
+  defaultReasoningEffort?: string;
 };
 
 const MAX_MODEL_OFFERS = 128;
@@ -201,6 +206,9 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     options.models === undefined ? undefined : validateModelOffers(options.models);
   const defaultModel =
     options.defaultModel === undefined ? undefined : validateModelSelection(options.defaultModel);
+  if (options.defaultReasoningEffort !== undefined && !isReasoningEffort(options.defaultReasoningEffort)) {
+    throw new Error("defaultReasoningEffort must be a non-empty reasoning-effort string");
+  }
   const key = deriveWorkgroupKey(options.workgroupId, options.password);
   const requestedEndpoints = options.endpoints ?? [];
   const normalized = normalizeEndpoints(requestedEndpoints);
@@ -234,6 +242,9 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
   ...(options.allowLoopbackPeers !== undefined ? { allow_loopback_peers: options.allowLoopbackPeers } : {}),
   ...(models !== undefined ? { models } : {}),
   ...(defaultModel !== undefined ? { default_model: defaultModel } : {}),
+  ...(options.defaultReasoningEffort !== undefined
+    ? { default_reasoning_effort: options.defaultReasoningEffort }
+    : {}),
   };
 }
 
@@ -380,6 +391,13 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
   if (models !== undefined) config.models = validateModelOffers(models);
   const defaultModel = record["default_model"];
   if (defaultModel !== undefined) config.default_model = validateModelSelection(defaultModel);
+  const defaultEffort = record["default_reasoning_effort"];
+  if (defaultEffort !== undefined) {
+    if (!isReasoningEffort(defaultEffort)) {
+      throw new Error("config.default_reasoning_effort must be a non-empty reasoning-effort string");
+    }
+    config.default_reasoning_effort = defaultEffort;
+  }
   return config;
 }
 

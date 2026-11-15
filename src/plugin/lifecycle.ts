@@ -90,6 +90,7 @@ const OVERRIDE_KEYS = [
   "allow_public_peers",
   "allow_loopback_peers",
   "permission_mode",
+  "default_reasoning_effort",
   "executor",
 ] as const
 
@@ -180,6 +181,7 @@ const BASE_FIELDS = [
   "allow_public_peers",
   "allow_loopback_peers",
   "permission_mode",
+  "default_reasoning_effort",
   "executor",
 ] as const
 
@@ -193,6 +195,7 @@ const ADVANCED_KEYS = [
   "allow_public_peers",
   "allow_loopback_peers",
   "permission_mode",
+  "default_reasoning_effort",
   "executor",
 ] as const
 
@@ -251,6 +254,9 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
     ...(config.allow_public_peers === undefined ? {} : { allow_public_peers: config.allow_public_peers }),
     ...(config.allow_loopback_peers === undefined ? {} : { allow_loopback_peers: config.allow_loopback_peers }),
     ...(config.permission_mode === undefined ? {} : { permission_mode: config.permission_mode }),
+    ...(config.default_reasoning_effort === undefined
+      ? {}
+      : { default_reasoning_effort: config.default_reasoning_effort }),
     executor,
   }
 
@@ -286,6 +292,9 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
       ...(config.allow_public_peers === undefined ? {} : { allowPublicPeers: config.allow_public_peers }),
       ...(config.allow_loopback_peers === undefined ? {} : { allowLoopbackPeers: config.allow_loopback_peers }),
       ...(config.permission_mode === undefined ? {} : { permissionMode: config.permission_mode }),
+      ...(config.default_reasoning_effort === undefined
+        ? {}
+        : { defaultReasoningEffort: config.default_reasoning_effort }),
       executor,
     })
   }

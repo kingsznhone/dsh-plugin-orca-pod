@@ -75,7 +75,8 @@ export function apply(ctx: HostContext, config: Config): void {
   // node with the same catalog before the first join.
   const catalog: ModelCatalog = { models: [], defaultModel: null }
   const handle = startPod(config, logger, {
-    onNodeStarted: (orcaNode) => orcaNode.setModelCatalog(catalog.models, catalog.defaultModel),
+    onNodeStarted: (orcaNode) =>
+      orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null),
   })
   void handle.ready.then(async () => {
     try {
@@ -83,7 +84,7 @@ export function apply(ctx: HostContext, config: Config): void {
       catalog.models = next.models
       catalog.defaultModel = next.defaultModel
       const orcaNode = handle.runtime.orcaNode
-      if (orcaNode !== null) orcaNode.setModelCatalog(catalog.models, catalog.defaultModel)
+      if (orcaNode !== null) orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null)
       if (catalog.models.length > 0) {
         logger.info(`orca-pod: advertising ${catalog.models.length} models`)
       }

@@ -376,29 +376,33 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
 
       // ACP selects the model per session (§6.15). The option value is the
       // catalog's opaque choice value; the ACP server rejects unknown values.
-      if (input.model !== undefined) {
-        try {
+      // The effort is always written (empty = provider default) so a resumed
+      // session cannot keep a previous task's override.
+      try {
+        if (input.model !== undefined) {
           await conn.request("session/set_config_option", {
             sessionId,
             configId: "model",
             value: JSON.stringify([input.model.provider, input.model.model]),
           });
-          if (input.model.reasoning_effort !== undefined) {
-            await conn.request("session/set_config_option", {
-              sessionId,
-              configId: "reasoning_effort",
-              value: input.model.reasoning_effort,
-            });
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          yield {
-            type: "failed",
-            text: `cannot select model ${input.model.provider}/${input.model.model}: ${message}`,
-            reason: "model_unavailable",
-          };
-          return;
         }
+        await conn.request("session/set_config_option", {
+          sessionId,
+          configId: "reasoning_effort",
+          value: input.reasoningEffort ?? "",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const target =
+          input.model === undefined
+            ? `reasoning effort "${input.reasoningEffort ?? ""}"`
+            : `model ${input.model.provider}/${input.model.model}`;
+        yield {
+          type: "failed",
+          text: `cannot select ${target}: ${message}`,
+          reason: "model_unavailable",
+        };
+        return;
       }
 
       const events = new AsyncQueue<RunEvent>();

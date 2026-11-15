@@ -12,9 +12,11 @@ import {
   narrowPermissionMode,
   newTaskId,
   permissionModeOf,
+  reasoningEffortOf,
   TaskError,
   type A2AMessage,
   type BusyState,
+  type ModelSelection,
   type PermissionMode,
   type PermissionRequest,
   type SignedGrant,
@@ -177,6 +179,11 @@ export type TaskRunnerDeps = {
   sendTaskMessage?: (peerUrl: string, taskId: string, message: A2AMessage) => Promise<void>;
   /** Called after every observable task change, for the UI event bus (§9.2). */
   onEvent?: (view: TaskView) => void;
+  /** Local ACP session defaults when an origin does not override them (§6.15). */
+  modelDefaults?: () => {
+    model?: ModelSelection | null;
+    reasoningEffort?: string | null;
+  };
 };
 
 /**
@@ -471,7 +478,9 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           ? inheritedMode
           : narrowPermissionMode(deps.permissionMode, inheritedMode);
     const requestedModel = modelSelectionOf(rec.metadata);
-    if (requestedModel !== undefined && deps.executor.supportsModelSelection !== true) {
+    const requestedEffort = reasoningEffortOf(rec.metadata);
+    const supportsModels = deps.executor.supportsModelSelection === true;
+    if (requestedModel !== undefined && !supportsModels) {
       finish(
         rec,
         "failed",
@@ -482,6 +491,23 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       );
       return;
     }
+    if (requestedEffort !== undefined && !supportsModels) {
+      finish(
+        rec,
+        "failed",
+        textMessage(
+          `this orca node cannot select reasoning effort "${requestedEffort}"; only the ACP executor supports per-task models`,
+        ),
+        "model_unsupported",
+      );
+      return;
+    }
+    // Local defaults apply when the origin only overrides part of the selection
+    // (or nothing at all). ACP always receives them so a resumed session cannot
+    // keep a previous task's model or effort (§6.15).
+    const defaults = supportsModels ? deps.modelDefaults?.() : undefined;
+    const model = requestedModel ?? defaults?.model ?? undefined;
+    const reasoningEffort = requestedEffort ?? defaults?.reasoningEffort ?? undefined;
     const iterator =
       rec.iterator ??
       deps.executor.run(
@@ -494,7 +520,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           ...(workspace ? { workspaceDir: workspace.root, podDir: workspace.state } : {}),
           ...(deps.dataRoot ? { dataRootDir: deps.dataRoot } : {}),
           ...(permissionMode ? { permissionMode } : {}),
-          ...(requestedModel ? { model: requestedModel } : {}),
+          ...(model === null || model === undefined ? {} : { model }),
+          ...(reasoningEffort === null || reasoningEffort === undefined ? {} : { reasoningEffort }),
           metadata: rec.metadata,
         },
         rec.abort.signal,

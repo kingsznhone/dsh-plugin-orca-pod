@@ -172,7 +172,11 @@ export interface OrcaNode {
    * default route (§6.15). Host integrations call this after the DSH model
    * catalog is available; peers see it on the next roster exchange.
    */
-  setModelCatalog(models: ModelOffer[], defaultModel: ModelSelection | null): void;
+  setModelCatalog(
+    models: ModelOffer[],
+    defaultModel: ModelSelection | null,
+    defaultReasoningEffort?: string | null,
+  ): void;
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
   /** Leave the workgroup: tell every known peer, then clear the local roster. */
@@ -311,6 +315,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     ...(config.max_input_bytes !== undefined ? { maxInputBytes: config.max_input_bytes } : {}),
     taskTimeoutS: maxTaskTtlS,
     dataRoot: config.data_root,
+    modelDefaults: () => ({ model: defaultModel, reasoningEffort: defaultReasoningEffort }),
     sendTaskMessage: async (peerUrl, _taskId, message) => {
       await postA2a<TaskView>(peerUrl, "message/send", { message });
     },
@@ -346,14 +351,24 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   });
 
   let modelCatalog: ModelOffer[] = [...(config.models ?? [])];
-  let defaultModel: ModelSelection | null = config.default_model ?? null;
+  // A local pin in config.json wins over whatever the DSH host reports; the
+  // pin is what makes per-node defaults reproducible across UI changes (§6.15).
+  const configuredDefaultModel: ModelSelection | null = config.default_model ?? null;
+  const configuredReasoningEffort: string | null =
+    config.default_reasoning_effort ?? config.default_model?.reasoning_effort ?? null;
+  let defaultModel: ModelSelection | null = configuredDefaultModel;
+  let defaultReasoningEffort: string | null = configuredReasoningEffort;
 
   /**
    * Publish the model routes an ACP session can be switched to (§6.15). The
    * Host computes them from the DSH catalog after the node starts; peers learn
-   * the new list from the next roster exchange.
+   * the new list from the next roster exchange. Local config pins still win.
    */
-  function setModelCatalog(models: ModelOffer[], nextDefault: ModelSelection | null): void {
+  function setModelCatalog(
+    models: ModelOffer[],
+    nextDefault: ModelSelection | null,
+    nextReasoningEffort?: string | null,
+  ): void {
     const seen = new Set<string>();
     modelCatalog = [];
     for (const offer of models) {
@@ -362,7 +377,15 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       seen.add(key);
       modelCatalog.push(offer);
     }
-    defaultModel = nextDefault;
+    defaultReasoningEffort =
+      configuredReasoningEffort ?? nextReasoningEffort ?? nextDefault?.reasoning_effort ?? null;
+    const fallback = configuredDefaultModel ?? nextDefault ?? null;
+    defaultModel =
+      fallback === null
+        ? null
+        : defaultReasoningEffort === null
+          ? fallback
+          : { ...fallback, reasoning_effort: defaultReasoningEffort };
     emitMembersIfChanged();
   }
 
@@ -380,6 +403,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       max_task_ttl_s: maxTaskTtlS,
       ...(modelCatalog.length > 0 ? { models: modelCatalog } : {}),
       default_model: defaultModel,
+      default_reasoning_effort: defaultReasoningEffort,
     };
   }
 
@@ -406,7 +430,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       .map(
         (peer) =>
           `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
-          `:${peer.models?.length ?? 0}:${peer.default_model === undefined || peer.default_model === null ? "" : `${peer.default_model.provider}/${peer.default_model.model}`}`,
+          `:${peer.models?.length ?? 0}:${peer.default_model === undefined || peer.default_model === null ? "" : `${peer.default_model.provider}/${peer.default_model.model}`}:${peer.default_reasoning_effort ?? ""}`,
       )
       .sort()
       .join("|");
@@ -471,6 +495,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       max_task_ttl_s: maxTaskTtlS,
       ...(modelCatalog.length > 0 ? { models: modelCatalog } : {}),
       default_model: defaultModel,
+      default_reasoning_effort: defaultReasoningEffort,
       ts,
       nonce,
       proof,
