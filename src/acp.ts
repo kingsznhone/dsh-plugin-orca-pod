@@ -376,8 +376,10 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
 
       // ACP selects the model per session (§6.15). The option value is the
       // catalog's opaque choice value; the ACP server rejects unknown values.
-      // The effort is always written (empty = provider default) so a resumed
-      // session cannot keep a previous task's override.
+      // The effort is written only when the task (or the node default) supplies
+      // one: DeepSeek models expose a fixed default effort, and dsh-acp rejects
+      // the empty "provider default" value for them ("" is valid only when the
+      // model has no default effort at all).
       try {
         if (input.model !== undefined) {
           await conn.request("session/set_config_option", {
@@ -386,17 +388,21 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
             value: JSON.stringify([input.model.provider, input.model.model]),
           });
         }
-        await conn.request("session/set_config_option", {
-          sessionId,
-          configId: "reasoning_effort",
-          value: input.reasoningEffort ?? "",
-        });
+        if (input.reasoningEffort !== undefined) {
+          await conn.request("session/set_config_option", {
+            sessionId,
+            configId: "reasoning_effort",
+            value: input.reasoningEffort,
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const target =
-          input.model === undefined
-            ? `reasoning effort "${input.reasoningEffort ?? ""}"`
-            : `model ${input.model.provider}/${input.model.model}`;
+        const target = [
+          input.model === undefined ? "" : `model ${input.model.provider}/${input.model.model}`,
+          input.reasoningEffort === undefined ? "" : `reasoning effort "${input.reasoningEffort}"`,
+        ]
+          .filter(Boolean)
+          .join(" and ");
         yield {
           type: "failed",
           text: `cannot select ${target}: ${message}`,

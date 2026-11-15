@@ -231,16 +231,15 @@ describe("AcpExecutor", () => {
     expect(effort?.value).toBe("max");
   }, 15_000);
 
-  it("clears the reasoning effort when neither the node nor the task sets one", async () => {
+  it("does not send a reasoning effort when neither the node nor the task sets one", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const node = await startNode(configFor(root, "ok"));
     const submitted = await send(node, "provider default effort");
     await waitForState(node, submitted.id, ["completed"]);
     const entries = await logEntries(join(root, "acp.log"));
-    const effort = entries.find(
-      (entry) => entry.method === "session/set_config_option" && entry.configId === "reasoning_effort",
-    );
-    expect(effort?.value).toBe("");
+    expect(
+      entries.some((entry) => entry.method === "session/set_config_option" && entry.configId === "reasoning_effort"),
+    ).toBe(false);
   }, 15_000);
 
   it("fails the task when the target rejects the requested model", async () => {
