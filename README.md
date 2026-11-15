@@ -62,7 +62,7 @@ the config afterwards.
 
 直接运行 `orca-pod install`（或只带 `--dry-run`）会进入交互式设置，询问 workgroup id、密码（隐藏输入）、监听地址与端口。**只要再带任何其他参数**，install 就进入参数分支、完全不提问：所有必填答案都要通过参数给出（缺少 workgroup/密码会直接报错退出），适合让 agent 通过 SSH 安装。密码用 `-p`/`--password <文本>` 传入；程序不读 stdin，避免 agent 的 SSH 调用被挂住或等待输入。
 
-`install` 会检查 `dsh --version`、生成 `<data_root>/config.json`（0600、默认 `executor: "acp"`）、写 unit 并 `enable --now`；`--dry-run` 只打印计划，`--system` 装到系统级、默认装到用户级 systemd，`--skip-dsh-check` 跳过 dsh 检查。`--peer <url>`（可重复）会把启动时的 join 目标写进 unit，让新节点开机即回到 mesh；`--endpoint <url>`（可重复）覆盖自动推导的广播地址。用户级 unit 在无头服务器上还需要 `loginctl enable-linger $USER`，否则退出登录后服务会停。
+`install` 会检查 `dsh --version`、生成 `<data_root>/config.json`（0600、默认 `executor: "acp"`）、写 unit 并 `enable --now`；`--dry-run` 只打印计划，`--system` 装到系统级、默认装到用户级 systemd，`--skip-dsh-check` 跳过 dsh 检查。`--peer <url>`（可重复）会把启动时的 join 目标写进 unit，让新节点开机即回到 mesh；`--endpoint <url>`（可重复）覆盖自动推导的广播地址；`--env-file <path>`（可重复）写 `EnvironmentFile=`（例如放 `DEEPSEEK_API_KEY` 的 0600 文件），`--env KEY=VALUE`（可重复）写 `Environment=`（例如给 ACP 子进程用的 `PATH`）。用户级 unit 在无头服务器上还需要 `loginctl enable-linger $USER`，否则退出登录后服务会停。
 
 ```bash
 # 交互式（终端里运行）

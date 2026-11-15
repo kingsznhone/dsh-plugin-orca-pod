@@ -103,6 +103,25 @@ describe("install plan", () => {
     expect(renderUnit(plan)).toContain("ExecStart=");
   });
 
+  it("adds environment files and assignments to the unit", () => {
+    const plan = planInstall(
+      hostOptions({
+        envFiles: ["/etc/orca-pod.env"],
+        environment: ["PATH=/opt/node/bin:/usr/bin", "PLAIN=value"],
+      }),
+      environment("/home/u"),
+    );
+    const unit = renderUnit(plan);
+    expect(unit).toContain("EnvironmentFile=/etc/orca-pod.env");
+    expect(unit).toContain("Environment=PATH=/opt/node/bin:/usr/bin");
+    expect(unit).toContain("Environment=PLAIN=value");
+  });
+
+  it("rejects a malformed environment assignment", () => {
+    expect(() => planInstall(hostOptions({ environment: ["PATH"] }), environment("/home/u"))).toThrow(/KEY=VALUE/);
+    expect(() => planInstall(hostOptions({ envFiles: [""] }), environment("/home/u"))).toThrow(/env-file/);
+  });
+
   it("plans a system service under /etc/systemd/system", () => {
     const plan = planInstall(hostOptions({ system: true, serviceName: "org.example.orca" }), environment("/home/u"));
     expect(plan.unitPath).toBe(join("/etc/systemd/system", "org.example.orca.service"));
@@ -286,6 +305,19 @@ describe("install invocation", () => {
       "http://192.168.86.252:11811",
     ]);
     expect(parsed.values.get("peer")).toEqual(["http://192.168.86.152:11811", "http://192.168.86.252:11811"]);
+    expect(isInteractiveInvocation(parsed)).toBe(false);
+  });
+
+  it("accepts repeated --env and --env-file flags", () => {
+    const parsed = parseArguments([
+      "install",
+      "--env-file",
+      "/root/.dsh-env",
+      "--env",
+      "PATH=/root/.nvm/versions/node/v26.13.1/bin:/usr/bin",
+    ]);
+    expect(parsed.values.get("env-file")).toEqual(["/root/.dsh-env"]);
+    expect(parsed.values.get("env")).toEqual(["PATH=/root/.nvm/versions/node/v26.13.1/bin:/usr/bin"]);
     expect(isInteractiveInvocation(parsed)).toBe(false);
   });
 

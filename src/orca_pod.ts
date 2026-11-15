@@ -53,6 +53,10 @@ Options:
   --port <number>       Listen port (default: 11811)
   --endpoint <url>      Advertised endpoint; repeatable
   --peer <url>          Peer to join at startup; repeatable
+  --env-file <path>     Read environment variables from this file (systemd EnvironmentFile);
+                        repeatable, for example a file holding DEEPSEEK_API_KEY
+  --env <KEY=VALUE>     Extra environment assignment for the unit; repeatable, for example
+                        --env PATH=/usr/local/bin:/usr/bin:/bin
   --display-name <name> Human-readable node name
   --service-name <name> systemd unit name (default: orca-pod)
   --system              Install a system-wide unit under /etc/systemd/system
@@ -85,6 +89,8 @@ const VALUE_FLAGS = new Set([
   "port",
   "endpoint",
   "peer",
+  "env-file",
+  "env",
   "display-name",
   "service-name",
   "dsh-bin",
@@ -248,6 +254,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     ...(numberFlag(parsed, "port") === undefined ? {} : { port: numberFlag(parsed, "port")! }),
     ...(parsed.values.get("endpoint") === undefined ? {} : { endpoints: [...parsed.values.get("endpoint")!] }),
     ...(parsed.values.get("peer") === undefined ? {} : { peers: [...parsed.values.get("peer")!] }),
+    ...(parsed.values.get("env-file") === undefined ? {} : { envFiles: [...parsed.values.get("env-file")!] }),
+    ...(parsed.values.get("env") === undefined ? {} : { environment: [...parsed.values.get("env")!] }),
   };
   const environment = resolveEnvironment({
     ...(first(parsed, "dsh-bin") === undefined ? {} : { dshBin: first(parsed, "dsh-bin")! }),
@@ -282,6 +290,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   const listen = `${listenHost.includes(":") ? `[${listenHost}]` : listenHost}:${String(answers.port ?? 11811)}`;
   write(`  listen:    ${listen}`);
   write(`  service:   ${resolvedPlan.serviceName} at ${resolvedPlan.unitPath}`);
+  if (resolvedPlan.envFiles.length > 0) write(`  env files: ${resolvedPlan.envFiles.join(", ")}`);
+  if (resolvedPlan.environment.length > 0) write(`  env:       ${resolvedPlan.environment.join(" ")}`);
 
   if (parsed.booleans.has("dry-run")) {
     write("");

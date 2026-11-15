@@ -34,6 +34,10 @@ export interface InstallOptions {
   displayName?: string;
   /** Peers the service unit joins on startup (`serve --peer ...`). */
   peers?: string[];
+  /** Files systemd reads with `EnvironmentFile=` (for example an API key file). */
+  envFiles?: string[];
+  /** `KEY=VALUE` assignments written as `Environment=` lines. */
+  environment?: string[];
   /** Path to the `dsh` executable; defaults to `dsh` on PATH. */
   dshBin?: string;
   /** Path to the `node` executable used by the unit. */
@@ -61,6 +65,10 @@ export interface InstallPlan {
   configPath: string;
   /** Command that the unit runs, arg by arg. */
   execStart: string[];
+  /** `EnvironmentFile=` entries for the unit. */
+  envFiles: string[];
+  /** `Environment=` assignments for the unit, already validated as KEY=VALUE. */
+  environment: string[];
   /** `systemctl` invocations to activate the unit. */
   commands: string[][];
 }
@@ -100,6 +108,16 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
   const unitPath = join(unitDir, `${serviceName}.service`);
   const config = configPath(dataRoot);
   const systemctl = system ? ["systemctl"] : ["systemctl", "--user"];
+  const envFiles = options.envFiles === undefined ? [] : [...options.envFiles];
+  const environment = options.environment === undefined ? [] : [...options.environment];
+  for (const file of envFiles) {
+    if (file === "") throw new Error("--env-file needs a non-empty path");
+  }
+  for (const assignment of environment) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(assignment)) {
+      throw new Error(`--env must be KEY=VALUE with an environment-style name, got ${JSON.stringify(assignment)}`);
+    }
+  }
   return {
     system,
     serviceName,
@@ -114,6 +132,8 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
       config,
       ...(options.peers ?? []).flatMap((peer) => ["--peer", peer]),
     ],
+    envFiles,
+    environment,
     commands: [
       [...systemctl, "daemon-reload"],
       [...systemctl, "enable", "--now", serviceName],
@@ -124,6 +144,14 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
 /** systemd splits ExecStart itself, so quote arguments that would confuse it. */
 export function systemdQuote(argument: string): string {
   return /^[A-Za-z0-9_./:=@+-]+$/.test(argument) ? argument : `"${argument.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** Render one `Environment=` assignment, quoting only the value when needed. */
+export function environmentAssignment(assignment: string): string {
+  const index = assignment.indexOf("=");
+  const name = assignment.slice(0, index);
+  const value = assignment.slice(index + 1);
+  return `${name}=${systemdQuote(value)}`;
 }
 
 export function renderUnit(plan: InstallPlan, description = "orca-pod host node"): string {
@@ -138,6 +166,8 @@ export function renderUnit(plan: InstallPlan, description = "orca-pod host node"
     `WorkingDirectory=${plan.dataRoot}`,
     `ExecStart=${plan.execStart.map(systemdQuote).join(" ")}`,
     "Environment=NODE_ENV=production",
+    ...plan.envFiles.map((file) => `EnvironmentFile=${systemdQuote(file)}`),
+    ...plan.environment.map((assignment) => `Environment=${environmentAssignment(assignment)}`),
     "Restart=on-failure",
     "RestartSec=5",
     "KillSignal=SIGTERM",
