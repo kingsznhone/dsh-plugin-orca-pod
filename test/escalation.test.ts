@@ -135,6 +135,20 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
     expect(permissionRequestOf(again)?.request_id).toBe(permissionRequestOf(first)?.request_id);
   });
 
+  it("keeps the deeper requester chain when a relay carries one", async () => {
+    const { b, c, parentId, childId } = await scenario();
+    const childRequest = permissionRequestOf(await b.getTask(c.endpoints[0]!, childId));
+    expect(childRequest).not.toBeNull();
+    const parked = await b.escalateTask(b.endpoints[0]!, parentId, {
+      peer: c.endpoints[0]!,
+      task_id: childId,
+      request: { ...childRequest!, upstream: ["deepnode"] },
+    });
+    const upstream = permissionRequestOf(parked);
+    expect(upstream?.requested_by).toBe(b.orcaNodeId);
+    expect(upstream?.upstream).toEqual(["deepnode", c.orcaNodeId]);
+  });
+
   it("propagates a denial down to the child", async () => {
     const { a, b, c, parentId, childId } = await scenario();
     const childRequest = permissionRequestOf(await b.getTask(c.endpoints[0]!, childId));

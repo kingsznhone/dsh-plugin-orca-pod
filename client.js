@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
         deny: "deny",
         apTitle: "Permission needed",
       apTitleNamed: "Node {name} requests permission",
+        apChain: "path: ",
         apBackground: "A background task needs permission",
         apWants: "wants to run",
         apTask: "task",
@@ -237,6 +238,7 @@ window.__ModuleLoader__.load({
         deny: "拒绝",
         apTitle: "需要权限决策",
       apTitleNamed: "节点 {name} 请求授权",
+        apChain: "来源链：",
         apBackground: "后台任务请求权限",
         apWants: "请求执行",
         apTask: "任务",
@@ -626,6 +628,22 @@ window.__ModuleLoader__.load({
       return found.display_name || short(found.orca_node_id);
     }
 
+    /** Leaf-first display names for a permission request's requester chain. */
+    function permissionChainNames(request, members) {
+      if (!request) return [];
+      const upstream = Array.isArray(request.upstream)
+        ? request.upstream.filter((id) => typeof id === "string" && id.length > 0)
+        : [];
+      const requestedBy = typeof request.requested_by === "string" && request.requested_by.length > 0 ? request.requested_by : null;
+      const ids = requestedBy === null ? upstream : [...upstream, requestedBy];
+      const names = [];
+      for (const id of ids) {
+        const name = approvalsName(members, id);
+        if (names.length === 0 || names[names.length - 1] !== name) names.push(name);
+      }
+      return names;
+    }
+
     /** Panel approval row: display name when known, else a stable short id. */
     function approvalsName(members, key) {
       const name = memberName(members, key);
@@ -835,17 +853,20 @@ window.__ModuleLoader__.load({
       return h(
         "div",
         null,
-        approvals.map((item) =>
-          h(
+        approvals.map((item) => {
+          const chain = permissionChainNames(item.request, props.members);
+          const leaf = chain.length > 0 ? chain[0] : approvalsName(props.members, item.request && item.request.requested_by);
+          const chainLine = chain.length > 1 ? " · " + t("apChain") + chain.join(" → ") : "";
+          return h(
             "div",
             { key: item.task_id, style: { display: "flex", gap: 8, alignItems: "center", margin: "4px 0" } },
             h("span", { style: CELL }, short(item.task_id)),
             h("span", { style: MUTED }, item.request && item.request.tool ? item.request.tool : t("tool")),
-            h("span", { style: MUTED }, t("from") + approvalsName(props.members, item.request && item.request.requested_by)),
+            h("span", { style: MUTED }, t("from") + leaf + chainLine),
             h("button", { style: BUTTON, disabled: props.busy, onClick: () => props.onAct("approve", { peer: item.peer, task_id: item.task_id }) }, t("approve")),
             h("button", { style: DANGER, disabled: props.busy, onClick: () => props.onAct("deny", { peer: item.peer, task_id: item.task_id }) }, t("deny")),
-          ),
-        ),
+          );
+        }),
       );
     }
 
@@ -1820,8 +1841,13 @@ window.__ModuleLoader__.load({
       const tool = request.tool || prompt.tool || "";
       const requested = describeRequested(request.requested);
       const meta = prompt.peer + " · " + t("apTask") + " " + prompt.task_id;
-      const nodeName = memberName(props.members, prompt.peer);
-      const title = props.background ? t("apBackground") : nodeName === null ? t("apTitle") : tFormat("apTitleNamed", { name: nodeName });
+      // Relayed requests carry the leaf-first requester chain in upstream; prefer
+      // the leaf so the human sees who actually needs the permission, not just the
+      // hop that forwarded it (§7.12).
+      const chainNames = permissionChainNames(request, props.members);
+      const leafName = chainNames.length === 0 ? null : chainNames[0];
+      const chainLine = chainNames.length > 1 ? t("apChain") + chainNames.join(" → ") : null;
+      const title = props.background ? t("apBackground") : leafName === null ? t("apTitle") : tFormat("apTitleNamed", { name: leafName });
       return h(
         "div",
         { style: props.background ? APPROVAL_POPUP_CARD : APPROVAL_DOCK_CARD },
@@ -1831,6 +1857,7 @@ window.__ModuleLoader__.load({
           title,
         ),
         h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, meta),
+        chainLine === null ? null : h("div", { style: { ...MUTED, padding: 0, whiteSpace: "normal" } }, chainLine),
         h(
           "div",
           { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "20px", marginTop: 4, whiteSpace: "normal" } },

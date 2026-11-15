@@ -281,7 +281,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       requested: suspended.requested,
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
-      ...(relay ? { upstream: [relay.request.requested_by] } : {}),
+      ...(relay ? { upstream: [...(relay.request.upstream ?? []), relay.request.requested_by] } : {}),
       // No expiry by default: the origin waits however long the human takes (§7.12).
       ...(permissionTtlS === undefined
         ? {}
@@ -805,7 +805,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       requested: relay.request.requested ?? {},
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
-      upstream: [relay.request.requested_by],
+      upstream: [...(relay.request.upstream ?? []), relay.request.requested_by],
       ...(permissionTtlS === undefined
         ? {}
         : { expires_at: new Date(Date.now() + permissionTtlS * 1000).toISOString() }),
