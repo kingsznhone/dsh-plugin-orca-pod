@@ -81,7 +81,7 @@ export function podState(admin: PodAdmin): Record<string, unknown> {
     config: admin.config(),
     members: admin.members(),
     tasks,
-    dispatches: admin.dispatches().slice(0, 50),
+    dispatches: admin.dispatches().slice(-50),
     approvals: admin.approvals().map((tracked) => ({
       peer: tracked.peer,
       task_id: tracked.taskId,
@@ -118,6 +118,17 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
         }
         const view = await admin.task(peer, taskId)
         sendJson(response, 200, { task: view, artifacts: admin.artifacts(view) })
+        return
+      }
+      // Every task this node knows about, for the panel's "all tasks" view:
+      // local (inbound) tasks newest first plus the origin dispatch log.
+      if (request.method === "GET" && path === `${POD_API_PREFIX}/tasks`) {
+        const rawLimit = Number(url.searchParams.get("limit") ?? "500")
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500
+        const tasks = admin.tasks(limit)
+        const artifacts: Record<string, ReturnType<PodAdmin["artifacts"]>> = {}
+        for (const view of tasks) artifacts[view.id] = admin.artifacts(view)
+        sendJson(response, 200, { tasks, dispatches: admin.dispatches().slice(-limit), artifacts })
         return
       }
       if (request.method === "GET" && path === `${POD_API_PREFIX}/config`) {

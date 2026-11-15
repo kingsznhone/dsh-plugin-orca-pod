@@ -253,6 +253,15 @@ describe("panel HTTP bridge", () => {
     expect(result.body.artifacts[0].name).toBe("report.md");
   });
 
+  it("serves every local task plus the dispatch log for the all-tasks view", async () => {
+    const handler = createPodApiHandler(fakeAdmin());
+    const result = await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=10` });
+    expect(result.status).toBe(200);
+    expect(result.body.tasks.map((task: TaskView) => task.id)).toEqual(["TASK01", "TASK02"]);
+    expect(result.body.dispatches).toHaveLength(1);
+    expect(result.body.artifacts.TASK01[0].name).toBe("report.md");
+  });
+
   it("includes the editable config in the state snapshot", async () => {
     const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);

@@ -76,6 +76,8 @@ window.__ModuleLoader__.load({
         pendingApprovals: "Pending approvals",
         nothingWaiting: "nothing waiting",
         recentTasks: "Recent tasks",
+        allTasks: "All tasks",
+        tasksLoading: "loading tasks…",
         noTasks: "no tasks yet",
         members: "Members",
         noPeers: "no peers yet",
@@ -212,6 +214,8 @@ window.__ModuleLoader__.load({
         pendingApprovals: "待审批权限",
         nothingWaiting: "没有等待中的审批",
         recentTasks: "最近任务",
+        allTasks: "全部任务",
+        tasksLoading: "正在加载任务…",
         noTasks: "暂无任务",
         members: "成员",
         noPeers: "还没有 peer",
@@ -845,11 +849,12 @@ window.__ModuleLoader__.load({
           .filter((dispatch) => !localIds.has(dispatch.task_id))
           .map((dispatch) => ({ kind: "dispatch", id: dispatch.task_id, at: dispatch.updated_at, dispatch })),
       ].sort((left, right) => String(right.at || "").localeCompare(String(left.at || "")));
-      if (entries.length === 0) return h("div", { style: MUTED }, t("noTasks"));
+      const visible = props.limit && props.limit > 0 ? entries.slice(0, props.limit) : entries;
+      if (visible.length === 0) return h("div", { style: MUTED }, t("noTasks"));
       return h(
         Table,
         { columns: [t("colTask"), t("colState"), t("colOrigin"), t("colAge"), t("colArtifacts"), ""] },
-        entries.map((entry) => {
+        visible.map((entry) => {
           if (entry.kind === "dispatch") {
             const dispatch = entry.dispatch;
             const running =
@@ -1063,6 +1068,47 @@ window.__ModuleLoader__.load({
           h("div", { style: { marginTop: 6 } }, artifacts),
           h("div", { style: { ...H2, marginTop: 16 } }, t("dtInputs")),
           h("div", { style: { marginTop: 6 } }, inputs),
+        ),
+      );
+    }
+
+    /* ----- all tasks ------------------------------------------------------ */
+
+    function AllTasks(props) {
+      const data = props.data;
+      React.useEffect(() => {
+        function onKey(event) {
+          if (event.key === "Escape") props.onClose();
+        }
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [props]);
+      const body =
+        data === null
+          ? h("div", { key: "loading", style: MUTED }, t("tasksLoading"))
+          : h(Tasks, {
+              tasks: data.tasks,
+              dispatches: data.dispatches,
+              artifacts: data.artifacts,
+              busy: props.busy,
+              onAct: props.onAct,
+              onOpen: props.onOpenTask,
+              onOpenDispatch: props.onOpenDispatch,
+            });
+      return h(
+        "div",
+        {
+          style: OVERLAY,
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) props.onClose();
+          },
+        },
+        h(
+          "div",
+          { style: { ...CARD, width: "min(1040px, calc(100vw - 40px))", maxHeight: "min(84vh, 880px)", overflowY: "auto" } },
+          h("button", { type: "button", style: CLOSE_BUTTON, title: t("close"), onClick: props.onClose }, "×"),
+          h("div", { style: { ...H2, marginBottom: 10 } }, t("allTasks")),
+          body,
         ),
       );
     }
@@ -1498,6 +1544,8 @@ window.__ModuleLoader__.load({
       const [detail, setDetail] = React.useState(null);
       const [nodeDetail, setNodeDetail] = React.useState(null);
       const [detailError, setDetailError] = React.useState(null);
+      const [allOpen, setAllOpen] = React.useState(false);
+      const [allData, setAllData] = React.useState(null);
 
       function openDetail(task) {
         const artifacts = state.artifacts && Array.isArray(state.artifacts[task.id]) ? state.artifacts[task.id] : [];
@@ -1524,6 +1572,34 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setDetailError(t("dtLoadFailed") + messageOf(err));
         }
+      }
+
+      async function openAllTasks() {
+        setDetailError(null);
+        setAllData(null);
+        setAllOpen(true);
+        try {
+          const fetched = await api("/orca-api/tasks?limit=500");
+          setAllData({
+            tasks: Array.isArray(fetched.tasks) ? fetched.tasks : [],
+            dispatches: Array.isArray(fetched.dispatches) ? fetched.dispatches : [],
+            artifacts: fetched.artifacts && typeof fetched.artifacts === "object" ? fetched.artifacts : {},
+          });
+        } catch (err) {
+          setDetailError(t("dtLoadFailed") + messageOf(err));
+          setAllOpen(false);
+        }
+      }
+
+      function openAllTask(task) {
+        const artifacts =
+          allData && allData.artifacts && Array.isArray(allData.artifacts[task.id]) ? allData.artifacts[task.id] : [];
+        const dispatch =
+          allData && Array.isArray(allData.dispatches)
+            ? allData.dispatches.find((entry) => entry.task_id === task.id) || null
+            : null;
+        setDetailError(null);
+        setDetail({ task, artifacts, dispatch, inputs: [] });
       }
 
       // Accepts a bare host/IP, host:port, or a full http(s) URL.
@@ -1613,10 +1689,22 @@ window.__ModuleLoader__.load({
             )
           : null,
         h("div", { style: SECTION }, h("div", { style: H2 }, t("pendingApprovals")), h(Approvals, { approvals: state.approvals, members: state.members, busy: props.busy, onAct: props.onAct })),
-        h("div", { style: SECTION }, h("div", { style: H2 }, t("recentTasks")), h(Tasks, { tasks: state.tasks, dispatches: dispatches, artifacts: state.artifacts, busy: props.busy, onCancel: () => true, onAct: props.onAct, onOpen: openDetail, onOpenDispatch: openDispatch })),
+        h(
+          "div",
+          { style: SECTION },
+          h(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 10 } },
+            h("div", { style: H2 }, t("recentTasks")),
+            h("div", { style: { flex: 1 } }),
+            h("button", { type: "button", style: BUTTON, onClick: openAllTasks }, t("allTasks")),
+          ),
+          h(Tasks, { tasks: state.tasks, dispatches: dispatches, artifacts: state.artifacts, limit: 5, busy: props.busy, onCancel: () => true, onAct: props.onAct, onOpen: openDetail, onOpenDispatch: openDispatch }),
+        ),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("members")), h(Members, { members: state.members, onOpen: setNodeDetail })),
         h("div", { style: SECTION }, h("div", { style: H2 }, t("workspace")), h(Workspace, { workspace: state.workspace })),
         h("div", { style: { ...SECTION, color: "var(--dsw-alias-label-secondary)", fontFamily: FONT_FAMILY, fontSize: 12, lineHeight: "18px" } }, t("updated") + age(state.now) + t("updatedSuffix")),
+        allOpen ? h(AllTasks, { data: allData, busy: props.busy, onAct: props.onAct, onOpenTask: openAllTask, onOpenDispatch: openDispatch, onClose: () => setAllOpen(false) }) : null,
         detail ? h(TaskDetail, { detail, members, onClose: () => setDetail(null) }) : null,
         nodeDetail ? h(NodeDetail, { detail: nodeDetail, members, onClose: () => setNodeDetail(null) }) : null,
       );
