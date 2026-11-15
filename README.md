@@ -111,18 +111,18 @@ orca node 配置（`config.json`）首次启动时生成，同一 `workgroup_id`
 
 ## 工具
 
-六个工具都返回 JSON 文本，且从不阻塞等待远端任务；任务在远端 orca node 异步执行。
+插件只注册一个 `orca_pod` 工具（一份 schema，按 `method` 分派，避免占满 agent 的工具预算），返回 JSON 文本，从不阻塞等待远端任务；任务在远端 orca node 异步执行。
 
-| Tool          | Arguments                | Result                                                         |
-| ------------- | ------------------------ | -------------------------------------------------------------- |
-| `pod_send`    | `peer`, `text`, `echo?`, `model?`, `reasoning_effort?`  | `{task_id, state, peer}` immediately after the remote accepts   |
-| `pod_status`  | `peer`, `task_id`        | Remote `TaskView` plus a `terminal` flag                        |
-| `pod_cancel`  | `peer`, `task_id`        | Task view observed at cancel time plus `terminal`               |
-| `pod_members` | —                        | `{self, members, members_digest}` with id/name/endpoints/state  |
-| `pod_connect` | `peer`                   | Joins a peer into the mesh, remembers it for restart, returns the refreshed members |
-| `pod_approve` | `peer`, `task_id`, `decision`, `reason?` | Answers a suspended `permission_request`: opens the DSH approval card in the current turn and sends a grant or denial |
+| Method    | Extra arguments                                    | Result                                                         |
+| --------- | -------------------------------------------------- | -------------------------------------------------------------- |
+| `send`    | `peer`, `text`, `echo?`, `model?`, `reasoning_effort?`, `permission_mode?` | `{task_id, state, peer}` immediately after the remote accepts   |
+| `status`  | `peer`, `task_id`                                  | Remote `TaskView` plus a `terminal` flag                        |
+| `cancel`  | `peer`, `task_id`                                  | Task view observed at cancel time plus `terminal`               |
+| `approve` | `peer`, `task_id`, `decision`, `reason?`           | Answers a suspended `permission_request`: opens the DSH approval card in the current turn and sends a grant or denial |
+| `members` | —                                                  | `{self, members, members_digest}` with id/name/endpoints/state  |
+| `connect` | `peer`                                             | Joins a peer into the mesh, remembers it for restart, returns the refreshed members |
 
-`peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`（端口默认 11811）；可选 `echo` 会作为 `metadata.echo` 转发确定性脚本（测试用；默认任务本身就会回显）。
+每次调用都带 `method`；`peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`（端口默认 11811）。`send` 的可选 `echo` 会作为 `metadata.echo` 转发确定性脚本（测试用；默认任务本身就会回显）。
 
 ## CLI
 

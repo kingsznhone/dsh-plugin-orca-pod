@@ -1,7 +1,7 @@
 /**
  * Background task tracker for the DSH host bundle.
  *
- * `pod_send` returns as soon as the remote orca node accepts a task, so the
+ * The `orca_pod` `send` method returns as soon as the remote orca node accepts a task, so the
  * dispatching agent ends its turn while the task keeps running. The tracker
  * polls those tasks, coalesces their terminal states, and hands one notice back
  * to the dispatching agent through the DSH Agent interface:
@@ -41,7 +41,7 @@ export interface TrackerOptions {
   /** Consecutive wake-ups allowed without the agent running in between. */
   maxConsecutiveWakes?: number
   /**
-   * Returns true when a `pod_approve` call is already parked on this task, so the
+   * Returns true when an `orca_pod` approve call is already parked on this task, so the
    * UI card (not a chat notice) is the approval surface. The request is still
    * recorded, the notice is just not injected (§7.12: one decision channel).
    */
@@ -123,7 +123,7 @@ export function permissionOriginNote(request: PermissionRequest): string {
 
 export function permissionNoticeLine(request: PermissionRequest, peer: string): string {
   const details = JSON.stringify(request.requested)
-  return `task ${request.task_id} on ${peer} needs permission for "${request.tool}" (${details})${permissionOriginNote(request)}; call pod_approve with peer, task_id and decision to answer`
+  return `task ${request.task_id} on ${peer} needs permission for "${request.tool}" (${details})${permissionOriginNote(request)}; call orca_pod with method "approve" and peer, task_id, decision to answer`
 }
 
 /** One terminal task reduced to the line shown to the agent. */
@@ -222,7 +222,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         scheduleFlush()
       } catch (error) {
         // A vanished task (404) or a transient network failure must not wedge the
-        // tracker; drop it and let the agent discover the state through pod_status.
+        // tracker; drop it and let the agent discover the state through the `orca_pod` status method.
         pending.delete(key)
         changed = true
         options.onSettled?.(entry.peer, entry.taskId)

@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
       return panelOpen;
     }
 
-    /* Permission prompts parked by `pod_approve`. The dock lives inside the
+    /* Permission prompts parked by an `orca_pod` approve call. The dock lives inside the
      * session the agent ran in, so it renders prompts for that session; every
      * other prompt (background session) shows as a frame-wide popup instead.
      * There is no timeout: the human answers whenever they show up (§7.12). */
@@ -1800,7 +1800,7 @@ window.__ModuleLoader__.load({
       return text.length > 160 ? text.slice(0, 157) + "…" : text;
     }
 
-    /** One parked `pod_approve` prompt; the dock and the popup share it. */
+    /** One parked approve prompt; the dock and the popup share it. */
     function PromptCard(props) {
       const prompt = props.prompt;
       const request = prompt.request || {};
@@ -1852,7 +1852,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** Chat card: prompts parked by a `pod_approve` call in this session. */
+    /** Chat card: prompts parked by an `orca_pod` approve call in this session. */
     function ApprovalDock(props) {
       useLocaleTick();
       const sessionId = props && typeof props.sessionId === "string" ? props.sessionId : null;

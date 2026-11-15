@@ -2,7 +2,7 @@
  * `orca-pod` — DeepSeek Harness host-side bundle for Orca.
  *
  * The bundle creates one Orca node from the plugin config, starts it without
- * blocking the DSH host, registers the `pod_*` tools, and stops the orca node when
+ * blocking the DSH host, registers the `orca_pod` tool, and stops the orca node when
  * the plugin fiber unloads. There are no module-level side effects: the orca node is
  * only created inside `apply`.
  */
@@ -94,7 +94,7 @@ export function apply(ctx: HostContext, config: Config): void {
     }
   })
 
-  // Parked `pod_approve` calls: the panel, chat card and popup answer them.
+  // Parked `orca_pod` approve calls: the panel, chat card and popup answer them.
   const prompts = createApprovalPrompts()
 
   // Background task tracker: polls tasks dispatched by this session and returns

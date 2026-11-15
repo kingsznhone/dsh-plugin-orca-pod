@@ -52,7 +52,7 @@ Hard constraints that must not be undone:
   403 ancestor_call_forbidden. A blocked sub-agent reports
   via input-required with a `blocked` payload and releases its slot; the origin
   decides and continues the task with a follow-up message. No reverse calls.
-- Polling lives in the Host plugin, not in the agent's shell: pod_send returns a
+- Polling lives in the Host plugin, not in the agent's shell: orca_pod's send method returns a
   task_id immediately; a background tracker polls tasks/get (or holds an SSE
   stream), and completion reaches the session through agent.inject() as a compact
   inbox notice that does not wake the agent. There is no notify flag: if the

@@ -86,7 +86,7 @@ export interface PodAdmin {
   task(peer: string, taskId: string): Promise<TaskView>
   /** Watched remote tasks currently blocked on a permission request. */
   approvals(): TrackedTask[]
-  /** `pod_approve` calls currently parked on a human answer. */
+  /** `orca_pod` approve calls currently parked on a human answer. */
   prompts(): ApprovalPrompt[]
   approve(peer: string, taskId: string): Promise<TaskView>
   deny(peer: string, taskId: string, reason?: string): Promise<TaskView>
@@ -118,7 +118,7 @@ function entries(dir: string): Array<{ name: string; is_dir: boolean }> {
   }
 }
 
-/** Poll until a parked `pod_approve` has resumed the task (or it settles). */
+/** Poll until a parked `orca_pod` approve call has resumed the task (or it settles). */
 async function waitForResume(node: OrcaNode, peer: string, taskId: string): Promise<TaskView> {
   const deadline = Date.now() + 10_000
   let view = await node.getTask(peer, taskId)
@@ -201,7 +201,7 @@ export function createPodAdmin(
       return options.prompts?.list() ?? []
     },
     async approve(peer, taskId) {
-      // A pending `pod_approve` call may be parked on this task; answering here
+      // A pending `orca_pod` approve call may be parked on this task; answering here
       // is the same decision the chat card / popup sends.
       const resolved = options.prompts?.resolve(peer, taskId, "allow") ?? false
       const current = requireNode()

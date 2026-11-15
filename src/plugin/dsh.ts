@@ -78,7 +78,7 @@ export interface AgentNotice {
 }
 
 /**
- * The DSH Agent subset needed by `pod_send`: identify the caller, observe
+ * The DSH Agent subset needed by `orca_pod`'s send method: identify the caller, observe
  * whether its turn is in flight, and return a notice to it later.
  */
 export interface ToolAgent {

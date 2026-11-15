@@ -6,9 +6,9 @@ import { createPodTools } from "../src/plugin/tools.ts"
 import { createTracker } from "../src/plugin/tracker.ts"
 import * as plugin from "../src/plugin/index.ts"
 
-function tool(result: ReturnType<typeof createPodTools>, name: string) {
-  const found = result.find((candidate) => candidate.name === name)
-  if (found === undefined) throw new Error(`missing tool ${name}`)
+function tool(result: ReturnType<typeof createPodTools>) {
+  const found = result.find((candidate) => candidate.name === "orca_pod")
+  if (found === undefined) throw new Error("missing tool orca_pod")
   return found
 }
 
@@ -75,7 +75,7 @@ describe("plugin config", () => {
   })
 })
 
-describe("pod tools", () => {
+describe("orca_pod tool", () => {
   const handle: PodHandle = {
     ready: Promise.resolve(),
     runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
@@ -89,58 +89,64 @@ describe("pod tools", () => {
   const tracker = createTracker(() => null, { intervalMs: 60_000 })
   const tools = createPodTools(handle, tracker)
 
-  it("registers the six pod tools", () => {
-    expect(tools.map((candidate) => candidate.name)).toEqual([
-      "pod_send",
-      "pod_status",
-      "pod_cancel",
-      "pod_approve",
-      "pod_members",
-      "pod_connect",
-    ])
+  it("registers exactly one orca_pod tool", () => {
+    expect(tools.map((candidate) => candidate.name)).toEqual(["orca_pod"])
   })
 
-  it("documents asynchronous remote execution", () => {
-    expect(tool(tools, "pod_send").description).toContain("asynchronously")
-    expect(tool(tools, "pod_send").description).toContain("pod_status")
-    expect(tool(tools, "pod_status").description).toContain("asynchronous")
-    expect(tool(tools, "pod_cancel").description).toContain("pod_status")
+  it("documents the methods and asynchronous remote execution", () => {
+    const description = tool(tools).description
+    for (const method of ["send", "status", "cancel", "approve", "members", "connect"]) {
+      expect(description).toContain(method)
+    }
+    expect(description).toContain("asynchronously")
+    expect(description).toContain("task_id")
   })
 
   it("renders results as JSON text", () => {
-    const blocks = tool(tools, "pod_members").output.render({}, { self: { orca_node_id: "abc" } })
+    const blocks = tool(tools).output.render({}, { self: { orca_node_id: "abc" } })
     expect(blocks).toEqual([
       { type: "text", text: JSON.stringify({ self: { orca_node_id: "abc" } }, null, 2) },
     ])
   })
 
-  it("validates arguments before touching the orca node", async () => {
-    await expect(tool(tools, "pod_send").execute({})).rejects.toThrow(/peer/)
-    await expect(tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1" })).rejects.toThrow(/text/)
-    await expect(tool(tools, "pod_status").execute({ peer: "http://127.0.0.1:1" })).rejects.toThrow(
+  it("requires a known method", async () => {
+    await expect(tool(tools).execute({})).rejects.toThrow(/method/)
+    await expect(tool(tools).execute({ method: "nope" })).rejects.toThrow(/method must be one of/)
+  })
+
+  it("validates each method's arguments before touching the orca node", async () => {
+    await expect(tool(tools).execute({ method: "send" })).rejects.toThrow(/peer/)
+    await expect(tool(tools).execute({ method: "send", peer: "http://127.0.0.1:1" })).rejects.toThrow(/text/)
+    await expect(tool(tools).execute({ method: "status", peer: "http://127.0.0.1:1" })).rejects.toThrow(
       /task_id/,
     )
+    await expect(tool(tools).execute({ method: "cancel", peer: "http://127.0.0.1:1" })).rejects.toThrow(
+      /task_id/,
+    )
+    await expect(tool(tools).execute({ method: "connect" })).rejects.toThrow(/peer/)
+    await expect(tool(tools).execute({ method: "connect", peer: "not a url" })).rejects.toThrow(/http/)
+    await expect(
+      tool(tools).execute({ method: "approve", peer: "http://127.0.0.1:1", task_id: "t" }),
+    ).rejects.toThrow(/decision/)
+    await expect(
+      tool(tools).execute({ method: "approve", peer: "http://127.0.0.1:1", task_id: "t", decision: "maybe" }),
+    ).rejects.toThrow(/decision must be "allow" or "deny"/)
   })
 
   it("rejects a malformed model selector before touching the orca node", async () => {
     await expect(
-      tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1", text: "hi", model: "nope" }),
+      tool(tools).execute({ method: "send", peer: "http://127.0.0.1:1", text: "hi", model: "nope" }),
     ).rejects.toThrow(/provider\/model/)
   })
 
   it("fails clearly when the orca node is not running", async () => {
-    await expect(tool(tools, "pod_send").execute({ peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
+    await expect(tool(tools).execute({ method: "send", peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
       /orca node is not running/,
     )
-    await expect(tool(tools, "pod_members").execute({})).rejects.toThrow(/orca node is not running/)
-    await expect(tool(tools, "pod_connect").execute({ peer: "127.0.0.1:11811" })).rejects.toThrow(
+    await expect(tool(tools).execute({ method: "members" })).rejects.toThrow(/orca node is not running/)
+    await expect(tool(tools).execute({ method: "connect", peer: "127.0.0.1:11811" })).rejects.toThrow(
       /orca node is not running/,
     )
-  })
-
-  it("validates the pod_connect peer before touching the orca node", async () => {
-    await expect(tool(tools, "pod_connect").execute({})).rejects.toThrow(/peer/)
-    await expect(tool(tools, "pod_connect").execute({ peer: "not a url" })).rejects.toThrow(/http/)
   })
 
   it("joins a peer and returns the refreshed members", async () => {
@@ -162,7 +168,7 @@ describe("pod tools", () => {
       reset: async () => {},
     } as unknown as PodHandle
     const connectTools = createPodTools(handleForConnect, tracker)
-    const result = await tool(connectTools, "pod_connect").execute({ peer: "192.168.1.20" })
+    const result = await tool(connectTools).execute({ method: "connect", peer: "192.168.1.20" })
     expect(seen).toEqual(["http://192.168.1.20:11811"])
     expect(result).toEqual({
       peer: "http://192.168.1.20:11811",

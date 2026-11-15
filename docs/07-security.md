@@ -126,7 +126,7 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 
 | 情形 | 谁批 | 行为 |
 | --- | --- | --- |
-| `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 交 Orca Pod UI：当前会话聊天卡、后台会话弹窗、或面板列表（`pod_approve` park 到人回答，无超时） |
+| `origin == self`，且 task 由**交互式会话**（桌面插件的 agent）发起 | 本机的人 | 交 Orca Pod UI：当前会话聊天卡、后台会话弹窗、或面板列表（`orca_pod` 的 `approve` 方法 park 到人回答，无超时） |
 | `origin == self`，且会话本身在执行某个 inbound task（ACP 执行器派出的子任务） | 链上更上游的人 | 本机不批：请求沿这条 inbound task 继续上升（CLI `wait --local-task <那个 task>` 自动 `tasks/escalate`），一直走到有人的会话为止 |
 | `origin == self`，且是本机真实根（没有 inbound task，人在这台机器前） | 本机的人 | 同样交 Orca Pod UI；默认无限等待，可配置 `approval_timeout_s` 到点自动 `failed(permission_timeout)`；预授权命中则自动放行并记 `decided_by: policy` |
 | `origin != self` | 链上更上游的人 | 本机不批，只逐跳上升：`permission_request` 交给 origin（CLI 的 `wait --local-task` 自动调 `tasks/escalate`），批准后下发 child grant |
@@ -153,7 +153,7 @@ origin 发起任务时携带会话的 permission mode，target 原样执行：
 - mode 随任务签名一起传，target 校验签名后再执行，防止中间人改宽；
 - mode 不写进 grant 之外的任何持久状态；任务结束即失效。
 
-**实现状态（Phase 3）**：`pod.permission_mode` 进任务元数据并随签名传递，`chain.ts` 校验合法性、子任务由 `childPodMetadata` 继承；本机 `config.json` 的 `permission_mode` 是上限，`src/tasks.ts` 取「上限 vs 继承值」较窄者后交给执行器。`AcpExecutor` 在 `session/request_permission` 处按模式自动回答（`read-only` 拒绝写类工具、`workspace-write` 放行工作区内编辑/执行、`danger-full-access` 全放行），没有继承模式时仍挂起、回到 origin 的审批卡片。`pod_send` 与 `orca-node send --permission-mode` 都能显式指定；测试见 `test/permission-mode.test.ts`（7 条）。
+**实现状态（Phase 3）**：`pod.permission_mode` 进任务元数据并随签名传递，`chain.ts` 校验合法性、子任务由 `childPodMetadata` 继承；本机 `config.json` 的 `permission_mode` 是上限，`src/tasks.ts` 取「上限 vs 继承值」较窄者后交给执行器。`AcpExecutor` 在 `session/request_permission` 处按模式自动回答（`read-only` 拒绝写类工具、`workspace-write` 放行工作区内编辑/执行、`danger-full-access` 全放行），没有继承模式时仍挂起、回到 origin 的审批卡片。`orca_pod` 的 `send` 方法与 `orca-node send --permission-mode` 都能显式指定；测试见 `test/permission-mode.test.ts`（7 条）。
 
 ### 7.11 Grant
 
@@ -224,7 +224,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 - 同一 task 的升级次数上限（默认 3），超过即 failed 并告警；防止被调用 orca node 反复索权。
 - origin 侧支持**预授权**（避免每次都弹）：按 `(workgroup, target, tool)` 记一条本地策略，如“允许 N7K3QM 在 P2W8XA 上跑 shell，单次 ≤15 分钟”。预授权记录进审计。
 
-**实现状态（Phase 3 第一版）**：target 在挂起时生成 `permission_request`（`request_id`、`task_id`、`tool`、`requested`、`requested_by`、`via`、`expires_at`）写进 `status.message`；只有任务 origin 能 `message/send` resume（其他成员 `403 not_task_origin`，但读取不受限）。插件侧由 tracker 看到该请求即强制 `followup` 唤醒派发它的 agent（不受连续唤醒预算限制），模型调用 `pod_approve(peer, task_id, decision, reason?)`；工具在 open turn 内调 DSH `approval.request` 弹卡，只有 `allowed-once` 才签 grant，其余 outcome 与显式 `deny` 都发 `permission_denied`。
+**实现状态（Phase 3 第一版）**：target 在挂起时生成 `permission_request`（`request_id`、`task_id`、`tool`、`requested`、`requested_by`、`via`、`expires_at`）写进 `status.message`；只有任务 origin 能 `message/send` resume（其他成员 `403 not_task_origin`，但读取不受限）。插件侧由 tracker 看到该请求即强制 `followup` 唤醒派发它的 agent（不受连续唤醒预算限制），模型调用 `orca_pod` 的 `approve` 方法（peer, task_id, decision, reason?）；工具在 open turn 内调 DSH `approval.request` 弹卡，只有 `allowed-once` 才签 grant，其余 outcome 与显式 `deny` 都发 `permission_denied`。
 
 **实现状态（Phase 3 第二版）**：链式第一版已实现——`chain.ts` 提供 `childPodMetadata`、`validatePodMetadata`、`grantCovers`、`deriveChildGrant`；`approveTask(..., { parentGrant })` 先校验父 grant 签名与覆盖范围（同 tool、未过期），再派生 child grant（`chain` 追加当前 orca node、`target_orca_node` 指向请求者、`expires_at` 不晚于父），派生失败抛 `escalation_required` 或 `grant_expired`，不发请求。hop 与祖先链校验见 [§5.1](05-tasks.md#51-任务标识与元数据)。**未实现**：`permission_mode`/`limits` 的收窄（签名结构只有 `mode`）；中间节点按本地策略自动放行。
 
@@ -232,11 +232,11 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 **实现状态（Phase 3 第六版，自动上升）**：父任务不再依赖执行器注入 `relay`，改由 origin 侧自己发现。CLI `send --local-task <此 task>` 在子任务建成后向本机发 `POST /cluster/child-link`（子进程通过环境变量 `ORCA_POD_PARENT_TASK` 自动带上，agent 不必记参数）；节点为该 `(parent, child)` 起 1s 轮询，看到子任务 `input-required` 且带 `permission_request` 就对本机父任务调用 `tasks/escalate`，父任务随即挂成 `input-required`（`upstream` 指向子任务请求者），origin 批准后 child grant 逐跳下发、父任务回 `working`、子任务继续——第 17 轮测试（`test/relay-auto.test.ts`）用 ACP 父任务 + Echo 子任务覆盖了整条链路，父任务未被中断。轮询有界：子任务终态、父任务终态、或连续 10 次读失败都会摘掉链接。**这个控制接口只登记、不执行**，所以它的本地性用传输层判定：只接受回环地址且没有 `x-forwarded-for`/`forwarded`/`x-real-ip` 的请求，否则 `403 local_only`——Ed25519 之后签名身份已不可伪造，但 local-only 能力仍只认传输层事实（纵深防御：代理可能改写来源地址）。**仍未实现**：child link 只在内存里（重启后不恢复，父任务按 §8.3 对账）；`permission_mode`/`limits` 收窄。
 
-**实现状态（Phase 3 第四版，显式 escalate）**：中间 orca node 的 task 可以在执行中主动挂起自己——CLI `orca-node escalate --peer <child> --task <child task> --local-task <此 task>` 取子任务的 `permission_request`，经本机 `tasks/escalate` 交给 runner；runner 把此 task 改成 `input-required` 并填一条上游请求（`requested_by`=本 orca node、`upstream`=[子请求者]、`via`=祖先链），执行器本身继续跑（不打断 ACP turn，也不动 iterator）。origin 批准后按第三版派生子 grant 发回子任务，然后把此 task 放回 `working`；拒绝则向下传 `permission_denied` 并让此 task 失败。`tasks/escalate` 只接受本 orca node 自己签名（跨节点调用一律拒绝）。ACP 的 preamble 里已写明：`wait` 退出码为 3 时用 `escalate` 把决定权交还 origin。审批卡片与 tracker 通知现在都会显示来源链：`permissionOriginNote` 把 `via` 与 `upstream` 拼成 ` via A → B` 后缀，`pod_approve` 的 `approval.request.reason` 由 `approvalReason` 生成（形如 `Remote task <id> on <peer> wants to run "<tool>" via A → B: {...}`），人能看到这张卡是替谁批的。自动感知就是轮询：`orca-node wait` 带上 `--local-task <此 task>` 时，一旦在轮询中看到子任务 `input-required` 且带 `permission_request`，会自己调用 `tasks/escalate` 把请求上升，然后继续等；同一个 `request_id` 只上升一次，批准后子任务恢复、拒绝则失败，agent 不需要再单独发一次 `escalate`。**仍未实现**：不经 CLI 的宿主（例如插件工具直接派发子任务）没有这层轮询；`permission_mode`/`limits` 收窄。
+**实现状态（Phase 3 第四版，显式 escalate）**：中间 orca node 的 task 可以在执行中主动挂起自己——CLI `orca-node escalate --peer <child> --task <child task> --local-task <此 task>` 取子任务的 `permission_request`，经本机 `tasks/escalate` 交给 runner；runner 把此 task 改成 `input-required` 并填一条上游请求（`requested_by`=本 orca node、`upstream`=[子请求者]、`via`=祖先链），执行器本身继续跑（不打断 ACP turn，也不动 iterator）。origin 批准后按第三版派生子 grant 发回子任务，然后把此 task 放回 `working`；拒绝则向下传 `permission_denied` 并让此 task 失败。`tasks/escalate` 只接受本 orca node 自己签名（跨节点调用一律拒绝）。ACP 的 preamble 里已写明：`wait` 退出码为 3 时用 `escalate` 把决定权交还 origin。审批卡片与 tracker 通知现在都会显示来源链：`permissionOriginNote` 把 `via` 与 `upstream` 拼成 ` via A → B` 后缀，`orca_pod` 的 `approve` 方法的 `approval.request.reason` 由 `approvalReason` 生成（形如 `Remote task <id> on <peer> wants to run "<tool>" via A → B: {...}`），人能看到这张卡是替谁批的。自动感知就是轮询：`orca-node wait` 带上 `--local-task <此 task>` 时，一旦在轮询中看到子任务 `input-required` 且带 `permission_request`，会自己调用 `tasks/escalate` 把请求上升，然后继续等；同一个 `request_id` 只上升一次，批准后子任务恢复、拒绝则失败，agent 不需要再单独发一次 `escalate`。**仍未实现**：不经 CLI 的宿主（例如插件工具直接派发子任务）没有这层轮询；`permission_mode`/`limits` 收窄。
 
 **实现状态（Phase 3 第五版，默认无限等待）**：审批不再默认 120 秒过期。`permission_request.expires_at` 变成可选字段，只有配置了 `approval_timeout_s` 的 orca node 才会填；没配就是无限等待——人可能正在吃饭，任务不该因此失败。对应地，`input-required` 期间 task TTL（`task_ttl_s`）暂停，`resume` 后才重新计时，否则“等人”会被 TTL 当成“超时”。配置 `approval_timeout_s` 后，到点自动拒绝对应的挂起请求：先向下游（`pending_escalation`/`relay`）发 `permission_denied`，再让本 task `failed(permission_timeout)`。CLI 的 `wait`/`escalate` 的 `--timeout` 也变成可选：不给就一直等到 origin 决策。grant 范围内按工具/路径自动放行（预授权的自动化）仍未实现。
 
-**实现状态（Phase 3 第八版，审批不经过对话文本）**：tracker 轮询到 `permission_request` 时直接调用 `TrackerOptions.onPermission` 把 prompt park 进 `prompts` 注册表（`prompts.park`），回调绑定 approveTask/denyTask——**原始请求文本不再注入 agent 对话**，用户点卡片后回调直接给目标节点发 grant/deny。`pod_approve` 工具仍保留给 agent 主动询问与 CLI 路径（park 后由同一注册表唤醒）。任务终态或消失时 `onSettled` 会收回卡片（`prompts.withdraw`）；已入队的历史通知在 park/终态时丢弃，避免卡片与聊天通知重复。`prompts.resolve` 对 tracker-parked 的 prompt 会执行 `onDecision` 回调，面板/弹窗/聊天卡三条通道因此同权。
+**实现状态（Phase 3 第八版，审批不经过对话文本）**：tracker 轮询到 `permission_request` 时直接调用 `TrackerOptions.onPermission` 把 prompt park 进 `prompts` 注册表（`prompts.park`），回调绑定 approveTask/denyTask——**原始请求文本不再注入 agent 对话**，用户点卡片后回调直接给目标节点发 grant/deny。`orca_pod` 的 `approve` 方法仍保留给 agent 主动询问与 CLI 路径（park 后由同一注册表唤醒）。任务终态或消失时 `onSettled` 会收回卡片（`prompts.withdraw`）；已入队的历史通知在 park/终态时丢弃，避免卡片与聊天通知重复。`prompts.resolve` 对 tracker-parked 的 prompt 会执行 `onDecision` 回调，面板/弹窗/聊天卡三条通道因此同权。
 
 #### 链式调用：授权向下收窄，升级向上回传
 
@@ -252,7 +252,7 @@ origin: 下一次 tasks/get（或已挂着的 SSE）看到 input-required
 
 ```text
 C：工具越界 → C 的 task 变 input-required，permission_request 落在 C 的 task 上
-B（C 的 origin）：agent 通过 pod_status/tracker 看到 → B 的 task 也变 input-required
+B（C 的 origin）：agent 通过 `orca_pod` 的 `status` 方法/tracker 看到 → B 的 task 也变 input-required
    status.message 里放一条 permission_request，带来源链：
    {
      "request_id": "pr_01J",

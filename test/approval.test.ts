@@ -134,7 +134,7 @@ function grantFor(view: TaskView, originOrcaNode: string, tool = "write_file"): 
   };
 }
 
-describe("pod_approve tool", () => {
+describe("orca_pod approve method", () => {
   function fakeAgent(): ToolAgent {
     return { id: "session-test", status: "running", inject: () => {}, followup: () => {} };
   }
@@ -155,8 +155,8 @@ describe("pod_approve tool", () => {
     };
     const tracker = createTracker(() => null, { intervalMs: 60_000 });
     const tools = createPodTools(handle, tracker, approval === undefined ? {} : { approval: approval as never });
-    const found = tools.find((candidate) => candidate.name === "pod_approve");
-    if (found === undefined) throw new Error("missing pod_approve");
+    const found = tools.find((candidate) => candidate.name === "orca_pod");
+    if (found === undefined) throw new Error("missing orca_pod");
     return found;
   }
 
@@ -173,7 +173,7 @@ describe("pod_approve tool", () => {
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
     const result = (await approve.execute(
-      { peer: targetUrl, task_id: submitted.id, decision: "allow" },
+      { method: "approve", peer: targetUrl, task_id: submitted.id, decision: "allow" },
       { agent: fakeAgent() },
     )) as Record<string, unknown>;
 
@@ -194,7 +194,7 @@ describe("pod_approve tool", () => {
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
     const result = (await approve.execute(
-      { peer: targetUrl, task_id: submitted.id, decision: "allow" },
+      { method: "approve", peer: targetUrl, task_id: submitted.id, decision: "allow" },
       { agent: fakeAgent() },
     )) as Record<string, unknown>;
     expect(result["decision"]).toBe("denied");
@@ -217,7 +217,7 @@ describe("pod_approve tool", () => {
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
     await approve.execute(
-      { peer: targetUrl, task_id: submitted.id, decision: "deny", reason: "not this time" },
+      { method: "approve", peer: targetUrl, task_id: submitted.id, decision: "deny", reason: "not this time" },
       { agent: fakeAgent() },
     );
 
@@ -234,7 +234,7 @@ describe("pod_approve tool", () => {
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
     await expect(
-      approve.execute({ peer: targetUrl, task_id: submitted.id, decision: "allow" }, { agent: fakeAgent() }),
+      approve.execute({ method: "approve", peer: targetUrl, task_id: submitted.id, decision: "allow" }, { agent: fakeAgent() }),
     ).rejects.toThrow(/human approval is unavailable/);
   });
 });

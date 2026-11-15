@@ -1,7 +1,7 @@
 /**
  * In-flight human approval prompts (§7.13 / §9.2).
  *
- * `pod_approve` does not raise the native DSH approval card: it parks the tool
+ * `orca_pod`'s approve method does not raise the native DSH approval card: it parks the tool
  * call here and lets the Orca Pod UI answer it — the chat card when the asking
  * session is on screen, otherwise the popup or the panel's approval list. The
  * wait has no timeout: a desktop main session blocks until the user answers,
@@ -27,7 +27,7 @@ export interface ApprovalPrompt {
 
 export type PromptDecision = "allow" | "deny"
 
-/** A prompt being awaited by a `pod_approve` call. */
+/** A prompt being awaited by an `orca_pod` approve call. */
 export interface PendingPrompt {
   prompt: ApprovalPrompt
   /** Resolves with the user's decision, or null when the prompt is withdrawn. */
@@ -44,7 +44,7 @@ export interface ApprovalPrompts {
     agent_id: string
   }): PendingPrompt
   /**
-   * Park a prompt raised by the tracker rather than by a `pod_approve` call.
+   * Park a prompt raised by the tracker rather than by an `orca_pod` approve call.
    * `onDecision` runs the remote decision (approve/deny the parked task) once
    * the user answers in the UI, so no agent-visible notice is needed.
    */
@@ -157,7 +157,7 @@ export function createApprovalPrompts(now: () => number = Date.now): ApprovalPro
           .then(() => entry.onDecision?.(decision))
           .catch(() => {
             // A failed approve/deny leaves the remote task parked; its notice
-            // path and pod_status still surface the state.
+            // path and the `orca_pod` status method still surface the state.
           })
       }
       return true

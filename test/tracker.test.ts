@@ -173,7 +173,7 @@ describe("createTracker", () => {
     const notice = agent.followed[0]!.content[0].text
     expect(notice).toContain("needs permission")
     expect(notice).toContain("write_file")
-    expect(notice).toContain("pod_approve")
+    expect(notice).toContain("orca_pod")
     // The task stays tracked until it settles.
     expect(tracker.size()).toBe(1)
 
@@ -207,7 +207,7 @@ describe("createTracker", () => {
     tracker.track(agent, "http://peer:11811", "01TASK")
 
     await new Promise((resolve) => setTimeout(resolve, 60))
-    // The pod_approve call is already parked, so the promise waits on the UI
+    // The orca_pod approve call is already parked, so the promise waits on the UI
     // card; injecting a chat notice would only queue a redundant message.
     expect(agent.followed).toHaveLength(0)
     expect(tracker.size()).toBe(1)

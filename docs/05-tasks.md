@@ -64,15 +64,15 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 
 轮询是插件的后台行为，不是 agent 的一条命令：
 
-- `pod_send` 建完 task 立刻返回 `task_id`，不挂着连接等结果；
+- `orca_pod` 的 `send` 方法建完 task 立刻返回 `task_id`，不挂着连接等结果；
 - 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
-- agent 只看到薄工具，没有一个会阻塞：`pod_send`（建完 task 立刻返回 `task_id`）、`pod_status(task_id)`（读缓存/任务存储，立即返回）、`pod_cancel(task_id)`、`pod_members()`。**没有 `pod_wait`**——等待不是 agent 的职责。
+- agent 只看到一个薄工具 `orca_pod`，没有一个方法会阻塞：`send`（建完 task 立刻返回 `task_id`）、`status`（读缓存/任务存储，立即返回）、`cancel`、`members`。**没有等待方法**——等待不是 agent 的职责。
 
-**Phase 0 现状**：`orca-pod` 插件已注册 `pod_send`/`pod_status`/`pod_cancel`/`pod_members` 四个工具（见 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`pod_send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。`pod_wait` 明确不做；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
+**Phase 0 现状**：`orca-pod` 插件只注册单个 `orca_pod` 工具（`method` 分派 `send`/`status`/`cancel`/`approve`/`members`/`connect`，见 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。明确不做等待方法；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
 
 派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会由 tracker 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
 
-**为什么不让模型用 bash 长轮询**：`sleep 2 && pod_status` 每跑一次就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消、能挂 SSE，也知道任务该等多久。
+**为什么不让模型用 bash 长轮询**：每等 2 秒再调一次 `orca_pod` 的 `status` 方法，就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消、能挂 SSE，也知道任务该等多久。
 
 状态怎么回到会话——不塞 user 消息，也不让 agent 猜：
 
@@ -80,7 +80,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 |---|---|---|
 | 任务完成 / 失败（普通） | 由 tracker 投递：running → `agent.inject()`；idle → `agent.followup()` | 2s 窗口内多个终态合并成一条 notice；`inject` 落 `agent/inbox/spliced` 等下一步，`followup` 叫醒新一轮 |
 | `input-required` 的 `permission_request`、祖先禁调的 `blocked`、需要人立刻决定 | `agent.followup()` | 唤醒 agent 开新一轮，走 Orca Pod UI 审批/回报流程（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
-| 任何时刻用户主动问 | `pod_status` | 从任务存储/缓存读，与会话历史无关 |
+| 任何时刻用户主动问 | `orca_pod` 的 `status` 方法 | 从任务存储/缓存读，与会话历史无关 |
 
 普通完成由 tracker 投递：同一轮还没结束时 `inject()`（不打断），idle 时 `followup()`（开新一轮）；`input-required` 里的 `permission_request`、祖先禁调的 `blocked` 这类“必须现在处理”的事件无条件走 `followup()`。唤醒是有代价的（新一轮模型调用、可能打断用户），所以用预算和 idle 判定兜住。
 
@@ -91,7 +91,7 @@ origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
 - 它继承该 session 的审批策略：唤醒后若需要权限，仍然弹 DSH 卡片；用户不在电脑前就会超时。
 - 因此“完成即唤醒”是默认行为：同一轮内完成只 `inject()`，轮次结束后才完成则 `followup()` 唤醒；想做“用户离开时提醒”，也可以由客户端插件做徽标/桌面通知，而不是让模型空转一轮。
 
-会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`pod_status` 随时可重放，插件内存只是缓存。
+会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`orca_pod` 的 `status` 方法 随时可重放，插件内存只是缓存。
 
 CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包) 里 harness 入口的一部分；`orca-node log [--json]` 直接读 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），用于重启后对账。
 
@@ -101,7 +101,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 
 - 终态到达时 session 仍活着、且当前 `running`（同一轮还没结束）→ `inject()`，不打断这一轮；
 - session 活着且 idle → `followup()` 唤醒新一轮；
-- session 已归档（没有 Agent 实例）→ 结果留在任务存储，等会话恢复后由 `pod_status` 重读。
+- session 已归档（没有 Agent 实例）→ 结果留在任务存储，等会话恢复后由 `orca_pod` 的 `status` 方法 重读。
 
 `inject()` 落 `agent/inbox/spliced`，`agent.status` 只用来区分“同一轮内”与“轮次之间”，不做 `turn/end` 记账。
 
@@ -112,9 +112,9 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、�
 - **预算**：连续后台唤醒轮次 ≤3（中间没有用户输入）；超了就不再唤醒，结果标未读并留在 inbox。用户下一次说话重置。这是防 A→B→A 自动循环烧 token 的闸，不是防正常续跑。
 - **不反向**：唤醒是 origin 自己对自己做的，不涉及任何 target→origin 的连接；B 那边只是任务变终态。
 
-例子：A 用 `pod_send` 派给 B，随后结束这一轮；B 在 12 分钟后 `completed`；插件看到 session 活着且 idle → `inject()` notice + `followup()`；A 开新一轮，读到 `status.message`，发现编译报错，继续改代码。若编译通过，A 一句话总结并停。
+例子：A 用 `orca_pod` 的 `send` 方法派给 B，随后结束这一轮；B 在 12 分钟后 `completed`；插件看到 session 活着且 idle → `inject()` notice + `followup()`；A 开新一轮，读到 `status.message`，发现编译报错，继续改代码。若编译通过，A 一句话总结并停。
 
-**Phase 0 实现边界**：tracker 只看 `agent.status`（running → `inject`，idle → `followup`），不监听用户新消息重置预算；会话已归档时 notice 丢弃（任务仍在存储里，可 `pod_status` 重读）。
+**Phase 0 实现边界**：tracker 只看 `agent.status`（running → `inject`，idle → `followup`），不监听用户新消息重置预算；会话已归档时 notice 丢弃（任务仍在存储里，可 `orca_pod` 的 `status` 方法重读）。
 
 ### 5.3 取消
 

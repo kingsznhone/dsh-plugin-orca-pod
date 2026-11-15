@@ -53,8 +53,8 @@ export function skillMarkdown(options: SkillOptions): string {
   const cli = `node "${options.cliPath}" --data-root "${options.dataRoot}"`
   return `---
 name: ${SKILL_NAME}
-description: Delegate work to other orca nodes in this mesh, check tasks you already dispatched, and escalate a blocked sub-task to its origin.
-whenToUse: When the user asks you to run something on another machine or orca node, when you need the status or result of a task you dispatched earlier, or when waiting on a sub-task returns exit code 3.
+description: Delegate work to other orca nodes in this mesh, add a machine to the mesh, check tasks you already dispatched, and escalate a blocked sub-task to its origin.
+whenToUse: When the user asks you to run something on another machine or orca node, wants to add a machine to the mesh, needs the status or result of a task you dispatched earlier, or when waiting on a sub-task returns exit code 3.
 ---
 
 # Orca node CLI
@@ -74,6 +74,27 @@ ${cli} escalate --peer <child:port> --task <child task> --local-task <this task>
 
 \`wait\` exit codes: \`0\` completed, \`1\` failed or canceled, \`2\` still
 running, \`3\` the target is waiting for a human decision.
+
+## Add a machine to the mesh
+
+Use the installer instead of inventing a protocol. On a Linux node that already
+has Node >= 22 and \`dsh\`:
+
+\`\`\`bash
+npx orca-pod install --workgroup <group> -p '<password>' \\
+  --peer http://<this-machine>:11811 --endpoint http://<linux-ip>:11811
+loginctl enable-linger $USER   # if the installer reports a user service
+\`\`\`
+
+Then from the desktop session call the \`orca_pod\` tool with
+\`method: "connect"\` and \`peer: "<linux-ip>"\`, or run
+\`${cli} members --json\` first and check whether it is already there. Finish with
+a small \`send\` round trip.
+
+Principal: the password is the join credential (same group = same password), the
+peer list is what starts the mesh, and members must be mutually reachable (same
+LAN or VPN). Do not change a remote config over the mesh and do not expose 11811
+to the public internet.
 
 ## Rules
 

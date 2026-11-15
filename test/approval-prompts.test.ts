@@ -142,15 +142,15 @@ describe("approval prompts", () => {
     unsubscribe()
   })
 
-  it("keeps pod_approve parked until the panel approves it", async () => {
+  it("keeps orca_pod approve parked until the panel approves it", async () => {
     const prompts = createApprovalPrompts()
     const node = fakeNode()
     const handle = fakeHandle(node)
     const admin = createPodAdmin(handle, fakeTracker(), { prompts })
-    const tool = createPodTools(handle, fakeTracker(), { prompts }).find((candidate) => candidate.name === "pod_approve")
+    const tool = createPodTools(handle, fakeTracker(), { prompts }).find((candidate) => candidate.name === "orca_pod")
     expect(tool).toBeDefined()
 
-    const parked = tool!.execute({ peer: PEER, task_id: TASK, decision: "allow" }, EXEC)
+    const parked = tool!.execute({ method: "approve", peer: PEER, task_id: TASK, decision: "allow" }, EXEC)
     await waitFor(() => prompts.list().length === 1)
     expect(prompts.list()[0]!.agent_id).toBe("session-1")
 
@@ -167,9 +167,9 @@ describe("approval prompts", () => {
     const node = fakeNode()
     const handle = fakeHandle(node)
     const admin = createPodAdmin(handle, fakeTracker(), { prompts })
-    const tool = createPodTools(handle, fakeTracker(), { prompts }).find((candidate) => candidate.name === "pod_approve")
+    const tool = createPodTools(handle, fakeTracker(), { prompts }).find((candidate) => candidate.name === "orca_pod")
 
-    const parked = tool!.execute({ peer: PEER, task_id: TASK, decision: "allow" }, EXEC)
+    const parked = tool!.execute({ method: "approve", peer: PEER, task_id: TASK, decision: "allow" }, EXEC)
     await waitFor(() => prompts.list().length === 1)
     await admin.deny(PEER, TASK)
     const result = (await parked) as { decision: string }
