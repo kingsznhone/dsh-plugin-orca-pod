@@ -94,6 +94,8 @@ window.__ModuleLoader__.load({
         apTitle: "Permission needed",
       apTitleNamed: "Node {name} requests permission",
         apChain: "path: ",
+        apChainTag: "approval path",
+        apChainHint: "hover or click to see the approval path",
         apSelf: "this node",
         apBackground: "A background task needs permission",
         apWants: "wants to run",
@@ -240,6 +242,8 @@ window.__ModuleLoader__.load({
         apTitle: "需要权限决策",
       apTitleNamed: "节点 {name} 请求授权",
         apChain: "来源链：",
+        apChainTag: "申请链路",
+        apChainHint: "悬浮或点击查看申请链路",
         apSelf: "本机",
         apBackground: "后台任务请求权限",
         apWants: "请求执行",
@@ -1863,55 +1867,73 @@ window.__ModuleLoader__.load({
 
     function ChainFlow(props) {
       const entries = props.entries || [];
+      const lineColor = "var(--dsw-alias-border-l1)";
+      const arrowColor = "var(--dsw-alias-label-secondary)";
       return h(
         "div",
-        {
-          style: {
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            paddingLeft: 10,
-            borderLeft: "1px dashed var(--dsw-alias-border-l1)",
-          },
-        },
+        { style: { display: "flex", flexDirection: "column", paddingLeft: 4 } },
         entries.map((entry, index) => {
           const last = index === entries.length - 1;
-          return h(
-            "div",
-            { key: String(index), style: { display: "flex", alignItems: "center", gap: 6, padding: "2px 0" } },
-            h("span", {
-              style: {
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                flex: "0 0 auto",
-                background: last
-                  ? "var(--dsw-alias-state-warn-primary)"
-                  : "var(--dsw-alias-label-secondary)",
-              },
-            }),
+          const rows = [
             h(
-              "span",
-              { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "18px", fontWeight: last ? 600 : 400 } },
-              entry.name,
+              "div",
+              { key: "node-" + index, style: { display: "flex", alignItems: "center", gap: 8 } },
+              h("span", {
+                style: {
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  flex: "0 0 auto",
+                  background: last
+                    ? "var(--dsw-alias-state-warn-primary)"
+                    : "var(--dsw-alias-label-secondary)",
+                },
+              }),
+              h(
+                "span",
+                { style: { fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "18px", fontWeight: last ? 600 : 400 } },
+                entry.name,
+              ),
+              entry.self ? h("span", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apSelf")) : null,
             ),
-            entry.self ? h("span", { style: { ...MUTED, padding: 0, fontSize: 11 } }, t("apSelf")) : null,
-          );
+          ];
+          if (!last) {
+            rows.push(
+              h(
+                "div",
+                { key: "arrow-" + index, style: { display: "flex", alignItems: "center", gap: 8 } },
+                h(
+                  "span",
+                  { style: { width: 8, display: "flex", flexDirection: "column", alignItems: "center" } },
+                  h("span", { style: { width: 1, height: 7, background: lineColor } }),
+                  h("span", {
+                    style: {
+                      width: 0,
+                      height: 0,
+                      borderLeft: "3.5px solid transparent",
+                      borderRight: "3.5px solid transparent",
+                      borderTop: "4.5px solid " + arrowColor,
+                    },
+                  }),
+                ),
+              ),
+            );
+          }
+          return h(React.Fragment, { key: index }, rows);
         }),
       );
     }
 
-    /** Inline chain text; hover/click opens the hops as a vertical A → B → C stack. */
+    /** Compact tag for the approval chain; hover/click opens the hops as a vertical stack. */
     function ChainBadge(props) {
       const entries = props.entries || [];
       const [hover, setHover] = React.useState(false);
       const [pinned, setPinned] = React.useState(false);
       if (entries.length < 2) return null;
-      const text = entries.map((entry) => entry.name).join(" → ");
       return h(
         "span",
         {
-          style: { position: "relative", display: "inline-flex", minWidth: 0, maxWidth: 220 },
+          style: { position: "relative", display: "inline-flex", minWidth: 0 },
           onMouseEnter: () => setHover(true),
           onMouseLeave: () => setHover(false),
         },
@@ -1919,27 +1941,29 @@ window.__ModuleLoader__.load({
           "button",
           {
             type: "button",
-            title: text,
+            title: t("apChainHint"),
             style: {
               ...MUTED,
-              padding: 0,
-              border: "none",
-              background: "transparent",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "1px 8px",
+              border: "1px solid var(--dsw-alias-border-l1)",
+              borderRadius: 999,
+              background: "var(--dsw-alias-bg-layer-1)",
               cursor: "pointer",
-              maxWidth: 220,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              textAlign: "left",
               fontFamily: "inherit",
-              fontSize: "inherit",
+              fontSize: 12,
+              lineHeight: "18px",
+              whiteSpace: "nowrap",
             },
             onClick: (event) => {
               event.stopPropagation();
               setPinned((value) => !value);
             },
           },
-          text,
+          t("apChainTag"),
+          h("span", { style: { fontSize: 10, lineHeight: "10px" } }, "▾"),
         ),
         hover || pinned
           ? h(
@@ -2007,7 +2031,6 @@ window.__ModuleLoader__.load({
                   flexWrap: "wrap",
                 },
               },
-              t("apChain"),
               h(ChainBadge, { entries: chainEntries }),
             )
           : null,
