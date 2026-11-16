@@ -22,6 +22,12 @@ export type DispatchEntry = {
   last_error?: string;
   /** When the dispatching task was itself a local task, its id (for automatic relay). */
   parent_local_task_id?: string;
+  /**
+   * DSH session that dispatched the task (§8.3). Persisted so the host can
+   * resume background tracking after a restart, when the in-memory tracker is
+   * empty but the remote task may still be running.
+   */
+  agent_id?: string;
   created_at: string;
   updated_at: string;
 };

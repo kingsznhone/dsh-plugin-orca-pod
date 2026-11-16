@@ -49,6 +49,17 @@ describe("dispatch store (13.4)", () => {
     reopened.close();
   });
 
+  it("persists the dispatching agent so tracking can resume after a restart", () => {
+    const file = join(tempRoot(), "tasks.db");
+    const store = createSqliteDispatchStore(file);
+    store.save(entry({ task_id: "task-1", state: "working", agent_id: "session-7" }));
+    store.close();
+
+    const reopened = createSqliteDispatchStore(file);
+    expect(reopened.get("task-1")?.agent_id).toBe("session-7");
+    reopened.close();
+  })
+
   it("marks only in-flight entries unknown on restart", () => {
     const file = join(tempRoot(), "tasks.db");
     const store = createSqliteDispatchStore(file);

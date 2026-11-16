@@ -336,6 +336,68 @@ describe("createTracker", () => {
     expect(reason).toContain("via ORIGIN → LEAF")
     expect(reason).toContain('"path":"note.txt"')
   })
+  it("retries a transient poll failure instead of dropping the task", async () => {
+    const agent = new FakeAgent()
+    let calls = 0
+    const tracker = createTracker(
+      () => ({
+        async getTask(): Promise<TaskView> {
+          calls += 1
+          if (calls === 1) throw new Error("network down")
+          return taskView("01TASK", "completed", "done")
+        },
+      }),
+      fast,
+    )
+    tracker.track(agent, "http://peer:11811", "01TASK")
+    await waitFor(() => agent.followed.length === 1, 1500)
+    expect(calls).toBeGreaterThan(1)
+    expect(agent.followed[0]!.content[0].text).toContain("completed")
+    tracker.stop()
+  })
+
+  it("gives up after repeated transient failures and reports the interruption", async () => {
+    const agent = new FakeAgent()
+    const tracker = createTracker(
+      () => ({
+        async getTask(): Promise<TaskView> {
+          throw new Error("peer unreachable")
+        },
+      }),
+      { intervalMs: 2, coalesceMs: 5, maxTransientFailures: 2 },
+    )
+    tracker.track(agent, "http://peer:11811", "01TASK")
+    await waitFor(() => agent.followed.length === 1, 2000)
+    const text = agent.followed[0]!.content[0].text
+    expect(text).toContain("interrupted")
+    expect(text).toContain("01TASK")
+    expect(tracker.size()).toBe(0)
+    tracker.stop()
+  })
+
+  it("never runs two polls at once", async () => {
+    const agent = new FakeAgent()
+    let active = 0
+    let max = 0
+    const tracker = createTracker(
+      () => ({
+        async getTask(): Promise<TaskView> {
+          active += 1
+          max = Math.max(max, active)
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          active -= 1
+          return taskView("01TASK", "working")
+        },
+      }),
+      { intervalMs: 1, coalesceMs: 5 },
+    )
+    tracker.track(agent, "http://peer:11811", "01TASK")
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(max).toBe(1)
+    expect(tracker.size()).toBe(1)
+    tracker.stop()
+  })
+
   it("drops pending work on stop()", async () => {
     const agent = new FakeAgent()
     const views = new Map([["01TASK", taskView("01TASK", "completed")]])

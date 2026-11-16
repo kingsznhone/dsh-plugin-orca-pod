@@ -12,7 +12,16 @@ import { createPodAdmin } from "./admin.ts"
 import { createApprovalPrompts } from "./prompts.ts"
 import { createConfigSchema } from "./config.ts"
 import type { Config as PodConfig } from "./config.ts"
-import type { HostContext, HostLogger, PermissionPresetsService, StandardSchemaV1, ToolExecution } from "./dsh.ts"
+import type {
+  AgentsService,
+  HostContext,
+  HostLogger,
+  PermissionPresetsService,
+  StandardSchemaV1,
+  ToolExecution,
+} from "./dsh.ts"
+import { TERMINAL_TASK_STATES } from "../dispatches.ts"
+import type { DispatchEntry } from "../dispatches.ts"
 import { isPermissionMode } from "../protocol.ts"
 import type { PermissionMode } from "../protocol.ts"
 import { startPod, stopPod } from "./lifecycle.ts"
@@ -20,6 +29,7 @@ import { discoverModelCatalog, type ModelCatalog } from "./models.ts"
 import { installSkill } from "./skill.ts"
 import { createPodTools } from "./tools.ts"
 import { createTracker } from "./tracker.ts"
+import type { Tracker, TrackerAgent } from "./tracker.ts"
 import { errorMessage } from "./util.ts"
 import { registerPodWeb } from "./web.ts"
 
@@ -82,6 +92,30 @@ export function sessionSandboxMode(
   } catch {
     return undefined
   }
+}
+
+/**
+ * Resume background tracking after a host restart (§8.3). The in-memory tracker
+ * is empty, but the origin's dispatch log still remembers non-terminal tasks and
+ * the DSH session that dispatched them; sessions the host no longer runs are
+ * skipped (the task stays visible through `status` and the panel).
+ */
+export function restoreTrackedDispatches(
+  tracker: Tracker,
+  dispatches: readonly DispatchEntry[],
+  resolveAgent: (agentId: string) => TrackerAgent | undefined,
+  logger?: HostLogger,
+): number {
+  let restored = 0
+  for (const entry of dispatches) {
+    if (entry.agent_id === undefined || TERMINAL_TASK_STATES.has(entry.state)) continue
+    const agent = resolveAgent(entry.agent_id)
+    if (agent === undefined) continue
+    tracker.track(agent, entry.peer, entry.task_id, { record: false })
+    restored += 1
+  }
+  if (restored > 0) logger?.info(`orca-pod: resumed tracking ${restored} dispatched task(s)`)
+  return restored
 }
 
 /**
@@ -149,6 +183,21 @@ export function apply(ctx: HostContext, config: Config): void {
     onSettled: (peer, taskId) => {
       prompts.withdraw(peer, taskId)
     },
+  })
+
+  // Resume tracking for tasks dispatched before a host restart (§8.3). The
+  // dispatch log carries the dispatching session id; agents the host no longer
+  // runs are skipped, and the task remains reachable through `status`.
+  void handle.ready.then(() => {
+    const orcaNode = handle.runtime.orcaNode
+    if (orcaNode === null) return
+    const agents = optionalService<AgentsService>(ctx, "agents")
+    restoreTrackedDispatches(
+      tracker,
+      orcaNode.listDispatches(),
+      (agentId) => agents?.get(agentId),
+      logger,
+    )
   })
 
   // ACP and CLI executors run in their own `dsh` subprocesses and cannot see

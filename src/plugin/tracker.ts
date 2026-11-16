@@ -30,6 +30,8 @@ export type TrackerMessage = AgentNotice
 /** The one orca-node method the tracker needs. */
 export interface TrackerNode {
   getTask(peerUrl: string, taskId: string): Promise<TaskView>
+  /** Persist the dispatching agent so tracking can resume after a host restart. */
+  annotateDispatch?(taskId: string, agentId: string): void
 }
 
 /** Construction options; every value has a production default. */
@@ -60,6 +62,11 @@ export interface TrackerOptions {
   }) => boolean
   /** The task settled or vanished: drop any parked prompt for it. */
   onSettled?: (peer: string, taskId: string) => void
+  /**
+   * Consecutive transient poll failures tolerated before tracking gives up and
+   * tells the agent to check the task with `orca_pod` `status` (§8.3).
+   */
+  maxTransientFailures?: number
   logger?: HostLogger
 }
 
@@ -76,7 +83,7 @@ export interface TrackedTask {
 /** Tracker handle returned to the plugin. */
 export interface Tracker {
   /** Start watching a task dispatched by the given agent. */
-  track(agent: TrackerAgent, peer: string, taskId: string): void
+  track(agent: TrackerAgent, peer: string, taskId: string, options?: { record?: boolean }): void
   /** Stop polling and drop pending notices. */
   stop(): void
   /** Number of tasks still being watched (tests and diagnostics). */
@@ -95,17 +102,26 @@ interface PendingTask {
   seenRequest: string | null
   /** Latest view observed during polling; null until the first successful poll. */
   view: TaskView | null
+  /** Consecutive transient poll failures. */
+  failures: number
+  /** Don't poll again before this time (exponential backoff). */
+  nextAttemptAt: number
 }
 
 interface FinishedTask extends PendingTask {
-  kind: "terminal" | "permission"
-  view: TaskView
+  kind: "terminal" | "permission" | "interrupted"
+  /** Latest observed view; null when tracking was interrupted before a poll. */
+  view: TaskView | null
   request?: PermissionRequest
+  /** Why tracking stopped, for interrupted entries. */
+  reason?: string
 }
 
 const DEFAULT_INTERVAL_MS = 1000
 const DEFAULT_COALESCE_MS = 2000
 const DEFAULT_MAX_CONSECUTIVE_WAKES = 3
+const DEFAULT_MAX_TRANSIENT_FAILURES = 5
+const MAX_RETRY_DELAY_MS = 30_000
 const SUMMARY_MAX_CHARS = 120
 
 /** One suspended permission request reduced to the line shown to the agent. */
@@ -166,6 +182,15 @@ function clampSummary(text: string): string {
 }
 
 /**
+ * One task the tracker had to abandon, reduced to the line shown to the agent.
+ * The remote task may still be running, so this must not read like a terminal
+ * state — it points the agent at `orca_pod` `status` instead.
+ */
+export function trackingInterruptedLine(taskId: string, peer: string, reason: string): string {
+  return `tracking of task ${taskId} on ${peer} was interrupted: ${reason}; the task may still be running — call orca_pod with method "status" to check it`
+}
+
+/**
  * Create a tracker bound to one running orca node.
  *
  * Polling is lazy: tasks are watched only while at least one is pending, so an
@@ -175,6 +200,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS
   const coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS
   const maxConsecutiveWakes = options.maxConsecutiveWakes ?? DEFAULT_MAX_CONSECUTIVE_WAKES
+  const maxTransientFailures = options.maxTransientFailures ?? DEFAULT_MAX_TRANSIENT_FAILURES
   const logger = options.logger
 
   const listeners = new Set<() => void>()
@@ -192,15 +218,25 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   const pending = new Map<string, PendingTask>()
   const finished: FinishedTask[] = []
   const awake = new Map<string, number>()
-  let pollTimer: ReturnType<typeof setInterval> | undefined
+  let pollTimer: ReturnType<typeof setTimeout> | undefined
   let coalesceTimer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
 
-  function ensurePolling(): void {
-    if (pollTimer !== undefined || stopped) return
-    pollTimer = setInterval(() => {
-      void poll()
-    }, intervalMs)
+  /**
+   * Poll with a self-scheduling timer instead of `setInterval`: the next poll
+   * starts only after the previous one finished, so a slow peer cannot stack
+   * overlapping rounds that deliver the same terminal state twice (§8.3).
+   */
+  function schedulePoll(delayMs = intervalMs): void {
+    if (pollTimer !== undefined) {
+      clearTimeout(pollTimer)
+      pollTimer = undefined
+    }
+    if (stopped || pending.size === 0) return
+    pollTimer = setTimeout(() => {
+      pollTimer = undefined
+      void poll().finally(() => schedulePoll())
+    }, delayMs)
     pollTimer.unref?.()
   }
 
@@ -209,23 +245,28 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
     if (node === null) return
     let changed = false
     for (const [key, entry] of [...pending]) {
+      // Exponential backoff after transient failures; the timer keeps running so
+      // other entries are still polled on schedule.
+      if (Date.now() < entry.nextAttemptAt) continue
       try {
         const view = await node.getTask(entry.peer, entry.taskId)
         entry.view = view
+        entry.failures = 0
+        entry.nextAttemptAt = 0
         changed = true
         const request = permissionRequestOf(view)
         if (request !== null) {
           // A suspended permission request is surfaced once; the task stays
           // tracked until it finishes or the request changes. When the host can
           // park it in the UI, the raw request text never enters the chat.
-          const changed = request.request_id !== entry.seenRequest
+          const requestChanged = request.request_id !== entry.seenRequest
           const parkedByTool = options.isPromptParked?.(entry.peer, entry.taskId) === true
           let parkedByTracker = false
           if (parkedByTool) {
             // The `orca_pod` approve call already owns the prompt; re-parking it
             // would settle that waiter and turn the model's approval into a denial.
             dropPermissionNotices(entry.peer, entry.taskId)
-          } else if (changed) {
+          } else if (requestChanged) {
             parkedByTracker =
               options.onPermission?.({
                 peer: entry.peer,
@@ -236,7 +277,7 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
               }) === true
             if (parkedByTracker) dropPermissionNotices(entry.peer, entry.taskId)
           }
-          if (changed) {
+          if (requestChanged) {
             entry.seenRequest = request.request_id
             if (!parkedByTool && !parkedByTracker) {
               finished.push({ ...entry, kind: "permission", view, request })
@@ -252,19 +293,43 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         finished.push({ ...entry, kind: "terminal", view })
         scheduleFlush()
       } catch (error) {
-        // A vanished task (404) or a transient network failure must not wedge the
-        // tracker; drop it and let the agent discover the state through the `orca_pod` status method.
-        pending.delete(key)
+        // A vanished task (404) or a rejected read is final; a network timeout or
+        // a 5xx is transient and must be retried instead of silently losing the
+        // task — the agent was told not to poll (§8.3).
+        failPoll(key, entry, error)
         changed = true
-        options.onSettled?.(entry.peer, entry.taskId)
-        logger?.warn(`orca-pod: stopped tracking ${entry.taskId} on ${entry.peer}: ${errorMessage(error)}`)
       }
     }
     if (changed) notify()
-    if (pending.size === 0 && pollTimer !== undefined) {
-      clearInterval(pollTimer)
-      pollTimer = undefined
+  }
+
+  /** Retry a transient failure with backoff; give up (with a notice) after N. */
+  function failPoll(key: string, entry: PendingTask, error: unknown): void {
+    const status = (error as { status?: number }).status
+    const code = (error as { code?: string }).code
+    const gone = status === 404 || code === "task_not_found"
+    const unauthorized = status === 401 || status === 403
+    if (gone || unauthorized) {
+      endTracking(key, entry, errorMessage(error))
+      return
     }
+    entry.failures += 1
+    entry.nextAttemptAt = Date.now() + Math.min(intervalMs * 2 ** (entry.failures - 1), MAX_RETRY_DELAY_MS)
+    if (entry.failures === 1) {
+      logger?.warn(`orca-pod: poll of ${entry.taskId} on ${entry.peer} failed (retrying): ${errorMessage(error)}`)
+    }
+    if (entry.failures < maxTransientFailures) return
+    endTracking(key, entry, errorMessage(error))
+  }
+
+  /** Stop watching one task and tell the agent where to look next. */
+  function endTracking(key: string, entry: PendingTask, reason: string): void {
+    pending.delete(key)
+    dropPermissionNotices(entry.peer, entry.taskId)
+    options.onSettled?.(entry.peer, entry.taskId)
+    logger?.warn(`orca-pod: gave up tracking ${entry.taskId} on ${entry.peer}: ${reason}`)
+    finished.push({ ...entry, kind: "interrupted", view: entry.view, reason })
+    scheduleFlush()
   }
 
   /**
@@ -298,8 +363,10 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
         batch.lines.push(permissionNoticeLine(task.request, task.peer))
         batch.force = true
         batch.permission = true
+      } else if (task.kind === "interrupted") {
+        batch.lines.push(trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error"))
       } else {
-        batch.lines.push(taskNoticeLine(task.view, task.peer))
+        batch.lines.push(taskNoticeLine(task.view!, task.peer))
       }
       batches.set(task.agent.id, batch)
     }
@@ -346,15 +413,26 @@ export function createTracker(getNode: () => TrackerNode | null, options: Tracke
   }
 
   return {
-    track(agent, peer, taskId) {
+    track(agent, peer, taskId, trackOptions = {}) {
       if (stopped) return
-      pending.set(`${peer}|${taskId}`, { agent, peer, taskId, seenRequest: null, view: null })
+      pending.set(`${peer}|${taskId}`, {
+        agent,
+        peer,
+        taskId,
+        seenRequest: null,
+        view: null,
+        failures: 0,
+        nextAttemptAt: 0,
+      })
+      // Persist the dispatching session so a host restart can resume tracking
+      // (§8.3). Restored entries already carry it and skip the write.
+      if (trackOptions.record !== false) getNode()?.annotateDispatch?.(taskId, agent.id)
       notify()
-      ensurePolling()
+      schedulePoll(0)
     },
     stop() {
       stopped = true
-      if (pollTimer !== undefined) clearInterval(pollTimer)
+      if (pollTimer !== undefined) clearTimeout(pollTimer)
       if (coalesceTimer !== undefined) clearTimeout(coalesceTimer)
       pollTimer = undefined
       coalesceTimer = undefined

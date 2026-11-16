@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 import { ConfigValidationError, validateConfigInput } from "../src/plugin/config.ts"
+import type { DispatchEntry } from "../src/dispatches.ts"
 import type { PodHandle } from "../src/plugin/lifecycle.ts"
+import type { TaskView } from "../src/protocol.ts"
 import { createPodTools } from "../src/plugin/tools.ts"
+import type { TrackerAgent } from "../src/plugin/tracker.ts"
 import { createTracker } from "../src/plugin/tracker.ts"
 import * as plugin from "../src/plugin/index.ts"
 
@@ -236,5 +239,62 @@ describe("orca_pod tool", () => {
       members: [],
       members_digest: "digest",
     })
+  })
+})
+
+describe("tracker recovery (8.3)", () => {
+  function dispatch(taskId: string, state: string, agentId?: string): DispatchEntry {
+    const now = new Date().toISOString()
+    return {
+      task_id: taskId,
+      peer: "http://127.0.0.1:9",
+      state,
+      created_at: now,
+      updated_at: now,
+      ...(agentId === undefined ? {} : { agent_id: agentId }),
+    }
+  }
+
+  function view(taskId: string): TaskView {
+    return {
+      kind: "task",
+      id: taskId,
+      contextId: taskId,
+      status: { state: "working", timestamp: new Date().toISOString() },
+    }
+  }
+
+  it("resumes only non-terminal dispatches with a live dispatching agent", async () => {
+    const agent: TrackerAgent = {
+      id: "live-session",
+      status: "idle",
+      inject: () => {},
+      followup: () => {},
+    }
+    const tracker = createTracker(
+      () => ({
+        async getTask(_peer: string, taskId: string): Promise<TaskView> {
+          return view(taskId)
+        },
+      }),
+      { intervalMs: 1000, coalesceMs: 1000 },
+    )
+    try {
+      const restored = plugin.restoreTrackedDispatches(
+        tracker,
+        [
+          dispatch("running", "working", "live-session"),
+          dispatch("parked", "input-required", "live-session"),
+          dispatch("done", "completed", "live-session"),
+          dispatch("unattributed", "working"),
+          dispatch("orphaned", "working", "gone-session"),
+        ],
+        (agentId) => (agentId === "live-session" ? agent : undefined),
+      )
+      expect(restored).toBe(2)
+      expect(tracker.size()).toBe(2)
+    } finally {
+      tracker.stop()
+    }
   })
 })

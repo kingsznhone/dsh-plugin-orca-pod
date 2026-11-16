@@ -206,6 +206,12 @@ export interface OrcaNode {
   linkChildTask(parentTaskId: string, peerUrl: string, childTaskId: string): void;
   /** Origin-side dispatch log, oldest first (§13.4). */
   listDispatches(): DispatchEntry[];
+  /**
+   * Remember which DSH session dispatched a task, so the host can resume
+   * background tracking after a restart (§8.3). The dispatch entry must already
+   * exist; unknown ids are ignored.
+   */
+  annotateDispatch(taskId: string, agentId: string): void;
   /** Local (inbound) tasks, newest first, for the UI task panel (§9.2). */
   listTasks(limit?: number): TaskView[];
   /**
@@ -655,6 +661,19 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     events.emit({ type: "dispatch", entry });
   }
 
+  /**
+   * Stamp the dispatching DSH session onto an existing dispatch entry. The
+   * tracker calls this when a task starts being watched; it must not change
+   * the observed task state, so the entry is read-modify-written in place.
+   */
+  function annotateDispatch(taskId: string, agentId: string): void {
+    const entry = dispatches.get(taskId);
+    if (entry === undefined || entry.agent_id === agentId) return;
+    const annotated: DispatchEntry = { ...entry, agent_id: agentId };
+    dispatches.save(annotated);
+    events.emit({ type: "dispatch", entry: annotated });
+  }
+
   async function tracked<T extends TaskView>(peerUrl: string, call: Promise<T>): Promise<T> {
     const view = await call;
     rememberDispatch(peerUrl, view);
@@ -1080,6 +1099,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     escalateTask,
     linkChildTask,
     listDispatches: () => dispatches.list(),
+    annotateDispatch,
     listTasks,
     subscribe,
     blobLink,

@@ -99,6 +99,14 @@ export interface ToolExecution {
   agent?: ToolAgent
 }
 
+/**
+ * Host agent registry. Background tracking persists the dispatching session id
+ * with the dispatch log and looks the agent up here after a host restart (§8.3).
+ */
+export interface AgentsService {
+  get(id: string): ToolAgent | undefined
+}
+
 /** Tool registry service exposed to plugins as `ctx.tools`. */
 export interface ToolRegistry {
   register(definition: ToolDefinition, options?: Record<string, unknown>): unknown
