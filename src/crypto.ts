@@ -14,7 +14,7 @@ export const AUTH_SCHEME = "Pod";
  * (path *and* query) into every signature: a request captured from one node
  * cannot be replayed against another node or with different query parameters.
  */
-export const PROOF_VERSION = "pod-v2";
+export const PROOF_VERSION = "pod-v1";
 export const JOIN_PROOF_VERSION = "pod-join-v1";
 export const KEY_DERIVATION_SALT = "orca-pod";
 /**

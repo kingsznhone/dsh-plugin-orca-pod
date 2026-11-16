@@ -38,7 +38,7 @@ Authorization: Pod orca_node_id=<43-char base64url public key>; target=<receiver
 
 ```text
 sig = Ed25519(identity.private_key,
-  "pod-v2|" + method + "|" + target_orca_node_id + "|" + url_with_query + "|" + sha256(body) + "|" + ts + "|" + nonce)
+  "pod-v1|" + method + "|" + target_orca_node_id + "|" + url_with_query + "|" + sha256(body) + "|" + ts + "|" + nonce)
 ```
 
 `target` 是**接收方**的 `orca_node_id`，`url_with_query` 是请求路径连同查询串（`/blobs?name=a.zip` 的 `?name=` 也被签名）。目标是让请求不能被“换一个收件人重放”、也不能被代理在查询串上做小动作。
