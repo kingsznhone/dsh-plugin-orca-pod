@@ -53,6 +53,21 @@ describe("membership watchdog", () => {
     expect(membership.needsProbe("BBBBBB", membership.now())).toBe(true);
   });
 
+  it("does not let a third-party roster overwrite a known member", () => {
+    const { membership } = setup();
+    membership.mergeRemote([peerView("BBBBBB")]);
+    membership.mergeRemote([
+      peerView("BBBBBB", {
+        display_name: "mallory",
+        endpoints: ["http://192.0.2.9:11811"],
+      }),
+    ]);
+
+    const peer = membership.get("BBBBBB");
+    expect(peer?.display_name).toBe("orca-node-BBBBBB");
+    expect(peer?.endpoints).toEqual(["http://127.0.0.1:11811"]);
+  });
+
   it("walks online -> suspect(quiet) -> offline -> pruned from inbound silence", () => {
     const { membership, advance } = setup();
     membership.mergeRemote([peerView("BBBBBB")]);

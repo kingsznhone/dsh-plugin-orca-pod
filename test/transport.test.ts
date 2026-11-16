@@ -50,6 +50,22 @@ function jittered(state: Jitter): FetchLike {
   };
 }
 
+/** Rewrite one JSON response field in flight; everything else passes through. */
+function rewriteJson(
+  pathSuffix: string,
+  mutate: (body: Record<string, unknown>) => Record<string, unknown>,
+): FetchLike {
+  return async (url, init) => {
+    const response = await fetch(url, init);
+    if (!url.pathname.endsWith(pathSuffix)) return response;
+    const body = (await response.json()) as Record<string, unknown>;
+    return new Response(JSON.stringify(mutate(body)), {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
 function newWorkgroupId(): string {
   return `wg-${randomBytes(6).toString("hex")}`;
 }
@@ -237,6 +253,28 @@ describe("transport jitter during formation", () => {
       expect(a.membersDigest()).toBe(b.membersDigest());
     } finally {
       await Promise.all([a.stop(), b.stop()]);
+    }
+  });
+
+  it("refuses a heartbeat response that claims another node", async () => {
+    const workgroupId = newWorkgroupId();
+    const forgedId = "ocRQy-mZ2YzHZOVJEQCkFnxmLuG2p51Yp4jq27Cz1ag";
+    const a = makeNode(workgroupId, "jitter", { timings: JITTER });
+    const c = makeNode(workgroupId, "jitter", {
+      timings: JITTER,
+      fetch: rewriteJson("/cluster/heartbeat", (body) => ({ ...body, from: forgedId })),
+    });
+
+    try {
+      const aUrl = (await a.start()).url;
+      await c.start();
+      if (!aUrl) throw new Error("orca nodes did not start");
+      await c.join(aUrl);
+
+      await expect(c.heartbeat(aUrl)).rejects.toThrow(/claimed .* but .* was expected/);
+      expect(c.members().some((peer) => peer.orca_node_id === forgedId)).toBe(false);
+    } finally {
+      await Promise.all([a.stop(), c.stop()]);
     }
   });
 });

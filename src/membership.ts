@@ -276,11 +276,11 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     for (const member of members) {
       if (member.orca_node_id === selfOrcaNodeId) continue;
       if (isTombstoned(member.orca_node_id)) continue;
-      const existing = records.get(member.orca_node_id);
-      if (existing) {
-        profilePatch(existing, member);
-        continue;
-      }
+      // A third-party roster is only a hint for nodes we have never met (§7.1).
+      // Once a record exists, only that node's own signed self-description may
+      // update its endpoints or profile; otherwise any member could redirect
+      // everyone's traffic to itself.
+      if (records.get(member.orca_node_id)) continue;
       records.set(member.orca_node_id, createRecord(member, "unknown", nowMs, "candidate"));
     }
   }

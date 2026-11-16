@@ -486,6 +486,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       ts,
       nonce,
     });
+    const expected = membership.findByEndpoint(peerUrl);
     const response = await postSigned<JoinResponse>(peerUrl, "/cluster/join", {
       workgroup_id: config.workgroup_id,
       orca_node_id: orcaNodeId,
@@ -500,6 +501,14 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       nonce,
       proof,
     });
+    // The response carries no signature of its own, so bind it to the node we
+    // dialed: a known endpoint must not be able to introduce a new identity
+    // (first contact is TOFU, as there is nothing to compare it with yet).
+    if (expected !== null && response.self.orca_node_id !== expected.orca_node_id) {
+      throw new Error(
+        `/cluster/join from ${peerUrl} claimed ${response.self.orca_node_id} but ${expected.orca_node_id} was expected`,
+      );
+    }
     peers.upsert(response.self);
     admittedPeers.add(peerUrl);
     membership.observeInbound(response.self.orca_node_id);
@@ -551,6 +560,13 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         } else {
           throw error;
         }
+      }
+      // The response has no signature of its own, so it must not be able to
+      // speak for a node other than the one we dialed (§7.1).
+      if (peer !== null && response.from !== peer.orca_node_id) {
+        throw new Error(
+          `/cluster/heartbeat from ${peerUrl} claimed ${response.from} but ${peer.orca_node_id} was expected`,
+        );
       }
       membership.observeInbound(response.from);
       membership.observeOutboundOk(response.from);

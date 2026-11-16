@@ -22,6 +22,8 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 - 换密码：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，下一拍心跳的准入证明对不上，双方互相 401 丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)），每个请求由本节点私钥签名，接收方用目录里的公钥验签——签名现在能证明“谁在调用”，伪造不了的。密码不再参与请求签名。
 - **local-only 能力仍用传输层判定（纵深防御）**：签名身份虽然不可伪造，但“只有本机可以做”的操作仍只看 socket 与转发头，不靠 `auth.orca_node_id`——代理可能改写来源地址，传输层事实更难伪造。已落实的例子是文件 blob 登记（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`publish` 由 CLI 直写本机 SQLite，根本不提供 HTTP 路由。
+- **目录不能改写已知成员**：他人目录里的条目只是“我还知道这个人”的提示，只用于把从未见过的 `orca_node_id` 加为候选端点；已存在记录的端点/显示名/忙碌/模型只接受该节点本人签名的心跳或 join 自述更新，否则任一成员都能把别人的流量重定向到自己（`mergeRemote` 不修补已有记录，`test/membership.test.ts`）。
+- **响应绑定拨号目标**：join/heartbeat 的响应体本身没有签名，接收方把 `self`/`from` 绑定到本次拨号目标的身份——已知端点不得声明成另一个 `orca_node_id`，否则按失败处理（`test/transport.test.ts`）。首次接触没有可比对的身份，仍是 TOFU；明文 HTTP 下的完整消息认证由前置代理的 TLS 承担。
 - **先证明是成员，再谈签名**：签名只证明“持有这把私钥”，陌生人生成一把 Ed25519 密钥同样能签出合法格式的请求。因此除 `/health`、agent card、`/cluster/join` 和 blob 直链（`?exp&sig`）外，所有签名路由在验签后都要过成员闸门：调用者必须是本机，或在成员目录里（未固定为墓碑），否则 `403 not_a_member`（`test/authorization.test.ts`）。`/cluster/join` 是唯一的准入入口——它同时校验密码派生的 `pod-join-v1` 证明；初次派发的节点若还没 join 过对端，`sendTask`/`getTask` 等会先按密码准入再发请求。
 - **授权按记录归属，不按签名身份**：签名能证明“谁”，但写操作仍按记录归属校验：普通读接口允许同组成员读，但写操作必须在**记录归属**上校验——`tasks/cancel` 只接受 task 的 origin（或执行它的本机节点），其他成员 `403 not_task_origin`（[§5.3](05-tasks.md#53-取消)）；`tasks/resume`、`tasks/escalate` 同理只接受 origin / 本机（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。`/cluster/child-link` 则同时要求传输层回环——它登记的是“本机任务在等某个子任务的权限”，不能让别的节点替你登记。
 
