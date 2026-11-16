@@ -91,7 +91,7 @@ Full mesh (<= 10 orca nodes), 唯一拓扑
 - Caddy reverse_proxy：https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
 - nginx proxy 模块：https://nginx.org/en/docs/http/ngx_http_proxy_module.html
 - SQLite WAL：https://sqlite.org/wal.html
-- HKDF（RFC 5869）：https://www.rfc-editor.org/rfc/rfc5869
+- scrypt（RFC 7914）：https://www.rfc-editor.org/rfc/rfc7914
 - Ed25519（RFC 8032）：https://www.rfc-editor.org/rfc/rfc8032
 
 ---

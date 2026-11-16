@@ -7,15 +7,17 @@
 ### 7.1 workgroup 与密码
 
 - `workgroup_id`：`[a-z0-9][a-z0-9-]{1,31}`，创建时指定，之后不可改（改名 = 新建 workgroup）。
-- 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`HKDF(ikm = "")` 是公开常量，等于没有准入控制。**密码只用于组网准入**（`/cluster/join` 与每拍心跳的 HMAC 证明），请求签名与 grant 都用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
-- 密码不入库明文：首选系统钥匙串引用；退而求其次才在插件配置里存 `HKDF` 派生密钥（文件权限 0600）。存派生密钥的代价是：配置文件泄露 = 直接获得签名能力，所以推荐前者。面板覆盖层 `<data_root>/ui-config.json` 目前以明文保存 `workgroup_password`（只由回环闸门写入，生产应换成 credentials 引用）。
+- 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`scrypt(password = "")` 是公开常量，等于没有准入控制。**密码只用于组网准入**（`/cluster/join` 与每拍心跳的 HMAC 证明），请求签名与 grant 都用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
+- 密码不入库明文：首选系统钥匙串引用；退而求其次才在插件配置里存 `scrypt` 派生密钥（文件权限 0600）。存派生密钥的代价是：配置文件泄露 = 直接获得签名能力，所以推荐前者。面板覆盖层 `<data_root>/ui-config.json` 目前以明文保存 `workgroup_password`（只由回环闸门写入，生产应换成 credentials 引用）。
 - DSH 插件默认 `bind_host: "127.0.0.1"`，而且 bundle 不再携带任何 workgroup/密码：首次启动必须先在面板向导里完成 setup（workgroup、密码、监听地址），否则节点根本不启动监听。向导默认仍选 loopback，只有显式选择 LAN 地址或 `::` 才接受 peer——同网段访问是运维的显式决定，不是默认。认证仍靠 workgroup 签名；不支持无密码的开放 mesh。需要更严格时保持 loopback 并让流量只走代理。
 - 日志、配置文件、错误信息里都不出现密码或派生密钥。
-- 密钥派生：
+- 密钥派生（内存困难，只在启动时付一次代价）：
 
 ```text
-k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32)
+k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1, len = 32)
 ```
+
+- 为什么不是 HKDF：join/heartbeat 的 `proof` 是 HMAC，输入（workgroup_id、节点 id、ts、nonce）全是明文；明文 HTTP 上嗅到一个心跳就能离线跑字典。HKDF 每猜一次只花几微秒，scrypt 每次要 ~32 MiB 内存与 ~100 ms，把爆破成本抬到数量级之上。派生结果只在进程启动时算一次（`config.json` 写 `key_derivation: "scrypt-v1"`）；插件在启动时用配置里的密码重新派生并落盘，standalone 的旧 `config.json` 需跑一次 `orca-node serve --config … --password <密码>` 迁移，之后不再需要 `--password`。KDF 变更不兼容旧节点：同组所有节点升级到同一版本（密码不变，key 会不同）。仍未做的是 `/cluster/join` 的按 IP 限速——scrypt 只抬高单次猜测成本，弱口令仍应避免。
 
 - 换密码：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，下一拍心跳的准入证明对不上，双方互相 401 丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)），每个请求由本节点私钥签名，接收方用目录里的公钥验签——签名现在能证明“谁在调用”，伪造不了的。密码不再参与请求签名。
@@ -52,7 +54,7 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 - **大 body 的签名**：带 body 的请求加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘后再自校验，不一致即 `400 body_digest_mismatch`。
 - **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = Ed25519(identity.private_key, "blob-link-v1|" + blob_id + "|" + exp)`，TTL 与 blob 保留期一致（默认 7 天）。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
 
-`/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = HMAC-SHA256(HKDF(password), "pod-join-v1|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce)`——密码只出现在这一步。`/cluster/heartbeat` 同样带 `ts`/`nonce`/`proof`（域分离 `pod-hb-v1`），验不过回 `401 bad_proof`，双方据此在下一拍互相丢弃。`/health` 不签。
+`/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = HMAC-SHA256(scrypt(password, "orca-pod\0" + workgroup_id), "pod-join-v1|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce)`——密码只出现在这一步。`/cluster/heartbeat` 同样带 `ts`/`nonce`/`proof`（域分离 `pod-hb-v1`），验不过回 `401 bad_proof`，双方据此在下一拍互相丢弃。`/health` 不签。
 
 ### 7.3 密钥与密码的分发
 

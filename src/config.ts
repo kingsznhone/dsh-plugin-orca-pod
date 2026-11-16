@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { deriveWorkgroupKey } from "./crypto.ts";
+import { deriveWorkgroupKey, KEY_DERIVATION } from "./crypto.ts";
 import { isNodeId, loadOrCreateIdentity, shortenNodeId, type NodeIdentity } from "./identity.ts";
 import {
   DEFAULT_PORT,
@@ -50,6 +50,8 @@ export type OrcaNodeConfig = {
   bind: BindConfig;
   data_root: string;
   key_base64: string;
+  /** KDF version that produced `key_base64`; absent means a pre-scrypt config (§7.1). */
+  key_derivation?: string;
   created_at: string;
   executor?: ExecutorKind;
   acp?: AcpExecutorConfig;
@@ -229,6 +231,7 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     bind: { host: options.host ?? "127.0.0.1", port: options.port ?? DEFAULT_PORT },
     data_root: dataRoot,
     key_base64: key.toString("base64"),
+    key_derivation: KEY_DERIVATION,
     created_at: new Date().toISOString(),
     ...(options.executor ? { executor: options.executor } : {}),
     ...(options.acp ? { acp: options.acp } : {}),
@@ -345,6 +348,15 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
     throw new Error("config.orca_node_id must be an Ed25519 public key; reset the orca node to migrate");
   }
   if (!config.key_base64) throw new Error("config.key_base64 is missing");
+  const derivation = record["key_derivation"];
+  if (derivation !== undefined) {
+    if (derivation !== KEY_DERIVATION) {
+      throw new Error(
+        `config.key_derivation must be "${KEY_DERIVATION}"; rerun with the workgroup password to rederive the key`,
+      );
+    }
+    config.key_derivation = KEY_DERIVATION;
+  }
   const executor = record["executor"];
   if (executor !== undefined) {
     if (executor === "headless") {

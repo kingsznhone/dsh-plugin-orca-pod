@@ -80,7 +80,7 @@ POST /cluster/heartbeat
 { "workgroup_id": "orca-demo",
   "orca_node_id": "<43-char base64url public key>",
   "ts": 1763100000, "nonce": "9f2c1a",
-  "proof": "<HMAC-SHA256(HKDF(password), \"pod-hb-v1|...\")>",
+  "proof": "<HMAC-SHA256(scrypt(password, \"orca-pod\\0\" + workgroup_id), \"pod-hb-v1|...\")>",
   "busy": null,
   "digest": "sha256:...",
   "self": { ... } }                                  // 仅首次，或记录变更时

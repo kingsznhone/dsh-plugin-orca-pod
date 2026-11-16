@@ -7,7 +7,7 @@ import { Readable } from "node:stream";
 
 import { createFileBlobRegistry } from "./blob_files.ts";
 import { configPath, defaultDataRoot, endpointWriteback, loadConfig, saveConfig, workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { blobLinkSignature, buildAuthHeader } from "./crypto.ts";
+import { blobLinkSignature, buildAuthHeader, deriveWorkgroupKey, KEY_DERIVATION } from "./crypto.ts";
 import { echoScriptFrom } from "./executor.ts";
 import { loadIdentity, type NodeIdentity } from "./identity.ts";
 import { createOrcaNode, createPersistentStorage, joinRoster } from "./index.ts";
@@ -18,7 +18,7 @@ import { createSqliteDispatchStore, createSqliteFileBlobStore } from "./sqlite.t
 const USAGE = `orca-node
 
 Usage:
-  orca-node serve   --config <path> [--peer <url>] [--bind <host>] [--port <n>]  start an orca node from a config file
+  orca-node serve   --config <path> [--peer <url>] [--bind <host>] [--port <n>] [--password <text>]  start an orca node from a config file
   orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
@@ -216,6 +216,19 @@ async function serve(args: string[]): Promise<void> {
   const flags = parseFlags(args);
   const explicit = requireFlag(flags, "config");
   const config = await loadConfig(explicit);
+  // One-time migration: a config written before the memory-hard KDF keeps a key
+  // that makes sniffed join/heartbeat proofs cheap to crack offline. Re-derive
+  // it from the configured password once, then persist the new version marker.
+  const password = flag(flags, "password");
+  if (password !== undefined) {
+    config.key_base64 = deriveWorkgroupKey(config.workgroup_id, password).toString("base64");
+    config.key_derivation = KEY_DERIVATION;
+    await saveConfig(explicit, config);
+  } else if (config.key_derivation !== KEY_DERIVATION) {
+    throw new Error(
+      `config.key_base64 was derived with an older key function; rerun once with --password <workgroup password> to rederive it`,
+    );
+  }
   // Explicit listen overrides are useful for one-off runs and for the harness:
   // the persisted config keeps whatever the operator installed.
   const bindOverride = flag(flags, "bind");

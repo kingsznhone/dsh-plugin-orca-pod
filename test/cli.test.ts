@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { configPath, createOrcaNodeConfig, saveConfig, type OrcaNodeConfig } from "../src/config.ts";
+import { configPath, createOrcaNodeConfig, saveConfig, validateConfig, type OrcaNodeConfig } from "../src/config.ts";
+import { KEY_DERIVATION } from "../src/crypto.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/index.ts";
 import { sha256Hex } from "../src/storage.ts";
 
@@ -198,5 +199,47 @@ describe("orca-node CLI", () => {
     // abuse from another orca node (a shared workgroup key cannot prove identity).
     const register = await fetch(`${endpoint}/blobs/register`, { method: "POST", body: "{}" });
     expect(register.status).toBe(404);
+  });
+});
+
+describe("scrypt key derivation", () => {
+  it("stamps fresh configs with the version marker", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orca-kdf-"));
+    const created = createOrcaNodeConfig({
+      workgroupId: "orca-kdf",
+      password: "kdf-password-123",
+      dataRoot: dir,
+    });
+    expect(created.key_derivation).toBe(KEY_DERIVATION);
+    expect(created.key_base64.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a config from another key derivation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orca-kdf-legacy-"));
+    const created = createOrcaNodeConfig({
+      workgroupId: "orca-kdf",
+      password: "kdf-password-123",
+      dataRoot: dir,
+    });
+    expect(() => validateConfig({ ...created, key_derivation: "hkdf-v1" })).toThrow(/key_derivation/);
+  });
+
+  it("asks for --password when serve loads an unmarked config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orca-kdf-serve-"));
+    const legacy: Record<string, unknown> = {
+      ...createOrcaNodeConfig({
+        workgroupId: "orca-kdf",
+        password: "kdf-password-123",
+        dataRoot: dir,
+      }),
+    };
+    delete legacy["key_derivation"];
+    const path = join(dir, "old-config.json");
+    await writeFile(path, JSON.stringify(legacy), "utf8");
+
+    const served = await runCli(["serve", "--config", path]);
+    expect(served.code).toBe(1);
+    expect(served.stderr).toContain("older key function");
+    expect(served.stderr).toContain("--password");
   });
 });

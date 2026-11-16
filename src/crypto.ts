@@ -1,4 +1,4 @@
-import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 import {
   isNodeId,
@@ -12,6 +12,18 @@ export const AUTH_SCHEME = "Pod";
 export const PROOF_VERSION = "pod-v1";
 export const JOIN_PROOF_VERSION = "pod-join-v1";
 export const KEY_DERIVATION_SALT = "orca-pod";
+/**
+ * Key-derivation version written into `config.json`. It exists so a node with a
+ * key derived by an older (cheaper) KDF cannot silently keep using it: the
+ * admission proof is HMAC over public fields, so a sniffed heartbeat is an
+ * offline dictionary oracle unless each guess costs memory-hard work.
+ */
+export const KEY_DERIVATION = "scrypt-v1";
+/** scrypt parameters: ~32 MiB, one derivation per start, ~100ms (§7.1). */
+export const KEY_DERIVATION_N = 1 << 15;
+export const KEY_DERIVATION_R = 8;
+export const KEY_DERIVATION_P = 1;
+const KEY_DERIVATION_MAX_MEM = 64 * 1024 * 1024;
 export const DEFAULT_CLOCK_SKEW_MS = 60_000;
 export const DEFAULT_NONCE_TTL_MS = 5 * 60_000;
 export const DEFAULT_NONCE_CAPACITY = 10_000;
@@ -33,16 +45,27 @@ export class PodAuthError extends Error {
   }
 }
 
-/** HKDF-SHA256(password, salt="orca-pod", info=workgroup_id) -> 32 bytes. */
+/**
+ * scrypt(password, salt="orca-pod\x00<workgroup_id>") -> 32 bytes.
+ *
+ * Memory-hard on purpose: the workgroup key backs the join/heartbeat HMAC
+ * proofs over plaintext HTTP, so HKDF's cheap output made every sniffed proof
+ * an offline dictionary target. scrypt is paid once per process start; the
+ * salt binds the derivation to the workgroup id so the same password yields a
+ * different key in another group.
+ */
 export function deriveWorkgroupKey(workgroupId: string, password: string): Buffer {
-  const derived = hkdfSync(
-    "sha256",
-    Buffer.from(password, "utf8"),
+  const salt = Buffer.concat([
     Buffer.from(KEY_DERIVATION_SALT, "utf8"),
+    Buffer.from([0]),
     Buffer.from(workgroupId, "utf8"),
-    32,
-  );
-  return Buffer.from(derived);
+  ]);
+  return scryptSync(Buffer.from(password, "utf8"), salt, 32, {
+    N: KEY_DERIVATION_N,
+    r: KEY_DERIVATION_R,
+    p: KEY_DERIVATION_P,
+    maxmem: KEY_DERIVATION_MAX_MEM,
+  });
 }
 
 export function bodySha256(body?: Uint8Array | string): string {

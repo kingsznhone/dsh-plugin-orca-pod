@@ -47,6 +47,13 @@ describe("deriveWorkgroupKey", () => {
     expect(freshKey()).toHaveLength(32);
   });
 
+  it("uses the memory-hard KDF (known vector)", () => {
+    // scrypt(password, "orca-pod\x00<workgroup>", N=2^15, r=8, p=1, len=32).
+    expect(freshKey().toString("hex")).toBe(
+      "91ccc5f4970b3dfd334eec59e845b15fcc2a416c89ae93505fdfff4ca1f54361",
+    );
+  });
+
   it("is deterministic", () => {
     expect(freshKey().equals(freshKey())).toBe(true);
   });
