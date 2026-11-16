@@ -831,6 +831,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       }
       const parentPod = parent.metadata?.["pod"] as PodTaskMetadata | undefined;
       const callerPod = (input.metadata?.["pod"] as Record<string, unknown> | undefined) ?? {};
+      // `parent.metadata` is the stored view, so `pod.origin` (stamped by the
+      // gateway) is already there; child tasks inherit it as `root_origin`.
       const inherited = childPodMetadata(parentPod, options.parentTaskId, orcaNodeId);
       const merged: Record<string, unknown> = { ...callerPod, ...inherited };
       if (callerPod["inputs"] !== undefined) merged["inputs"] = callerPod["inputs"];
@@ -893,7 +895,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         target_orca_node: request.requested_by,
         tool: request.tool,
         mode: options.mode ?? "allow_once",
-        chain: request.via,
+        chain: [orcaNodeId, ...request.via],
+        request_id: request.origin_request_id ?? request.request_id,
         issued_at: issuedAt.toISOString(),
         expires_at: expiresAt.toISOString(),
       };

@@ -135,7 +135,8 @@ describe("child grants", () => {
       target_orca_node: "B",
       tool: "write_file",
       mode: "allow_once",
-      chain: [],
+      chain: [origin.orcaNodeId],
+      request_id: "req_parent",
       issued_at: new Date(now).toISOString(),
       expires_at: new Date(now + 60_000).toISOString(),
       ...overrides,
@@ -158,7 +159,7 @@ describe("child grants", () => {
       selfOrcaNodeId: "B",
     });
     expect(child).toEqual(parent);
-    expect(child.chain).toEqual([]);
+    expect(child.chain).toEqual([origin.orcaNodeId]);
     expect(child.target_orca_node).toBe("B");
     expect(child.tool).toBe("write_file");
   });
@@ -252,6 +253,8 @@ describe("chained approval", () => {
     expect(request?.via).toEqual(["A", delegator.orcaNodeId]);
 
     const now = Date.now();
+    const pendingRequest = permissionRequestOf(suspended);
+    if (pendingRequest === null) throw new Error("worker has no permission request");
     const parent: SignedGrant = signGrant(origin, {
       grant_id: randomUUID(),
       workgroup_id: WORKGROUP,
@@ -260,7 +263,8 @@ describe("chained approval", () => {
       target_orca_node: delegator.orcaNodeId,
       tool: "write_file",
       mode: "allow_once",
-      chain: [],
+      chain: [origin.orcaNodeId],
+      request_id: pendingRequest.request_id,
       issued_at: new Date(now).toISOString(),
       expires_at: new Date(now + 60_000).toISOString(),
     });
@@ -293,7 +297,8 @@ describe("chained approval", () => {
       target_orca_node: delegator.orcaNodeId,
       tool: "run_command",
       mode: "allow_once",
-      chain: [],
+      chain: [origin.orcaNodeId],
+      request_id: "req_parent",
       issued_at: new Date(now).toISOString(),
       expires_at: new Date(now + 60_000).toISOString(),
     });
@@ -330,7 +335,15 @@ describe("relay prototype (7.12)", () => {
 
     const childView = await middle.sendTask(leaf.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },
-      metadata: { ...podMetadata(1, [middle.orcaNodeId]), echo: childEcho },
+      metadata: {
+        pod: {
+          hop: 1,
+          chain: [middle.orcaNodeId],
+          root: "t_root",
+          root_origin: root.orcaNodeId,
+        } satisfies PodTaskMetadata,
+        echo: childEcho,
+      },
     });
     const waitingChild = await waitForState(leaf, leaf.endpoints[0]!, childView.id, "input-required");
     const childRequest = permissionRequestOf(waitingChild);

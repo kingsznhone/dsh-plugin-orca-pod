@@ -22,10 +22,13 @@ export function childPodMetadata(
   parentTaskId: string,
   selfOrcaNodeId: string,
 ): PodTaskMetadata {
+  const rootOrigin =
+    parent?.root_origin ?? (parent as { origin?: unknown } | undefined)?.origin;
   return {
     hop: (parent?.hop ?? 0) + 1,
     chain: [...(parent?.chain ?? []), selfOrcaNodeId],
     root: parent?.root ?? parentTaskId,
+    ...(typeof rootOrigin === "string" ? { root_origin: rootOrigin } : {}),
     ...(parent?.permission_mode !== undefined ? { permission_mode: parent.permission_mode } : {}),
   };
 }
@@ -57,6 +60,10 @@ export function validatePodMetadata(
   if (root !== undefined && typeof root !== "string") {
     throw new TaskError("bad_request", "pod.root must be a task id");
   }
+  const rootOrigin = pod["root_origin"];
+  if (rootOrigin !== undefined && typeof rootOrigin !== "string") {
+    throw new TaskError("bad_request", "pod.root_origin must be an orca node id");
+  }
   const permissionMode = pod["permission_mode"];
   if (permissionMode !== undefined && !isPermissionMode(permissionMode)) {
     throw new TaskError(
@@ -84,6 +91,7 @@ export function validatePodMetadata(
   }
   const normalized: PodTaskMetadata = { hop: typeof hop === "number" ? hop : 0, chain: path };
   if (typeof root === "string") normalized.root = root;
+  if (typeof rootOrigin === "string") normalized.root_origin = rootOrigin;
   if (isPermissionMode(permissionMode)) normalized.permission_mode = permissionMode;
   if (isModelSelection(model)) normalized.model = model;
   if (isReasoningEffort(reasoningEffort)) normalized.reasoning_effort = reasoningEffort;

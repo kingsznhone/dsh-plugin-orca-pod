@@ -347,19 +347,26 @@ export function verifyHeartbeatProof(key: Buffer, fields: JoinProofFields, proof
 
 export const GRANT_VERSION = "pod-grant-v1";
 
+/**
+ * The signature covers every grant field, including the deciding origin and the
+ * request id. Writing them as canonical JSON (fixed key order, no optional
+ * trailing fields) avoids the ambiguity of `|`-joined values: a grant cannot be
+ * re-labelled with a different origin or replayed for another request.
+ */
 export function grantSignatureInput(grant: Grant): string {
-  return [
-    GRANT_VERSION,
-    grant.grant_id,
-    grant.workgroup_id,
-    grant.task_id,
-    grant.target_orca_node,
-    grant.tool,
-    grant.mode,
-    grant.chain.join(","),
-    grant.issued_at,
-    grant.expires_at,
-  ].join("|");
+  return `${GRANT_VERSION}\n${JSON.stringify({
+    grant_id: grant.grant_id,
+    workgroup_id: grant.workgroup_id,
+    origin_orca_node: grant.origin_orca_node,
+    task_id: grant.task_id,
+    target_orca_node: grant.target_orca_node,
+    tool: grant.tool,
+    mode: grant.mode,
+    chain: grant.chain,
+    request_id: grant.request_id,
+    issued_at: grant.issued_at,
+    expires_at: grant.expires_at,
+  })}`;
 }
 
 export function signGrant(identity: NodeIdentity, grant: Grant): SignedGrant {

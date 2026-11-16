@@ -313,7 +313,9 @@ describe("AcpExecutor in a chain", () => {
     // B (mid node) creates the child task on C; C's ACP agent asks for permission.
     const child = await b.sendTask(c.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write a file" }], contextId: "ctx-child" },
-      metadata: { pod: { hop: 1, chain: [b.orcaNodeId] } },
+      metadata: {
+        pod: { hop: 1, chain: [b.orcaNodeId], root_origin: a.orcaNodeId },
+      },
     });
     const childSuspended = await waitForRemoteState(b, c.endpoints[0]!, child.id, ["input-required"]);
     const childRequest = permissionRequestOf(childSuspended);

@@ -179,13 +179,12 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
   "grant_id": "g_01JABC",
   "workgroup_id": "orca-dev",
   "origin_orca_node": "N7K3QM",
-  "target_node": "P2W8XA",
   "task_id": "t_01JABD",
-  "permission_mode": "workspace-write",
-  "workspace": { "kind": "group" },
-  "limits": { "max_runtime_s": 3600, "max_write_bytes": 536870912 },
-  "nonce": "9f2c...",
-  "chain": [],
+  "target_orca_node": "P2W8XA",
+  "tool": "write_file",
+  "mode": "allow_once",
+  "chain": ["N7K3QM", "P2W8XA"],
+  "request_id": "pr_01JABE",
   "issued_at": "2026-11-14T04:40:00Z",
   "expires_at": "2026-11-14T05:40:00Z"
 }
@@ -193,12 +192,16 @@ grant 是 origin 对“这一次任务”的授权凭证，随 A2A 请求下发�
 
 校验：
 
-- 绑定 `(workgroup_id, origin_orca_node, target_node, task_id, nonce)`，五者任一不符即拒；
+- 绑定 `(workgroup_id, origin_orca_node, target_orca_node, task_id, tool, request_id, chain)`，任一不符即拒；
+- 签名覆盖 **grant 全部字段**：grant 签名输入是固定键序的规范 JSON（版本常量保持 `pod-grant-v1`，原型阶段直接改语义，不用 `|` 拼接字段子集），所以 `origin_orca_node` 与 `request_id` 都在签名保护内；
+- `origin_orca_node` 必须等于 `chain[0]`，且等于该任务的**根 origin**（`pod.root_origin`；单跳时就是任务自己的 origin）——中间节点不能冒充 origin、也不能把别人的 grant 挂到自己的任务上；
+- `request_id` 绑定本次叶子权限请求；relay 逐跳只带 `origin_request_id` 原值，不重新生成；
+- `allow_once` 用掉即作废：target 按 `grant_id` 记已消费集合（TTL 到 `expires_at`），重复使用 `failed(reason=grant_replayed)`；
 - 只能**收窄**：target 拿到的 mode 不能高于 origin 会话当时的 mode；链式转授时，sub-grant 的 mode/limits 不能宽于父 grant、`expires_at` 不能晚于父 grant，`chain` 追加当前跳（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；
 - `expires_at` 到点即失效；任务 cancel / 完成即吊销（target 本地删记录，不需要广播）；
 - 无 grant 的请求直接 `deny(missing_grant)`，不接受“老客户端”兼容。
 
-**实现状态（Phase 3 第一版）**：`crypto.ts` 的 `signGrant`/`verifyGrant` 用 **origin 节点的 Ed25519 私钥签发、公钥校验**，签名覆盖 `GRANT_VERSION|grant_id|origin_orca_node|workgroup_id|task_id|target_orca_node|tool|mode|chain|issued_at|expires_at`；`Grant` 结构里带 `origin_orca_node`，中间节点不重签，只转发 origin 的 grant 并按委托链校验（`deriveChildGrant` 返回父 grant 原样，校验 `target`/`chain`/`tool`/`expiry`）；grant 由 origin 批准时签发，target 端校验签名、`task_id`、`target_orca_node`、`workgroup_id`、`tool` 与过期时间，任一不符即 `failed(reason=grant_invalid)` 或 `failed(reason=grant_expired)`。当前只支持 `mode: "allow_once"`；`limits`、`nonce`、`permission_mode` 尚未进签名结构（原型阶段先只做“单次工具放行”），grant 随 resume message 的 data part 下发，不单独持久化。
+**实现状态**：`signGrant`/`verifyGrant` 用 origin 节点 Ed25519 私钥签发、公钥校验；签名输入是固定键序的规范 JSON（常量保持 `pod-grant-v1`，没有兼容旧格式的分支），覆盖 grant 全部字段（含 `origin_orca_node`、`request_id`）。target 端顺序校验：签名 → `chain[0] === origin_orca_node` → `origin_orca_node === 根任务 origin`（`pod.root_origin`，单跳即任务 origin）→ `workgroup_id`/`tool`/`expires_at` → `request_id` 匹配本次叶子请求 → 未消费 → direct（`task_id`+`target_orca_node` 匹配）或 delegated（`target_orca_node` 在 `chain` 中，且 `chain.slice(1)` 是任务祖先链前缀），全部通过后把 `grant_id` 记入已消费表（TTL 到 `expires_at`）。`chain` 在 origin 签发时写成 `[origin, ...via]`；中间节点只转发父 grant、不重签（`deriveChildGrant` 校验签名/target/tool/expiry 后原样返回），所以 `origin_orca_node` 始终指向真正签字的那个人。`suspendMessage`/`escalate` 逐跳携带 `origin_request_id`，保证 grant 绑定的始终是叶子那个请求。当前只支持 `mode: "allow_once"`；`limits`/`permission_mode` 仍未进签名结构，grant 随 resume message 的 data part 下发，不单独持久化。
 
 ### 7.12 升级回路：任务状态，不是反向调用
 
@@ -288,7 +291,7 @@ A（B 的 origin，也是人的位置）：tasks/get 看到 → 审批卡片显�
 
 规则：
 
-- **grant 逐跳派生，派生必然收窄**：每一跳不转发父 grant，而是由当前 orca node 用自己持有的父 grant 派生一张新的 SignedGrant（绑定自己的 task 与 `target_orca_node`，`chain` 追加当前跳）——这就是“继承”。因为派生只能从父 grant 里取子集，`permission_mode` 不高于父 grant、`limits` 不宽于父 grant、`expires_at` 不晚于父 grant，所以结果必然收窄，不需要额外一步“裁剪”。父 grant 的 `task_id`/`target_orca_node` 绑定的是上一跳，原样转发给下一跳本来就会被 target 校验拒绝（既无效，也让审计失去“谁批给谁”）。
+- **grant 只由 origin 签发、链上逐跳转发**：origin 批准时把完整 `chain`（origin → 中间跳 → 目标）写进签名；中间节点只转发 origin 的 SignedGrant，不重签（否则“谁批给谁”的审计链就断了）。target 端要求 `chain[0] === origin_orca_node`，且 origin 等于该任务的根 origin；delegated 时自己必须出现在 `chain` 里、且 `chain.slice(1)` 是任务祖先链的前缀。收窄来自 origin 签发时对请求的约束（同 tool、`expires_at` 不晚于父 grant），而不是中间节点的二次裁剪。
 - **请求逐跳上升**：`via` 只追加、不改写；每跳把自己的 `expires_in_s` 减一档，避免“最后一秒批下来、下游已超时”。任一跳超时 → 该跳 deny，逐跳向下传 `failed(permission_denied)` 或 `failed(permission_timeout)`。
 - **等待不占槽**：C 与 B 都停在 `input-required`（槽位释放）；A 长期无人 → 链上各级超时失败，不会挂住 B 或 C。
 - **环靠祖先禁调阻断，不靠深度上限**：链可以任意长（workgroup 就是几台机器），但子任务不能指向 `chain` 里的任何 orca node 或自身（[§5.1](05-tasks.md#51-任务标识与元数据)）；长链由每跳超时与 task TTL 兜底。

@@ -260,6 +260,45 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return Array.isArray(chain) ? chain.filter((hop): hop is string => typeof hop === "string") : [];
   }
 
+  /**
+   * The origin of the whole delegation tree. Root tasks fall back to the node
+   * that created them; child tasks carry the inherited id (§7.11).
+   */
+  function rootOriginOf(rec: Running): string {
+    const pod = rec.metadata?.["pod"] as { root_origin?: unknown } | undefined;
+    return typeof pod?.root_origin === "string" ? pod.root_origin : rec.origin_orca_node;
+  }
+
+  // A grant is `allow_once`: remembering its id until it expires turns a replay
+  // into `grant_replayed` instead of a second allowed tool call (§7.11).
+  const consumedGrants = new Map<string, number>();
+  const CONSUMED_GRANT_LIMIT = 1024;
+
+  function isConsumedGrant(grantId: string): boolean {
+    const expiresAt = consumedGrants.get(grantId);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
+      consumedGrants.delete(grantId);
+      return false;
+    }
+    return true;
+  }
+
+  function consumeGrant(grant: SignedGrant): void {
+    if (consumedGrants.size >= CONSUMED_GRANT_LIMIT) {
+      const now = Date.now();
+      for (const [id, expiresAt] of consumedGrants) {
+        if (expiresAt <= now) consumedGrants.delete(id);
+      }
+      if (consumedGrants.size >= CONSUMED_GRANT_LIMIT) {
+        const oldest = consumedGrants.keys().next();
+        if (!oldest.done) consumedGrants.delete(oldest.value);
+      }
+    }
+    const expiresAt = Date.parse(grant.expires_at);
+    consumedGrants.set(grant.grant_id, Number.isNaN(expiresAt) ? Date.now() + 300_000 : expiresAt);
+  }
+
   function suspendMessage(rec: Running, suspend: ExecutorEvent & { type: "suspend" }): A2AMessage {
     if (suspend.suspend.kind === "blocked") {
       return {
@@ -287,6 +326,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       requested: suspended.requested,
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
+      ...(relay ? { origin_request_id: relay.request.origin_request_id ?? relay.request.request_id } : {}),
       ...(relay ? { upstream: [...(relay.request.upstream ?? []), relay.request.requested_by] } : {}),
       // No expiry by default: the origin waits however long the human takes (§7.12).
       ...(permissionTtlS === undefined
@@ -363,21 +403,38 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   /** Returns the failure reason, or null when the grant matches what was asked. */
   function checkGrant(rec: Running, grant: SignedGrant, pending: PermissionRequest): string | null {
     if (!verifyGrant(grant.origin_orca_node, grant)) return "grant_invalid";
+    // The deciding origin must be the root of this delegation tree and the first
+    // hop it signed. Anything else means the grant was re-labelled (§7.11).
+    if (!Array.isArray(grant.chain) || grant.chain[0] !== grant.origin_orca_node) {
+      return "grant_invalid";
+    }
+    if (grant.origin_orca_node !== rootOriginOf(rec)) return "grant_invalid";
     if (deps.workgroupId !== undefined && grant.workgroup_id !== deps.workgroupId) return "grant_invalid";
     if (grant.tool !== pending.tool) return "grant_invalid";
     if (Number.isNaN(Date.parse(grant.expires_at)) || Date.parse(grant.expires_at) <= Date.now()) {
       return "grant_expired";
     }
+    // The grant allows exactly one leaf request; relaying reuses the leaf id, so
+    // an intermediate hop cannot redirect the human's decision (§7.12).
+    if (grant.request_id !== (pending.origin_request_id ?? pending.request_id)) {
+      return "grant_invalid";
+    }
+    if (isConsumedGrant(grant.grant_id)) return "grant_replayed";
     // Direct decision: the origin signed this very task for this very node.
-    if (grant.task_id === rec.view.id && grant.target_orca_node === selfOrcaNodeId) return null;
+    if (grant.task_id === rec.view.id && grant.target_orca_node === selfOrcaNodeId) {
+      consumeGrant(grant);
+      return null;
+    }
     // Delegated decision (§7.12): the origin signed for an ancestor of this
     // task's delegation chain; middle nodes forward that grant unchanged.
     const chain = chainOf(rec);
     const delegated =
       grant.target_orca_node !== selfOrcaNodeId &&
       chain.includes(grant.target_orca_node) &&
-      grant.chain.every((hop, index) => chain[index] === hop);
-    return delegated ? null : "grant_invalid";
+      grant.chain.slice(1).every((hop, index) => chain[index] === hop);
+    if (!delegated) return "grant_invalid";
+    consumeGrant(grant);
+    return null;
   }
 
   /** Data controls a resume may carry; anything else is ordinary task input. */
@@ -835,6 +892,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       requested: relay.request.requested ?? {},
       requested_by: selfOrcaNodeId,
       via: chainOf(rec),
+      origin_request_id: relay.request.origin_request_id ?? relay.request.request_id,
       upstream: [...(relay.request.upstream ?? []), relay.request.requested_by],
       ...(permissionTtlS === undefined
         ? {}

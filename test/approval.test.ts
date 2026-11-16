@@ -131,7 +131,8 @@ function grantFor(view: TaskView, originOrcaNode: string, tool = "write_file"): 
     target_orca_node: request.requested_by,
     tool,
     mode: "allow_once",
-    chain: request.via,
+    chain: [originOrcaNode, ...request.via],
+    request_id: request.origin_request_id ?? request.request_id,
     issued_at: issuedAt.toISOString(),
     expires_at: new Date(issuedAt.getTime() + 60_000).toISOString(),
   };
@@ -367,5 +368,45 @@ describe("Phase 3 approval round trip", () => {
     const failed = await waitForState(origin, target.endpoints[0]!, submitted.id, "failed", 4000);
     expect(failed.status.reason).toBe("permission_timeout");
     expect(textOf(failed)).toContain("permission request timed out");
+  });
+});
+
+describe("grant binding (§7.11)", () => {
+  it("rejects a grant issued for another permission request", async () => {
+    const { origin, targetUrl, identity } = await threeNodes();
+    const view = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
+    const grant = grantFor(suspended, origin.self().orca_node_id);
+    const tampered = signGrant(identity, { ...grant, request_id: randomUUID() });
+
+    await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: tampered }));
+    const failed = await waitForState(origin, targetUrl, view.id, "failed");
+    expect(failed.status.reason).toBe("grant_invalid");
+  });
+
+  it("rejects a grant whose origin is not the task root origin", async () => {
+    const { origin, targetUrl, outsider, identity } = await threeNodes();
+    const outsiderIdentity = loadIdentity(outsider.config.data_root);
+    if (outsiderIdentity === null) throw new Error("outsider identity is missing");
+    const view = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
+    const forged = signGrant(outsiderIdentity, grantFor(suspended, outsider.orcaNodeId));
+
+    // The origin still drives the resume (only it may); the grant itself is forged.
+    await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: forged }));
+    const failed = await waitForState(origin, targetUrl, view.id, "failed");
+    expect(failed.status.reason).toBe("grant_invalid");
+  });
+
+  it("rejects a grant whose chain does not start with its origin", async () => {
+    const { origin, targetUrl, outsider, identity } = await threeNodes();
+    const view = await submit(origin, targetUrl);
+    const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
+    const grant = grantFor(suspended, origin.self().orca_node_id);
+    const relabelled = signGrant(identity, { ...grant, chain: [outsider.orcaNodeId, ...grant.chain] });
+
+    await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: relabelled }));
+    const failed = await waitForState(origin, targetUrl, view.id, "failed");
+    expect(failed.status.reason).toBe("grant_invalid");
   });
 });

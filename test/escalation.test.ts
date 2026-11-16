@@ -84,7 +84,10 @@ async function scenario(): Promise<{
 
   const child = await b.sendTask(c.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text: "child" }], contextId: "ctx-child" },
-    metadata: { pod: { hop: 1, chain: [b.orcaNodeId] }, echo: permissionEcho },
+    metadata: {
+      pod: { hop: 1, chain: [b.orcaNodeId], root_origin: a.orcaNodeId },
+      echo: permissionEcho,
+    },
   });
   await waitForState(c, c.endpoints[0]!, child.id, "input-required");
 

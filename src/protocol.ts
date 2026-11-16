@@ -351,6 +351,8 @@ export type PodTaskMetadata = {
   hop?: number;
   chain?: string[];
   root?: string;
+  /** Origin of the whole delegation tree; propagated unchanged by child tasks (§7.11). */
+  root_origin?: string;
   /** Origin session mode; the target never runs above it (§7.10). */
   permission_mode?: PermissionMode;
   /** Model route the target's ACP executor should select for this task (§6.15). */
@@ -380,6 +382,11 @@ export type PermissionRequest = {
   via: string[];
   /** Orca nodes further down the chain that actually need the permission (§7.12 relay). */
   upstream?: string[];
+  /**
+   * The leaf request this one relays upwards. A grant binds this id because the
+   * origin must allow *that* request, not the intermediate hop's copy (§7.12).
+   */
+  origin_request_id?: string;
   /** Present only when the executing orca node configures an approval timeout (§7.12). */
   expires_at?: string;
 };
@@ -400,7 +407,10 @@ export type Grant = {
   target_orca_node: string;
   tool: string;
   mode: GrantMode;
+  /** Decision path: origin first, then the nodes the request passed through. */
   chain: string[];
+  /** The leaf permission request this grant allows (§7.12). */
+  request_id: string;
   issued_at: string;
   expires_at: string;
 };

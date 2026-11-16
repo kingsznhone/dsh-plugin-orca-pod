@@ -392,6 +392,14 @@ async function send(args: string[]): Promise<number> {
     pod["hop"] = (typeof parentPod["hop"] === "number" ? parentPod["hop"] : 0) + 1;
     pod["chain"] = [...parentChain, config.orca_node_id];
     pod["root"] = typeof parentPod["root"] === "string" ? parentPod["root"] : parentLocalTask;
+    // Root origin rides along so a grant from the top of the tree can be verified
+    // at the leaf without trusting the middle hops (§7.11).
+    const parentRootOrigin = typeof parentPod["root_origin"] === "string"
+      ? parentPod["root_origin"]
+      : typeof parentPod["origin"] === "string"
+        ? parentPod["origin"]
+        : undefined;
+    if (parentRootOrigin !== undefined) pod["root_origin"] = parentRootOrigin;
     if (pod["permission_mode"] === undefined && typeof parentPod["permission_mode"] === "string") {
       pod["permission_mode"] = parentPod["permission_mode"];
     }
