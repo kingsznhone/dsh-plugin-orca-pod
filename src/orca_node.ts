@@ -274,6 +274,14 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     );
   }
   const httpFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, init));
+  /**
+   * Every outbound call needs a deadline (§4.7): a peer that accepts the
+   * connection and then stalls would otherwise hang a tool call, the tracker,
+   * or the child-link poller forever.
+   */
+  const requestTimeoutMs = config.request_timeout_ms ?? 30_000;
+  /** A hostile or broken peer must not be able to make us buffer unbounded JSON. */
+  const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
   const membership = createMembership({
     selfOrcaNodeId: orcaNodeId,
     timings: options.timings,
@@ -451,6 +459,30 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     events.emit({ type: "members", members: current, digest: computeMembersDigest(current) });
   }
 
+  /**
+   * Read one outbound JSON response with the checks every signed route relies on:
+   * a known content type and a size cap (§4.7). Callers own the deadline.
+   */
+  async function readJsonResponse(label: string, response: Response): Promise<unknown> {
+    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+    const declared = Number(response.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+      throw new Error(`${label} ${response.status}: response body is too large`);
+    }
+    const text = await response.text();
+    if (text.length > MAX_RESPONSE_BYTES) {
+      throw new Error(`${label} ${response.status}: response body is too large`);
+    }
+    if (!contentType.includes("application/json")) {
+      throw new Error(`${label} ${response.status}: unexpected content type ${contentType || "none"}`);
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new Error(`${label} ${response.status}: response is not valid JSON`);
+    }
+  }
+
   async function postSigned<T>(
     peerUrl: string,
     path: string,
@@ -466,19 +498,27 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         authorization: buildAuthHeader({ identity, method: "POST", path: url.pathname, body }),
       },
       body,
-      signal,
+      // Heartbeats pass their own (shorter) deadline; everything else gets the
+      // node-wide outbound timeout so a stalled peer cannot wedge the caller.
+      signal: signal ?? AbortSignal.timeout(requestTimeoutMs),
     });
     if (!response.ok) {
-      const { code } = (await response.json().catch(() => ({ code: "http_error" }))) as { code?: string };
-      const error = new Error(`${path} ${response.status}: ${code ?? "http_error"}`) as Error & {
+      const text = await response.text().catch(() => "");
+      let code = "http_error";
+      try {
+        code = (JSON.parse(text) as { code?: string }).code ?? code;
+      } catch {
+        // Non-JSON error bodies keep the generic code.
+      }
+      const error = new Error(`${path} ${response.status}: ${code}`) as Error & {
         status: number;
         code: string;
       };
       error.status = response.status;
-      error.code = code ?? "http_error";
+      error.code = code;
       throw error;
     }
-    return (await response.json()) as T;
+    return (await readJsonResponse(path, response)) as T;
   }
 
   async function join(peerUrl: string): Promise<JoinResponse> {
@@ -616,7 +656,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return { left };
   }
 
-  /** Signed JSON-RPC call to a peer's /a2a endpoint (§4.7). */  async function postA2a<T>(peerUrl: string, method: string, params: unknown): Promise<T> {
+  /** Signed JSON-RPC call to a peer's /a2a endpoint (§4.7). */
+  async function postA2a<T>(peerUrl: string, method: string, params: unknown): Promise<T> {
     const url = new URL("/a2a", peerUrl);
     const body = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
     const response = await httpFetch(url, {
@@ -626,8 +667,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         authorization: buildAuthHeader({ identity, method: "POST", path: url.pathname, body }),
       },
       body,
+      signal: AbortSignal.timeout(requestTimeoutMs),
     });
-    const payload = (await response.json()) as {
+    const payload = (await readJsonResponse(method, response)) as {
       result?: T;
       error?: { message?: string; data?: { message?: string } };
     };
@@ -654,8 +696,37 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       ...(previous?.parent_local_task_id !== undefined
         ? { parent_local_task_id: previous.parent_local_task_id }
         : {}),
+      ...(previous?.agent_id !== undefined ? { agent_id: previous.agent_id } : {}),
       created_at: previous?.created_at ?? now,
       updated_at: now,
+    };
+    dispatches.save(entry);
+    events.emit({ type: "dispatch", entry });
+  }
+
+  /**
+   * Refresh an existing dispatch entry after a read (§13.4). Reads must never
+   * create entries: the tracker, child-link poller and panel read tasks constantly,
+   * and only `sendTask` means "this origin dispatched it".
+   */
+  function updateDispatchIfChanged(peerUrl: string, view: TaskView): void {
+    const previous = dispatches.get(view.id);
+    if (previous === undefined) return;
+    const state = view.status.state;
+    const lastError = view.status.reason;
+    if (previous.state === state && previous.last_error === lastError) return;
+    const entry: DispatchEntry = {
+      task_id: previous.task_id,
+      peer: previous.peer || peerUrl,
+      ...(previous.context_id !== undefined ? { context_id: previous.context_id } : {}),
+      state,
+      ...(lastError === undefined ? {} : { last_error: lastError }),
+      ...(previous.parent_local_task_id !== undefined
+        ? { parent_local_task_id: previous.parent_local_task_id }
+        : {}),
+      ...(previous.agent_id !== undefined ? { agent_id: previous.agent_id } : {}),
+      created_at: previous.created_at,
+      updated_at: new Date().toISOString(),
     };
     dispatches.save(entry);
     events.emit({ type: "dispatch", entry });
@@ -672,12 +743,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     const annotated: DispatchEntry = { ...entry, agent_id: agentId };
     dispatches.save(annotated);
     events.emit({ type: "dispatch", entry: annotated });
-  }
-
-  async function tracked<T extends TaskView>(peerUrl: string, call: Promise<T>): Promise<T> {
-    const view = await call;
-    rememberDispatch(peerUrl, view);
-    return view;
   }
 
   /**
@@ -739,17 +804,23 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         },
       };
     }
-    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", body));
+    const view = await postA2a<TaskView>(peerUrl, "message/send", body);
+    rememberDispatch(peerUrl, view);
+    return view;
   }
 
   async function getTask(peerUrl: string, taskId: string): Promise<TaskView> {
     await ensurePeer(peerUrl);
-    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "tasks/get", { id: taskId }));
+    const view = await postA2a<TaskView>(peerUrl, "tasks/get", { id: taskId });
+    updateDispatchIfChanged(peerUrl, view);
+    return view;
   }
 
   async function cancelTask(peerUrl: string, taskId: string): Promise<TaskView> {
     await ensurePeer(peerUrl);
-    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId }));
+    const view = await postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId });
+    updateDispatchIfChanged(peerUrl, view);
+    return view;
   }
 
   /** Grant validity is deliberately short: it only has to cover one resume. */
@@ -790,18 +861,24 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       signed = signGrant(identity, grant);
     }
     const message = resumeMessage(view, { grant: signed });
-    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
+    const resumed = await postA2a<TaskView>(peerUrl, "message/send", { message });
+    updateDispatchIfChanged(peerUrl, resumed);
+    return resumed;
   }
 
   async function denyTask(peerUrl: string, view: TaskView, reason = "denied by origin"): Promise<TaskView> {
     await ensurePeer(peerUrl);
     const message = resumeMessage(view, { permission_denied: true, reason });
-    return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
+    const resumed = await postA2a<TaskView>(peerUrl, "message/send", { message });
+    updateDispatchIfChanged(peerUrl, resumed);
+    return resumed;
   }
 
   async function escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView> {
     await ensurePeer(peerUrl);
-    return postA2a<TaskView>(peerUrl, "tasks/escalate", { taskId, relay });
+    const view = await postA2a<TaskView>(peerUrl, "tasks/escalate", { taskId, relay });
+    updateDispatchIfChanged(peerUrl, view);
+    return view;
   }
 
   /** Peers this node has explicitly joined (admitted with the workgroup password). */

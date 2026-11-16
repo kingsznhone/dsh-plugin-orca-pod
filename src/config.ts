@@ -67,6 +67,8 @@ export type OrcaNodeConfig = {
   max_input_bytes?: number;
   /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
   approval_timeout_s?: number;
+  /** Timeout for one outbound A2A/cluster call; default 30s (§4.7). */
+  request_timeout_ms?: number;
   /** Allow candidate endpoints on public IPs (§7.7). Default: private ranges only. */
   allow_public_peers?: boolean;
   /** Reject loopback candidate endpoints; defaults to allowing them for same-host meshes (§7.7). */
@@ -94,6 +96,8 @@ export type CreateOrcaNodeConfigOptions = {
   acp?: AcpExecutorConfig;
   permissionMode?: PermissionMode;
   approvalTimeoutS?: number;
+  /** Per-call outbound timeout in milliseconds; default 30s. */
+  requestTimeoutMs?: number;
   taskTimeoutS?: number;
   resultMaxBytes?: number;
   maxInputFiles?: number;
@@ -199,6 +203,7 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     ["resultMaxBytes", options.resultMaxBytes],
     ["maxInputFiles", options.maxInputFiles],
     ["maxInputBytes", options.maxInputBytes],
+    ["requestTimeoutMs", options.requestTimeoutMs],
   ] as const) {
     if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
       throw new Error(`${name} must be a positive number`);
@@ -236,7 +241,8 @@ export function createOrcaNodeConfig(options: CreateOrcaNodeConfigOptions): Orca
     ...(options.executor ? { executor: options.executor } : {}),
     ...(options.acp ? { acp: options.acp } : {}),
     ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
-      ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
+    ...(options.approvalTimeoutS !== undefined ? { approval_timeout_s: options.approvalTimeoutS } : {}),
+    ...(options.requestTimeoutMs !== undefined ? { request_timeout_ms: options.requestTimeoutMs } : {}),
   ...(options.taskTimeoutS !== undefined ? { task_timeout_s: options.taskTimeoutS } : {}),
   ...(options.resultMaxBytes !== undefined ? { result_max_bytes: options.resultMaxBytes } : {}),
   ...(options.maxInputFiles !== undefined ? { max_input_files: options.maxInputFiles } : {}),
@@ -383,7 +389,7 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
     }
     config.approval_timeout_s = approvalTimeout;
   }
-  for (const key of ["task_timeout_s", "result_max_bytes", "max_input_files", "max_input_bytes"] as const) {
+  for (const key of ["task_timeout_s", "result_max_bytes", "max_input_files", "max_input_bytes", "request_timeout_ms"] as const) {
     const value = record[key];
     if (value !== undefined) {
       if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
