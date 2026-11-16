@@ -35,14 +35,17 @@
     }
   },
   "scripts": {
+    "check": "biome check . && tsc --noEmit && vitest run",
+    "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "harness": "node --no-warnings src/harness_run.ts"
+    "harness": "node --no-warnings scripts/harness_run.ts"
   },
   "dependencies": {
     "fastify": "^5.12.8"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"

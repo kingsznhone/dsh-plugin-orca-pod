@@ -3,12 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  createOrcaNodeConfig,
-  validateModelOffers,
-  validateModelSelection,
-  type CreateOrcaNodeConfigOptions,
-} from "../src/config.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
+import { validateModelOffers, validateModelSelection, type Settings } from "../src/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/models.ts";
 import type { HostContext } from "../src/plugin/dsh.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
@@ -21,12 +17,16 @@ afterEach(async () => {
   for (const root of ROOTS.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function startNode(
-  options: Omit<CreateOrcaNodeConfigOptions, "workgroupId" | "password">,
-): Promise<OrcaNode> {
+async function startNode(options: Partial<Settings>): Promise<OrcaNode> {
   const root = await mkdtemp(join(tmpdir(), "orca-model-"));
   ROOTS.push(root);
-  const config = createOrcaNodeConfig({ workgroupId: "model-test", password: "correct horse", dataRoot: root, port: 0, ...options });
+  const config = createOrcaNodeConfig({
+    workgroup_id: "model-test",
+    workgroup_password: "correct horse",
+    data_root: root,
+    port: 0,
+    ...options,
+  });
   const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
   await node.start();
   LIVE.push(node);
@@ -57,18 +57,18 @@ describe("model catalog", () => {
     expect(() => validateModelSelection({ provider: "p" })).toThrow();
     expect(() => validateModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toThrow();
     const configured = createOrcaNodeConfig({
-      workgroupId: "wg",
-      password: "pw",
-      dataRoot: join(tmpdir(), "orca-model-config"),
-      defaultReasoningEffort: "max",
+      workgroup_id: "wg",
+      workgroup_password: "pw",
+      data_root: join(tmpdir(), "orca-model-config"),
+      default_reasoning_effort: "max",
     });
     expect(configured.default_reasoning_effort).toBe("max");
     expect(() =>
       createOrcaNodeConfig({
-        workgroupId: "wg",
-        password: "pw",
-        dataRoot: join(tmpdir(), "orca-model-config"),
-        defaultReasoningEffort: "",
+        workgroup_id: "wg",
+        workgroup_password: "pw",
+        data_root: join(tmpdir(), "orca-model-config"),
+        default_reasoning_effort: "",
       }),
     ).toThrow();
   });
@@ -81,8 +81,8 @@ describe("model catalog", () => {
     const a = await startNode({ models });
     const b = await startNode({
       models: [{ provider: "deepseek", model: "deepseek-flash" }],
-      defaultModel: { provider: "deepseek", model: "deepseek-flash" },
-      defaultReasoningEffort: "max",
+      default_model: { provider: "deepseek", model: "deepseek-flash" },
+      default_reasoning_effort: "max",
     });
     await b.join(a.endpoints[0]!);
     const peer = await until(() => a.members().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
@@ -152,7 +152,7 @@ describe("model catalog", () => {
         return undefined;
       },
     } as unknown as HostContext;
-    const catalog = await discoverModelCatalog(ctx);
+    const catalog = await discoverModelCatalog(ctx, { info() {}, warn() {}, error() {} });
     expect(catalog.models.map((model) => model.model)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(catalog.models[0]?.description).toBe("fast");
     expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });

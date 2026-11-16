@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createAcpExecutor } from "../src/acp.ts";
+import { createAcpExecutor } from "../src/acp/executor.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
 import type { LocalExecutor } from "../src/executor.ts";
+import { connectAll } from "../src/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol.ts";
 
@@ -29,10 +30,10 @@ async function makeNode(executor?: LocalExecutor): Promise<OrcaNode> {
   const dataRoot = mkdtempSync(join(tmpdir(), "orca-relay-auto-"));
   roots.push(dataRoot);
   const config = createOrcaNodeConfig({
-    workgroupId: WORKGROUP,
-    password: PASSWORD,
-    dataRoot,
-    host: "127.0.0.1",
+    workgroup_id: WORKGROUP,
+    workgroup_password: PASSWORD,
+    data_root: dataRoot,
+    bind_host: "127.0.0.1",
     port: 0,
   });
   const node = createOrcaNode({ config, ...(executor === undefined ? {} : { executor }) });
@@ -52,7 +53,10 @@ async function waitForState(
   for (;;) {
     const view = await reader.getTask(peerUrl, taskId);
     if (view.status.state === state) return view;
-    if (Date.now() > deadline) throw new Error(`task ${taskId} did not reach ${state}; last ${view.status.state} reason=${String(view.status.reason ?? "")}`);
+    if (Date.now() > deadline)
+      throw new Error(
+        `task ${taskId} did not reach ${state}; last ${view.status.state} reason=${String(view.status.reason ?? "")}`,
+      );
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -74,26 +78,31 @@ describe("automatic chain ascent (7.12)", () => {
         extra_args: [FAKE_ACP, "hang", join(acpRoot, "acp.log")],
       }),
     );
+    await connectAll([root, middle, leaf]);
 
     const parentView = await root.sendTask(middle.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "parent keeps working" }] },
     });
     await waitForState(root, middle.endpoints[0]!, parentView.id, "working");
 
-    const childView = await middle.sendTask(leaf.endpoints[0]!, {
-      message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },
-      metadata: {
-        echo: {
-          steps: [
-            {
-              at_ms: 10,
-              suspend: { kind: "permission", tool: "write_file", requested: { path: "child.txt", bytes: 9 } },
-            },
-          ],
-          final: { state: "completed", text: "child done" },
+    const childView = await middle.sendTask(
+      leaf.endpoints[0]!,
+      {
+        message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },
+        metadata: {
+          echo: {
+            steps: [
+              {
+                at_ms: 10,
+                suspend: { kind: "permission", tool: "write_file", requested: { path: "child.txt", bytes: 9 } },
+              },
+            ],
+            final: { state: "completed", text: "child done" },
+          },
         },
       },
-    }, { parentTaskId: parentView.id });
+      { parentTaskId: parentView.id },
+    );
     await waitForState(root, leaf.endpoints[0]!, childView.id, "input-required");
 
     // The CLI does this on `send --local-task`; here we call it directly.
@@ -119,8 +128,6 @@ describe("automatic chain ascent (7.12)", () => {
 
   it("rejects a child link for an unknown local task", async () => {
     const node = await makeNode();
-    expect(() => node.linkChildTask("task-missing", "http://127.0.0.1:1", "child-1")).toThrow(
-      /unknown local task/,
-    );
+    expect(() => node.linkChildTask("task-missing", "http://127.0.0.1:1", "child-1")).toThrow(/unknown local task/);
   });
 });

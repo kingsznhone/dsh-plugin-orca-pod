@@ -35,12 +35,12 @@ export function isCmdShim(resolved: string): boolean {
   return process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved);
 }
 
-export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (process.platform === "win32") {
     // dsh may spawn its own children; /T is the only portable way to reach them.
-    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => child.kill());
     return;
   }
   try {
@@ -52,6 +52,22 @@ export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
       // already gone
     }
   }
+}
+
+/**
+ * SIGTERM the child's process tree, SIGKILL after the grace period; resolves
+ * once the child has exited, so callers can release its cwd safely.
+ */
+export function terminateChild(child: ChildProcess): Promise<void> {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => killTree(child, "SIGKILL"), KILL_GRACE_MS);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    killTree(child, "SIGTERM");
+  });
 }
 
 export function abortError(): Error {

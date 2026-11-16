@@ -1,10 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { NonceCache, blobLinkSignature, buildAuthHeader, buildJoinProof } from "../src/crypto.ts";
-import { TaskError, type BusyState, type PeerView, type TaskRunner } from "../src/protocol.ts";
+import { NonceCache, admissionProof, blobLinkSignature, buildAuthHeader } from "../src/crypto.ts";
+import { runtimeDigest, type BusyState, type PeerView, type SelfRecord, type TaskRunner } from "../src/protocol.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/identity.ts";
-import { createMemoryBlobStore, createMemoryPeerStore, sha256Hex } from "../src/storage.ts";
-import { createGateway, type GatewayDeps, type GatewayOrcaNode } from "../src/gateway.ts";
+import { createMembership } from "../src/membership.ts";
+import type { PeerStore } from "../src/membership.ts";
+import { createMemoryBlobStore, sha256Hex } from "../src/storage.ts";
+import { createFileBlobRegistry, createMemoryFileBlobStore } from "../src/blob_files.ts";
+import { createGateway, type GatewayDeps } from "../src/gateway/index.ts";
 
 const ENDPOINT = "http://orca-node.test";
 const WORKGROUP = "orca-dev";
@@ -39,12 +42,26 @@ const idleTasks: TaskRunner = {
   },
 };
 
+function selfRecord(identity: NodeIdentity): SelfRecord {
+  return {
+    orca_node_id: identity.orcaNodeId,
+    display_name: "authorization-test-orca-node",
+    endpoints: [ENDPOINT],
+    runtime: null,
+    runtime_digest: runtimeDigest(null),
+    state: "online",
+    busy: null,
+    last_recv_at: null,
+    workgroup_id: WORKGROUP,
+  };
+}
+
 type Harness = {
   app: ReturnType<typeof createGateway>;
   key: Buffer;
   identity: NodeIdentity;
   orcaNodeId: string;
-  peers: ReturnType<typeof createMemoryPeerStore>;
+  peers: PeerStore;
   sign(method: string, path: string, body?: Uint8Array | string, bodySha256?: string): string;
 };
 
@@ -52,22 +69,22 @@ function createHarness(): Harness {
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
   const orcaNodeId = identity.orcaNodeId;
-  const orcaNode: GatewayOrcaNode = {
-    orca_node_id: orcaNodeId,
-    display_name: "authorization-test-orca-node",
-    workgroup_id: WORKGROUP,
-    endpoints: [ENDPOINT],
-  };
-  const peers = createMemoryPeerStore();
+  const peers = createMembership({ selfOrcaNodeId: orcaNodeId }).peers;
   const deps: GatewayDeps = {
-    orcaNode,
+    orcaNode: {
+      orca_node_id: orcaNodeId,
+      workgroup_id: WORKGROUP,
+      self: () => selfRecord(identity),
+      linkChildTask: () => {},
+    },
     identity,
     workgroupKey: key,
     peers,
     nonceCache: new NonceCache(),
-    runtime: null,
+    startedAt: Date.now(),
     tasks: idleTasks,
     blobs: createMemoryBlobStore(),
+    fileBlobs: createFileBlobRegistry(createMemoryFileBlobStore()),
   };
   return {
     app: createGateway(deps),
@@ -163,7 +180,18 @@ describe("workgroup membership gate (C1)", () => {
         url: "/a2a",
         payload: { jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", parts: [] } } },
         contentType: "application/json",
-        authorization: strangerSign(harness, stranger, "POST", "/a2a", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", parts: [] } } })),
+        authorization: strangerSign(
+          harness,
+          stranger,
+          "POST",
+          "/a2a",
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "message/send",
+            params: { message: { role: "user", parts: [] } },
+          }),
+        ),
       },
       {
         method: "POST",
@@ -197,7 +225,9 @@ describe("workgroup membership gate (C1)", () => {
         },
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
-      expect(response.json()).toMatchObject({ code: "not_a_member" });
+      // /a2a answers with a JSON-RPC envelope; its error carries the same code.
+      const body = response.json<{ code?: string; error?: { message: string } }>();
+      expect(body.code ?? body.error?.message).toBe("not_a_member");
     }
   });
 
@@ -230,7 +260,7 @@ describe("workgroup membership gate (C1)", () => {
     const stranger = generateNodeIdentity();
     const ts = Date.now();
     const nonce = randomBytes(16).toString("base64url");
-    const proof = buildJoinProof(harness.key, {
+    const proof = admissionProof("join", harness.key, {
       workgroupId: WORKGROUP,
       orcaNodeId: stranger.orcaNodeId,
       ts,
@@ -271,6 +301,81 @@ describe("workgroup membership gate (C1)", () => {
     expect(direct.rawPayload.equals(payload)).toBe(true);
   });
 
+  it("answers an unknown path with 404 before any signature check", async () => {
+    const response = await createHarness().app.inject({ method: "GET", url: "/nope" });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("rejects a bad join signature with 401 and a malformed join body with 400", async () => {
+    const harness = createHarness();
+    const stranger = generateNodeIdentity();
+    const unsigned = await harness.app.inject({
+      method: "POST",
+      url: "/cluster/join",
+      payload: {},
+      headers: { "content-type": "application/json" },
+    });
+    expect(unsigned.statusCode).toBe(401);
+    const body = JSON.stringify({ workgroup_id: WORKGROUP });
+    const malformed = await harness.app.inject({
+      method: "POST",
+      url: "/cluster/join",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        authorization: strangerSign(harness, stranger, "POST", "/cluster/join", body),
+      },
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json()).toMatchObject({ code: "bad_request" });
+  });
+
+  it("rejects a heartbeat whose busy field is not a busy holder", async () => {
+    const harness = createHarness();
+    const body = JSON.stringify({
+      workgroup_id: WORKGROUP,
+      orca_node_id: harness.orcaNodeId,
+      ts: Date.now(),
+      nonce: "n",
+      proof: "p",
+      busy: "yes",
+    });
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/cluster/heartbeat",
+      payload: body,
+      headers: { "content-type": "application/json", authorization: harness.sign("POST", "/cluster/heartbeat", body) },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("limits local controls to this node over loopback without proxy headers", async () => {
+    const harness = createHarness();
+    const stranger = generateNodeIdentity();
+    harness.peers.upsert(peerView(stranger, "http://stranger.test"));
+    const url = "/cluster/task?task=missing";
+    const call = (options: { remoteAddress?: string; headers?: Record<string, string>; as?: NodeIdentity }) =>
+      harness.app.inject({
+        method: "GET",
+        url,
+        remoteAddress: options.remoteAddress ?? "127.0.0.1",
+        headers: {
+          authorization: strangerSign(harness, options.as ?? harness.identity, "GET", url),
+          ...options.headers,
+        },
+      });
+
+    expect((await call({})).statusCode).toBe(404);
+    for (const rejected of [
+      await call({ remoteAddress: "10.0.0.5" }),
+      await call({ headers: { "x-forwarded-for": "10.0.0.5" } }),
+      await call({ as: stranger }),
+    ]) {
+      expect(rejected.statusCode).toBe(403);
+      expect(rejected.json()).toMatchObject({ code: "local_only" });
+    }
+  });
+
   it("returns 404 for an unknown task instead of leaking it to members", async () => {
     const harness = createHarness();
     const response = await harness.app.inject({
@@ -279,7 +384,11 @@ describe("workgroup membership gate (C1)", () => {
       payload: { jsonrpc: "2.0", id: 1, method: "tasks/get", params: { id: "missing-task" } },
       headers: {
         "content-type": "application/json",
-        authorization: harness.sign("POST", "/a2a", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/get", params: { id: "missing-task" } })),
+        authorization: harness.sign(
+          "POST",
+          "/a2a",
+          JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/get", params: { id: "missing-task" } }),
+        ),
       },
     });
     expect(response.statusCode).toBe(404);

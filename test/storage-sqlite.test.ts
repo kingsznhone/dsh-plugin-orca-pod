@@ -4,10 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { EchoExecutor } from "../src/executor.ts";
 import { createSqliteTaskStore } from "../src/sqlite.ts";
-import { createMemoryBlobStore, type PersistedTask } from "../src/storage.ts";
-import { createTaskRunner } from "../src/tasks.ts";
+import type { PersistedTask } from "../src/storage.ts";
+import { createTestRunner } from "./fixtures/runner.ts";
 
 const dirs: string[] = [];
 
@@ -61,7 +60,7 @@ describe("sqlite task store", () => {
   it("keeps a completed task readable from a new runner", async () => {
     const path = join(tempDir(), "tasks.db");
     const store = createSqliteTaskStore(path);
-    const runner = createTaskRunner({ executor: new EchoExecutor(), blobs: createMemoryBlobStore(), store });
+    const runner = createTestRunner({ store });
     const view = runner.submit({
       message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
       metadata: { echo: { final: { state: "completed", text: "persisted" } } },
@@ -69,11 +68,7 @@ describe("sqlite task store", () => {
     await waitFor(() => runner.get(view.id)?.status.state === "completed");
 
     const reopenedStore = createSqliteTaskStore(path);
-    const reopened = createTaskRunner({
-      executor: new EchoExecutor(),
-      blobs: createMemoryBlobStore(),
-      store: reopenedStore,
-    });
+    const reopened = createTestRunner({ store: reopenedStore });
     expect(reopened.get(view.id)?.status.state).toBe("completed");
     reopenedStore.close();
     store.close();
@@ -85,7 +80,7 @@ describe("sqlite task store", () => {
     store.save(storedTask("working", "WORKING1"));
     store.save(storedTask("completed", "DONE1"));
 
-    const runner = createTaskRunner({ executor: new EchoExecutor(), blobs: createMemoryBlobStore(), store });
+    const runner = createTestRunner({ store });
     expect(runner.recover()).toBe(1);
 
     const failed = runner.get("WORKING1");

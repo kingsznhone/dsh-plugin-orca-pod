@@ -15,7 +15,7 @@
 # interface should be exposed to peers.
 - insert:
     - id: orca-pod
-      name: 'orca-pod'
+      name: "orca-pod"
       config:
         port: 11811
         peers: []

@@ -7,16 +7,15 @@
  * origin pulls the bytes only if it wants them.
  *
  * Registration is a local capability, not an HTTP route: publishing a path is
- * equivalent to reading it, and a shared workgroup key cannot prove which node
- * signed a request (any member could sign as any `orca_node_id`). The CLI
- * therefore writes the mapping straight into the node's SQLite database; peers
- * only ever see content-addressed URLs, never a path.
+ * equivalent to reading it. The CLI therefore writes the mapping straight into
+ * the node's SQLite database; peers only ever see content-addressed URLs, never
+ * a path.
  */
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { resolve } from "node:path";
-import { DEFAULT_BLOB_TTL_MS } from "./blobs.ts";
+import { DEFAULT_BLOB_TTL_S } from "./blobs.ts";
 
 export type FileBlob = {
   /** sha256 of the file contents; doubles as the content address. */
@@ -27,22 +26,31 @@ export type FileBlob = {
   expires_at: string | null;
 };
 
-/** Durable mapping storage; the SQLite implementation lives in `sqlite.ts`. */
+/** Mapping storage; the durable SQLite implementation lives in `sqlite.ts`. */
 export type FileBlobStore = {
   save(blob: FileBlob): void;
   get(blobId: string): FileBlob | undefined;
-  /** Optional: SQLite handles need closing so Windows can delete the data dir. */
-  close?(): void;
+  /** SQLite handles need closing so Windows can delete the data dir. */
+  close(): void;
 };
+
+/** A mapping that lives as long as the process: unit tests and in-memory orca nodes. */
+export function createMemoryFileBlobStore(): FileBlobStore {
+  const entries = new Map<string, FileBlob>();
+  return {
+    save(blob) {
+      entries.set(blob.blob_id, blob);
+    },
+    get: (blobId) => entries.get(blobId),
+    close() {},
+  };
+}
 
 export type FileBlobRegistry = {
   register(path: string, ttlS?: number): Promise<FileBlob>;
   get(blobId: string): FileBlob | undefined;
   has(blobId: string): boolean;
 };
-
-/** Published files share the blob retention window (§5.6). */
-export const DEFAULT_FILE_BLOB_TTL_S = Math.floor(DEFAULT_BLOB_TTL_MS / 1000);
 
 async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   const hash = createHash("sha256");
@@ -59,14 +67,9 @@ async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   return { sha: hash.digest("hex"), size };
 }
 
-/**
- * With a store the mapping survives restarts and is shared with the CLI; without
- * one (unit tests, in-memory orca nodes) it lives in a `Map` for the process.
- */
-export function createFileBlobRegistry(store?: FileBlobStore): FileBlobRegistry {
-  const entries = new Map<string, FileBlob>();
+export function createFileBlobRegistry(store: FileBlobStore): FileBlobRegistry {
   return {
-    async register(path: string, ttlS: number = DEFAULT_FILE_BLOB_TTL_S): Promise<FileBlob> {
+    async register(path: string, ttlS: number = DEFAULT_BLOB_TTL_S): Promise<FileBlob> {
       const absolute = resolve(path);
       const { sha, size } = await hashFile(absolute);
       const blob: FileBlob = {
@@ -75,16 +78,15 @@ export function createFileBlobRegistry(store?: FileBlobStore): FileBlobRegistry 
         size,
         expires_at: ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null,
       };
-      if (store) store.save(blob);
-      else entries.set(sha, blob);
+      store.save(blob);
       return { ...blob };
     },
     get(blobId: string): FileBlob | undefined {
-      const blob = store ? store.get(blobId) : entries.get(blobId);
-      return blob ? { ...blob } : undefined;
+      const blob = store.get(blobId);
+      return blob && { ...blob };
     },
     has(blobId: string): boolean {
-      return (store ? store.get(blobId) : entries.get(blobId)) !== undefined;
+      return store.get(blobId) !== undefined;
     },
   };
 }

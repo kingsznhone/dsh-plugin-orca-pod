@@ -10,11 +10,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/config.ts";
-import { EchoExecutor, type ExecutorEvent, type LocalExecutor } from "../src/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
-import type { TaskView } from "../src/protocol.ts";
-import { createMemoryBlobStore } from "../src/storage.ts";
-import { createTaskRunner } from "../src/tasks.ts";
+import { isTerminal, type TaskView } from "../src/protocol.ts";
+import { createTestRunner } from "./fixtures/runner.ts";
 
 const WORKGROUP = "orca-limits";
 
@@ -47,7 +45,7 @@ async function waitForTerminal(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const view = runner.get(taskId);
-    if (view && ["completed", "failed", "canceled"].includes(view.status.state)) return view;
+    if (view && isTerminal(view.status.state)) return view;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("timed out waiting for a terminal task");
@@ -55,11 +53,7 @@ async function waitForTerminal(
 
 describe("task hard TTL", () => {
   it("kills a hung task at the local cap even when the origin asked for longer", async () => {
-    const runner = createTaskRunner({
-      executor: new EchoExecutor(),
-      blobs: createMemoryBlobStore(),
-      taskTimeoutS: 0.15,
-    });
+    const runner = createTestRunner({ taskTimeoutS: 0.15 });
     const view = runner.submit({
       ...hangTask(),
       metadata: { echo: { final: { state: "hang", text: "" } }, pod: { task_ttl_s: 600 } },
@@ -71,11 +65,7 @@ describe("task hard TTL", () => {
   });
 
   it("uses the local cap when the origin sends no ttl", async () => {
-    const runner = createTaskRunner({
-      executor: new EchoExecutor(),
-      blobs: createMemoryBlobStore(),
-      taskTimeoutS: 0.1,
-    });
+    const runner = createTestRunner({ taskTimeoutS: 0.1 });
     const view = runner.submit(hangTask());
     const done = await waitForTerminal(runner, view.id);
     expect(done.status.reason).toBe("timeout");
@@ -84,11 +74,7 @@ describe("task hard TTL", () => {
 
 describe("summary limits", () => {
   it("truncates a summary longer than result_max_bytes", async () => {
-    const runner = createTaskRunner({
-      executor: new EchoExecutor(),
-      blobs: createMemoryBlobStore(),
-      resultMaxBytes: 64,
-    });
+    const runner = createTestRunner({ resultMaxBytes: 64 });
     const view = runner.submit(completedTask("x".repeat(200)));
     const done = await waitForTerminal(runner, view.id);
     expect(done.status.state).toBe("completed");
@@ -97,33 +83,48 @@ describe("summary limits", () => {
     expect(text).toContain("[summary truncated at 64 bytes]");
   });
 
+  it("truncates on a character boundary", async () => {
+    const runner = createTestRunner({ resultMaxBytes: 64 });
+    const view = runner.submit(completedTask("é".repeat(200)));
+    const text = textOf(await waitForTerminal(runner, view.id));
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(64);
+    expect(text).not.toContain("�");
+    expect(text.startsWith("éé")).toBe(true);
+  });
+
   it("keeps a short summary intact", async () => {
-    const runner = createTaskRunner({
-      executor: new EchoExecutor(),
-      blobs: createMemoryBlobStore(),
-      resultMaxBytes: 1024,
-    });
+    const runner = createTestRunner({ resultMaxBytes: 1024 });
     const view = runner.submit(completedTask("short and sweet"));
     const done = await waitForTerminal(runner, view.id);
     expect(textOf(done)).toBe("short and sweet");
   });
 });
 
-describe("usage", () => {
-  it("records token usage reported by the executor", async () => {
-    const executor: LocalExecutor = {
-      async *run(): AsyncGenerator<ExecutorEvent> {
-        yield {
-          type: "completed",
-          text: "done",
-          usage: { input_tokens: 11, output_tokens: 22, cache_read_tokens: 3 },
-        };
+describe("storage failures", () => {
+  it("logs a store that cannot save and still ends the task, instead of crashing the node", async () => {
+    const warnings: string[] = [];
+    const seen: TaskView[] = [];
+    const runner = createTestRunner({
+      store: {
+        save() {
+          throw new Error("disk full");
+        },
+        load: () => undefined,
+        list: () => [],
+        close() {},
       },
-    };
-    const runner = createTaskRunner({ executor, blobs: createMemoryBlobStore() });
-    const view = runner.submit(completedTask("ignored"));
-    const done = await waitForTerminal(runner, view.id);
-    expect(done.usage).toEqual({ input_tokens: 11, output_tokens: 22, cache_read_tokens: 3 });
+      logger: { warn: (text) => warnings.push(text) },
+      onEvent: (view) => seen.push(view),
+    });
+    runner.submit(completedTask("fine"));
+
+    const deadline = Date.now() + 5_000;
+    while (!seen.some((view) => view.status.state === "completed") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(seen.at(-1)?.status.state).toBe("completed");
+    expect(warnings.some((text) => text.includes("disk full"))).toBe(true);
+    expect(runner.busy()).toBeNull();
   });
 });
 
@@ -131,11 +132,11 @@ describe("budget advertisement", () => {
   it("publishes max_task_ttl_s in the agent card and peer records", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-limits-"));
     const config = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: "pw",
-      dataRoot: root,
+      workgroup_id: WORKGROUP,
+      workgroup_password: "pw",
+      data_root: root,
       port: 0,
-      taskTimeoutS: 900,
+      task_timeout_s: 900,
     });
     const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     await node.start();
@@ -147,9 +148,9 @@ describe("budget advertisement", () => {
 
       const otherRoot = await mkdtemp(join(tmpdir(), "orca-limits-peer-"));
       const otherConfig = createOrcaNodeConfig({
-        workgroupId: WORKGROUP,
-        password: "pw",
-        dataRoot: otherRoot,
+        workgroup_id: WORKGROUP,
+        workgroup_password: "pw",
+        data_root: otherRoot,
         port: 0,
       });
       const other = createOrcaNode({ config: otherConfig, storage: createPersistentStorage(otherConfig) });

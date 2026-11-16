@@ -13,7 +13,7 @@
 5. [07-security.md](07-security.md) → [08-reliability.md](08-reliability.md)（安全与运维）。
 6. [09-implementation.md](09-implementation.md) → [10-roadmap.md](10-roadmap.md)（落地与验收）。
 7. [11-open-questions.md](11-open-questions.md) → 本文件（未决与交接）。
-8. [DECISIONS.md](DECISIONS.md)（关键决策及理由）。
+8. [DECISIONS.md](DECISIONS.md)（跨模块决策及理由）。
 
 ### 12.2 第一条 prompt 建议
 
@@ -23,65 +23,79 @@ Read docs/README.md and docs/01-overview.md first, then 02 → 03 → 04 as need
 Hard constraints that must not be undone:
 - Topology is full mesh only. There is no ring, no gossip, no coordinator.
 - There is no epoch, no incarnation, no global membership table.
-  An orca node's table contains only peers it directly heard from; roster entries
-  carried by heartbeat are candidate endpoints, never liveness claims.
+  An orca node's table contains only peers it directly heard from or explicitly
+  joined; roster entries carried by heartbeat responses are candidate endpoints,
+  never liveness claims, and never rewrite an existing record.
 - Listener is plain HTTP/1.1 with keep-alive. TLS is terminated by Caddy/nginx.
 - orca_node_id is the node's Ed25519 public key (43-char base64url) generated at
-  install into <data_root>/identity.json (0600). It IS the security principal.
-- Auth = Ed25519 per-request signature (header sig) verified with the peer's public
-  key; the workgroup password only proves admission at /cluster/join. No session
-  token, no TTL, no empty password.
-- Agent Card is public but carries no runtime, paths, or topology; runtime and
-  busy state sit behind signed endpoints only.
+  first start into <data_root>/identity.json (0600). It IS the security principal.
+- Auth = Ed25519 per-request signature verified with the peer's public key, then a
+  membership gate (403 not_a_member). The workgroup password only proves admission
+  at /cluster/join and on every heartbeat. No session token, no TTL, no empty
+  password. Every route declares config.access; one hook authenticates and
+  authorizes; one error handler answers. The peer client never joins implicitly:
+  an unknown URL is unknown_peer, only an explicit join admits a peer.
+- There are no version numbers: no protocol versions, no key-derivation markers, no migrations, no
+  compatibility branches. Domain separators are plain tags ("orca-pod/request").
+- Agent Card is public but carries only name, url and max_task_ttl_s; runtime,
+  busy state and the model catalog sit behind signed endpoints only.
 - File exchange goes through a content-addressed blob channel. Task conclusions
-  come back inline as text; artifacts are pulled explicitly by blob id.
-- Approval happens on the ORIGIN orca node and follows the origin session's
-  permission mode. The target never opens a local approval dialog.
+  come back inline as text; large outputs are published by the child as signed
+  blob URLs and pulled explicitly.
+- Approval happens on the ORIGIN orca node. A task inherits the dispatching
+  session's permission mode (none inherited => read-only); the local
+  permission_mode only narrows it. The target auto-answers ACP permission
+  requests by mode and parks the rest as input-required for the origin; it never
+  opens a local approval dialog. There is one ApprovalBroker and the UI (chat
+  card, popup, panel) is the only answer channel: the orca_pod tool has no
+  approve method, and a permission request produces no chat notice.
 - Execution dir is the persistent per-workgroup workspace; there is no
   published-root concept. One task at a time per orca node (single slot), otherwise
-  429 orca_node_busy with retry_after and holder; the calling model decides whether
-  to retry, switch orca node, or report back to the user. No server-side queue.
-  Endpoints are an ordered list (1-8, primary first); peers dial them in order.
-  Absolute paths from origin are rejected.
+  429 orca_node_busy with retry_after_s and holder; resuming a parked task while
+  another task holds the slot is also 429 and the origin decides when to retry.
+  The calling model decides whether to retry, switch orca node, or report back to
+  the user. No server-side queue. Endpoints are an ordered list (1-8, primary
+  first); peers dial them in order. The protocol never carries
+  paths (task input names are bare file names).
 - Tasks are never forwarded: a child task is a new task an agent creates
-  explicitly (CLI or plugin tool). The gateway, not the agent, decides
-  hop/chain/root; there is no depth limit (a workgroup is a few machines) and the
-  loop guard is the ancestor chain. Nodes never wake each other except by an
-  origin-issued request.
-- A child task may never target an orca node already in its chain: the gateway returns
-  403 ancestor_call_forbidden. A blocked sub-agent reports
-  via input-required with a `blocked` payload and releases its slot; the origin
-  decides and continues the task with a follow-up message. No reverse calls.
-- Polling lives in the Host plugin, not in the agent's shell: orca_pod's send method returns a
-  task_id immediately; a background tracker polls tasks/get (or holds an SSE
-  stream), and completion reaches the session through agent.inject() as a compact
-  inbox notice that does not wake the agent. There is no notify flag: if the
-  session is still running that turn, inject(); if it is idle, followup() wakes it
-  once (batch completions within 2s, cap 3 consecutive background turns, drop to
-  inbox beyond that). Only must-act-now events (a permission_request,
-  a blocked sub-agent, a hard failure) also use followup(). Never implement waiting
-  with bash sleep loops, and provide no blocking wait tool at all: dispatch returns
-  immediately, completion arrives by inject/wake, and a busy target answers 429
-  orca_node_busy (with holder and retry_after_s) which the agent reports to the user
+  explicitly through the CLI (send --local-task). The CLI assembles hop/chain/root;
+  there is no depth limit (a workgroup is a few machines) and the loop guard is
+  the ancestor chain (403 ancestor_call_forbidden). Nodes never wake each other
+  except by an origin-issued request.
+- Polling lives in the Host plugin, not in the agent's shell: orca_pod's send
+  method returns a task_id immediately; a background tracker polls tasks/get every
+  second with backoff, and completion reaches the session as a compact
+  source.kind "orca-pod" notice: inject() if the agent is running, followup() if
+  it is idle (batch completions within 2s, cap 3 consecutive background turns,
+  then inject only; a user message resets the budget). When transient failures
+  persist the tracker gives up and tells the agent that tracking was interrupted.
+  Never implement waiting with bash sleep loops, and provide no blocking wait tool
+  at all: dispatch returns immediately, completion arrives by inject/wake, and a
+  busy target answers 429 orca_node_busy which the agent reports to the user
   before ending the turn or doing unrelated work.
 - Task and blob ids are the only access handles: any workgroup member holding a
   task_id or blob_id can read it; there is no per-task/per-blob ACL and no
-  listing. Id leakage is the exposure boundary. One shared key means orca-node-level
-  checks are policy, not cryptographic isolation.
+  listing. Only the origin may cancel or resume a task. Id leakage is the exposure
+  boundary. One shared password means orca-node-level checks are policy, not
+  cryptographic isolation.
 - Handoff uses the shared group workspace: a later task reads the workgroup root
   (the agent's cwd) and `notes/` left by earlier ones. There is no protocol-level
-  continuation flag;
-  whether to continue, and from where, is the agent's call.
+  continuation flag; whether to continue, and from where, is the agent's call.
 - Password rotation rebuilds the whole group. There is no per-orca-node revocation
   and no transition window with two passwords.
-- Task storage is single-orca-node SQLite (WAL). Orca node loss fails the task; do not
-  re-dispatch and do not invent a resume.
+- Task storage is single-orca-node SQLite (WAL). A restart fails every non-terminal
+  task as failed(node_restart); do not re-dispatch and do not invent a resume.
+  The origin's dispatch log marks tasks it can no longer see as unknown, never
+  as failed.
+- Quotas are settings (max_workspace_bytes, max_workspace_files,
+  max_blob_store_bytes); over quota is 507 quota_exceeded.
+- `npm run check` (biome + tsc + vitest) is the single acceptance command.
 ```
 
 ### 12.3 交接规则
 
-1. 新 agent 的第一件事是读本文与 ADR，不是写代码。
-2. 任何与本文冲突的实现选择，要么改文档（并写 ADR），要么改实现；不允许“代码里先这么写，文档以后补”。
+1. 新 agent 的第一件事是读本文与 [DECISIONS](DECISIONS.md)，不是写代码。
+2. 任何与本文冲突的实现选择，要么改文档，要么改实现；不允许“代码里先这么写，文档以后补”。
 3. 新增依赖、放宽权限、改变传输层，必须显式提出，不能夹带在功能 PR 里。
 4. 每个 Phase 结束时更新 [§10.6](10-roadmap.md#106-验收标准) 的勾选项与 [§11](11-open-questions.md#11-未决问题) 的未决问题。
 
@@ -91,8 +105,7 @@ Hard constraints that must not be undone:
 
 - 威胁模型与攻击面清单：07 的附录。
 - 密码分发与轮换 runbook：07.3（[§7.3](07-security.md#73-密钥与密码的分发)）的附录。
-- Windows 路径 / 保留名 / 长路径测试矩阵：[10.6](10-roadmap.md#106-验收标准) 的展开。
-- EchoExecutor 场景脚本样例集：[06.3](06-execution.md#63-echoexecutor用脚本模拟任务) 的附录。
-- ADR：`0001-full-mesh-no-ring.md`、`0002-orca-node-id-as-label.md`、`0003-password-derived-hmac.md`、`0004-approval-on-origin.md`、`0005-group-workspace.md`、`0006-fail-fast-on-orca-node-loss.md`、`0007-candidate-lists-are-not-liveness.md`、`0008-plain-http-behind-proxy.md`、`0009-sqlite-task-store.md`（`0002`/`0003` 已被 Ed25519 节点身份取代，见 §2.4）。
+- Windows 路径 / 保留名 / 长路径测试矩阵：[§11](11-open-questions.md#11-未决问题) 第 5 项的展开。
+- EchoExecutor 场景脚本样例集：[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务) 的附录。
 
 ---

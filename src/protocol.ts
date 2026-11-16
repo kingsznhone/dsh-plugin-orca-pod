@@ -2,33 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { isNodeId } from "./identity.ts";
 
-export const PROTOCOL_VERSION = "0.1.0";
 export const DEFAULT_PORT = 11811;
-export const WORKGROUP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,31}$/;
-
-export const ERROR_CODES = [
-  "missing_auth",
-  "malformed_auth",
-  "clock_skew",
-  "nonce_replay",
-  "bad_proof",
-  "bad_request",
-  "workgroup_mismatch",
-  "orca_node_id_conflict",
-  "unknown_orca_node",
-  "not_found",
-  "orca_node_busy",
-  "bad_echo_script",
-  "task_not_found",
-  "task_not_terminal",
-  "unsupported",
-  "internal",
-] as const;
-
-export type ErrorCode = (typeof ERROR_CODES)[number];
+const WORKGROUP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,31}$/;
 
 export type OrcaNodeId = string;
-export type WorkgroupId = string;
+type WorkgroupId = string;
 export type PeerState = "unknown" | "online" | "suspect" | "offline";
 
 export type RuntimeInfo = {
@@ -66,7 +44,7 @@ export type ModelSelection = {
  * One reasoning-effort value a provider offers (`off`, `low`, `high`, `max`
  * today; treated as an opaque string so a provider can add values).
  */
-export type ReasoningEffort = string;
+type ReasoningEffort = string;
 
 export type PeerView = {
   orca_node_id: OrcaNodeId;
@@ -90,37 +68,12 @@ export type PeerView = {
 
 export type SelfRecord = PeerView & {
   workgroup_id: WorkgroupId;
-  protocol_version: string;
-};
-
-export type JoinRequest = {
-  workgroup_id: WorkgroupId;
-  orca_node_id: OrcaNodeId;
-  display_name: string;
-  endpoints: string[];
-  runtime: RuntimeInfo | null;
-  max_task_ttl_s?: number;
-  models?: ModelOffer[];
-  default_model?: ModelSelection | null;
-  default_reasoning_effort?: ReasoningEffort | null;
 };
 
 export type JoinResponse = {
   self: SelfRecord;
   members: PeerView[];
   members_digest: string;
-};
-
-export type HeartbeatRequest = {
-  workgroup_id: string;
-  orca_node_id: OrcaNodeId;
-  /** Admission proof derived from the workgroup password (§7.1); heartbeats carry it too. */
-  ts: number;
-  nonce: string;
-  proof: string;
-  busy: BusyState | null;
-  /** 本 orca node 当前成员视图的摘要；与对端不一致时对端会回目录（候选端点）。 */
-  digest: string | null;
 };
 
 export type HeartbeatResponse = {
@@ -172,9 +125,7 @@ export function runtimeDigest(runtime: RuntimeInfo | null): string {
 export function membersDigest(
   peers: ReadonlyArray<Pick<PeerView, "orca_node_id" | "endpoints" | "runtime_digest">>,
 ): string {
-  const lines = peers
-    .map((peer) => `${peer.orca_node_id}|${peer.endpoints.join(",")}|${peer.runtime_digest}`)
-    .sort();
+  const lines = peers.map((peer) => `${peer.orca_node_id}|${peer.endpoints.join(",")}|${peer.runtime_digest}`).sort();
   return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
 
@@ -189,7 +140,7 @@ export function isHttpEndpoint(value: unknown): value is string {
 }
 
 /** Max advertised base URLs per orca node; enough for IPv4/IPv6/LAN/public. */
-export const MAX_ENDPOINTS = 8;
+const MAX_ENDPOINTS = 8;
 
 /**
  * Validate and normalize an advertised endpoint list: http(s) base URLs with no
@@ -212,13 +163,19 @@ export function normalizeEndpoints(value: unknown): string[] | null {
 
 export type TaskState = "submitted" | "working" | "input-required" | "completed" | "failed" | "canceled";
 
-export const TERMINAL_STATES: ReadonlyArray<TaskState> = ["completed", "failed", "canceled"];
-
-export function isTerminal(state: TaskState): boolean {
-  return TERMINAL_STATES.includes(state);
+/** A plain JSON object (not null, not an array). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type MessagePart =
+/** States in which a task can no longer change; the one definition every reader uses. */
+const TERMINAL_STATES: ReadonlySet<string> = new Set<TaskState>(["completed", "failed", "canceled"]);
+
+export function isTerminal(state: string): boolean {
+  return TERMINAL_STATES.has(state);
+}
+
+type MessagePart =
   | { kind: "text"; text: string }
   | { kind: "data"; data: Record<string, unknown> }
   | { kind: "file"; file: { name: string; mimeType?: string; bytes?: string } };
@@ -233,25 +190,18 @@ export type A2AMessage = {
 };
 
 /** Suspended payload lives in `status.message`; it is task state, not a push (§4.7). */
-export type TaskStatus = {
+type TaskStatus = {
   state: TaskState;
   timestamp: string;
   message?: A2AMessage;
   reason?: string;
 };
 
-export type TaskArtifact = {
+type TaskArtifact = {
   artifactId: string;
   name: string;
   mediaType?: string;
   bytes: number;
-};
-
-/** Token spend reported by the executor, when it reports one (§6.14). */
-export type TaskUsage = {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
 };
 
 export type TaskView = {
@@ -260,18 +210,13 @@ export type TaskView = {
   contextId: string;
   status: TaskStatus;
   artifacts?: TaskArtifact[];
-  usage?: TaskUsage;
   metadata?: Record<string, unknown>;
 };
 
 /** How much an agent may do on the orca node running its task (§7.10). */
 export type PermissionMode = "read-only" | "workspace-write" | "danger-full-access";
 
-export const PERMISSION_MODES: readonly PermissionMode[] = [
-  "read-only",
-  "workspace-write",
-  "danger-full-access",
-];
+const PERMISSION_MODES: readonly PermissionMode[] = ["read-only", "workspace-write", "danger-full-access"];
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return value === "read-only" || value === "workspace-write" || value === "danger-full-access";
@@ -287,21 +232,13 @@ export function narrowPermissionMode(local: PermissionMode, inherited: Permissio
   return permissionModeRank(inherited) < permissionModeRank(local) ? inherited : local;
 }
 
-/** Read `permission_mode` out of a task's `metadata.pod` block, if valid. */
-export function permissionModeOf(metadata: Record<string, unknown> | undefined): PermissionMode | undefined {
-  const pod = metadata?.["pod"];
-  if (typeof pod !== "object" || pod === null) return undefined;
-  const mode = (pod as Record<string, unknown>)["permission_mode"];
-  return isPermissionMode(mode) ? mode : undefined;
-}
-
 /** True when `value` names a provider/model route with optional reasoning effort. */
 export function isModelSelection(value: unknown): value is ModelSelection {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (typeof record["provider"] !== "string" || record["provider"].length === 0) return false;
-  if (typeof record["model"] !== "string" || record["model"].length === 0) return false;
-  const effort = record["reasoning_effort"];
+  if (typeof record.provider !== "string" || record.provider.length === 0) return false;
+  if (typeof record.model !== "string" || record.model.length === 0) return false;
+  const effort = record.reasoning_effort;
   return effort === undefined || (typeof effort === "string" && effort.length > 0);
 }
 
@@ -320,31 +257,9 @@ export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSel
   };
 }
 
-/** Read `metadata.pod.model` out of a task submission, if valid (§6.15). */
-export function modelSelectionOf(metadata: Record<string, unknown> | undefined): ModelSelection | undefined {
-  const pod = metadata?.["pod"];
-  if (typeof pod !== "object" || pod === null) return undefined;
-  const selection = (pod as Record<string, unknown>)["model"];
-  return isModelSelection(selection) ? selection : undefined;
-}
-
 /** True when `value` is a usable reasoning-effort selector (§6.15). */
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-/** Read `metadata.pod.reasoning_effort` (or a model-pinned effort), if valid (§6.15). */
-export function reasoningEffortOf(
-  metadata: Record<string, unknown> | undefined,
-): ReasoningEffort | undefined {
-  const pod = metadata?.["pod"];
-  if (typeof pod !== "object" || pod === null) return undefined;
-  const record = pod as Record<string, unknown>;
-  const direct = record["reasoning_effort"];
-  if (isReasoningEffort(direct)) return direct;
-  const selection = record["model"];
-  if (!isModelSelection(selection)) return undefined;
-  return isReasoningEffort(selection.reasoning_effort) ? selection.reasoning_effort : undefined;
 }
 
 export type PodTaskMetadata = {
@@ -363,8 +278,11 @@ export type PodTaskMetadata = {
   task_ttl_s?: number;
   grant_id?: string;
   /** Blobs the target materializes under `inputs/<task_id>/` before the run (§6.7). */
-  inputs?: Array<{ blob_id: string; name: string }>;
+  inputs?: TaskInputRef[];
 };
+
+/** A task input is a content-addressed blob the target saves under a plain file name (§6.7). */
+export type TaskInputRef = { blob_id: string; name: string };
 
 /**
  * A suspended task's ask for one tool outside the origin's grant (§7.11,
@@ -417,11 +335,6 @@ export type Grant = {
 
 export type SignedGrant = Grant & { sig: string };
 
-/** Data parts understood by `tasks/resume`; anything else is free-form input. */
-export type ResumeControl =
-  | { grant: SignedGrant }
-  | { permission_denied: true; reason?: string };
-
 /**
  * A child task an orca node is waiting on while it escalates upward (§7.12).
  * The parent task holds this so an approval can be turned into a child grant.
@@ -448,13 +361,12 @@ export function permissionRequestOf(view: TaskView): PermissionRequest | null {
 export type SubmitTaskInput = {
   message: A2AMessage;
   metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
-  /** Authenticated origin; recorded on the task for busy/holder reporting (§6.9). */
-  originOrcaNode?: OrcaNodeId;
 };
 
 /** Implemented by orca_node (needs an executor), consumed by the gateway. */
 export interface TaskRunner {
-  submit(input: SubmitTaskInput): TaskView;
+  /** `originOrcaNode` is the authenticated caller; it is recorded for busy/holder reporting (§6.9). */
+  submit(input: SubmitTaskInput & { originOrcaNode: OrcaNodeId }): TaskView;
   get(taskId: string): TaskView | null;
   resume(taskId: string, message: A2AMessage, callerOrcaNode?: OrcaNodeId): TaskView;
   /**
@@ -463,7 +375,7 @@ export interface TaskRunner {
    * `input-required` with an upstream request; an approval derives a child
    * grant from the parent grant and resumes the child.
    */
-  escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: OrcaNodeId): TaskView;
+  escalate(taskId: string, relay: unknown, callerOrcaNode?: OrcaNodeId): TaskView;
   cancel(taskId: string): TaskView;
   /** Origin of a known task, used by the gateway to authorize cancellation (§5.3). */
   originOf(taskId: string): OrcaNodeId | null;
@@ -477,17 +389,6 @@ export interface TaskRunner {
   /** Fail tasks that were interrupted by a restart (§8.3); returns how many. */
   recover(): number;
 }
-
-/** Task-level failure carrying a stable code for the gateway's HTTP mapping. */
-export class TaskError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "TaskError";
-    this.code = code;
-  }
-}
-
 
 const TASK_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -505,4 +406,3 @@ export function newTaskId(now: number = Date.now(), random: Uint8Array = randomB
   }
   return out;
 }
-

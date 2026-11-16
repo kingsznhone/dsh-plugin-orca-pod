@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createMesh, type Mesh } from "../src/index.ts";
+import { createMesh, type Mesh } from "../src/harness.ts";
 import type { OrcaNode } from "../src/orca_node.ts";
 import type { TaskState, TaskView } from "../src/protocol.ts";
 
@@ -50,9 +50,11 @@ describe("A2A task surface", () => {
     });
     expect(submitted.kind).toBe("task");
     expect(["submitted", "working"]).toContain(submitted.status.state);
-    // The view names the node that created the task, so the panel can show the
-    // origin without a second lookup (§9.2).
-    expect((submitted.metadata?.["pod"] as { origin?: string } | undefined)?.origin).toBe(origin.self().orca_node_id);
+    // The view names the origin of the delegation tree, so the panel can show it
+    // without a second lookup (§9.2).
+    expect((submitted.metadata?.pod as { root_origin?: string } | undefined)?.root_origin).toBe(
+      origin.self().orca_node_id,
+    );
 
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("hello pod");
@@ -73,7 +75,7 @@ describe("A2A task surface", () => {
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
     const payload = suspended.status.message?.parts[0];
     expect(payload?.kind).toBe("data");
-    expect(payload?.kind === "data" ? payload.data["blocked"] : null).toMatchObject({
+    expect(payload?.kind === "data" ? payload.data.blocked : null).toMatchObject({
       reason: "need_decision",
       question: "continue?",
     });
@@ -83,6 +85,38 @@ describe("A2A task surface", () => {
     });
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("done");
+  });
+
+  it("answers a resume with 429 orca_node_busy while another task holds the slot", async () => {
+    const { origin, targetUrl } = await twoNodes();
+    const parked = await origin.sendTask(targetUrl, {
+      message: { role: "user", parts: [{ kind: "text", text: "start" }] },
+      metadata: {
+        echo: {
+          steps: [{ at_ms: 10, suspend: { kind: "blocked", reason: "need_decision", question: "continue?" } }],
+          final: { state: "completed", text: "done" },
+        },
+      },
+    });
+    await waitForState(origin, targetUrl, parked.id, "input-required");
+    const holder = await origin.sendTask(targetUrl, {
+      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
+      metadata: { echo: { final: { state: "hang", text: "" } } },
+    });
+    await waitForState(origin, targetUrl, holder.id, "working");
+
+    await expect(
+      origin.sendTask(targetUrl, {
+        message: { role: "user", parts: [{ kind: "text", text: "yes" }], taskId: parked.id },
+      }),
+    ).rejects.toMatchObject({ code: "orca_node_busy", status: 429 });
+    expect((await origin.getTask(targetUrl, parked.id)).status.state).toBe("input-required");
+
+    await origin.cancelTask(targetUrl, holder.id);
+    await origin.sendTask(targetUrl, {
+      message: { role: "user", parts: [{ kind: "text", text: "yes" }], taskId: parked.id },
+    });
+    expect(textOf(await waitForState(origin, targetUrl, parked.id, "completed"))).toBe("done");
   });
 
   it("stores echo artifacts as content-addressed blobs", async () => {

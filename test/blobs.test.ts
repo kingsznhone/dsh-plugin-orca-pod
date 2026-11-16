@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/crypto.ts";
-import { createFileBlobRegistry, type FileBlobRegistry } from "../src/blob_files.ts";
-import { TaskError, type BusyState, type TaskRunner } from "../src/protocol.ts";
+import { createFileBlobRegistry, createMemoryFileBlobStore, type FileBlobRegistry } from "../src/blob_files.ts";
+import { PodError } from "../src/errors.ts";
+import { runtimeDigest, type BusyState, type SelfRecord, type TaskRunner } from "../src/protocol.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/identity.ts";
 import { createSqliteFileBlobStore } from "../src/sqlite.ts";
-import { createMemoryBlobStore, createMemoryPeerStore, sha256Hex } from "../src/storage.ts";
-import { createGateway, type GatewayDeps, type GatewayOrcaNode } from "../src/gateway.ts";
+import { createMembership } from "../src/membership.ts";
+import { createFsBlobStore, createMemoryBlobStore, sha256Hex, type BlobStore } from "../src/storage.ts";
+import { createGateway, type GatewayDeps } from "../src/gateway/index.ts";
 
 const ENDPOINT = "http://orca-node.test";
 
@@ -43,6 +45,20 @@ const idleTasks: TaskRunner = {
   },
 };
 
+function selfRecord(identity: NodeIdentity): SelfRecord {
+  return {
+    orca_node_id: identity.orcaNodeId,
+    display_name: "blob-test-orca-node",
+    endpoints: [ENDPOINT],
+    runtime: null,
+    runtime_digest: runtimeDigest(null),
+    state: "online",
+    busy: null,
+    last_recv_at: null,
+    workgroup_id: "orca-dev",
+  };
+}
+
 type Harness = {
   app: ReturnType<typeof createGateway>;
   key: Buffer;
@@ -51,26 +67,29 @@ type Harness = {
   sign(method: string, path: string, body?: Uint8Array | string, bodySha256?: string): string;
 };
 
-function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegistry): Harness {
+function createHarness(
+  tasks: TaskRunner = idleTasks,
+  fileBlobs: FileBlobRegistry = createFileBlobRegistry(createMemoryFileBlobStore()),
+  blobs: BlobStore = createMemoryBlobStore(),
+): Harness {
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
   const orcaNodeId = identity.orcaNodeId;
-  const orcaNode: GatewayOrcaNode = {
-    orca_node_id: orcaNodeId,
-    display_name: "blob-test-orca-node",
-    workgroup_id: "orca-dev",
-    endpoints: [ENDPOINT],
-  };
   const deps: GatewayDeps = {
-    orcaNode,
+    orcaNode: {
+      orca_node_id: orcaNodeId,
+      workgroup_id: "orca-dev",
+      self: () => selfRecord(identity),
+      linkChildTask: () => {},
+    },
     identity,
     workgroupKey: key,
-    peers: createMemoryPeerStore(),
+    peers: createMembership({ selfOrcaNodeId: orcaNodeId }).peers,
     nonceCache: new NonceCache(),
-    runtime: null,
+    startedAt: Date.now(),
     tasks,
-    blobs: createMemoryBlobStore(),
-    ...(fileBlobs === undefined ? {} : { fileBlobs }),
+    blobs,
+    fileBlobs,
   };
   return {
     app: createGateway(deps),
@@ -89,11 +108,7 @@ function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegist
   };
 }
 
-async function upload(
-  harness: Harness,
-  payload: Buffer,
-  options: { name?: string; digest?: string } = {},
-) {
+async function upload(harness: Harness, payload: Buffer, options: { name?: string; digest?: string } = {}) {
   const url = options.name === undefined ? "/blobs" : `/blobs?name=${encodeURIComponent(options.name)}`;
   const digest = options.digest ?? sha256Hex(payload);
   return harness.app.inject({
@@ -107,6 +122,20 @@ async function upload(
     },
   });
 }
+
+describe("blob store quota", () => {
+  it("answers 507 quota_exceeded to an upload that would overflow the store", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-blob-quota-"));
+    const harness = createHarness(idleTasks, undefined, createFsBlobStore(root, { maxBytes: 16 }));
+
+    const fits = await upload(harness, Buffer.from("0123456789"));
+    expect(fits.statusCode).toBe(201);
+
+    const overflow = await upload(harness, Buffer.from("abcdefghij"));
+    expect(overflow.statusCode).toBe(507);
+    expect(overflow.json()).toMatchObject({ code: "quota_exceeded" });
+  });
+});
 
 describe("blob channel", () => {
   it("rejects an unsigned upload with 401", async () => {
@@ -130,7 +159,7 @@ describe("blob channel", () => {
       digest: sha256Hex(Buffer.from("something else")),
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ code: "blob_digest_mismatch" });
+    expect(response.json()).toMatchObject({ code: "blob_digest_mismatch" });
   });
 
   it("stores bytes and returns 201 with the blob metadata", async () => {
@@ -198,6 +227,27 @@ describe("blob channel", () => {
       },
     });
     expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({ code: "body_too_large" });
+  });
+
+  it("rejects a malformed upload name or digest header with 400", async () => {
+    const harness = createHarness();
+    for (const name of ["../escape", "a/b", "a\\b", "C:evil"]) {
+      const response = await upload(harness, Buffer.from("x"), { name });
+      expect(response.statusCode, name).toBe(400);
+    }
+    const payload = Buffer.from("x");
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/blobs",
+      payload,
+      headers: {
+        "content-type": "application/octet-stream",
+        authorization: harness.sign("POST", "/blobs", payload, "not-a-digest"),
+        "x-pod-body-sha256": "not-a-digest",
+      },
+    });
+    expect(response.statusCode).toBe(400);
   });
 
   it("dedupes a repeated upload with 200 and the same blob_id", async () => {
@@ -207,9 +257,7 @@ describe("blob channel", () => {
     const second = await upload(harness, payload);
     expect(first.statusCode).toBe(201);
     expect(second.statusCode).toBe(200);
-    expect(second.json<{ blob_id: string }>().blob_id).toBe(
-      first.json<{ blob_id: string }>().blob_id,
-    );
+    expect(second.json<{ blob_id: string }>().blob_id).toBe(first.json<{ blob_id: string }>().blob_id);
   });
 
   it("serves a /link URL without signed headers", async () => {
@@ -243,7 +291,7 @@ describe("blob channel", () => {
       url: `/blobs/${blobId}?exp=${exp}&sig=${sig}`,
     });
     expect(response.statusCode).toBe(410);
-    expect(response.json()).toEqual({ code: "link_expired" });
+    expect(response.json()).toMatchObject({ code: "link_expired" });
   });
 });
 
@@ -254,7 +302,7 @@ describe("file blobs registered by the local CLI", () => {
     const content = Buffer.from("# findings\n");
     await writeFile(filePath, content);
 
-    const fileBlobs = createFileBlobRegistry();
+    const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
     const blob = await fileBlobs.register(filePath, 120);
     expect(blob.blob_id).toBe(sha256Hex(content));
     expect(blob.size).toBe(content.length);
@@ -272,8 +320,8 @@ describe("file blobs registered by the local CLI", () => {
   });
 
   it("has no HTTP registration route at all", async () => {
-    // Publishing a path is reading it; a shared workgroup key cannot prove which
-    // orca node signed, so this capability stays local (CLI) and off the network.
+    // Publishing a path is reading it, so this capability stays local (CLI) and
+    // off the network.
     const harness = createHarness();
     const response = await harness.app.inject({
       method: "POST",
@@ -303,7 +351,9 @@ describe("file blobs registered by the local CLI", () => {
 
   it("refuses a missing path instead of registering it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
-    await expect(createFileBlobRegistry().register(join(dir, "absent.txt"))).rejects.toThrow();
+    await expect(
+      createFileBlobRegistry(createMemoryFileBlobStore()).register(join(dir, "absent.txt")),
+    ).rejects.toThrow();
   });
 });
 
@@ -316,7 +366,7 @@ describe("a2a busy response", () => {
     };
     const tasks: TaskRunner = {
       submit() {
-        throw new TaskError("orca_node_busy", "node is busy");
+        throw new PodError("orca_node_busy", "node is busy");
       },
       get() {
         return null;
@@ -367,7 +417,7 @@ describe("a2a busy response", () => {
       error: {
         code: -32000,
         message: "orca_node_busy",
-        data: { code: "orca_node_busy", retry_after_s: 30, holder },
+        data: { code: "orca_node_busy", message: "node is busy", retry_after_s: 30, holder },
       },
     });
   });

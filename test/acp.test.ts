@@ -1,13 +1,15 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/config.ts";
-import { permissionRequestOf, type TaskView } from "../src/protocol.ts";
-import { createAcpExecutor } from "../src/acp.ts";
+import { permissionRequestOf, type PermissionMode, type TaskView } from "../src/protocol.ts";
+import { createAcpExecutor } from "../src/acp/executor.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor.ts";
+import { connectAll } from "../src/harness.ts";
+import { parseEchoScript } from "../src/echo.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
@@ -19,9 +21,9 @@ afterEach(async () => {
 
 function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): OrcaNodeConfig {
   const config = createOrcaNodeConfig({
-    workgroupId: "acp-test",
-    password: "correct horse",
-    dataRoot: root,
+    workgroup_id: "acp-test",
+    workgroup_password: "correct horse",
+    data_root: root,
     port: 0,
     executor: "acp",
     acp: {
@@ -35,9 +37,9 @@ function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig
 
 function echoConfigFor(root: string): OrcaNodeConfig {
   return createOrcaNodeConfig({
-    workgroupId: "acp-test",
-    password: "correct horse",
-    dataRoot: root,
+    workgroup_id: "acp-test",
+    workgroup_password: "correct horse",
+    data_root: root,
     port: 0,
   });
 }
@@ -49,13 +51,24 @@ async function startNode(config: OrcaNodeConfig): Promise<OrcaNode> {
   return node;
 }
 
-async function send(node: OrcaNode, text: string, contextId = "ctx-1"): Promise<TaskView> {
+async function send(
+  node: OrcaNode,
+  text: string,
+  contextId = "ctx-1",
+  permissionMode?: PermissionMode,
+): Promise<TaskView> {
   return node.sendTask(node.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text }], contextId },
+    ...(permissionMode === undefined ? {} : { metadata: { pod: { permission_mode: permissionMode } } }),
   });
 }
 
-async function waitForState(node: OrcaNode, taskId: string, wanted: readonly string[], timeoutMs = 10_000): Promise<TaskView> {
+async function waitForState(
+  node: OrcaNode,
+  taskId: string,
+  wanted: readonly string[],
+  timeoutMs = 10_000,
+): Promise<TaskView> {
   return waitForRemoteState(node, node.endpoints[0]!, taskId, wanted, timeoutMs);
 }
 
@@ -95,11 +108,7 @@ async function logEntries(path: string): Promise<LogEntry[]> {
     .map((line) => JSON.parse(line) as LogEntry);
 }
 
-async function waitForLog(
-  path: string,
-  predicate: (entry: LogEntry) => boolean,
-  timeoutMs = 2_000,
-): Promise<boolean> {
+async function waitForLog(path: string, predicate: (entry: LogEntry) => boolean, timeoutMs = 2_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if ((await logEntries(path)).some(predicate)) return true;
@@ -136,8 +145,8 @@ describe("AcpExecutor", () => {
 
   it("suspends for a permission request and continues after the origin approves", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "permission"));
-    const submitted = await send(node, "write a file");
+    const node = await startNode(configFor(root, "permission-fetch"));
+    const submitted = await send(node, "write a file", "ctx-1", "workspace-write");
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
     const request = permissionRequestOf(suspended);
     expect(request?.tool).toBe("write file");
@@ -150,8 +159,8 @@ describe("AcpExecutor", () => {
 
   it("answers a denied permission request so the child prompt does not hang", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "permission"));
-    const submitted = await send(node, "write a file");
+    const node = await startNode(configFor(root, "permission-fetch"));
+    const submitted = await send(node, "write a file", "ctx-1", "workspace-write");
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
 
     const denied = await node.denyTask(node.endpoints[0]!, suspended);
@@ -214,6 +223,29 @@ describe("AcpExecutor", () => {
     expect(entries.some((entry) => entry.method === "session/resume")).toBe(true);
   }, 20_000);
 
+  it("starts a new session when the stored one is not found", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const config = configFor(root, "resume-fail");
+    const first = await startNode(config);
+    await waitForState(first, (await send(first, "before restart")).id, ["completed"]);
+    await first.stop();
+
+    const second = await startNode(config);
+    await waitForState(second, (await send(second, "after restart")).id, ["completed"]);
+    const entries = await logEntries(join(root, "acp.log"));
+    expect(entries.filter((entry) => entry.method === "session/new")).toHaveLength(2);
+  }, 20_000);
+
+  it("fails the task instead of overwriting a corrupt session store", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "ok"));
+    const store = join(node.workspacePaths().state, "sessions.json");
+    await writeFile(store, "{not json", "utf8");
+    const view = await waitForState(node, (await send(node, "hi")).id, ["failed"]);
+    expect(view.status.reason).toBe("executor_error");
+    expect(await readFile(store, "utf8")).toBe("{not json");
+  }, 15_000);
+
   it("selects the requested model on the ACP session before prompting", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const node = await startNode(configFor(root, "ok"));
@@ -242,9 +274,9 @@ describe("AcpExecutor", () => {
       (entry) => entry.method === "session/set_config_option" && entry.configId === "reasoning_effort",
     );
     expect(effort?.value).toBe("max");
-    expect(
-      entries.some((entry) => entry.method === "session/set_config_option" && entry.configId === "model"),
-    ).toBe(false);
+    expect(entries.some((entry) => entry.method === "session/set_config_option" && entry.configId === "model")).toBe(
+      false,
+    );
   }, 15_000);
 
   it("lets the task override the node default reasoning effort", async () => {
@@ -294,10 +326,18 @@ describe("AcpExecutor", () => {
       contextId: "c1",
       prompt: "hi",
       originOrcaNode: "ORIGIN",
+      selfOrcaNodeId: "SELF",
       workspaceDir: pod,
+      podDir: join(pod, ".state"),
+      permissionMode: "read-only",
+      model: undefined,
+      reasoningEffort: undefined,
+      echo: parseEchoScript(undefined),
     };
-    for await (const event of executor.run(input, new AbortController().signal)) events.push(event);
-    expect(events[0]).toMatchObject({ type: "failed" });
+    await expect(async () => {
+      for await (const event of executor.run(input, new AbortController().signal)) events.push(event);
+    }).rejects.toThrow("cannot start acp server");
+    expect(events).toEqual([]);
   }, 15_000);
 });
 
@@ -308,13 +348,14 @@ describe("AcpExecutor in a chain", () => {
     const rootC = await mkdtemp(join(tmpdir(), "orca-acp-c-"));
     const a = await startNode(echoConfigFor(rootA));
     const b = await startNode(echoConfigFor(rootB));
-    const c = await startNode(configFor(rootC, "permission"));
+    const c = await startNode(configFor(rootC, "permission-fetch"));
+    await connectAll([a, b, c]);
 
     // B (mid node) creates the child task on C; C's ACP agent asks for permission.
     const child = await b.sendTask(c.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write a file" }], contextId: "ctx-child" },
       metadata: {
-        pod: { hop: 1, chain: [b.orcaNodeId], root_origin: a.orcaNodeId },
+        pod: { hop: 1, chain: [b.orcaNodeId], root_origin: a.orcaNodeId, permission_mode: "workspace-write" },
       },
     });
     const childSuspended = await waitForRemoteState(b, c.endpoints[0]!, child.id, ["input-required"]);

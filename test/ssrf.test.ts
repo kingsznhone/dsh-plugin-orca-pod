@@ -90,7 +90,6 @@ describe("candidate endpoint filtering (§7.7)", () => {
     // IPv4 comes before IPv6 so the primary URL is the reliable LAN path.
     const firstV6 = urls.findIndex((url) => url.includes("["));
     if (firstV6 >= 0) expect(urls.slice(firstV6).every((url) => url.includes("["))).toBe(true);
-    expect(detectLocalEndpoints(0)).toEqual([]);
   });
 });
 

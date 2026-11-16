@@ -6,24 +6,13 @@
 
 ### 1.1 概览
 
-Orca Pod 是一个小规模、对等的 DSH 集群：
+一页摘要见 [README](README.md#一页摘要)；本章不重复展开，只列骨架：
 
-- 每台机器上跑一个 **DSH 插件**（Pod 网关）：对外是 A2A server + 控制面，对内驱动本地 DSH。
-- 本地执行由 **LocalExecutor** 驱动，ACP 只走本地 stdio，绝不跨网络。
-- orca node 之间是 **full mesh**，10 台以内不做 ring、不做 gossip、不做中心调度器。
-- **默认单跳**：origin → target，不转发、不回调、不广播；多跳与扇出是可选能力，默认关闭（[§8.6](08-reliability.md#86-放大扇出与唤醒)）。orca node 只被任务请求唤醒，忙时 429 而不是排队。
-- **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
-- orca node 身份 = 首次启动生成的 **Ed25519 公钥**（`<data_root>/identity.json`，43 字符 base64url；面板显示缩略 `psB9…3Zlw`，悬停可看完整值）。节点用自己的私钥签每个请求，别人用公钥验签——id 就是公钥，可验证、不可伪造。
-- 入组 = `workgroup_id` + 非空密码：密码只派生 `/cluster/join` 与每拍心跳的准入证明（HMAC），能进组才能交换目录；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。
-- 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
-- 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询，SSE 可选。
-- 文件交换走**内容寻址 blob 通道**：素材先传后引用，产物按需拉取；结论文本内联返回，`notes/` 不出本机。
-- **任务与产物凭 id 交接**：同 workgroup 任意 orca node 知道 `task_id` / `blob_id` 就能读；没有列表接口，也没有 per-task ACL——id 就是句柄。
-- **交接靠工作区**：同一 workgroup 的任务共享一份持久工作区（agent 的 cwd 就是 workgroup 根）与 `notes/`；后到的 agent 读现场决定接着干什么，协议不定义“续跑”。
-- **权限跟着发起 orca node 的会话走**：origin 的会话是只读，target 就只能读；是 workspace-write，target 就只能写工作区；超出的操作回到 origin 弹审批卡片，target 永不本地弹窗。
-- 目标侧执行目录 = **workgroup 工作区**：加入 workgroup 时自动分配、跨任务持久、跨 session 保留上下文。**orca node 是单槽的**：同一时间只跑一个任务，忙时明确拒绝（不排队），忙闲状态对其他 orca node 可见；**遇到忙时由调用方模型决定**重试、换 orca node 还是回报用户。
-- 任务状态落**单机 SQLite**；orca node 失联即任务失败，不重发、不猜、不复活。
-- 一致性目标是 at-least-once + 幂等；`failed` 会明确标注“目标侧可能已产生副作用”。
+- 每台机器一个 orca node（DSH 插件，或无头的 `orca-node serve`）：对外是 A2A server + 控制面，对内驱动本地 DSH。
+- 拓扑只有 full mesh；成员关系只来自直接收到的心跳；身份是 Ed25519 公钥，入组靠 workgroup 密码派生的准入证明。
+- 任务面是 A2A（`message/send` / `tasks/get` / `tasks/cancel`），异步、轮询；单槽执行，忙时 429。
+- 文件走内容寻址 blob 通道；交接靠持久的 group 工作区与 `notes/`。
+- 权限继承发起会话的模式；越界请求回到 origin 由人决定。
 
 ### 1.2 目标
 
@@ -34,54 +23,46 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 5. 任务异步执行：提交后返回 task id，进度和结果通过 task 状态取回。
 6. orca node 上下线可被观测；某个 orca node 掉线后，其余 orca node 不再给它派任务。
 7. 跨 workgroup 隔离；不同 workgroup 的 orca node 互不可见、互不可调。
-8. 本地执行器可替换：Echo / ACP / in-process 不改变集群协议。
+8. 本地执行器可替换：Echo / ACP 不改变集群协议。
 9. 设计可跨 Windows/Linux 移植；不依赖某台机器的本地路径或 DSH profile。
-10. orca node 信息可发现：OS 与版本、CPU、内存、GPU、DSH 版本，以及当前是否忙。
+10. orca node 信息可发现：OS 与版本、CPU、内存、Node 版本、可用模型，以及当前是否忙。
 11. 长程协作连贯：同一个 workgroup 里，后续任务能在同一工作区接着上次的上下文继续，而不是每次从零开始。
 
 ### 1.3 非目标
 
 1. **不做分布式共享会话/共享上下文**。每个任务在目标 orca node 本地 DSH 里执行；A2A 只传任务和结果。
-2. **不做 exactly-once**。采用 at-least-once + 幂等；需要强一致的场景另加外部协调。
+2. **不做 exactly-once，也不做重发。** 失败就是失败，要不要重来由人或 agent 显式再派一次。
 3. **不做跨 workgroup 联邦**。不同 workgroup 默认互不可见。
 4. **不做 ring。** 连接拓扑只有 full mesh，不保留“后续可选环”的设计位。
 5. **不做全局成员表版本号（epoch）和 orca node 代数（incarnation）。** 见 [§3.1](03-membership.md#31-成员状态的判定)。
 6. **不做被调用 orca node 阻塞式人工审批。** 无人值守机器上弹窗等人是设计错误；审批只在发起 orca node 做（[§7](07-security.md#7-安全与权限)）。
 7. **不做 target-local-approval。** 目标侧本地弹窗没有意义：人不在那台机器前，弹了也没人点。
-8. **不做共享文件系统 / 反向挂载。** 不引入 SMB/NFS/9p/分布式 FS；跨 orca node 只传 artifact（[§6.12](06-execution.md#612-明确不做)）。
-9. **不做空密码 workgroup。** 没有密码就没有认证，不存在“先跑起来再补”的中间态。
-10. **不做 session token / 短期令牌。** 密码派生密钥直接做请求签名，少一层状态和一层失效语义。
+8. **不做共享文件系统 / 反向挂载。** 不引入 SMB/NFS/9p/分布式 FS；跨 orca node 只传 blob（[§6.12](06-execution.md#612-明确不做)）。
+9. **不做空密码 workgroup。** 没有密码就没有准入控制，不存在“先跑起来再补”的中间态。
+10. **不做 session token / 短期令牌。** 每个请求由节点私钥签名，少一层状态和一层失效语义。
 11. **不把 ACP 或 MCP 当集群协议。** ACP 只允许本地 stdio；MCP 是 agent→tool，不是对等任务协议。
-12. **不把 DSH 内部 Web API（`/api/*`、`/api/remote.mux`）当公开协议。** 它是单 Host 的内部 BFF，版本耦合。
-13. **不做 orca node 内建 TLS 作为默认部署。** 默认明文监听 + 前置代理；orca node 内建 mTLS 是 Phase 4 的可选项。
+12. **不把 DSH 内部 Web API（`/api/*`、`/api/remote.mux`）当公开协议。** 它是单 Host 的内部 BFF，没有稳定契约。
+13. **不做 orca node 内建 TLS。** 默认明文监听 + 前置代理。
 14. **不做公网裸奔。** 公网暴露必须经 TLS 代理或 VPN。
 
 ### 1.4 术语与命名约定
 
-| 术语 | 含义 |
-|---|---|
-| **orca node** | mesh 里的一台机器（一个进程、一个 `orca_node_id`）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/orca_node.ts` 与 `createOrcaNode()`。 |
-| **workgroup_id** | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。 |
-| **orca_node_id** | Ed25519 公钥（43 字符 base64url）；节点身份即公钥，面板与日志显示缩略形式。 |
-| **Peer** | 同一 workgroup 内、本 orca node 已知的另一个 orca node。 |
-| **SelfRecord** | orca node 对自己的描述（`endpoints`、runtime、工作区用量、忙闲），只能由本人写。 |
-| **members_digest** | 排序后的成员记录摘要，用于“我落后了没有”的比对，不表达在线状态。 |
-| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(orca_node_id, endpoints[])`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。 |
-| **tombstone** | 本地的“别再试它”标记，带过期时间；不传播。 |
-| **workspace** | orca node 上自动分配的持久目录，跨任务、跨 session 保留上下文。 |
-| **group workspace** | 就是上面那个 `workspace`；本文有时强调“单 orca node 一份”时这么叫。 |
-| **session** | DSH / ACP 的会话状态，绑定 `(workgroup_id, origin_orca_node, context_id)`。 |
-| **context_id** | A2A 的逻辑会话 id，把多个 task 归到同一串工作里。 |
-| **grant** | origin 签发的单任务授权，绑定 origin/target/task/nonce，随任务结束失效。 |
+| 术语                      | 含义                                                                                                                                                                 |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **orca node**             | mesh 里的一台机器（一个进程、一个 `orca_node_id`）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/orca_node.ts` 与 `createOrcaNode()`。 |
+| **workgroup_id**          | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。                                                                                           |
+| **orca_node_id**          | Ed25519 公钥（43 字符 base64url）；节点身份即公钥，面板与日志显示缩略形式。                                                                                          |
+| **Peer**                  | 同一 workgroup 内、本 orca node 已知的另一个 orca node。                                                                                                             |
+| **SelfRecord**            | orca node 对自己的描述（`endpoints`、runtime、忙闲、模型目录），只能由本人写。                                                                                       |
+| **members_digest**        | 排序后的成员记录摘要，用于“我落后了没有”的比对，不表达在线状态。                                                                                                     |
+| **candidate**（候选端点） | 心跳摘要不一致时对端回传的目录条目，只是可拨号的 `(orca_node_id, endpoints[])`，**不是**在线声明，见 [§3.5](03-membership.md#35-候选端点与墓碑)。                    |
+| **tombstone**             | 本地的“别再试它”标记，带过期时间；不传播。                                                                                                                           |
+| **workspace**             | orca node 上自动分配的持久目录，跨任务、跨 session 保留上下文；每个 workgroup 一份，也叫 group workspace。                                                           |
+| **session**               | ACP 会话状态，绑定 `(origin_orca_node, context_id)`，存在 `<data_root>/state/<workgroup_id>/sessions.json`。                                                         |
+| **context_id**            | A2A 的逻辑会话 id，把多个 task 归到同一串工作里。                                                                                                                    |
+| **grant**                 | origin 签发的单次授权，绑定 origin/target/task/tool/request 与决策链，用掉即作废。                                                                                   |
 
-**命名注意：** `workgroup_id`、`workspace`、`session` 三者不能混用。DSH GUI 里把项目目录叫“工作区”，本文的 `workspace` 指的是被调用 orca node 上自动分配的那份执行目录；代码与日志里不允许用裸的 `workspace` 表示命名空间。同理，mesh 成员一律写 **orca node**（代码：`src/orca_node.ts`、`createOrcaNode()`），不写裸的 `node`——那是 Node.js。
-
-**图里的调用关系：**
-
-```text
-Workgroup: orca-dev
-Full mesh (<= 10 orca nodes), 唯一拓扑
-```
+**命名注意：** `workgroup_id`、`workspace`、`session` 三者不能混用。DSH GUI 里把项目目录叫“工作区”，本文的 `workspace` 指的是被调用 orca node 上自动分配的那份执行目录；代码与日志里不允许用裸的 `workspace` 表示命名空间。同理，mesh 成员一律写 **orca node**，不写裸的 `node`——那是 Node.js。
 
 ### 1.5 参考
 

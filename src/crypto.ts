@@ -1,56 +1,28 @@
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
-import {
-  isNodeId,
-  signWithIdentity,
-  verifyWithNodeId,
-  type NodeIdentity,
-} from "./identity.ts";
+import { isNodeId, signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
+import { PodError } from "./errors.ts";
 import type { Grant, OrcaNodeId, SignedGrant } from "./protocol.ts";
 
-export const AUTH_SCHEME = "Pod";
+const AUTH_SCHEME = "Pod";
 /**
- * Signature domain version. v2 binds the receiver id and the full request URL
- * (path *and* query) into every signature: a request captured from one node
- * cannot be replayed against another node or with different query parameters.
+ * Domain-separation tags. The request signature binds the receiver id and the
+ * full request URL (path *and* query): a request captured from one node cannot
+ * be replayed against another node or with different query parameters.
  */
-export const PROOF_VERSION = "pod-v1";
-export const JOIN_PROOF_VERSION = "pod-join-v1";
-export const KEY_DERIVATION_SALT = "orca-pod";
-/**
- * Key-derivation version written into `config.json`. It exists so a node with a
- * key derived by an older (cheaper) KDF cannot silently keep using it: the
- * admission proof is HMAC over public fields, so a sniffed heartbeat is an
- * offline dictionary oracle unless each guess costs memory-hard work.
- */
-export const KEY_DERIVATION = "scrypt-v1";
+const REQUEST_DOMAIN = "orca-pod/request";
+const ADMISSION_DOMAIN = { join: "orca-pod/join", heartbeat: "orca-pod/heartbeat" } as const;
+const GRANT_DOMAIN = "orca-pod/grant";
+const BLOB_LINK_DOMAIN = "orca-pod/blob-link";
+const KEY_DERIVATION_SALT = "orca-pod";
 /** scrypt parameters: ~32 MiB, one derivation per start, ~100ms (§7.1). */
-export const KEY_DERIVATION_N = 1 << 15;
-export const KEY_DERIVATION_R = 8;
-export const KEY_DERIVATION_P = 1;
+const KEY_DERIVATION_N = 1 << 15;
+const KEY_DERIVATION_R = 8;
+const KEY_DERIVATION_P = 1;
 const KEY_DERIVATION_MAX_MEM = 64 * 1024 * 1024;
 export const DEFAULT_CLOCK_SKEW_MS = 60_000;
-export const DEFAULT_NONCE_TTL_MS = 5 * 60_000;
-export const DEFAULT_NONCE_CAPACITY = 10_000;
-
-export type AuthErrorCode =
-  | "missing_auth"
-  | "malformed_auth"
-  | "clock_skew"
-  | "nonce_replay"
-  | "bad_signature"
-  | "wrong_target"
-  | "stale_request";
-
-export class PodAuthError extends Error {
-  readonly code: AuthErrorCode;
-
-  constructor(code: AuthErrorCode, message: string) {
-    super(message);
-    this.name = "PodAuthError";
-    this.code = code;
-  }
-}
+const DEFAULT_NONCE_TTL_MS = 5 * 60_000;
+const DEFAULT_NONCE_CAPACITY = 10_000;
 
 /**
  * scrypt(password, salt="orca-pod\x00<workgroup_id>") -> 32 bytes.
@@ -76,11 +48,7 @@ export function deriveWorkgroupKey(workgroupId: string, password: string): Buffe
 }
 
 export function bodySha256(body?: Uint8Array | string): string {
-  const input = body === undefined
-    ? Buffer.alloc(0)
-    : typeof body === "string"
-      ? Buffer.from(body, "utf8")
-      : body;
+  const input = body === undefined ? Buffer.alloc(0) : typeof body === "string" ? Buffer.from(body, "utf8") : body;
   return createHash("sha256").update(input).digest("hex");
 }
 
@@ -88,10 +56,10 @@ export function bodySha256(body?: Uint8Array | string): string {
 // Request authentication (§7.1): every request is signed by the sending
 // node's Ed25519 key; the orca node id *is* the public key, so verifying the
 // signature also authenticates the identity. The workgroup password is used
-// only for mesh admission (`buildJoinProof`), never to sign requests.
+// only for mesh admission (`admissionProof`), never to sign requests.
 // ---------------------------------------------------------------------------
 
-export type SignatureFields = {
+type SignatureFields = {
   method: string;
   /** Request target on the receiver, path *and* query included (§7.1). */
   url: string;
@@ -102,9 +70,9 @@ export type SignatureFields = {
   nonce: string;
 };
 
-export function signatureInput(fields: SignatureFields): string {
+function signatureInput(fields: SignatureFields): string {
   return [
-    PROOF_VERSION,
+    REQUEST_DOMAIN,
     fields.method.toUpperCase(),
     fields.targetOrcaNodeId,
     fields.url,
@@ -114,7 +82,7 @@ export function signatureInput(fields: SignatureFields): string {
   ].join("|");
 }
 
-export type AuthHeaderOptions = {
+type AuthHeaderOptions = {
   identity: NodeIdentity;
   method: string;
   url: string;
@@ -148,7 +116,7 @@ export function buildAuthHeader(options: AuthHeaderOptions): string {
   return `${AUTH_SCHEME} orca_node_id=${options.identity.orcaNodeId}; ${targetField}ts=${ts}; nonce=${nonce}; sig=${signature}`;
 }
 
-export type ParsedAuthHeader = {
+type ParsedAuthHeader = {
   orcaNodeId: string;
   target: string;
   ts: number;
@@ -170,7 +138,7 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
   const orcaNodeId = fields.get("orca_node_id");
   const ts = fields.get("ts");
   const nonce = fields.get("nonce");
-  const signature = fields.get("sig") ?? fields.get("proof");
+  const signature = fields.get("sig");
   if (!orcaNodeId || !ts || !nonce || !signature) return null;
   const tsValue = Number(ts);
   if (!Number.isSafeInteger(tsValue)) return null;
@@ -215,11 +183,11 @@ export type VerifyAuthOptions = {
   method: string;
   url: string;
   /** This node's id; a request addressed to another node is rejected. */
-  targetOrcaNodeId?: string;
+  targetOrcaNodeId: string;
   /** `/cluster/join` cannot know the receiver's id before first contact. */
   allowEmptyTarget?: boolean;
   /** Reject requests issued before this process started: blocks restart replay. */
-  notBefore?: number;
+  notBefore: number;
   body?: Uint8Array | string;
   /** Digest signed by a streaming client; overrides hashing `body` when set. */
   bodySha256?: string;
@@ -238,28 +206,28 @@ export type VerifiedAuth = {
 export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   const parsed = parseAuthHeader(options.header);
   if (!parsed) {
-    throw new PodAuthError(
+    throw new PodError(
       options.header ? "malformed_auth" : "missing_auth",
       options.header ? "malformed Authorization header" : "missing Authorization header",
     );
   }
   if (!isNodeId(parsed.orcaNodeId)) {
-    throw new PodAuthError("malformed_auth", "orca_node_id in the Authorization header is not an Ed25519 public key");
+    throw new PodError("malformed_auth", "orca_node_id in the Authorization header is not an Ed25519 public key");
   }
   const now = options.now ?? Date.now();
   const skewMs = options.skewMs ?? DEFAULT_CLOCK_SKEW_MS;
   if (Math.abs(now - parsed.ts) > skewMs) {
-    throw new PodAuthError("clock_skew", "timestamp outside the allowed skew window");
+    throw new PodError("clock_skew", "timestamp outside the allowed skew window");
   }
-  if (options.notBefore !== undefined && parsed.ts < options.notBefore) {
-    throw new PodAuthError("stale_request", "timestamp predates this node process; restart replay rejected");
+  if (parsed.ts < options.notBefore) {
+    throw new PodError("stale_request", "timestamp predates this node process; restart replay rejected");
   }
   if (parsed.target === "") {
     if (options.allowEmptyTarget !== true) {
-      throw new PodAuthError("wrong_target", "request is not bound to a target orca node");
+      throw new PodError("wrong_target", "request is not bound to a target orca node");
     }
-  } else if (options.targetOrcaNodeId !== undefined && parsed.target !== options.targetOrcaNodeId) {
-    throw new PodAuthError("wrong_target", "request is addressed to another orca node");
+  } else if (parsed.target !== options.targetOrcaNodeId) {
+    throw new PodError("wrong_target", "request is addressed to another orca node");
   }
   const valid = verifyWithNodeId(
     parsed.orcaNodeId,
@@ -273,9 +241,9 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
     }),
     parsed.signature,
   );
-  if (!valid) throw new PodAuthError("bad_signature", "signature does not match");
+  if (!valid) throw new PodError("bad_signature", "signature does not match");
   if (!options.nonceCache.remember(`${parsed.orcaNodeId}:${parsed.nonce}`, now)) {
-    throw new PodAuthError("nonce_replay", "nonce already used");
+    throw new PodError("nonce_replay", "nonce already used");
   }
   return { orcaNodeId: parsed.orcaNodeId, ts: parsed.ts, nonce: parsed.nonce };
 }
@@ -284,58 +252,35 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
 // Admission proof (§7.1): the workgroup password gates *joining* the mesh.
 // ---------------------------------------------------------------------------
 
-export type JoinProofFields = {
+export type AdmissionKind = keyof typeof ADMISSION_DOMAIN;
+
+type AdmissionFields = {
   workgroupId: string;
   orcaNodeId: string;
   ts: number;
   nonce: string;
 };
 
-export function joinProofInput(fields: JoinProofFields): string {
-  return [
-    JOIN_PROOF_VERSION,
-    fields.workgroupId,
-    fields.orcaNodeId,
-    String(fields.ts),
-    fields.nonce,
-  ].join("|");
+/**
+ * HMAC over the admission fields, keyed by the password-derived workgroup key.
+ * `join` gates entry to the mesh; `heartbeat` repeats the proof on every beat
+ * (§7.1): a node whose password changed carries a proof the old mesh cannot
+ * verify, so both sides stop answering and drop each other within a few ticks.
+ */
+export function admissionProof(kind: AdmissionKind, key: Buffer, fields: AdmissionFields): string {
+  const input = [ADMISSION_DOMAIN[kind], fields.workgroupId, fields.orcaNodeId, String(fields.ts), fields.nonce].join(
+    "|",
+  );
+  return createHmac("sha256", key).update(input).digest("base64url");
 }
 
-export function buildJoinProof(key: Buffer, fields: JoinProofFields): string {
-  return createHmac("sha256", key).update(joinProofInput(fields)).digest("base64url");
-}
-
-export function verifyJoinProof(key: Buffer, fields: JoinProofFields, proof: string): boolean {
-  const expected = Buffer.from(buildJoinProof(key, fields), "base64url");
-  const actual = Buffer.from(proof, "base64url");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-// ---------------------------------------------------------------------------
-// Heartbeat admission (§7.1): membership is proven on every heartbeat, not only
-// at join. A node whose password changed carries a proof the old mesh cannot
-// verify, so both sides stop answering and drop each other within a few ticks —
-// rotating the password removes old members instead of only blocking new ones.
-// ---------------------------------------------------------------------------
-
-export const HEARTBEAT_PROOF_VERSION = "pod-hb-v1";
-
-export function heartbeatProofInput(fields: JoinProofFields): string {
-  return [
-    HEARTBEAT_PROOF_VERSION,
-    fields.workgroupId,
-    fields.orcaNodeId,
-    String(fields.ts),
-    fields.nonce,
-  ].join("|");
-}
-
-export function buildHeartbeatProof(key: Buffer, fields: JoinProofFields): string {
-  return createHmac("sha256", key).update(heartbeatProofInput(fields)).digest("base64url");
-}
-
-export function verifyHeartbeatProof(key: Buffer, fields: JoinProofFields, proof: string): boolean {
-  const expected = Buffer.from(buildHeartbeatProof(key, fields), "base64url");
+export function verifyAdmissionProof(
+  kind: AdmissionKind,
+  key: Buffer,
+  fields: AdmissionFields,
+  proof: string,
+): boolean {
+  const expected = Buffer.from(admissionProof(kind, key, fields), "base64url");
   const actual = Buffer.from(proof, "base64url");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
@@ -345,16 +290,14 @@ export function verifyHeartbeatProof(key: Buffer, fields: JoinProofFields, proof
 // deriving a child grant keeps the origin signature verifiable at every hop.
 // ---------------------------------------------------------------------------
 
-export const GRANT_VERSION = "pod-grant-v1";
-
 /**
  * The signature covers every grant field, including the deciding origin and the
  * request id. Writing them as canonical JSON (fixed key order, no optional
  * trailing fields) avoids the ambiguity of `|`-joined values: a grant cannot be
  * re-labelled with a different origin or replayed for another request.
  */
-export function grantSignatureInput(grant: Grant): string {
-  return `${GRANT_VERSION}\n${JSON.stringify({
+function grantSignatureInput(grant: Grant): string {
+  return `${GRANT_DOMAIN}\n${JSON.stringify({
     grant_id: grant.grant_id,
     workgroup_id: grant.workgroup_id,
     origin_orca_node: grant.origin_orca_node,
@@ -386,14 +329,9 @@ export function verifyGrant(originOrcaNodeId: string, grant: SignedGrant): boole
  * the serving node itself and verified with its own public key.
  */
 export function blobLinkSignature(identity: NodeIdentity, blobId: string, exp: string): string {
-  return signWithIdentity(identity, `blob-link-v1|${blobId}|${exp}`);
+  return signWithIdentity(identity, `${BLOB_LINK_DOMAIN}|${blobId}|${exp}`);
 }
 
-export function verifyBlobLinkSignature(
-  orcaNodeId: string,
-  blobId: string,
-  exp: string,
-  sig: string,
-): boolean {
-  return verifyWithNodeId(orcaNodeId, `blob-link-v1|${blobId}|${exp}`, sig);
+export function verifyBlobLinkSignature(orcaNodeId: string, blobId: string, exp: string, sig: string): boolean {
+  return verifyWithNodeId(orcaNodeId, `${BLOB_LINK_DOMAIN}|${blobId}|${exp}`, sig);
 }

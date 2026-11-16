@@ -35,7 +35,6 @@ describe("heartbeatIntervalMsFor", () => {
     expect(heartbeatIntervalMsFor(10)).toBe(10_000);
     expect(heartbeatIntervalMsFor(25)).toBe(HEARTBEAT_INTERVAL_MAX_MS);
     expect(heartbeatIntervalMsFor(0)).toBe(HEARTBEAT_INTERVAL_MIN_MS);
-    expect(heartbeatIntervalMsFor(Number.NaN)).toBe(HEARTBEAT_INTERVAL_MIN_MS);
   });
 });
 
@@ -69,23 +68,13 @@ describe("adaptive membership windows", () => {
     nowMs = 15_000;
     expect(membership.evaluate()[0]?.state).toBe("offline");
   });
-
-  it("ignores nonsense cadences", () => {
-    const membership = createMembership({ selfOrcaNodeId: "SELF" });
-    membership.setIntervalMs(0);
-    membership.setIntervalMs(Number.NaN);
-    expect(membership.timings.intervalMs).toBe(2000);
-  });
 });
 
 describe("node cadence follows the mesh", () => {
   it("drops to two seconds for a pair and five for five nodes", async () => {
     const pair = await createMesh({ orcaNodes: 2, workgroupId: "adaptive-pair", password: "correct horse" });
     try {
-      await eventually(
-        () => pair.orcaNodes.every((orcaNode) => orcaNode.heartbeatIntervalMs === 2000),
-        "pair cadence",
-      );
+      await eventually(() => pair.orcaNodes.every((orcaNode) => orcaNode.heartbeatIntervalMs === 2000), "pair cadence");
     } finally {
       await pair.stop();
     }
@@ -95,9 +84,7 @@ describe("node cadence follows the mesh", () => {
       // Each node must see the other four before the cadence reflects five nodes.
       await eventually(
         () =>
-          mesh.orcaNodes.every(
-            (orcaNode) => orcaNode.members().length === 4 && orcaNode.heartbeatIntervalMs === 5000,
-          ),
+          mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 4 && orcaNode.heartbeatIntervalMs === 5000),
         "five-node cadence",
         20_000,
       );

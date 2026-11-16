@@ -19,8 +19,10 @@
 
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 
 import {
+  INSTALL_BIND_HOST,
   checkDsh,
   installQuestions,
   installService,
@@ -33,6 +35,9 @@ import {
   type PromptFn,
   type PromptQuestion,
 } from "./install.ts";
+import { DEFAULT_PORT } from "./protocol.ts";
+import { parseSettings } from "./settings.ts";
+import { errorMessage } from "./errors.ts";
 
 const USAGE = `Usage: orca-pod install [options]
 
@@ -50,7 +55,7 @@ Options:
   --workgroup <id>      Workgroup id
   --data-root <path>    Node data directory (default: ~/.orca-pod)
   --bind-host <addr>    Listen address (default: ::, all interfaces)
-  --port <number>       Listen port (default: 11811)
+  --port <number>       Listen port (default: ${DEFAULT_PORT})
   --endpoint <url>      Advertised endpoint; repeatable
   --peer <url>          Peer to join at startup; repeatable
   --env-file <path>     Read environment variables from this file (systemd EnvironmentFile);
@@ -73,115 +78,54 @@ Examples:
   npx orca-pod install --dry-run --workgroup lab --password 'secret'
 `;
 
-interface ParsedArguments {
-  command: string | null;
-  values: Map<string, string[]>;
-  booleans: Set<string>;
-  /** Options the caller supplied, excluding `--dry-run` and help. */
-  explicit: Set<string>;
+const OPTIONS = {
+  workgroup: { type: "string" },
+  password: { type: "string", short: "p" },
+  "data-root": { type: "string" },
+  "bind-host": { type: "string" },
+  port: { type: "string" },
+  endpoint: { type: "string", multiple: true },
+  peer: { type: "string", multiple: true },
+  "env-file": { type: "string", multiple: true },
+  env: { type: "string", multiple: true },
+  "display-name": { type: "string" },
+  "service-name": { type: "string" },
+  "dsh-bin": { type: "string" },
+  system: { type: "boolean" },
+  "no-start": { type: "boolean" },
+  force: { type: "boolean" },
+  "dry-run": { type: "boolean" },
+  "skip-dsh-check": { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+function parseInstallArgs(argv: string[]) {
+  return parseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
 }
 
-const VALUE_FLAGS = new Set([
-  "workgroup",
-  "password",
-  "data-root",
-  "bind-host",
-  "port",
-  "endpoint",
-  "peer",
-  "env-file",
-  "env",
-  "display-name",
-  "service-name",
-  "dsh-bin",
-]);
+type InstallFlags = ReturnType<typeof parseInstallArgs>["values"];
 
-const BOOLEAN_FLAGS = new Set([
-  "system",
-  "no-start",
-  "force",
-  "dry-run",
-  "skip-dsh-check",
-  "help",
-]);
+interface ParsedArguments {
+  command: string | null;
+  values: InstallFlags;
+}
 
 /** Options that do not turn install into the flag-driven branch. */
 const INTERACTIVE_NEUTRAL = new Set(["dry-run", "help"]);
 
 export function parseArguments(argv: string[]): ParsedArguments {
-  const values = new Map<string, string[]>();
-  const booleans = new Set<string>();
-  const explicit = new Set<string>();
-  let command: string | null = null;
-  const record = (name: string): void => {
-    if (!INTERACTIVE_NEUTRAL.has(name)) explicit.add(name);
-  };
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index]!;
-    if (token === "-h" || token === "--help") {
-      booleans.add("help");
-      continue;
-    }
-    if (token === "-p") {
-      const value = argv[index + 1];
-      if (value === undefined || value.startsWith("--")) throw new Error("-p needs a value");
-      const list = values.get("password") ?? [];
-      list.push(value);
-      values.set("password", list);
-      record("password");
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--")) {
-      const name = token.slice(2);
-      if (BOOLEAN_FLAGS.has(name)) {
-        booleans.add(name);
-        record(name);
-        continue;
-      }
-      if (VALUE_FLAGS.has(name)) {
-        const value = argv[index + 1];
-        if (value === undefined || value.startsWith("--")) {
-          throw new Error(`--${name} needs a value`);
-        }
-        const list = values.get(name) ?? [];
-        list.push(value);
-        values.set(name, list);
-        record(name);
-        index += 1;
-        continue;
-      }
-      throw new Error(`unknown option --${name}`);
-    }
-    if (command === null) {
-      command = token;
-      continue;
-    }
-    throw new Error(`unexpected argument ${token}`);
-  }
-  return { command, values, booleans, explicit };
+  const { values, positionals } = parseInstallArgs(argv);
+  const [command = null, ...extra] = positionals;
+  if (extra.length > 0) throw new Error(`unexpected argument ${extra[0]}`);
+  return { command, values };
 }
 
 /** True only for `install` (plus `--dry-run`/help), i.e. no setup flags. */
 export function isInteractiveInvocation(parsed: ParsedArguments): boolean {
-  return parsed.explicit.size === 0;
+  return Object.keys(parsed.values).every((name) => INTERACTIVE_NEUTRAL.has(name));
 }
 
-function first(parsed: ParsedArguments, name: string): string | undefined {
-  return parsed.values.get(name)?.[0];
-}
-
-function numberFlag(parsed: ParsedArguments, name: string): number | undefined {
-  const raw = first(parsed, name);
-  if (raw === undefined) return undefined;
-  const parsedNumber = Number(raw);
-  if (!Number.isInteger(parsedNumber) || parsedNumber < 0 || parsedNumber > 65535) {
-    throw new Error(`--${name} must be an integer between 0 and 65535`);
-  }
-  return parsedNumber;
-}
-
-export interface MainDeps {
+interface MainDeps {
   /** Defaults to a readline session on stdin/stdout. */
   prompt?: PromptFn;
   /** Defaults to `process.stdin.isTTY`; false never prompts (SSH without -t). */
@@ -231,7 +175,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   const write = deps.write ?? ((text: string) => console.log(text));
   const writeError = deps.writeError ?? ((text: string) => console.error(text));
   const parsed = parseArguments(argv);
-  if (parsed.booleans.has("help") || parsed.command === null) {
+  const { values } = parsed;
+  if (values.help === true || parsed.command === null) {
     write(USAGE);
     return 0;
   }
@@ -240,25 +185,27 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     return 2;
   }
 
-  const dataRoot = first(parsed, "data-root");
   const options: InstallOptions = {
-    system: parsed.booleans.has("system"),
-    noStart: parsed.booleans.has("no-start"),
-    force: parsed.booleans.has("force"),
-    ...(dataRoot === undefined ? {} : { dataRoot }),
-    ...(first(parsed, "service-name") === undefined ? {} : { serviceName: first(parsed, "service-name")! }),
-    ...(first(parsed, "workgroup") === undefined ? {} : { workgroupId: first(parsed, "workgroup")! }),
-    ...(first(parsed, "password") === undefined ? {} : { password: first(parsed, "password")! }),
-    ...(first(parsed, "display-name") === undefined ? {} : { displayName: first(parsed, "display-name")! }),
-    ...(first(parsed, "bind-host") === undefined ? {} : { bindHost: first(parsed, "bind-host")! }),
-    ...(numberFlag(parsed, "port") === undefined ? {} : { port: numberFlag(parsed, "port")! }),
-    ...(parsed.values.get("endpoint") === undefined ? {} : { endpoints: [...parsed.values.get("endpoint")!] }),
-    ...(parsed.values.get("peer") === undefined ? {} : { peers: [...parsed.values.get("peer")!] }),
-    ...(parsed.values.get("env-file") === undefined ? {} : { envFiles: [...parsed.values.get("env-file")!] }),
-    ...(parsed.values.get("env") === undefined ? {} : { environment: [...parsed.values.get("env")!] }),
+    system: values.system === true,
+    noStart: values["no-start"] === true,
+    force: values.force === true,
+    serviceName: values["service-name"] ?? "orca-pod",
+    envFiles: values["env-file"] ?? [],
+    environment: values.env ?? [],
+    node: parseSettings({
+      workgroup_id: values.workgroup,
+      workgroup_password: values.password,
+      display_name: values["display-name"],
+      data_root: values["data-root"],
+      bind_host: values["bind-host"] ?? INSTALL_BIND_HOST,
+      port: values.port === undefined ? undefined : Number(values.port),
+      endpoints: values.endpoint,
+      peers: values.peer,
+    }),
   };
+  const dshBin = values["dsh-bin"];
   const environment = resolveEnvironment({
-    ...(first(parsed, "dsh-bin") === undefined ? {} : { dshBin: first(parsed, "dsh-bin")! }),
+    ...(dshBin === undefined ? {} : { dshBin }),
     packageEntry: fileURLToPath(new URL("./cli.ts", import.meta.url)),
     ...deps.environment,
   });
@@ -272,9 +219,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     if (!interactive || !canPrompt) {
       writeError(`install needs answers for a new node config: ${missingAnswerFlags(questions)}.`);
       if (!interactive) {
-        writeError("Pass them as flags (for example --workgroup lab --password 'secret'); running bare `orca-pod install` would ask interactively.");
+        writeError(
+          "Pass them as flags (for example --workgroup lab --password 'secret'); running bare `orca-pod install` would ask interactively.",
+        );
       } else {
-        writeError("The interactive setup needs a terminal; pass the answers as flags (for example --workgroup lab --password 'secret').");
+        writeError(
+          "The interactive setup needs a terminal; pass the answers as flags (for example --workgroup lab --password 'secret').",
+        );
       }
       return 1;
     }
@@ -282,18 +233,17 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   }
 
   const resolvedPlan = planInstall(answers, environment);
-  answers = { ...answers, dataRoot: resolvedPlan.dataRoot };
   write("orca-pod install");
-  write(`  workgroup: ${answers.workgroupId ?? "(existing config)"}`);
+  write(`  workgroup: ${answers.node.workgroup_id ?? "(existing config)"}`);
   write(`  data root: ${resolvedPlan.dataRoot}`);
-  const listenHost = answers.bindHost ?? "::";
-  const listen = `${listenHost.includes(":") ? `[${listenHost}]` : listenHost}:${String(answers.port ?? 11811)}`;
+  const { bind_host: listenHost, port: listenPort } = answers.node;
+  const listen = `${listenHost.includes(":") ? `[${listenHost}]` : listenHost}:${listenPort}`;
   write(`  listen:    ${listen}`);
   write(`  service:   ${resolvedPlan.serviceName} at ${resolvedPlan.unitPath}`);
   if (resolvedPlan.envFiles.length > 0) write(`  env files: ${resolvedPlan.envFiles.join(", ")}`);
   if (resolvedPlan.environment.length > 0) write(`  env:       ${resolvedPlan.environment.join(" ")}`);
 
-  if (parsed.booleans.has("dry-run")) {
+  if (values["dry-run"] === true) {
     write("");
     write(renderUnit(resolvedPlan).trimEnd());
     write("");
@@ -301,7 +251,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
     return 0;
   }
 
-  if (!parsed.booleans.has("skip-dsh-check")) {
+  if (values["skip-dsh-check"] !== true) {
     const checked = checkDsh(environment.dshBin);
     if (!checked.ok) {
       writeError(`dsh was not found: ${checked.message ?? "unknown error"}`);
@@ -321,7 +271,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
       return 1;
     }
   }
-  if (answers.noStart === true) {
+  if (answers.noStart) {
     write("orca-pod: unit written; start it with:");
     for (const command of resolvedPlan.commands) write(`  ${command.join(" ")}`);
   } else {
@@ -341,7 +291,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(errorMessage(error));
       process.exitCode = 1;
     });
 }

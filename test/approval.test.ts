@@ -4,12 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { buildAuthHeader, signGrant } from "../src/crypto.ts";
 import { loadIdentity, type NodeIdentity } from "../src/identity.ts";
-import { createMesh, type Mesh } from "../src/index.ts";
+import { createMesh, type Mesh } from "../src/harness.ts";
 import type { OrcaNode } from "../src/orca_node.ts";
-import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import { createPodTools } from "../src/plugin/tools.ts";
-import { createTracker } from "../src/plugin/tracker.ts";
-import type { ApprovalOutcome, ToolAgent, ToolDefinition } from "../src/plugin/dsh.ts";
 import { permissionRequestOf } from "../src/protocol.ts";
 import type { A2AMessage, Grant, SignedGrant, TaskState, TaskView } from "../src/protocol.ts";
 
@@ -138,111 +134,6 @@ function grantFor(view: TaskView, originOrcaNode: string, tool = "write_file"): 
   };
 }
 
-describe("orca_pod approve method", () => {
-  function fakeAgent(): ToolAgent {
-    return { id: "session-test", status: "running", inject: () => {}, followup: () => {} };
-  }
-
-  function approveTool(
-    origin: OrcaNode,
-    approval?: { request: (request: unknown) => Promise<ApprovalOutcome> },
-  ): ToolDefinition {
-    const handle: PodHandle = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: origin, url: origin.endpoints[0]!, port: null, started_at: null, error: null },
-      config: { workgroup_id: WORKGROUP, workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] },
-      uiConfigured: true,
-      reconfigure: async () => {},
-      addPeer: async () => {},
-      disconnect: async () => {},
-        reset: async () => {},
-    };
-    const tracker = createTracker(() => null, { intervalMs: 60_000 });
-    const tools = createPodTools(handle, tracker, approval === undefined ? {} : { approval: approval as never });
-    const found = tools.find((candidate) => candidate.name === "orca_pod");
-    if (found === undefined) throw new Error("missing orca_pod");
-    return found;
-  }
-
-  it("asks the host approval card and approves the remote task", async () => {
-    const { origin, targetUrl } = await threeNodes();
-    const seen: unknown[] = [];
-    const approve = approveTool(origin, {
-      request: async (request) => {
-        seen.push(request);
-        return "allowed-once";
-      },
-    });
-    const submitted = await submit(origin, targetUrl);
-    await waitForState(origin, targetUrl, submitted.id, "input-required");
-
-    const result = (await approve.execute(
-      { method: "approve", peer: targetUrl, task_id: submitted.id, decision: "allow" },
-      { agent: fakeAgent() },
-    )) as Record<string, unknown>;
-
-    expect(result["decision"]).toBe("approved");
-    expect(result["approval"]).toBe("allowed-once");
-    expect(seen).toHaveLength(1);
-    const shown = seen[0] as { reason?: string };
-    expect(shown.reason).toContain("write_file");
-
-    const done = await waitForState(origin, targetUrl, submitted.id, "completed");
-    expect(textOf(done)).toBe("written");
-  });
-
-  it("denies the task when the human rejects the card", async () => {
-    const { origin, targetUrl } = await threeNodes();
-    const approve = approveTool(origin, { request: async () => "rejected" });
-    const submitted = await submit(origin, targetUrl);
-    await waitForState(origin, targetUrl, submitted.id, "input-required");
-
-    const result = (await approve.execute(
-      { method: "approve", peer: targetUrl, task_id: submitted.id, decision: "allow" },
-      { agent: fakeAgent() },
-    )) as Record<string, unknown>;
-    expect(result["decision"]).toBe("denied");
-
-    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
-    expect(failed.status.reason).toBe("permission_denied");
-    expect(textOf(failed)).toContain("approval rejected");
-  });
-
-  it("denies without asking the human when decision is deny", async () => {
-    const { origin, targetUrl } = await threeNodes();
-    let asked = false;
-    const approve = approveTool(origin, {
-      request: async () => {
-        asked = true;
-        return "allowed-once";
-      },
-    });
-    const submitted = await submit(origin, targetUrl);
-    await waitForState(origin, targetUrl, submitted.id, "input-required");
-
-    await approve.execute(
-      { method: "approve", peer: targetUrl, task_id: submitted.id, decision: "deny", reason: "not this time" },
-      { agent: fakeAgent() },
-    );
-
-    expect(asked).toBe(false);
-    const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
-    expect(failed.status.reason).toBe("permission_denied");
-    expect(textOf(failed)).toContain("not this time");
-  });
-
-  it("refuses to approve when the host exposes no approval service", async () => {
-    const { origin, targetUrl } = await threeNodes();
-    const approve = approveTool(origin);
-    const submitted = await submit(origin, targetUrl);
-    await waitForState(origin, targetUrl, submitted.id, "input-required");
-
-    await expect(
-      approve.execute({ method: "approve", peer: targetUrl, task_id: submitted.id, decision: "allow" }, { agent: fakeAgent() }),
-    ).rejects.toThrow(/human approval is unavailable/);
-  });
-});
-
 describe("Phase 3 approval round trip", () => {
   it("surfaces a permission request and completes after the origin approves", async () => {
     const { origin, targetUrl, identity } = await threeNodes();
@@ -312,11 +203,7 @@ describe("Phase 3 approval round trip", () => {
     const grant = signGrant(identity, grantFor(suspended, origin.orcaNodeId));
     const outsiderIdentity = loadIdentity(outsider.config.data_root);
     if (outsiderIdentity === null) throw new Error("outsider identity is missing");
-    const response = await signedResume(
-      targetUrl,
-      outsiderIdentity,
-      resumeMessage(submitted.id, { grant }),
-    );
+    const response = await signedResume(targetUrl, outsiderIdentity, resumeMessage(submitted.id, { grant }));
 
     expect(response.status).toBe(403);
     expect(response.code).toBe("not_task_origin");
@@ -330,11 +217,7 @@ describe("Phase 3 approval round trip", () => {
     const submitted = await submit(origin, targetUrl);
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
-    const response = await signedResume(
-      targetUrl,
-      identity,
-      resumeMessage(submitted.id, { hello: "no grant here" }),
-    );
+    const response = await signedResume(targetUrl, identity, resumeMessage(submitted.id, { hello: "no grant here" }));
 
     expect(response.status).toBe(400);
     expect(response.code).toBe("bad_request");

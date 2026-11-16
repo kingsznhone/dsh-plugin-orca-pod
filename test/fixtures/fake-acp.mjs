@@ -1,7 +1,9 @@
 /**
  * Minimal fake ACP server for AcpExecutor tests: NDJSON JSON-RPC on stdio.
  * Usage: node fake-acp.mjs <mode> <logFile>
- * Modes: ok | permission | hang | resume-fail | crash-once
+ * Modes: ok | permission | permission-fetch | hang | resume-fail | crash-once
+ * `permission` asks to edit (a kind workspace-write allows by itself);
+ * `permission-fetch` asks for a kind that only the origin can approve.
  * Every request/notification is appended to <logFile> as one JSON object per line.
  */
 
@@ -11,7 +13,8 @@ import { createInterface } from "node:readline";
 // Skip trailing option-looking args the executor appends (e.g. `--profile acp`):
 // without this guard argv[3] would become a log path literally named "--profile".
 const rawMode = process.argv[2] ?? "ok";
-const mode = rawMode.startsWith("-") ? "ok" : rawMode;
+const mode = rawMode.startsWith("-") ? "ok" : rawMode === "permission-fetch" ? "permission" : rawMode;
+const toolKind = rawMode === "permission-fetch" ? "fetch" : "edit";
 const rawLog = process.argv[3] ?? null;
 const logFile = rawLog !== null && !rawLog.startsWith("-") ? rawLog : null;
 const sessions = new Set();
@@ -35,8 +38,8 @@ function respond(id, result) {
   send({ jsonrpc: "2.0", id, result });
 }
 
-function fail(id, message) {
-  send({ jsonrpc: "2.0", id, error: { code: -32602, message } });
+function fail(id, message, code = -32602) {
+  send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
 function update(sessionId, payload) {
@@ -84,7 +87,7 @@ function promptTurn(id, params) {
       method: "session/request_permission",
       params: {
         sessionId,
-        toolCall: { toolCallId: "call-1", title: "write file", kind: "edit" },
+        toolCall: { toolCallId: "call-1", title: "write file", kind: toolKind },
         options: permissionOptions,
       },
     });
@@ -112,13 +115,18 @@ function onRequest(message) {
     }
     const sessionId = `fake-${++counter}`;
     sessions.add(sessionId);
-    log({ method: "session/new", sessionId, cwd: params.cwd, mcpServers: Array.isArray(params?.mcpServers) ? params.mcpServers.length : 0 });
+    log({
+      method: "session/new",
+      sessionId,
+      cwd: params.cwd,
+      mcpServers: Array.isArray(params?.mcpServers) ? params.mcpServers.length : 0,
+    });
     respond(id, { sessionId });
     return;
   }
   if (method === "session/resume") {
     if (mode === "resume-fail") {
-      fail(id, "session is not resumable");
+      fail(id, "session not found", -32002);
       return;
     }
     log({ method: "session/resume", sessionId: params?.sessionId });

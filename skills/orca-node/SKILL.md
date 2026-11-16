@@ -1,4 +1,5 @@
 ---
+
 name: orca-node
 description: Delegate work to other orca nodes in this mesh, add a machine to the mesh, check tasks you already dispatched, and escalate a blocked sub-task to its origin.
 whenToUse: When the user asks you to run something on another machine or orca node, wants to add a machine to the mesh, needs the status or result of a task you dispatched earlier, or when waiting on a sub-task returns exit code 3.

@@ -33,7 +33,7 @@ describe("workspace manager", () => {
 
   it("is idempotent and stable across calls", () => {
     const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
-    expect(manager.ensure().root).toBe(manager.get().root);
+    expect(manager.ensure()).toBe(manager.ensure());
   });
 
   it("isolates workgroups", () => {
@@ -43,12 +43,10 @@ describe("workspace manager", () => {
     expect(first.ensure().root).not.toBe(second.ensure().root);
   });
 
-  it("builds per-task dirs under the state dir and rejects traversal", () => {
-    const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" }).get();
-    expect(workspace.taskDir("TASK01")).toBe(join(workspace.state, "tasks", "TASK01"));
+  it("builds the input dir under the workspace root and rejects traversal", () => {
+    const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" }).ensure();
     expect(workspace.inputDir("TASK01")).toBe(join(workspace.root, "inputs", "TASK01"));
-    expect(() => workspace.taskDir("../escape")).toThrow();
-    expect(() => workspace.taskDir("a/b")).toThrow();
+    expect(() => workspace.inputDir("a/b")).toThrow();
     expect(() => workspace.inputDir("../escape")).toThrow();
   });
 

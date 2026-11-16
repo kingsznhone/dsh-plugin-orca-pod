@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMesh } from "../src/index.ts";
+import { createMesh } from "../src/harness.ts";
 import type { MembershipTimings } from "../src/membership.ts";
 import type { OrcaNode } from "../src/orca_node.ts";
 
@@ -33,8 +33,7 @@ describe("heartbeat loop and watchdog", () => {
     try {
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) =>
-            orcaNode.members().length === 2 && orcaNode.members().every((peer) => peer.state === "online"),
+          (orcaNode) => orcaNode.members().length === 2 && orcaNode.members().every((peer) => peer.state === "online"),
         ),
       );
 
@@ -42,9 +41,7 @@ describe("heartbeat loop and watchdog", () => {
 
       await waitFor(() =>
         survivors.every((orcaNode) =>
-          orcaNode
-            .members()
-            .some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
+          orcaNode.members().some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
         ),
       );
 
@@ -67,8 +64,7 @@ describe("heartbeat loop and watchdog", () => {
     try {
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) =>
-            orcaNode.members().length === 1 && orcaNode.members().every((peer) => peer.state === "online"),
+          (orcaNode) => orcaNode.members().length === 1 && orcaNode.members().every((peer) => peer.state === "online"),
         ),
       );
       await new Promise((resolve) => setTimeout(resolve, 150));

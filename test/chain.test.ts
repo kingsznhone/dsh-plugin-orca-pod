@@ -5,15 +5,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  childPodMetadata,
-  deriveChildGrant,
-  grantCovers,
-  validatePodMetadata,
-} from "../src/chain.ts";
+import { childPodMetadata, deriveChildGrant, grantCovers } from "../src/chain.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
+import { parsePodMetadata } from "../src/task_meta.ts";
 import { signGrant } from "../src/crypto.ts";
-import { generateNodeIdentity, loadIdentity, type NodeIdentity } from "../src/identity.ts";
+import { generateNodeIdentity, loadIdentity } from "../src/identity.ts";
+import { connectAll } from "../src/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 import {
   permissionRequestOf,
@@ -41,10 +38,10 @@ async function makeNode(): Promise<OrcaNode> {
   const dataRoot = mkdtempSync(join(tmpdir(), "orca-chain-"));
   dataRoots.push(dataRoot);
   const config = createOrcaNodeConfig({
-    workgroupId: WORKGROUP,
-    password: PASSWORD,
-    dataRoot,
-    host: "127.0.0.1",
+    workgroup_id: WORKGROUP,
+    workgroup_password: PASSWORD,
+    data_root: dataRoot,
+    bind_host: "127.0.0.1",
     port: 0,
   });
   const node = createOrcaNode({ config });
@@ -96,11 +93,7 @@ function podMetadata(hop: number, chain: string[], root = "t_root"): Record<stri
 describe("chain metadata", () => {
   it("child metadata increments the hop and appends this orca node", () => {
     expect(
-      childPodMetadata(
-        { hop: 0, chain: ["A"], root: "t_root", permission_mode: "workspace-write" },
-        "t_parent",
-        "B",
-      ),
+      childPodMetadata({ hop: 0, chain: ["A"], root: "t_root", permission_mode: "workspace-write" }, "t_parent", "B"),
     ).toEqual({ hop: 1, chain: ["A", "B"], root: "t_root", permission_mode: "workspace-write" });
     expect(childPodMetadata(undefined, "t_parent", "B")).toEqual({
       hop: 1,
@@ -110,15 +103,26 @@ describe("chain metadata", () => {
   });
 
   it("accepts any hop depth but rejects callbacks to an ancestor", () => {
-    expect(() => validatePodMetadata(podMetadata(1, ["A", "B"]), "B")).toThrowError(/ancestors/);
-    expect(validatePodMetadata(podMetadata(2, ["A", "B"]), "C")).toMatchObject({ hop: 2, chain: ["A", "B"] });
-    expect(validatePodMetadata(undefined, "C")).toEqual({});
+    expect(() => parsePodMetadata(podMetadata(1, ["A", "B"]), "B", "A")).toThrowError(/ancestors/);
+    expect(parsePodMetadata(podMetadata(2, ["A", "B"]), "C", "A")).toMatchObject({
+      chain: ["A", "B"],
+      rootOrigin: "A",
+    });
+    expect(parsePodMetadata(undefined, "C", "A")).toMatchObject({
+      chain: [],
+      rootOrigin: "A",
+      permissionMode: "read-only",
+      inputs: [],
+    });
+    expect(parsePodMetadata({ pod: { root_origin: "R" } }, "C", "A").rootOrigin).toBe("R");
   });
 
   it("rejects malformed hop and chain values", () => {
-    expect(() => validatePodMetadata({ pod: { hop: -1 } }, "B")).toThrowError(/non-negative integer/);
-    expect(() => validatePodMetadata({ pod: { hop: 0.5 } }, "B")).toThrowError(/non-negative integer/);
-    expect(() => validatePodMetadata({ pod: { chain: "A" } }, "B")).toThrowError(/array/);
+    expect(() => parsePodMetadata({ pod: { hop: -1 } }, "B", "A")).toThrowError(/non-negative integer/);
+    expect(() => parsePodMetadata({ pod: { hop: 0.5 } }, "B", "A")).toThrowError(/non-negative integer/);
+    expect(() => parsePodMetadata({ pod: { chain: "A" } }, "B", "A")).toThrowError(/array/);
+    expect(() => parsePodMetadata({ pod: { task_ttl_s: -1 } }, "B", "A")).toThrowError(/task_ttl_s/);
+    expect(() => parsePodMetadata({ echo: { nope: 1 } }, "B", "A")).toThrowError(/unknown field/);
   });
 });
 
@@ -210,6 +214,7 @@ describe("multi-hop enforcement", () => {
   it("accepts hop > 0 without a depth limit", async () => {
     const sender = await makeNode();
     const target = await makeNode();
+    await connectAll([sender, target]);
     const view = await sender.sendTask(target.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "two hops" }] },
       metadata: { ...podMetadata(1, [sender.orcaNodeId]), echo: { final: { state: "completed", text: "hop ok" } } },
@@ -221,11 +226,12 @@ describe("multi-hop enforcement", () => {
   it("rejects a callback into an ancestor chain", async () => {
     const sender = await makeNode();
     const target = await makeNode();
+    await connectAll([sender, target]);
     await expectCode(
       () =>
         sender.sendTask(target.endpoints[0]!, {
-        message: { role: "user", parts: [{ kind: "text", text: "callback" }] },
-        metadata: podMetadata(1, ["A", target.orcaNodeId]),
+          message: { role: "user", parts: [{ kind: "text", text: "callback" }] },
+          metadata: podMetadata(1, ["A", target.orcaNodeId]),
         }),
       "ancestor_call_forbidden",
     );
@@ -236,6 +242,7 @@ describe("chained approval", () => {
   it("derives a child grant from the parent grant and resumes the downstream task", async () => {
     const delegator = await makeNode();
     const worker = await makeNode();
+    await connectAll([delegator, worker]);
     const origin = loadIdentity(delegator.config.data_root);
     if (origin === null) throw new Error("delegator identity is missing");
 
@@ -277,6 +284,7 @@ describe("chained approval", () => {
   it("refuses to derive when the parent grant does not cover the request", async () => {
     const delegator = await makeNode();
     const worker = await makeNode();
+    await connectAll([delegator, worker]);
     const origin = loadIdentity(delegator.config.data_root);
     if (origin === null) throw new Error("delegator identity is missing");
 
@@ -332,6 +340,7 @@ describe("relay prototype (7.12)", () => {
     const root = await makeNode();
     const middle = await makeNode();
     const leaf = await makeNode();
+    await connectAll([root, middle, leaf]);
 
     const childView = await middle.sendTask(leaf.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "child writes" }] },

@@ -58,7 +58,7 @@ describe("dispatch store (13.4)", () => {
     const reopened = createSqliteDispatchStore(file);
     expect(reopened.get("task-1")?.agent_id).toBe("session-7");
     reopened.close();
-  })
+  });
 
   it("marks only in-flight entries unknown on restart", () => {
     const file = join(tempRoot(), "tasks.db");
@@ -89,10 +89,10 @@ describe("origin dispatch log (13.4)", () => {
   it("records a dispatched task and its last known state", async () => {
     const peerRoot = tempRoot();
     const peerConfig = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: PASSWORD,
-      dataRoot: peerRoot,
-      host: "127.0.0.1",
+      workgroup_id: WORKGROUP,
+      workgroup_password: PASSWORD,
+      data_root: peerRoot,
+      bind_host: "127.0.0.1",
       port: 0,
     });
     const peer = createOrcaNode({ config: peerConfig });
@@ -101,10 +101,10 @@ describe("origin dispatch log (13.4)", () => {
 
     const originRoot = tempRoot();
     const originConfig = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: PASSWORD,
-      dataRoot: originRoot,
-      host: "127.0.0.1",
+      workgroup_id: WORKGROUP,
+      workgroup_password: PASSWORD,
+      data_root: originRoot,
+      bind_host: "127.0.0.1",
       port: 0,
     });
     let origin = createOrcaNode({ config: originConfig, storage: createPersistentStorage(originConfig) });
@@ -128,7 +128,9 @@ describe("origin dispatch log (13.4)", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       record = origin.listDispatches().find((item) => item.task_id === view.id);
     }
-    expect(record).toMatchObject({ peer: peer.endpoints[0]!, state: "working" });
+    // The target answers `submitted` while it prepares the task, `working` once the executor runs.
+    expect(record).toMatchObject({ peer: peer.endpoints[0]! });
+    expect(["submitted", "working"]).toContain(record?.state);
 
     // Restart the origin: in-flight dispatches become unknown, never "failed".
     await origin.stop();

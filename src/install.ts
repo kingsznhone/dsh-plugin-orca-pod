@@ -12,43 +12,33 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { configPath, createOrcaNodeConfig, saveConfig } from "./config.ts";
-import { detectLocalEndpoints } from "./net.ts";
+import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "./config.ts";
+import { bindChoices } from "./net.ts";
+import { parseSettings, type Settings } from "./settings.ts";
+import { errorMessage } from "./errors.ts";
+
+/** A service listens on all interfaces unless told otherwise (the plugin defaults to loopback). */
+export const INSTALL_BIND_HOST = "::";
 
 export interface InstallOptions {
   /** Install a system-wide unit instead of a user unit. */
-  system?: boolean;
-  /** Defaults to `orca-pod`. */
-  serviceName?: string;
-  dataRoot?: string;
-  port?: number;
-  /** Listen address written into a new node config (default `::`). */
-  bindHost?: string;
-  workgroupId?: string;
-  password?: string;
-  endpoints?: string[];
-  displayName?: string;
-  /** Peers the service unit joins on startup (`serve --peer ...`). */
-  peers?: string[];
+  system: boolean;
+  serviceName: string;
   /** Files systemd reads with `EnvironmentFile=` (for example an API key file). */
-  envFiles?: string[];
+  envFiles: string[];
   /** `KEY=VALUE` assignments written as `Environment=` lines. */
-  environment?: string[];
-  /** Path to the `dsh` executable; defaults to `dsh` on PATH. */
-  dshBin?: string;
-  /** Path to the `node` executable used by the unit. */
-  nodeBin?: string;
-  /** Entry point of the CLI shipped by this package. */
-  packageEntry?: string;
+  environment: string[];
   /** Remove an existing unit before writing (does not delete config). */
-  force?: boolean;
+  force: boolean;
   /** Do not run `systemctl enable --now` (still writes the unit). */
-  noStart?: boolean;
+  noStart: boolean;
+  /** Settings of a fresh node config; `peers` are what the unit joins on startup (`serve --peer ...`). */
+  node: Settings;
 }
 
 export interface InstallEnvironment {
@@ -58,7 +48,7 @@ export interface InstallEnvironment {
   dshBin: string;
 }
 
-export interface InstallPlan {
+interface InstallPlan {
   system: boolean;
   serviceName: string;
   unitPath: string;
@@ -74,7 +64,7 @@ export interface InstallPlan {
   commands: string[][];
 }
 
-export interface CommandResult {
+interface CommandResult {
   ok: boolean;
   stdout: string;
   stderr: string;
@@ -96,7 +86,7 @@ export type PromptFn = (question: PromptQuestion) => Promise<string>;
 
 export function resolveEnvironment(overrides: Partial<InstallEnvironment> = {}): InstallEnvironment {
   return {
-    home: overrides.home ?? process.env["HOME"] ?? homedir(),
+    home: overrides.home ?? process.env.HOME ?? homedir(),
     nodeBin: overrides.nodeBin ?? process.execPath,
     packageEntry: overrides.packageEntry ?? "",
     dshBin: overrides.dshBin ?? "dsh",
@@ -104,15 +94,13 @@ export function resolveEnvironment(overrides: Partial<InstallEnvironment> = {}):
 }
 
 export function planInstall(options: InstallOptions, env: InstallEnvironment): InstallPlan {
-  const system = options.system === true;
-  const serviceName = options.serviceName ?? "orca-pod";
-  const dataRoot = options.dataRoot ?? join(env.home, ".orca-pod");
+  const { system, serviceName } = options;
+  const dataRoot = options.node.data_root ?? defaultDataRoot();
   const unitDir = system ? "/etc/systemd/system" : join(env.home, ".config", "systemd", "user");
   const unitPath = join(unitDir, `${serviceName}.service`);
   const config = configPath(dataRoot);
   const systemctl = system ? ["systemctl"] : ["systemctl", "--user"];
-  const envFiles = options.envFiles === undefined ? [] : [...options.envFiles];
-  const environment = options.environment === undefined ? [] : [...options.environment];
+  const { envFiles, environment } = options;
   for (const file of envFiles) {
     if (file === "") throw new Error("--env-file needs a non-empty path");
   }
@@ -133,7 +121,7 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
       "serve",
       "--config",
       config,
-      ...(options.peers ?? []).flatMap((peer) => ["--peer", peer]),
+      ...options.node.peers.flatMap((peer) => ["--peer", peer]),
     ],
     envFiles,
     environment,
@@ -146,11 +134,13 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
 
 /** systemd splits ExecStart itself, so quote arguments that would confuse it. */
 export function systemdQuote(argument: string): string {
-  return /^[A-Za-z0-9_./:=@+-]+$/.test(argument) ? argument : `"${argument.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(argument)
+    ? argument
+    : `"${argument.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 /** Render one `Environment=` assignment, quoting only the value when needed. */
-export function environmentAssignment(assignment: string): string {
+function environmentAssignment(assignment: string): string {
   const index = assignment.indexOf("=");
   const name = assignment.slice(0, index);
   const value = assignment.slice(index + 1);
@@ -183,7 +173,7 @@ export function renderUnit(plan: InstallPlan, description = "orca-pod host node"
   return `${lines.join("\n")}\n`;
 }
 
-export function runCommand(command: string, args: string[]): CommandResult {
+function runCommand(command: string, args: string[]): CommandResult {
   const result = spawnSync(command, args, { encoding: "utf8" });
   return {
     ok: result.status === 0,
@@ -199,17 +189,16 @@ export function checkDsh(
 ): { ok: boolean; version?: string; message?: string } {
   try {
     const result = run(dshBin, ["--version"]);
-    if (!result.ok) return { ok: false, message: `${dshBin} --version failed: ${result.stderr.trim() || result.stdout.trim()}` };
+    if (!result.ok)
+      return { ok: false, message: `${dshBin} --version failed: ${result.stderr.trim() || result.stdout.trim()}` };
     return { ok: true, version: result.stdout.trim() };
   } catch (error) {
-    return { ok: false, message: `could not run ${dshBin}: ${error instanceof Error ? error.message : String(error)}` };
+    return { ok: false, message: `could not run ${dshBin}: ${errorMessage(error)}` };
   }
 }
 
-export interface ConfigDeps {
+interface ConfigDeps {
   exists?: (path: string) => boolean;
-  save?: (path: string, config: ReturnType<typeof createOrcaNodeConfig>) => Promise<void>;
-  chmod?: (path: string, mode: number) => Promise<void>;
 }
 
 /** True when the install would write a fresh node config (or overwrite one). */
@@ -218,7 +207,7 @@ export function needsNodeConfig(
   options: InstallOptions,
   exists: (path: string) => boolean = existsSync,
 ): boolean {
-  return options.force === true || !exists(plan.configPath);
+  return options.force || !exists(plan.configPath);
 }
 
 /**
@@ -233,40 +222,36 @@ export function installQuestions(
 ): PromptQuestion[] {
   if (!needsNodeConfig(plan, options, exists)) return [];
   const questions: PromptQuestion[] = [];
-  if (options.workgroupId === undefined || options.workgroupId === "") {
+  if (!options.node.workgroup_id) {
     questions.push({ option: "workgroup", message: "Workgroup id" });
   }
-  if (options.password === undefined || options.password === "") {
+  if (!options.node.workgroup_password) {
     questions.push({ option: "password", message: "Workgroup password", secret: true });
   }
   return questions;
 }
 
-/** Read the host part out of an advertised endpoint URL (IPv6 kept unbracketed). */
-function endpointHost(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^\[|\]$/g, "");
-  } catch {
-    return "";
-  }
-}
-
 /** Extra prompts shown only in the interactive setup; answers have defaults. */
 export function optionalInstallQuestions(options: InstallOptions): PromptQuestion[] {
-  const port = options.port ?? 11811;
-  const choices = Array.from(
-    new Set(["127.0.0.1", "::", ...detectLocalEndpoints(port).map(endpointHost).filter((host) => host.length > 0)]),
-  );
+  const { port } = options.node;
+  const choices = bindChoices(port);
   return [
     {
       option: "bind-host",
       message: "Listen address (127.0.0.1 = local only, :: = all interfaces)",
-      default: options.bindHost ?? "::",
+      default: options.node.bind_host,
       choices,
     },
     { option: "port", message: "Listen port", default: String(port) },
   ];
 }
+
+const ANSWER_FIELD = {
+  workgroup: "workgroup_id",
+  password: "workgroup_password",
+  "bind-host": "bind_host",
+  port: "port",
+} as const;
 
 /** Fill the answers from the interactive prompts into a fresh options object. */
 export async function promptForInstall(
@@ -275,7 +260,7 @@ export async function promptForInstall(
   prompt: PromptFn,
   exists: (path: string) => boolean = existsSync,
 ): Promise<InstallOptions> {
-  const next: InstallOptions = { ...options };
+  const answers: Record<string, unknown> = {};
   const questions = [...installQuestions(plan, options, exists), ...optionalInstallQuestions(options)];
   for (const question of questions) {
     const asked =
@@ -285,25 +270,9 @@ export async function promptForInstall(
     const raw = (await prompt(asked)).trim();
     const value = raw === "" ? (question.default ?? "") : raw;
     if (value === "") throw new Error(`${question.message} is required`);
-    switch (question.option) {
-      case "workgroup":
-        next.workgroupId = value;
-        break;
-      case "password":
-        next.password = value;
-        break;
-      case "bind-host":
-        next.bindHost = value;
-        break;
-      case "port": {
-        const port = Number(value);
-        if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Listen port must be an integer between 0 and 65535");
-        next.port = port;
-        break;
-      }
-    }
+    answers[ANSWER_FIELD[question.option]] = question.option === "port" ? Number(value) : value;
   }
-  return next;
+  return { ...options, node: parseSettings({ ...options.node, ...answers }) };
 }
 
 /**
@@ -316,40 +285,27 @@ export async function ensureNodeConfig(
   deps: ConfigDeps = {},
 ): Promise<{ created: boolean }> {
   const exists = deps.exists ?? existsSync;
-  if (exists(plan.configPath) && options.force !== true) return { created: false };
-  if (!options.workgroupId || !options.password) {
+  if (exists(plan.configPath) && !options.force) return { created: false };
+  if (!options.node.workgroup_id || !options.node.workgroup_password) {
     throw new Error(
       "install needs a workgroup id and password to create the node config (pass --workgroup and --password, or answer the interactive prompts)",
     );
   }
-  const config = createOrcaNodeConfig({
-    workgroupId: options.workgroupId,
-    password: options.password,
-    dataRoot: plan.dataRoot,
-    host: options.bindHost ?? "::",
-    port: options.port ?? 11811,
-    ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
-    ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
-    executor: "acp",
-  });
   await mkdir(plan.dataRoot, { recursive: true, mode: 0o700 });
-  const save = deps.save ?? saveConfig;
-  await save(plan.configPath, config);
-  try {
-    await (deps.chmod ?? chmod)(plan.configPath, 0o600);
-  } catch {
-    // Windows has no POSIX modes; the file still lives under the data root.
-  }
+  await saveConfig(
+    plan.configPath,
+    createOrcaNodeConfig({ ...options.node, data_root: plan.dataRoot, executor: "acp" }),
+  );
   return { created: true };
 }
 
-export interface InstallDeps extends ConfigDeps {
+interface InstallDeps extends ConfigDeps {
   run?: CommandRunner;
   mkdir?: (path: string, options?: { recursive?: boolean; mode?: number }) => Promise<unknown>;
   writeFile?: (path: string, text: string) => Promise<void>;
 }
 
-export interface InstallResult {
+interface InstallResult {
   plan: InstallPlan;
   unit: string;
   configCreated: boolean;
@@ -369,11 +325,9 @@ export async function installService(
   await write(plan.unitPath, unit);
   const configCreated = (await ensureNodeConfig(plan, options, deps)).created;
   const commands: CommandResult[] = [];
-  if (options.noStart !== true) {
+  if (!options.noStart) {
     const run = deps.run ?? runCommand;
-    for (const command of plan.commands) {
-      commands.push(run(command[0]!, command.slice(1)));
-    }
+    for (const [program = "", ...args] of plan.commands) commands.push(run(program, args));
   }
   return { plan, unit, configCreated, commands };
 }

@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNode, createOrcaNodeConfig } from "../src/index.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
+import { createOrcaNode } from "../src/orca_node.ts";
 import type { OrcaNode } from "../src/orca_node.ts";
 
 function tempRoot(): string {
@@ -17,7 +18,12 @@ function newWorkgroupId(): string {
 }
 
 function makeNode(workgroupId: string, password: string, dataRoot: string, port = 0): OrcaNode {
-  const config = createOrcaNodeConfig({ workgroupId, password, dataRoot, port });
+  const config = createOrcaNodeConfig({
+    workgroup_id: workgroupId,
+    workgroup_password: password,
+    data_root: dataRoot,
+    port,
+  });
   return createOrcaNode({ config });
 }
 
@@ -41,7 +47,12 @@ describe("heartbeat admission", () => {
   it("drops a peer that kept the old password instead of leaving it online", async () => {
     const workgroupId = newWorkgroupId();
     const rootA = tempRoot();
-    const configA = createOrcaNodeConfig({ workgroupId, password: "old password", dataRoot: rootA, port: 0 });
+    const configA = createOrcaNodeConfig({
+      workgroup_id: workgroupId,
+      workgroup_password: "old password",
+      data_root: rootA,
+      port: 0,
+    });
     const b = makeNode(workgroupId, "old password", tempRoot());
     const a = createOrcaNode({ config: configA });
     await a.start();
@@ -55,14 +66,20 @@ describe("heartbeat admission", () => {
 
       // Same data root and port: same Ed25519 identity, a different password.
       const a2 = createOrcaNode({
-        config: createOrcaNodeConfig({ workgroupId, password: "new password", dataRoot: rootA, port: oldPort }),
+        config: createOrcaNodeConfig({
+          workgroup_id: workgroupId,
+          workgroup_password: "new password",
+          data_root: rootA,
+          port: oldPort,
+        }),
       });
       await a2.start();
       try {
         expect(b.members().some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(true);
         // The first attempt can reuse a pooled socket to the stopped node.
         const refusal = await b.heartbeat(a2.endpoints[0]!).catch((error: unknown) => error);
-        const failure = refusal instanceof TypeError ? await b.heartbeat(a2.endpoints[0]!).catch((error: unknown) => error) : refusal;
+        const failure =
+          refusal instanceof TypeError ? await b.heartbeat(a2.endpoints[0]!).catch((error: unknown) => error) : refusal;
         expect(failure).toMatchObject({ status: 401 });
         // The old mesh forgets the node on the very first rejected heartbeat.
         expect(b.members().some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(false);

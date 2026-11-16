@@ -7,11 +7,11 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
-import type { PodAdmin } from "../src/plugin/admin.ts";
-import type { DispatchEntry } from "../src/dispatches.ts";
-import type { PeerView, SelfRecord, TaskView } from "../src/protocol.ts";
+import type { PodAdmin, PodApproval, PodPeer, PodTaskRow } from "../src/plugin/admin.ts";
+import type { SelfRecord, TaskView } from "../src/protocol.ts";
 import type { HostLogger } from "../src/plugin/dsh.ts";
-import { createPodApiHandler, isLocalRequest, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";
+import { isDirectLoopbackRequest } from "../src/net.ts";
+import { createPodApiHandler, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"], artifacts: TaskView["artifacts"] = []): TaskView {
   return {
@@ -23,6 +23,45 @@ function taskView(id: string, state: TaskView["status"]["state"], artifacts: Tas
   } as TaskView;
 }
 
+const ARTIFACT = { name: "report.md", blob_id: "art-1", bytes: 3, url: "http://127.0.0.1/blobs/x" };
+
+const RECENT: PodTaskRow[] = [
+  {
+    id: "TASK02",
+    peer: "http://127.0.0.1:11811",
+    state: "input-required",
+    who: "node two",
+    who_title: "NODE02",
+    at: "2026-01-01T00:00:02.000Z",
+    artifacts: [],
+    cancellable: true,
+  },
+  {
+    id: "TASK01",
+    peer: "http://127.0.0.1:11812",
+    state: "completed",
+    who: "node two",
+    who_title: "http://127.0.0.1:11812",
+    at: "2026-01-01T00:00:01.000Z",
+    artifacts: [ARTIFACT],
+    cancellable: false,
+  },
+];
+
+const APPROVAL: PodApproval = {
+  id: "http://127.0.0.1:11812|TASK02",
+  peer: "http://127.0.0.1:11812",
+  task_id: "TASK02",
+  tool: "write_file",
+  requested: '{"path":"report.md"}',
+  from: "node two",
+  chain: [
+    { name: "node one", self: true },
+    { name: "node two", self: false },
+  ],
+  agent_id: "session-1",
+};
+
 function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
   const calls: string[] = [];
   const admin: PodAdmin = {
@@ -33,34 +72,11 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
         endpoints: ["http://127.0.0.1:11811"],
         state: "online",
         workgroup_id: "wg",
-      }) as unknown as SelfRecord,
-    members: () => [{ orca_node_id: "NODE02", state: "online", endpoints: [] } as unknown as PeerView],
-    tasks: () => [
-      taskView("TASK01", "completed", [{ artifactId: "art-1", name: "report.md", bytes: 3 }]),
-      taskView("TASK02", "input-required"),
-    ],
-    dispatches: () => [{ task_id: "TASK01", peer: "http://127.0.0.1:11812", state: "completed" } as DispatchEntry],
-    prompts: () => [
-      {
-        id: "p-1",
-        peer: "http://127.0.0.1:11812",
-        task_id: "TASK02",
-        request_id: "req-1",
-        tool: "write_file",
-        requested: { path: "report.md" },
-        request: {
-          request_id: "req-1",
-          task_id: "TASK02",
-          tool: "write_file",
-          requested: { path: "report.md" },
-          requested_by: "NODE02",
-          via: [],
-          upstream: [],
-        },
-        agent_id: "session-1",
-        created_at: "2026-01-01T00:00:00.000Z",
-      },
-    ],
+        busy_from: null,
+      }) as unknown as PodPeer<SelfRecord>,
+    members: () => [{ orca_node_id: "NODE02", state: "online", endpoints: [], busy_from: null } as unknown as PodPeer],
+    recent: (limit) => RECENT.slice(0, limit),
+    approvals: () => [APPROVAL],
     config: () => ({
       configured: true,
       workgroup_id: "wg",
@@ -68,8 +84,9 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       display_name: "node one",
       port: 11811,
       endpoints: ["http://127.0.0.1:11811"],
-      detected_endpoints: ["http://192.168.1.5:11811"],
-    bind_host: null,
+      suggested_endpoints: ["http://192.168.1.5:11811"],
+      bind_choices: ["127.0.0.1", "::", "192.168.1.5"],
+      bind_host: "127.0.0.1",
       peers: [],
       data_root: "/data",
       advanced: {
@@ -78,6 +95,9 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
         result_max_bytes: null,
         max_input_files: null,
         max_input_bytes: null,
+        max_workspace_bytes: 5368709120,
+        max_workspace_files: 50000,
+        max_blob_store_bytes: 5368709120,
         allow_public_peers: null,
         allow_loopback_peers: null,
         permission_mode: null,
@@ -89,11 +109,11 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       error: null,
     }),
     saveConfig: async (patch) => {
-      calls.push("saveConfig:" + JSON.stringify(patch));
+      calls.push(`saveConfig:${JSON.stringify(patch)}`);
       return admin.config();
     },
     connect: async (peer) => {
-      calls.push("connect:" + peer);
+      calls.push(`connect:${peer}`);
       return admin.config();
     },
     disconnect: async () => {
@@ -104,31 +124,28 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       calls.push("reset");
       return admin.config();
     },
-    task: async (_peer, taskId) => {
-      calls.push("task:" + taskId);
-      return taskView(taskId, "working");
+    task: async (peer, taskId) => {
+      calls.push(`task:${peer}:${taskId}`);
+      return {
+        task: taskView(taskId, "working"),
+        origin: "node two",
+        dispatch: null,
+        artifacts: [ARTIFACT],
+        inputs: ["in.txt"],
+      };
     },
-    approvals: () => [
-      {
-        peer: "http://127.0.0.1:11812",
-        taskId: "TASK02",
-        view: taskView("TASK02", "input-required"),
-        request: { request_id: "req-1", task_id: "TASK02", tool: "write_file" },
-      } as never,
-    ],
     approve: async (peer, taskId) => {
-      calls.push("approve:" + peer + ":" + taskId);
+      calls.push(`approve:${peer}:${taskId}`);
       return taskView(taskId, "working");
     },
     deny: async (peer, taskId, reason) => {
-      calls.push("deny:" + peer + ":" + taskId + ":" + (reason ?? ""));
+      calls.push(`deny:${peer}:${taskId}:${reason ?? ""}`);
       return taskView(taskId, "failed");
     },
     cancel: async (peer, taskId) => {
-      calls.push("cancel:" + peer + ":" + taskId);
+      calls.push(`cancel:${peer}:${taskId}`);
       return taskView(taskId, "canceled");
     },
-    artifacts: (view) => [{ name: "report.md", blob_id: view.id, bytes: 3, url: "http://127.0.0.1/blobs/x" }],
     workspace: () => ({
       root: "/data/workgroups/wg",
       notes: "/data/workgroups/wg/notes",
@@ -153,7 +170,10 @@ interface InvokeOptions {
 
 async function invoke(handler: (request: never, response: never) => Promise<void>, options: InvokeOptions) {
   const payload = options.body === undefined ? "" : JSON.stringify(options.body);
-  const request = Readable.from(payload.length === 0 ? [] : [Buffer.from(payload)]) as unknown as Record<string, unknown>;
+  const request = Readable.from(payload.length === 0 ? [] : [Buffer.from(payload)]) as unknown as Record<
+    string,
+    unknown
+  >;
   const method = options.method ?? "GET";
   const headers: Record<string, string> = {
     host: "127.0.0.1:7775",
@@ -161,10 +181,10 @@ async function invoke(handler: (request: never, response: never) => Promise<void
     ...(method === "GET" ? {} : { "content-type": "application/json" }),
     ...(options.headers ?? {}),
   };
-  request["method"] = method;
-  request["url"] = options.url;
-  request["headers"] = headers;
-  request["socket"] = { remoteAddress: options.address ?? "127.0.0.1" };
+  request.method = method;
+  request.url = options.url;
+  request.headers = headers;
+  request.socket = { remoteAddress: options.address ?? "127.0.0.1" };
 
   let status = 0;
   let body = "";
@@ -183,17 +203,25 @@ async function invoke(handler: (request: never, response: never) => Promise<void
 }
 
 describe("panel HTTP bridge", () => {
-  it("serves one state snapshot with members, tasks and approvals", async () => {
+  it("serves one state snapshot with members, recent tasks and pending approvals", async () => {
     const admin = fakeAdmin();
     const result = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);
     expect(result.body.self.orca_node_id).toBe("NODE01");
     expect(result.body.members).toHaveLength(1);
-    expect(result.body.tasks.map((task: TaskView) => task.id)).toEqual(["TASK01", "TASK02"]);
+    expect(result.body.mesh).toEqual({ reachable: 1 });
+    expect(result.body.recent.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
+    expect(result.body.recent[1].artifacts[0].name).toBe("report.md");
     expect(result.body.approvals).toHaveLength(1);
-    expect(result.body.approvals[0].request.tool).toBe("write_file");
+    expect(result.body.approval_count).toBe(1);
+    expect(result.body.approvals[0]).toMatchObject({ tool: "write_file", from: "node two", agent_id: "session-1" });
+    expect(result.body.approvals[0].chain).toEqual([
+      { name: "node one", self: true },
+      { name: "node two", self: false },
+    ]);
     expect(result.body.workspace.notes_files).toEqual(["STATUS.md"]);
-    expect(result.body.artifacts.TASK01).toHaveLength(1);
+    expect(result.body).not.toHaveProperty("tasks");
+    expect(result.body).not.toHaveProperty("prompts");
   });
 
   it("rejects non-loopback callers and proxied requests", async () => {
@@ -298,21 +326,36 @@ describe("panel HTTP bridge", () => {
     expect(unknown.status).toBe(404);
   });
 
-  it("serves one task with its artifact links", async () => {
-    const handler = createPodApiHandler(fakeAdmin());
-    const result = await invoke(handler, { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
+  it("serves one task with its dispatch, artifacts and inputs in a single call", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const result = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
     expect(result.status).toBe(200);
     expect(result.body.task.id).toBe("TASK01");
+    expect(result.body).toMatchObject({ origin: "node two", dispatch: null, inputs: ["in.txt"] });
     expect(result.body.artifacts[0].name).toBe("report.md");
+    expect(admin.calls).toEqual(["task:p:TASK01"]);
+
+    const missing = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/task?peer=p` });
+    expect(missing.status).toBe(400);
   });
 
-  it("serves every local task plus the dispatch log for the all-tasks view", async () => {
-    const handler = createPodApiHandler(fakeAdmin());
+  it("serves the merged task rows for the all-tasks view and clamps the limit", async () => {
+    const limits: number[] = [];
+    const handler = createPodApiHandler(
+      fakeAdmin({
+        recent: (limit) => {
+          limits.push(limit);
+          return RECENT;
+        },
+      }),
+    );
     const result = await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=10` });
     expect(result.status).toBe(200);
-    expect(result.body.tasks.map((task: TaskView) => task.id)).toEqual(["TASK01", "TASK02"]);
-    expect(result.body.dispatches).toHaveLength(1);
-    expect(result.body.artifacts.TASK01[0].name).toBe("report.md");
+    expect(result.body.recent.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
+    expect(result.body.recent[0]).toMatchObject({ peer: "http://127.0.0.1:11811", cancellable: true });
+    await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=99999` });
+    await invoke(handler, { url: `${POD_API_PREFIX}/tasks` });
+    expect(limits).toEqual([10, 1000, 500]);
   });
 
   it("includes the editable config in the state snapshot", async () => {
@@ -320,16 +363,16 @@ describe("panel HTTP bridge", () => {
     expect(result.status).toBe(200);
     expect(result.body.config.workgroup_id).toBe("wg");
     expect(result.body.config.password_set).toBe(true);
+    expect(result.body.config.suggested_endpoints).toEqual(["http://192.168.1.5:11811"]);
+    expect(result.body.config.bind_choices).toContain("::");
   });
 
-  it("includes parked approval prompts for the chat card and popup", async () => {
-    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/state` });
-    expect(result.status).toBe(200);
-    expect(result.body.prompts).toHaveLength(1);
-    expect(result.body.prompts[0]).toMatchObject({ task_id: "TASK02", agent_id: "session-1" });
+  it("has no separate config read: the state snapshot carries it", async () => {
+    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/config` });
+    expect(result.status).toBe(404);
   });
 
-  it("saves a config patch from the panel", async () => {
+  it("hands the panel body to saveConfig unchanged", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
     const result = await invoke(createPodApiHandler(admin), {
       method: "POST",
@@ -338,10 +381,9 @@ describe("panel HTTP bridge", () => {
         workgroup_id: "wg",
         workgroup_password: "next-password",
         display_name: "renamed",
-        port: "11812",
+        port: 11812,
         endpoints: ["http://127.0.0.1:11812"],
         peers: ["http://127.0.0.1:11813"],
-        ignored: "drop me",
       },
     });
     expect(result.status).toBe(200);
@@ -356,11 +398,14 @@ describe("panel HTTP bridge", () => {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
       body: {
-        task_timeout_s: "120",
+        task_timeout_s: 120,
         approval_timeout_s: 45,
         result_max_bytes: 4096,
         max_input_files: 4,
         max_input_bytes: 1048576,
+        max_workspace_bytes: 2147483648,
+        max_workspace_files: 1000,
+        max_blob_store_bytes: 1073741824,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
@@ -370,7 +415,7 @@ describe("panel HTTP bridge", () => {
     });
     expect(saved.status).toBe(200);
     expect(admin.calls).toEqual([
-      'saveConfig:{"task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"allow_public_peers":true,"allow_loopback_peers":false,"permission_mode":"workspace-write","default_reasoning_effort":"max","executor":"echo"}',
+      'saveConfig:{"task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"max_workspace_bytes":2147483648,"max_workspace_files":1000,"max_blob_store_bytes":1073741824,"allow_public_peers":true,"allow_loopback_peers":false,"permission_mode":"workspace-write","default_reasoning_effort":"max","executor":"echo"}',
     ]);
 
     // Clearing a control sends null, so the override (and the persisted config
@@ -447,7 +492,7 @@ describe("panel HTTP bridge", () => {
         callback({ webServer });
       },
     };
-    registerPodWeb(ctx as never, fakeAdmin(), ctx.logger);
+    registerPodWeb(ctx as never, fakeAdmin());
     expect(registered).toHaveLength(1);
     expect(registered[0]).toMatchObject({ kind: "prefix", path: POD_API_PREFIX });
     expect(cleanups).toHaveLength(1);
@@ -457,8 +502,8 @@ describe("panel HTTP bridge", () => {
 
   it("keeps loopback detection immune to header spoofing", () => {
     const base = { socket: { remoteAddress: "::1" }, headers: {} };
-    expect(isLocalRequest(base as never)).toBe(true);
-    expect(isLocalRequest({ ...base, headers: { "x-real-ip": "10.0.0.1" } } as never)).toBe(false);
-    expect(isLocalRequest({ socket: { remoteAddress: "10.0.0.5" }, headers: {} } as never)).toBe(false);
+    expect(isDirectLoopbackRequest(base as never)).toBe(true);
+    expect(isDirectLoopbackRequest({ ...base, headers: { "x-real-ip": "10.0.0.1" } } as never)).toBe(false);
+    expect(isDirectLoopbackRequest({ socket: { remoteAddress: "10.0.0.5" }, headers: {} } as never)).toBe(false);
   });
 });

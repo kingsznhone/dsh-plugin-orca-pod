@@ -12,390 +12,200 @@
  * file and is written only from the loopback-gated panel route (§9.2).
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
-import {
-  configPath,
-  createOrcaNodeConfig,
-  defaultDataRoot,
-  loadConfig,
-  saveConfig,
-} from "../config.ts"
-import { identityPath, loadOrCreateIdentity } from "../identity.ts"
-import type { OrcaNodeConfig } from "../config.ts"
-import { deriveWorkgroupKey } from "../crypto.ts"
-import { isLoopbackEndpoint } from "../net.ts"
-import { createOrcaNode, createPersistentStorage } from "../orca_node.ts"
-import type { OrcaNode } from "../orca_node.ts"
+import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../config.ts";
+import { identityPath } from "../identity.ts";
+import { isLoopbackEndpoint, normalizePeerUrl } from "../net.ts";
+import { createOrcaNode, createPersistentStorage } from "../orca_node.ts";
+import type { OrcaNode } from "../orca_node.ts";
+import { parseSettings, pickPanelFields } from "../settings.ts";
 
-import { validateConfigInput } from "./config.ts"
-import type { Config } from "./config.ts"
-import type { HostLogger } from "./dsh.ts"
-import { errorMessage } from "./util.ts"
-
-/**
- * Default listen address for the bundle: loopback only. A fresh install must not
- * accept peers before the panel wizard has picked an interface, so the first
- * start is local and the wizard writes a LAN address (or `::` for all
- * interfaces) into the local override (§7.1).
- */
-export const DEFAULT_PLUGIN_BIND_HOST = "127.0.0.1"
+import type { Config } from "./config.ts";
+import type { HostContext, HostLogger } from "./dsh.ts";
+import { discoverModelCatalog } from "./models.ts";
+import type { ModelCatalog } from "./models.ts";
+import { errorMessage } from "../errors.ts";
+import { isRecord } from "../protocol.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
-export interface PodRuntime {
+interface PodRuntime {
   /** Created orca node, or null before creation / after a failed creation. */
-  orcaNode: OrcaNode | null
+  orcaNode: OrcaNode | null;
   /** Endpoint reported by `orcaNode.start()`. */
-  url: string | null
+  url: string | null;
   /** Bound listen port reported by `orcaNode.start()`. */
-  port: number | null
+  port: number | null;
   /** ISO timestamp of a successful start. */
-  started_at: string | null
+  started_at: string | null;
   /** First fatal startup error, if any. */
-  error: Error | null
+  error: Error | null;
 }
 
 /** Handle returned by `startPod`; cleanup and tools share it. */
 export interface PodHandle {
-  runtime: PodRuntime
+  runtime: PodRuntime;
   /** Effective config (bundle config with any saved UI override applied). */
-  config: Config
+  config: Config;
   /** True once the panel completed setup (an override file exists). */
-  uiConfigured: boolean
+  uiConfigured: boolean;
   /** Startup completion; resolves after success or failure, never rejects. */
-  ready: Promise<void>
+  ready: Promise<void>;
   /** Persist an override and restart the orca node with the merged config. */
-  reconfigure(patch: Record<string, unknown>): Promise<void>
+  reconfigure(patch: Record<string, unknown>): Promise<void>;
   /** `join` one peer now and remember it in the override. */
-  addPeer(peer: string): Promise<void>
+  addPeer(peer: string): Promise<void>;
   /** Leave the workgroup: tell known peers and clear the persisted peer list. */
-  disconnect(): Promise<void>
+  disconnect(): Promise<void>;
   /** Delete the panel override and the persisted orca node identity (full reset). */
-  reset(): Promise<void>
+  reset(): Promise<void>;
   /**
    * Stop accepting lifecycle writes: wait for the current operation, and make
    * pending queue entries skip starting a new node. Used by `stopPod` so a
    * reconfiguration cannot leak a listener after host shutdown (§9.2).
    */
-  dispose?(): Promise<void>
+  dispose(): Promise<void>;
 }
 
-/** Fields the panel may override; the rest stays owned by the bundle config. */
-const OVERRIDE_KEYS = [
-  "workgroup_id",
-  "workgroup_password",
-  "display_name",
-  "bind_host",
-  "port",
-  "endpoints",
-  "peers",
-  "task_timeout_s",
-  "approval_timeout_s",
-  "result_max_bytes",
-  "max_input_files",
-  "max_input_bytes",
-  "allow_public_peers",
-  "allow_loopback_peers",
-  "permission_mode",
-  "default_reasoning_effort",
-  "executor",
-] as const
-
-/** `null` explicitly clears a stored override so the base config applies again. */
-type Override = Partial<{ [K in (typeof OVERRIDE_KEYS)[number]]: Config[K] | null }> & {
-  setup_complete?: boolean
-}
+/**
+ * What the panel saved: a patch over the bundle config holding only panel-editable
+ * fields, where `null` clears a field back to its default, plus the setup marker.
+ */
+type Override = Record<string, unknown>;
 
 function createRuntime(): PodRuntime {
-  return { orcaNode: null, url: null, port: null, started_at: null, error: null }
+  return { orcaNode: null, url: null, port: null, started_at: null, error: null };
 }
 
 /** Treat "file does not exist" as an empty install; other read errors are logged. */
 function isMissingFile(error: unknown): boolean {
   return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  )
-}
-
-async function loadStoredConfig(path: string, logger: HostLogger): Promise<OrcaNodeConfig | null> {
-  try {
-    return await loadConfig(path)
-  } catch (error) {
-    if (!isMissingFile(error)) {
-      logger.warn(`orca-pod: ignoring unreadable orca node config ${path}: ${errorMessage(error)}`)
-    }
-    return null
-  }
-}
-
-function sameConfig(left: OrcaNodeConfig, right: OrcaNodeConfig): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+    typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
 /** Path of the panel-written override next to the persisted orca node config. */
 export function overridePath(dataRoot: string): string {
-  return join(dataRoot, "ui-config.json")
+  return join(dataRoot, "ui-config.json");
 }
 
 /** Read the panel override; a missing or unreadable file means "not set up". */
-async function loadOverride(dataRoot: string, logger: HostLogger): Promise<Override | null> {
+async function loadOverride(dataRoot: string, logger: HostLogger): Promise<Override> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(overridePath(dataRoot), "utf8"))
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null
-    const source = parsed as Record<string, unknown>
-    const override: Override = {}
-    if (source["setup_complete"] === true) override.setup_complete = true
-    for (const key of OVERRIDE_KEYS) {
-      if (source[key] !== undefined) (override as Record<string, unknown>)[key] = source[key]
-    }
-    return override
+    const parsed: unknown = JSON.parse(await readFile(overridePath(dataRoot), "utf8"));
+    if (!isRecord(parsed)) return {};
+    return { ...pickPanelFields(parsed), setup_complete: parsed.setup_complete === true };
   } catch (error) {
     if (!isMissingFile(error)) {
-      logger.warn(`orca-pod: ignoring unreadable panel config: ${errorMessage(error)}`)
+      logger.warn(`orca-pod: ignoring unreadable panel config: ${errorMessage(error)}`);
     }
-    return null
+    return {};
   }
 }
 
 async function saveOverride(dataRoot: string, override: Override): Promise<void> {
-  await mkdir(dataRoot, { recursive: true })
-  await writeFile(overridePath(dataRoot), `${JSON.stringify(override, null, 2)}\n`, "utf8")
+  await mkdir(dataRoot, { recursive: true });
+  await writeFile(
+    overridePath(dataRoot),
+    `${JSON.stringify(override, null, 2)}
+`,
+    "utf8",
+  );
 }
 
-/** Merge a panel override over the bundle config, then re-validate the result. */
 /**
  * A panel-configured orca node needs both a workgroup and a password. Empty
  * values mean "not configured yet" and keep the node idle instead of opening a
  * passwordless mesh; the first-run wizard fills them in.
  */
 function needsSetup(config: Config): boolean {
-  return config.workgroup_id.length === 0 || config.workgroup_password.length === 0
+  return !config.workgroup_id || !config.workgroup_password;
 }
 
-/** Optional config fields that may also come from the bundle config. */
-const BASE_FIELDS = [
-  "display_name",
-  "endpoints",
-  "data_root",
-  "task_timeout_s",
-  "approval_timeout_s",
-  "result_max_bytes",
-  "max_input_files",
-  "max_input_bytes",
-  "allow_public_peers",
-  "allow_loopback_peers",
-  "permission_mode",
-  "default_reasoning_effort",
-  "executor",
-] as const
-
-/** Advanced controls whose absence means "use the default", not "keep stored". */
-const ADVANCED_KEYS = [
-  "task_timeout_s",
-  "approval_timeout_s",
-  "result_max_bytes",
-  "max_input_files",
-  "max_input_bytes",
-  "allow_public_peers",
-  "allow_loopback_peers",
-  "permission_mode",
-  "default_reasoning_effort",
-  "executor",
-] as const
-
+/** The effective config: the panel override over the bundle config, parsed once. */
 function mergeOverride(base: Config, override: Override): Config {
-  const merged: Record<string, unknown> = {
-    workgroup_id: base.workgroup_id,
-    workgroup_password: base.workgroup_password,
-    port: base.port,
-    skill_injection: base.skill_injection,
-    peers: base.peers,
-  }
-  for (const key of BASE_FIELDS) {
-    if (base[key] !== undefined) merged[key] = base[key]
-  }
-  for (const key of OVERRIDE_KEYS) {
-    const value = override[key]
-    // A null override is "not set": leave the base value in place.
-    if (value !== undefined && value !== null) merged[key] = value
-  }
-  return validateConfigInput(merged)
+  return parseSettings({ ...base, ...override });
 }
 
-/**
- * Resolve the persisted orca node identity for the configured workgroup.
- *
- * An existing `config.json` for the same workgroup is reused (stable orca node id
- * and creation time) with its key re-derived from the configured password;
- * otherwise a fresh orca node config is created and persisted.
- */
-export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger): Promise<OrcaNodeConfig> {
-  const dataRoot = config.data_root ?? defaultDataRoot()
-  const path = configPath(dataRoot)
-  const stored = await loadStoredConfig(path, logger)
-  const keyBase64 = deriveWorkgroupKey(config.workgroup_id, config.workgroup_password).toString("base64")
-  // Listen on all interfaces by default so LAN peers can reach this node; a
-  // loopback-only advertise list is useless across machines, so treat it as
-  // "derive from bind" and let the node detect the real interface addresses.
-  const bindHost = config.bind_host ?? DEFAULT_PLUGIN_BIND_HOST
-  // The Ed25519 identity is the orca node id; create it on first start.
-  const identity = loadOrCreateIdentity(dataRoot)
-  const advertised =
-    config.endpoints !== undefined && config.endpoints.length > 0 && !config.endpoints.every(isLoopbackEndpoint)
-      ? [...config.endpoints]
-      : []
+async function startNode(config: Config, runtime: PodRuntime, logger: HostLogger, hooks: StartPodHooks): Promise<void> {
+  const dataRoot = config.data_root ?? defaultDataRoot();
+  // The plugin runs real DSH sessions by default. A loopback-only advertise list
+  // is useless across machines, so it means "derive from the listen address".
+  const nodeConfig = createOrcaNodeConfig({
+    ...config,
+    data_root: dataRoot,
+    executor: config.executor ?? "acp",
+    endpoints: config.endpoints.every(isLoopbackEndpoint) ? [] : config.endpoints,
+  });
+  await saveConfig(configPath(dataRoot), nodeConfig);
+  const orcaNode = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig), logger });
+  runtime.orcaNode = orcaNode;
 
-  // Advanced local controls: only fields the panel/bundle configured are
-  // written; the stored config keeps everything else from the previous run.
-  // The plugin defaults to the ACP executor: tasks run real DSH sessions.
-  const executor = config.executor ?? "acp"
-  const advanced = {
-    ...(config.task_timeout_s === undefined ? {} : { task_timeout_s: config.task_timeout_s }),
-    ...(config.approval_timeout_s === undefined ? {} : { approval_timeout_s: config.approval_timeout_s }),
-    ...(config.result_max_bytes === undefined ? {} : { result_max_bytes: config.result_max_bytes }),
-    ...(config.max_input_files === undefined ? {} : { max_input_files: config.max_input_files }),
-    ...(config.max_input_bytes === undefined ? {} : { max_input_bytes: config.max_input_bytes }),
-    ...(config.allow_public_peers === undefined ? {} : { allow_public_peers: config.allow_public_peers }),
-    ...(config.allow_loopback_peers === undefined ? {} : { allow_loopback_peers: config.allow_loopback_peers }),
-    ...(config.permission_mode === undefined ? {} : { permission_mode: config.permission_mode }),
-    ...(config.default_reasoning_effort === undefined
-      ? {}
-      : { default_reasoning_effort: config.default_reasoning_effort }),
-    ...(config.bind_host === undefined ? {} : { bind_host: config.bind_host }),
-    executor,
-  }
-
-  let next: OrcaNodeConfig
-  if (stored !== null && stored.workgroup_id === config.workgroup_id) {
-    next = {
-      ...stored,
-      orca_node_id: identity.orcaNodeId,
-      display_name: config.display_name ?? stored.display_name,
-      // Advertised endpoints are derived from bind/port unless explicitly
-      // configured: reusing stored endpoints could advertise a stale port.
-      endpoints: advertised,
-      data_root: dataRoot,
-      bind: { host: bindHost, port: config.port },
-      key_base64: keyBase64,
-      ...advanced,
-    }
-  } else {
-    next = createOrcaNodeConfig({
-      workgroupId: config.workgroup_id,
-      password: config.workgroup_password,
-      dataRoot,
-      identity,
-      host: bindHost,
-      port: config.port,
-      ...(config.display_name === undefined ? {} : { displayName: config.display_name }),
-      ...(advertised.length === 0 ? {} : { endpoints: advertised }),
-      ...(config.task_timeout_s === undefined ? {} : { taskTimeoutS: config.task_timeout_s }),
-      ...(config.approval_timeout_s === undefined ? {} : { approvalTimeoutS: config.approval_timeout_s }),
-      ...(config.result_max_bytes === undefined ? {} : { resultMaxBytes: config.result_max_bytes }),
-      ...(config.max_input_files === undefined ? {} : { maxInputFiles: config.max_input_files }),
-      ...(config.max_input_bytes === undefined ? {} : { maxInputBytes: config.max_input_bytes }),
-      ...(config.allow_public_peers === undefined ? {} : { allowPublicPeers: config.allow_public_peers }),
-      ...(config.allow_loopback_peers === undefined ? {} : { allowLoopbackPeers: config.allow_loopback_peers }),
-      ...(config.permission_mode === undefined ? {} : { permissionMode: config.permission_mode }),
-      ...(config.default_reasoning_effort === undefined
-        ? {}
-        : { defaultReasoningEffort: config.default_reasoning_effort }),
-      executor,
-    })
-  }
-
-  // A panel-cleared field must not survive in the persisted orca node config.
-  // `executor` is excepted: the plugin always writes its effective value above.
-  const mutable = next as unknown as Record<string, unknown>
-  for (const key of ADVANCED_KEYS) {
-    if (key === "executor") continue
-    if (config[key] === undefined) delete mutable[key]
-  }
-
-  if (stored === null || !sameConfig(stored, next)) {
-    try {
-      await saveConfig(path, next)
-    } catch (error) {
-      logger.warn(`orca-pod: could not persist orca node config ${path}: ${errorMessage(error)}`)
-    }
-  }
-  return next
-}
-
-function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, "")
-}
-
-async function startNode(
-  config: Config,
-  runtime: PodRuntime,
-  logger: HostLogger,
-  hooks: StartPodHooks,
-): Promise<void> {
-  const nodeConfig = await resolveOrcaNodeConfig(config, logger)
-  const orcaNode = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig) })
-  runtime.orcaNode = orcaNode
-
-  let info: { url: string; port: number }
+  let info: { url: string; port: number };
   try {
-    info = await orcaNode.start()
+    info = await orcaNode.start();
   } catch (error) {
-    runtime.error = error instanceof Error ? error : new Error(String(error))
-    runtime.orcaNode = null
+    runtime.error = error instanceof Error ? error : new Error(String(error));
+    runtime.orcaNode = null;
     try {
-      await orcaNode.stop()
+      await orcaNode.stop();
     } catch {
       // The node never finished starting; nothing useful to report here.
     }
-    throw runtime.error
+    throw runtime.error;
   }
 
-  runtime.url = info.url
-  runtime.port = info.port
-  runtime.started_at = new Date().toISOString()
-  runtime.error = null
+  runtime.url = info.url;
+  runtime.port = info.port;
+  runtime.started_at = new Date().toISOString();
+  runtime.error = null;
   logger.info(
     `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
-  )
+  );
 
   // Install ambient state before the first join so the joined self record and
   // every heartbeat carry it from the start.
   try {
-    hooks.onNodeStarted?.(orcaNode)
+    hooks.onNodeStarted?.(orcaNode);
   } catch (error) {
-    logger.warn(`orca-pod: onNodeStarted hook failed: ${errorMessage(error)}`)
+    logger.warn(`orca-pod: onNodeStarted hook failed: ${errorMessage(error)}`);
   }
 
-  const seen = new Set<string>()
-  for (const rawPeer of config.peers) {
-    const peer = trimTrailingSlash(rawPeer)
-    if (peer === trimTrailingSlash(info.url) || seen.has(peer)) continue
-    seen.add(peer)
+  const self = normalizePeerUrl(info.url);
+  for (const peer of config.peers) {
+    if (peer === self) continue;
     try {
-      const response = await orcaNode.join(peer)
-      logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`)
+      const response = await orcaNode.join(peer);
+      logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`);
     } catch (error) {
       // A peer that is down at boot must not take the local orca node down.
-      logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`)
+      logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`);
     }
   }
 }
 
 async function stopNode(runtime: PodRuntime, logger: HostLogger): Promise<void> {
-  const orcaNode = runtime.orcaNode
-  runtime.orcaNode = null
-  runtime.url = null
-  runtime.port = null
-  if (orcaNode === null) return
+  const orcaNode = runtime.orcaNode;
+  runtime.orcaNode = null;
+  runtime.url = null;
+  runtime.port = null;
+  if (orcaNode === null) return;
   try {
-    await orcaNode.stop()
+    await orcaNode.stop();
   } catch (error) {
-    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`)
+    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
   }
+}
+
+/**
+ * Hooks a host plugin uses to attach ambient state to every orca node start
+ * (initial start, panel reconfigure). The model catalog (§6.15) is the
+ * only user today: it must be installed before the first `join` so the self
+ * record peers receive already advertises it.
+ */
+interface StartPodHooks {
+  onNodeStarted?: (orcaNode: OrcaNode) => void;
 }
 
 /**
@@ -404,28 +214,12 @@ async function stopNode(runtime: PodRuntime, logger: HostLogger): Promise<void> 
  * The returned `ready` promise resolves after startup (success or failure) and
  * never rejects; inspect `runtime.error` for the failure cause.
  */
-/**
- * Hooks a host plugin uses to attach ambient state to every orca node start
- * (initial start, panel reconfigure, reset). The model catalog (§6.15) is the
- * only user today: it must be installed before the first `join` so the self
- * record peers receive already advertises it.
- */
-export interface StartPodHooks {
-  onNodeStarted?: (orcaNode: OrcaNode) => void
-}
+export function startPod(baseConfig: Config, logger: HostLogger, hooks: StartPodHooks = {}): PodHandle {
+  const runtime = createRuntime();
+  const dataRoot = baseConfig.data_root ?? defaultDataRoot();
 
-export function startPod(
-  baseConfig: Config,
-  logger: HostLogger,
-  hooks: StartPodHooks = {},
-): PodHandle {
-  const runtime = createRuntime()
-  const dataRoot = baseConfig.data_root ?? defaultDataRoot()
-
-  let effective = baseConfig
-  let uiConfigured = false
-  let disposed = false
-  let queue: Promise<void> = Promise.resolve()
+  let disposed = false;
+  let queue: Promise<void> = Promise.resolve();
 
   /**
    * Serialize panel writes (override file + node restart). A failed operation
@@ -433,159 +227,146 @@ export function startPod(
    * operation runs against a clean queue.
    */
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const run = queue.catch(() => {}).then(operation)
+    const run = queue.catch(() => {}).then(operation);
     queue = run.then(
       () => {},
       () => {},
-    )
-    return run
+    );
+    return run;
+  }
+
+  /** Merge `patch` into the saved override, always marking the setup complete. */
+  async function saveOverridePatch(patch: Override): Promise<void> {
+    await saveOverride(dataRoot, { ...(await loadOverride(dataRoot, logger)), ...patch, setup_complete: true });
   }
 
   const handle: PodHandle = {
     runtime,
-    config: effective,
+    config: baseConfig,
     uiConfigured: false,
     ready: Promise.resolve(),
-    reconfigure: async (patch) => {
-      return enqueue(async () => {
-        const previous = await loadOverride(dataRoot, logger)
-        const next: Override = {
-          ...(previous ?? {}),
-          ...pickOverride(patch),
-          setup_complete: true,
-        }
-        const merged = mergeOverride(baseConfig, next)
-        await saveOverride(dataRoot, next)
-        uiConfigured = true
-        handle.uiConfigured = true
-        effective = merged
-        handle.config = merged
-        await stopNode(runtime, logger)
-        if (disposed) return
+    reconfigure: (patch) =>
+      enqueue(async () => {
+        const next = { ...(await loadOverride(dataRoot, logger)), ...pickPanelFields(patch), setup_complete: true };
+        const merged = mergeOverride(baseConfig, next);
+        await saveOverride(dataRoot, next);
+        handle.uiConfigured = true;
+        handle.config = merged;
+        await stopNode(runtime, logger);
+        if (disposed) return;
         if (needsSetup(merged)) {
-          runtime.error = null
-          return
+          runtime.error = null;
+          return;
         }
         try {
-          await startNode(merged, runtime, logger, hooks)
+          await startNode(merged, runtime, logger, hooks);
         } catch (error) {
-          logger.error(`orca-pod: reconfigure failed: ${errorMessage(error)}`)
+          logger.error(`orca-pod: reconfigure failed: ${errorMessage(error)}`);
         }
-      })
-    },
-    addPeer: async (peer) => {
-      return enqueue(async () => {
-        const orcaNode = runtime.orcaNode
-        if (orcaNode === null) throw new Error("orca node is not running")
-        await orcaNode.join(peer)
-        const peers = effective.peers.includes(peer) ? effective.peers : [...effective.peers, peer]
-        effective = { ...effective, peers }
-        handle.config = effective
-        const previous = (await loadOverride(dataRoot, logger)) ?? {}
-        await saveOverride(dataRoot, { ...previous, peers, setup_complete: true })
-      })
-    },
-    disconnect: async () => {
-      return enqueue(async () => {
-        const orcaNode = runtime.orcaNode
+      }),
+    addPeer: (peer) =>
+      enqueue(async () => {
+        const orcaNode = runtime.orcaNode;
+        if (orcaNode === null) throw new Error("orca node is not running");
+        await orcaNode.join(peer);
+        const peers = handle.config.peers.includes(peer) ? handle.config.peers : [...handle.config.peers, peer];
+        handle.config = { ...handle.config, peers };
+        await saveOverridePatch({ peers });
+      }),
+    disconnect: () =>
+      enqueue(async () => {
+        const orcaNode = runtime.orcaNode;
         if (orcaNode !== null) {
           try {
-            await orcaNode.leave()
+            await orcaNode.leave();
           } catch (error) {
-            logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`)
+            logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
           }
         }
-        effective = { ...effective, peers: [] }
-        handle.config = effective
-        const previous = (await loadOverride(dataRoot, logger)) ?? {}
-        await saveOverride(dataRoot, { ...previous, peers: [], setup_complete: true })
-      })
-    },
-    reset: async () => {
-      return enqueue(async () => {
-        await stopNode(runtime, logger)
+        handle.config = { ...handle.config, peers: [] };
+        await saveOverridePatch({ peers: [] });
+      }),
+    reset: () =>
+      enqueue(async () => {
+        await stopNode(runtime, logger);
         for (const path of [overridePath(dataRoot), configPath(dataRoot), identityPath(dataRoot)]) {
           try {
-            await rm(path, { force: true })
+            await rm(path, { force: true });
           } catch (error) {
-            logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`)
+            logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
           }
         }
-        uiConfigured = false
-        handle.uiConfigured = false
-        effective = baseConfig
-        handle.config = effective
-        runtime.error = null
-        // Reset returns to the first-run wizard: without a panel override the
-        // node must not restart, even if the bundle still carries a workgroup.
-        if (disposed || !uiConfigured || needsSetup(effective)) return
-        try {
-          await startNode(effective, runtime, logger, hooks)
-        } catch (error) {
-          logger.error(`orca-pod: restart after reset failed: ${errorMessage(error)}`)
-        }
-      })
+        // Back to the first-run wizard: nothing restarts until setup completes,
+        // even if the bundle still carries a workgroup.
+        handle.uiConfigured = false;
+        handle.config = baseConfig;
+        runtime.error = null;
+      }),
+    dispose: async () => {
+      disposed = true;
+      await queue;
     },
-  }
-
-  handle.dispose = async () => {
-    disposed = true
-    await queue
-  }
+  };
 
   handle.ready = (async () => {
     try {
-      const stored = await loadOverride(dataRoot, logger)
-      if (stored !== null) {
-        uiConfigured = stored.setup_complete === true
-        handle.uiConfigured = uiConfigured
-        effective = mergeOverride(baseConfig, stored)
-        handle.config = effective
+      const stored = await loadOverride(dataRoot, logger);
+      if (stored.setup_complete === true) {
+        handle.config = mergeOverride(baseConfig, stored);
+        handle.uiConfigured = true;
       }
     } catch (error) {
-      logger.warn(`orca-pod: ignoring panel config: ${errorMessage(error)}`)
+      logger.warn(`orca-pod: ignoring panel config: ${errorMessage(error)}`);
     }
-    if (!uiConfigured || needsSetup(effective)) {
+    if (!handle.uiConfigured || needsSetup(handle.config)) {
       // No completed panel setup yet: the panel shows its first-run wizard and
       // calls `reconfigure` once the user has picked a workgroup, password and
       // listen address. The bundle no longer carries credentials (§7.1).
-      logger.info("orca-pod: waiting for workgroup setup from the panel")
-      return
+      logger.info("orca-pod: waiting for workgroup setup from the panel");
+      return;
     }
     try {
-      await startNode(effective, runtime, logger, hooks)
+      await startNode(handle.config, runtime, logger, hooks);
     } catch (error) {
-      const failure = error instanceof Error ? error : new Error(String(error))
-      runtime.error = failure
-      logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`)
+      const failure = error instanceof Error ? error : new Error(String(error));
+      runtime.error = failure;
+      logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
     }
-  })()
+  })();
 
-  return handle
+  return handle;
 }
 
-/** Keep only the panel-editable keys with defined values. */
-function pickOverride(patch: Record<string, unknown>): Override {
-  const picked: Override = {}
-  for (const key of OVERRIDE_KEYS) {
-    const value = patch[key]
-    if (value !== undefined) (picked as Record<string, unknown>)[key] = value ?? null
-  }
-  return picked
+/**
+ * Start the pod for a DSH host. The host owns the real model catalog, the node
+ * only advertises it: the catalog is read once the node is up and installed on
+ * the running node (and on every later panel restart, before its first join).
+ */
+export function createPodRuntime(ctx: HostContext, config: Config): PodHandle {
+  const catalog: ModelCatalog = { models: [], defaultModel: null };
+  const advertise = (orcaNode: OrcaNode): void =>
+    orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null);
+  const handle = startPod(config, ctx.logger, { onNodeStarted: advertise });
+  void handle.ready.then(async () => {
+    Object.assign(catalog, await discoverModelCatalog(ctx, ctx.logger));
+    if (handle.runtime.orcaNode !== null) advertise(handle.runtime.orcaNode);
+    if (catalog.models.length > 0) ctx.logger.info(`orca-pod: advertising ${catalog.models.length} models`);
+  });
+  return handle;
 }
 
 /** Stop the pod; safe to call after a failed startup and safe to await twice. */
 export async function stopPod(handle: PodHandle, logger: HostLogger): Promise<void> {
-  await handle.ready
+  await handle.ready;
   // Let an in-flight reconfiguration finish (or skip its restart), so shutdown
   // cannot race a new listener into existence after the host disposed us.
-  await handle.dispose?.()
-  const orcaNode = handle.runtime.orcaNode
-  if (orcaNode === null) return
+  await handle.dispose();
+  const orcaNode = handle.runtime.orcaNode;
+  if (orcaNode === null) return;
   try {
-    await orcaNode.stop()
-    logger.info("orca-pod: orca node stopped")
+    await orcaNode.stop();
+    logger.info("orca-pod: orca node stopped");
   } catch (error) {
-    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`)
+    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
   }
 }

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath, createOrcaNodeConfig, saveConfig } from "../src/config.ts";
+import { connectAll } from "../src/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol.ts";
 
@@ -27,10 +28,10 @@ async function makeNode(): Promise<OrcaNode> {
   const dataRoot = mkdtempSync(join(tmpdir(), "orca-escalate-"));
   dataRoots.push(dataRoot);
   const config = createOrcaNodeConfig({
-    workgroupId: WORKGROUP,
-    password: PASSWORD,
-    dataRoot,
-    host: "127.0.0.1",
+    workgroup_id: WORKGROUP,
+    workgroup_password: PASSWORD,
+    data_root: dataRoot,
+    bind_host: "127.0.0.1",
     port: 0,
   });
   const node = createOrcaNode({ config });
@@ -81,6 +82,7 @@ async function scenario(): Promise<{
   const a = await makeNode();
   const b = await makeNode();
   const c = await makeNode();
+  await connectAll([a, b, c]);
 
   const child = await b.sendTask(c.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text: "child" }], contextId: "ctx-child" },
@@ -204,6 +206,7 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
   it("rejects escalation for a task that is not running", async () => {
     const b = await makeNode();
     const c = await makeNode();
+    await connectAll([b, c]);
     const child = await b.sendTask(c.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "child" }], contextId: "ctx-child" },
       metadata: { pod: { hop: 1, chain: [b.orcaNodeId] }, echo: permissionEcho },

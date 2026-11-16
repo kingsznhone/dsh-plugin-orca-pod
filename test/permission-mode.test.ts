@@ -4,22 +4,18 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createAcpExecutor } from "../src/acp.ts";
-import { childPodMetadata, validatePodMetadata } from "../src/chain.ts";
+import { createAcpExecutor } from "../src/acp/executor.ts";
+import { childPodMetadata } from "../src/chain.ts";
+import { parseEchoScript } from "../src/echo.ts";
 import { createOrcaNodeConfig } from "../src/config.ts";
+import { parsePodMetadata } from "../src/task_meta.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
-import {
-  narrowPermissionMode,
-  permissionModeRank,
-  type PodTaskMetadata,
-} from "../src/protocol.ts";
+import { narrowPermissionMode, permissionModeRank, type PodTaskMetadata } from "../src/protocol.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 
-async function collect(
-  stream: AsyncGenerator<ExecutorEvent, void, unknown>,
-): Promise<ExecutorEvent[]> {
+async function collect(stream: AsyncGenerator<ExecutorEvent, void, void>): Promise<ExecutorEvent[]> {
   const events: ExecutorEvent[] = [];
   for await (const event of stream) events.push(event);
   return events;
@@ -33,20 +29,23 @@ async function tempDir(): Promise<string> {
 
 function input(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInput {
   return {
+    permissionMode: "read-only",
     taskId: "task-1",
     contextId: "context-1",
     originOrcaNode: "ORIGIN",
+    selfOrcaNodeId: "SELF",
     prompt: "do it",
     workspaceDir: root,
     podDir: join(root, ".state"),
+    model: undefined,
+    reasoningEffort: undefined,
+    echo: parseEchoScript(undefined),
     ...overrides,
   };
 }
 
 function taskText(view: Awaited<ReturnType<ReturnType<typeof createOrcaNode>["getTask"]>>): string {
-  return (view.status.message?.parts ?? [])
-    .map((part) => (part.kind === "text" ? part.text : ""))
-    .join("");
+  return (view.status.message?.parts ?? []).map((part) => (part.kind === "text" ? part.text : "")).join("");
 }
 
 describe("permission modes", () => {
@@ -60,10 +59,9 @@ describe("permission modes", () => {
 
   it("validates and normalizes pod.permission_mode", () => {
     const metadata = { pod: { hop: 0, chain: [], permission_mode: "workspace-write" } };
-    expect(validatePodMetadata(metadata, "B")).toMatchObject({ permission_mode: "workspace-write" });
-    expect(() => validatePodMetadata({ pod: { permission_mode: "root" } }, "B")).toThrowError(
-      /permission_mode/,
-    );
+    expect(parsePodMetadata(metadata, "B", "A")).toMatchObject({ permissionMode: "workspace-write" });
+    expect(parsePodMetadata(undefined, "B", "A").permissionMode).toBe("read-only");
+    expect(() => parsePodMetadata({ pod: { permission_mode: "root" } }, "B", "A")).toThrowError(/permission_mode/);
   });
 
   it("child tasks inherit the parent's permission mode", () => {
@@ -106,27 +104,58 @@ describe("permission mode execution", () => {
     executor.close?.();
   });
 
-  it("acp suspends when no mode is inherited", async () => {
+  it("acp suspends a request outside workspace-write for the origin to decide", async () => {
     const root = await tempDir();
     const executor = createAcpExecutor({
       command: process.execPath,
-      extra_args: [FAKE_ACP, "permission", join(root, "acp.log")],
+      extra_args: [FAKE_ACP, "permission-fetch", join(root, "acp.log")],
     });
-    const events = await collect(executor.run(input(root), new AbortController().signal));
+    const events = await collect(
+      executor.run(input(root, { permissionMode: "workspace-write" }), new AbortController().signal),
+    );
     expect(events[0]).toMatchObject({ type: "suspend", suspend: { kind: "permission" } });
     executor.close?.();
+  });
+
+  it("runs a task that names no mode read-only", async () => {
+    const root = await tempDir();
+    const config = createOrcaNodeConfig({
+      workgroup_id: "orca-mode",
+      workgroup_password: "correct horse",
+      data_root: root,
+      port: 0,
+      executor: "acp",
+      acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
+    });
+    const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+    await node.start();
+    try {
+      const view = await node.sendTask(node.endpoints[0]!, {
+        message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
+      });
+      let current = view;
+      for (let i = 0; i < 100; i += 1) {
+        current = await node.getTask(node.endpoints[0]!, view.id);
+        if (current.status.state === "completed" || current.status.state === "failed") break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(current.status.state).toBe("completed");
+      expect(taskText(current)).toContain("acp donedenied");
+    } finally {
+      await node.stop();
+    }
   });
 
   it("narrows the origin mode by the local ceiling end to end", async () => {
     const root = await tempDir();
     const config = createOrcaNodeConfig({
-      workgroupId: "orca-mode",
-      password: "correct horse",
-      dataRoot: root,
+      workgroup_id: "orca-mode",
+      workgroup_password: "correct horse",
+      data_root: root,
       port: 0,
       executor: "acp",
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
-      permissionMode: "read-only",
+      permission_mode: "read-only",
     });
     const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     await node.start();

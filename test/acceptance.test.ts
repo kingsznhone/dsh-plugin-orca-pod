@@ -5,12 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/config.ts";
 import { createMesh } from "../src/harness.ts";
-import {
-  createOrcaNode,
-  createPersistentStorage,
-  type FetchLike,
-  type OrcaNode,
-} from "../src/orca_node.ts";
+import { createOrcaNode, createPersistentStorage, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
 
 const WORKGROUP = "orca-accept";
 const PASSWORD = "correct horse";
@@ -57,12 +52,14 @@ describe("acceptance: membership under partition", () => {
   it("marks a cut-off orca node offline and recovers it after the link returns", async () => {
     let blockedPort: string | null = null;
     let blockedIndex = -1;
-    const fetchFor = (index: number): FetchLike => (url, init) => {
-      if (blockedPort !== null && (url.port === blockedPort || index === blockedIndex)) {
-        return Promise.reject(new TypeError("simulated network partition"));
-      }
-      return fetch(url, init);
-    };
+    const fetchFor =
+      (index: number): FetchLike =>
+      (url, init) => {
+        if (blockedPort !== null && (url.port === blockedPort || index === blockedIndex)) {
+          return Promise.reject(new TypeError("simulated network partition"));
+        }
+        return fetch(url, init);
+      };
     const mesh = await createMesh({
       orcaNodes: 3,
       workgroupId: WORKGROUP,
@@ -74,20 +71,23 @@ describe("acceptance: membership under partition", () => {
       const [a, b, c] = mesh.orcaNodes;
       if (a === undefined || b === undefined || c === undefined) throw new Error("mesh is short");
       expect(a).toBeDefined();
-      await waitFor("three online members", () =>
-        a.members().length === 2 && a.members().every((peer) => peer.state === "online"),
+      await waitFor(
+        "three online members",
+        () => a.members().length === 2 && a.members().every((peer) => peer.state === "online"),
       );
 
       blockedPort = new URL(b.endpoints[0]!).port;
       blockedIndex = 1;
-      await waitFor("B offline at A and C", () =>
-        stateOf(a, b.orcaNodeId) === "offline" && stateOf(c, b.orcaNodeId) === "offline",
+      await waitFor(
+        "B offline at A and C",
+        () => stateOf(a, b.orcaNodeId) === "offline" && stateOf(c, b.orcaNodeId) === "offline",
       );
 
       blockedPort = null;
       blockedIndex = -1;
-      await waitFor("B back online at A and C", () =>
-        stateOf(a, b.orcaNodeId) === "online" && stateOf(c, b.orcaNodeId) === "online",
+      await waitFor(
+        "B back online at A and C",
+        () => stateOf(a, b.orcaNodeId) === "online" && stateOf(c, b.orcaNodeId) === "online",
       );
     } finally {
       await mesh.stop();
@@ -123,9 +123,9 @@ describe("acceptance: single slot concurrency", () => {
   it("starts exactly one agent turn for ten concurrent dispatches", async () => {
     const root = await tempDir();
     const config = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: PASSWORD,
-      dataRoot: root,
+      workgroup_id: WORKGROUP,
+      workgroup_password: PASSWORD,
+      data_root: root,
       port: 0,
     });
     const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
@@ -158,15 +158,15 @@ describe("acceptance: password rotation", () => {
     const rootB = await tempDir("orca-rot-b-");
 
     const configA1 = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: PASSWORD,
-      dataRoot: rootA,
+      workgroup_id: WORKGROUP,
+      workgroup_password: PASSWORD,
+      data_root: rootA,
       port: 0,
     });
     const configB = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: PASSWORD,
-      dataRoot: rootB,
+      workgroup_id: WORKGROUP,
+      workgroup_password: PASSWORD,
+      data_root: rootB,
       port: 0,
     });
     const a1 = createOrcaNode({ config: configA1, storage: createPersistentStorage(configA1) });
@@ -179,9 +179,9 @@ describe("acceptance: password rotation", () => {
 
     const rotatedRoot = await tempDir("orca-rot-new-");
     const rotated = createOrcaNodeConfig({
-      workgroupId: WORKGROUP,
-      password: "a brand new password",
-      dataRoot: rotatedRoot,
+      workgroup_id: WORKGROUP,
+      workgroup_password: "a brand new password",
+      data_root: rotatedRoot,
       port: 0,
     });
     const a2 = createOrcaNode({ config: rotated, storage: createPersistentStorage(rotated) });

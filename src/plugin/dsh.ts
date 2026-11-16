@@ -9,36 +9,39 @@
  */
 
 /** Cleanup returned from `ctx.effect`; Cordis awaits promise-returning disposers. */
-export type Cleanup = () => void | Promise<void>
+type Cleanup = () => void | Promise<void>;
 
 /** One HTTP route served by the host web server on the DSH origin. */
 export interface WebServerRoute {
-  kind: "exact" | "prefix"
-  path: string
-  handler(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): void | Promise<void>
+  kind: "exact" | "prefix";
+  path: string;
+  handler(
+    request: import("node:http").IncomingMessage,
+    response: import("node:http").ServerResponse,
+  ): void | Promise<void>;
 }
 
 /** Host web server service (`ctx.webServer`): same-origin routes for the UI. */
-export interface WebServerLike {
-  register(route: WebServerRoute): Cleanup
+interface WebServerLike {
+  register(route: WebServerRoute): Cleanup;
 }
 
-/** Services visible before and after an `ctx.inject` fence. */
-export interface HostWebContext {
-  webServer?: WebServerLike
+/** Services available inside a `ctx.inject(["webServer"], …)` callback. */
+interface HostWebContext {
+  webServer: WebServerLike;
 }
 
 /** Subset of the Cordis logger service used for lifecycle messages. */
 export interface HostLogger {
-  info(...args: unknown[]): void
-  warn(...args: unknown[]): void
-  error(...args: unknown[]): void
+  info(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
 }
 
 /** One model-facing content block; these tools only emit text. */
 export interface ContentBlock {
-  type: "text"
-  text: string
+  type: "text";
+  text: string;
 }
 
 /**
@@ -46,14 +49,14 @@ export interface ContentBlock {
  * documented subset: `type`/`oneOf`/`properties`/`required`/
  * `additionalProperties`/`items`/`enum`/`const` plus annotations.
  */
-export type RawJsonSchema = Record<string, unknown>
+export type RawJsonSchema = Record<string, unknown>;
 
 /** Canonical output declaration of a registered tool. */
-export interface ToolOutputDefinition {
+interface ToolOutputDefinition {
   /** Schema enforced against the value returned by `execute`. */
-  schema: RawJsonSchema
+  schema: RawJsonSchema;
   /** Pure projection that turns the canonical value into model content. */
-  render(args: unknown, value: unknown): ContentBlock[]
+  render(args: unknown, value: unknown): ContentBlock[];
 }
 
 /**
@@ -62,19 +65,19 @@ export interface ToolOutputDefinition {
  * metadata; none are needed by this bundle.
  */
 export interface ToolDefinition {
-  name: string
-  description: string
-  parameters: RawJsonSchema
-  output: ToolOutputDefinition
-  execute(args: unknown, exec?: ToolExecution): Promise<unknown>
+  name: string;
+  description: string;
+  parameters: RawJsonSchema;
+  output: ToolOutputDefinition;
+  execute(args: unknown, exec?: ToolExecution): Promise<unknown>;
 }
 
 /** User-role notice the bundle hands back to the dispatching agent. */
 export interface AgentNotice {
-  id: string
-  role: "user"
-  content: [{ type: "text"; text: string }]
-  source: { kind: "orca-pod" | "tool-jobs"; form: "notice"; summary: string }
+  id: string;
+  role: "user";
+  content: [{ type: "text"; text: string }];
+  source: { kind: "orca-pod"; form: "notice"; summary: string };
 }
 
 /**
@@ -82,21 +85,21 @@ export interface AgentNotice {
  * whether its turn is in flight, and return a notice to it later.
  */
 export interface ToolAgent {
-  readonly id: string
-  readonly status: "idle" | "running"
+  readonly id: string;
+  readonly status: "idle" | "running";
   /**
    * Live session behind the agent. DSH passes the full Agent instance here, so
    * the optional session lets the bundle read that session's permission preset
    * (§7.10) without an extra registration-time service.
    */
-  readonly session?: unknown
-  inject(message: AgentNotice): void
-  followup(message: AgentNotice): void
+  readonly session?: unknown;
+  inject(message: AgentNotice): void;
+  followup(message: AgentNotice): void;
 }
 
 /** Execution context passed to `ToolDefinition.execute`. */
 export interface ToolExecution {
-  agent?: ToolAgent
+  agent?: ToolAgent;
 }
 
 /**
@@ -104,28 +107,12 @@ export interface ToolExecution {
  * with the dispatch log and looks the agent up here after a host restart (§8.3).
  */
 export interface AgentsService {
-  get(id: string): ToolAgent | undefined
+  get(id: string): ToolAgent | undefined;
 }
 
 /** Tool registry service exposed to plugins as `ctx.tools`. */
-export interface ToolRegistry {
-  register(definition: ToolDefinition, options?: Record<string, unknown>): unknown
-}
-
-/** Closed set of decisions the DSH approval service returns. */
-export type ApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable"
-
-/** One pending human decision; `agent` is the live agent whose turn asks. */
-export interface ApprovalRequest {
-  agent: { readonly id: string }
-  toolName: string
-  reason?: string
-  signal?: AbortSignal
-}
-
-/** DSH approval service: asks the human through the host's approval card. */
-export interface ApprovalService {
-  request(req: ApprovalRequest): Promise<ApprovalOutcome>
+interface ToolRegistry {
+  register(definition: ToolDefinition, options?: Record<string, unknown>): unknown;
 }
 
 /**
@@ -133,10 +120,10 @@ export interface ApprovalService {
  * `permissionPresets` service. `sandbox` uses the same three values as the
  * orca node permission mode, so a task inherits it verbatim (§7.10).
  */
-export interface PermissionKnobs {
-  readonly sandbox?: string | null
-  readonly approval?: string | null
-  readonly preset?: string | null
+interface PermissionKnobs {
+  readonly sandbox?: string | null;
+  readonly approval?: string | null;
+  readonly preset?: string | null;
 }
 
 /**
@@ -145,35 +132,40 @@ export interface PermissionKnobs {
  * needs the projected knobs.
  */
 export interface PermissionPresetsService {
-  permissionState(session: unknown): PermissionKnobs
+  permissionState(session: unknown): PermissionKnobs;
 }
 
-/** Cordis plugin context subset available to a host-side bundle. */
+/** Payload of `agent/inbox/claimed`: the agent started consuming one inbox message. */
+export interface InboxClaimed {
+  agent: { readonly id: string };
+  /** `source.kind` is `"user"` for a message the person typed. */
+  message: { readonly source?: { readonly kind?: string } };
+  turn: number;
+}
+
+/** Cordis plugin context subset available to a host-side bundle; DSH provides every member. */
 export interface HostContext {
   /** Hard dependency declared through `inject = ['tools']`. */
-  tools: ToolRegistry
+  tools: ToolRegistry;
+  logger: HostLogger;
   /** Register a lifecycle cleanup that Cordis runs when the fiber unloads. */
-  effect(execute: () => Cleanup, label?: string): unknown
-  /** Logger service; DSH always provides it, the fallback exists for smoke hosts. */
-  logger?: HostLogger
-  /** Approval service; present when the host exposes human approvals. */
-  approval?: ApprovalService
-  /** Same-origin web server, present when the host serves a web UI. */
-  webServer?: WebServerLike
+  effect(execute: () => Cleanup, label?: string): unknown;
+  /** Listen to a host event for the lifetime of the plugin fiber. */
+  on(event: "agent/inbox/claimed", listener: (payload: InboxClaimed) => void): unknown;
   /** Cordis dependency fence; runs `callback` once the services appear. */
-  inject?(dependencies: string[], callback: (sub: HostWebContext) => void): void
+  inject(dependencies: string[], callback: (sub: HostWebContext) => void): void;
   /** Contextual service lookup that does not require an `inject` declaration. */
-  get?(name: string): unknown
+  get(name: string): unknown;
 }
 
 /** One Standard Schema validation issue. */
-export interface StandardIssue {
-  message: string
-  path?: ReadonlyArray<string | number>
+interface StandardIssue {
+  message: string;
+  path?: ReadonlyArray<string | number>;
 }
 
 /** Standard Schema (v1) validation result. */
-export type StandardResult<T> = { value: T } | { issues: StandardIssue[] }
+type StandardResult<T> = { value: T } | { issues: StandardIssue[] };
 
 /**
  * Standard Schema v1 validator. Cordis accepts any Standard Schema as a
@@ -181,8 +173,8 @@ export type StandardResult<T> = { value: T } | { issues: StandardIssue[] }
  */
 export interface StandardSchemaV1<T> {
   readonly "~standard": {
-    readonly version: 1
-    readonly vendor: string
-    validate(value: unknown): StandardResult<T>
-  }
+    readonly version: 1;
+    readonly vendor: string;
+    validate(value: unknown): StandardResult<T>;
+  };
 }

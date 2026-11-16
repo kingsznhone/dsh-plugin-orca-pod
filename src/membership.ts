@@ -1,5 +1,14 @@
 import type { OrcaNodeId, PeerState, PeerView } from "./protocol.ts";
-import type { PeerStore } from "./storage.ts";
+
+/** Peer directory contract; callers only depend on this interface. */
+export interface PeerStore {
+  upsert(peer: PeerView): void;
+  get(orcaNodeId: OrcaNodeId): PeerView | undefined;
+  list(): PeerView[];
+  remove(orcaNodeId: OrcaNodeId): void;
+  /** Mark a peer as recently heard from. Returns false when the orca node is unknown. */
+  touch(orcaNodeId: OrcaNodeId): boolean;
+}
 
 /**
  * Membership bookkeeping (§3.3): the only evidence that a peer is online is the
@@ -7,7 +16,7 @@ import type { PeerStore } from "./storage.ts";
  * else's member list — remote lists are hints that only add records.
  */
 
-export type SuspectReason = "quiet" | "unreachable";
+type SuspectReason = "quiet" | "unreachable";
 
 /**
  * Adaptive heartbeat cadence (§3.3): one heartbeat per peer per `N` seconds,
@@ -19,8 +28,7 @@ export const HEARTBEAT_INTERVAL_MAX_MS = 10_000;
 
 /** One second per orca node, clamped so detection stays bounded on large meshes. */
 export function heartbeatIntervalMsFor(orcaNodeCount: number): number {
-  const count = Number.isFinite(orcaNodeCount) ? Math.max(1, Math.round(orcaNodeCount)) : 1;
-  return Math.min(HEARTBEAT_INTERVAL_MAX_MS, Math.max(HEARTBEAT_INTERVAL_MIN_MS, count * 1000));
+  return Math.min(HEARTBEAT_INTERVAL_MAX_MS, Math.max(HEARTBEAT_INTERVAL_MIN_MS, orcaNodeCount * 1000));
 }
 
 export type MembershipTimings = {
@@ -42,7 +50,7 @@ export type MembershipTimings = {
   heartbeatTimeoutMs: number;
 };
 
-export const DEFAULT_MEMBERSHIP_TIMINGS: MembershipTimings = {
+const DEFAULT_MEMBERSHIP_TIMINGS: MembershipTimings = {
   intervalMs: 2000,
   suspectAfterMs: 6000,
   offlineAfterMs: 12000,
@@ -61,9 +69,9 @@ export type MembershipClock = {
 };
 
 /** How this orca node learned about a peer (§3.5, §7.7). */
-export type PeerOrigin = "explicit" | "candidate";
+type PeerOrigin = "explicit" | "candidate";
 
-export type PeerRecord = {
+type PeerRecord = {
   view: PeerView;
   /** Explicit: joined or configured directly. Candidate: only seen in a remote list. */
   origin: PeerOrigin;
@@ -100,18 +108,17 @@ export type Membership = {
   list(): PeerView[];
   get(orcaNodeId: OrcaNodeId): PeerView | null;
   getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null;
-  findByEndpoint(endpoint: string): PeerView | null;
   remove(orcaNodeId: OrcaNodeId): void;
   isTombstoned(orcaNodeId: OrcaNodeId): boolean;
 };
 
-export type CreateMembershipOptions = {
+type CreateMembershipOptions = {
   selfOrcaNodeId: OrcaNodeId;
   timings?: Partial<MembershipTimings>;
   clock?: MembershipClock;
 };
 
-export function resolveTimings(overrides: Partial<MembershipTimings> = {}): MembershipTimings {
+function resolveTimings(overrides: Partial<MembershipTimings> = {}): MembershipTimings {
   const merged = { ...DEFAULT_MEMBERSHIP_TIMINGS, ...overrides };
   if (overrides.intervalMs !== undefined && overrides.heartbeatTimeoutMs === undefined) {
     merged.heartbeatTimeoutMs = Math.max(100, Math.round(overrides.intervalMs / 2));
@@ -132,7 +139,6 @@ export function createMembership(options: CreateMembershipOptions): Membership {
   const tombstones = new Map<OrcaNodeId, number>();
   /** One missed tick is suspect, three is offline; jitter means a tick needs slack. */
   function setIntervalMs(intervalMs: number): void {
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return;
     timings.intervalMs = Math.round(intervalMs);
     timings.suspectAfterMs = Math.round(timings.intervalMs * 1.25);
     timings.offlineAfterMs = timings.intervalMs * 3;
@@ -208,7 +214,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     remove(orcaNodeId: OrcaNodeId): void {
       remove(orcaNodeId);
     },
-    touch(orcaNodeId: OrcaNodeId, _at?: string): boolean {
+    touch(orcaNodeId: OrcaNodeId): boolean {
       const record = records.get(orcaNodeId);
       if (!record) return false;
       markOnline(record, monotonicMs());
@@ -261,8 +267,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
       record.next_probe_ms = nowMs + Math.min(backoff, timings.maxRecoverProbeMs);
       return;
     }
-    const recentlyHeard =
-      record.last_recv_ms !== null && nowMs - record.last_recv_ms <= timings.offlineAfterMs;
+    const recentlyHeard = record.last_recv_ms !== null && nowMs - record.last_recv_ms <= timings.offlineAfterMs;
     const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
     if (record.fails >= missThreshold && recentlyHeard) {
       record.view.state = "suspect";
@@ -327,13 +332,6 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     return nowMs >= record.next_probe_ms;
   }
 
-  function findByEndpoint(endpoint: string): PeerView | null {
-    for (const record of records.values()) {
-      if (record.view.endpoints.includes(endpoint)) return toView(record);
-    }
-    return null;
-  }
-
   function get(orcaNodeId: OrcaNodeId): PeerView | null {
     const record = records.get(orcaNodeId);
     return record ? toView(record) : null;
@@ -355,7 +353,6 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     list: peers.list,
     get,
     getRecord,
-    findByEndpoint,
     remove,
     isTombstoned,
   };

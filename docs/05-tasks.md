@@ -6,179 +6,136 @@
 
 ### 5.1 任务标识与元数据
 
+任务元数据是 `message/send` 的 `params.metadata`；节点相关的部分在 `metadata.pod`：
+
 ```json
 {
-  "workgroup_id": "orca-dev",
-  "origin_orca_node": "N7K3QM",
-  "target_node": "P2W8XA",
-  "trace_id": "01J...",
-  "idempotency_key": "N7K3QM:ctx-42:1",
-  "task_ttl_s": 3600,
-  "grant_id": "g_01JABC",
-  "workspace": { "kind": "group" },
-  "pod": { "hop": 0, "chain": ["N7K3QM"], "root": "t_01JABD", "permission_mode": "workspace-write",
-            "model": { "provider": "deepseek", "model": "deepseek-flash" } }
+  "pod": {
+    "hop": 1,
+    "chain": ["<A 的 orca_node_id>"],
+    "root": "<根 task id>",
+    "root_origin": "<A 的 orca_node_id>",
+    "permission_mode": "workspace-write",
+    "model": { "provider": "deepseek", "model": "deepseek-flash", "reasoning_effort": "high" },
+    "reasoning_effort": "high",
+    "task_ttl_s": 1800,
+    "inputs": [{ "blob_id": "<sha256>", "name": "input.zip" }]
+  }
 }
 ```
 
 规则：
 
-- `task_id` 由 A2A server（目标 orca node）生成；origin 保存 `(target_node, task_id)` 映射。
-- `context_id` 把多个 task 归到同一逻辑会话；目标 orca node 把它映射到本地 DSH session，cwd 固定为本 orca node 的工作区（[§6.7](06-execution.md#67-工作区一份持久)）。
-- `idempotency_key` 作用域 = 同一 workgroup 内；目标 orca node 去重窗口默认 24h。它只防重复提交，不承担重发。
-- `trace_id` 跨 orca node 传递；`task_ttl_s` 是任务寿命，不是转发跳数（本设计无转发）。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
-- `pod.hop`：任务已经跨了几跳，只作信息与排查，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。origin 建 task 时为 0；target 上的 agent 新建子任务时，由网关注入 `hop+1` 与 `chain + [self]`，agent 不能自己写。
-- `pod.chain`：经过的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；target 若发现自己已在链中 → `403 ancestor_call_forbidden`（`chain` 由网关注入，正常不会出现重复）。
-- `pod.root`：这条调用树的根 task id。origin 建 task 时等于自己的 task id。
-- `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`），target 不能放大；本机 `config.permission_mode` 是本地上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。
-- `pod.model`（可选）：origin 想用的 `{provider, model, reasoning_effort?}`；target 只在自己自述的目录里认它，并由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
+- `task_id` 由 target 生成（ULID 形状、26 字符、不可枚举）；origin 在派发日志里记 `(peer, task_id)`。
+- **origin 是请求的签名者**（`origin_orca_node`），不由元数据声明。`context_id` 取 `message.contextId`，缺省等于 task id；目标 orca node 把 `(origin, context_id)` 映射到本地 ACP session，cwd 固定为 workgroup 根（[§6.10](06-execution.md#610-sessioncontext-与-workspace-的绑定)）。
+- `pod.hop`：任务已经跨了几跳，只作信息与排查，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。非负整数。
+- `pod.chain`：经手派发的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；每个用 CLI 派发子任务的节点把自己追加进去，target 若发现自己已在链中 → `403 ancestor_call_forbidden`。注意**根 origin 若是用插件工具派发的（不带 chain），它本身不在链里**，所以这条检查只拦住链上经手的节点，拦不住回调根 origin（见 [§11](11-open-questions.md#11-未决问题)“祖先禁调不覆盖根 origin”）。被挡住时，agent 应把问题写进结论文本（`BLOCKED: …`）交还 origin，而不是换条路再调回去。
+- `pod.root`：这条调用树的根 task id；`pod.root_origin`：根任务的 origin。`root_origin` 缺省取本任务的 origin，并写回 task 视图的 `metadata.pod`，grant 只认根 origin 的签名（[§7.11](07-security.md#711-grant)）。
+- **`hop`/`chain`/`root`/`root_origin` 由发起方的 CLI 在客户端拼装**：`orca-node send --local-task <本机 task>` 通过回环的 `GET /cluster/task` 读父任务视图，写成 `hop+1`、`chain + [本机 id]`、沿用 `root`/`root_origin`，并在没有显式 `--permission-mode` 时继承父任务的模式。target 只校验形状与环，不重算这些字段；这意味着节点上的 agent 能自己写它们（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
+- `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`）；缺省按 `read-only`；本机 `permission_mode` 是上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。非法值 → `400 bad_request`。
+- `pod.model` / `pod.reasoning_effort`（可选）：origin 想用的模型与 effort；由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
+- `pod.task_ttl_s`（可选）：origin 期望的任务寿命；实际寿命取它与本机 `task_timeout_s`（默认 3600）的较小者。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
+- `pod.inputs`（可选）：随任务的素材清单，见 [§5.6](05-tasks.md#56-文件交换blob-通道)。
 - 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
-- **祖先禁调（硬限制）**：子任务的目标集合必须排除 `pod.chain` 里的所有 orca node 和自身。尝试调用 → `403 ancestor_call_forbidden`。A→B→A 在第一次就被拒绝，而不是等到第 N 跳才断。
-- 被祖先禁调挡住时，正确动作是把问题写进 `input-required` + `blocked`（[§4.8](04-transport.md#48-任务状态机)），让 A 看到后决定下一步；不是换条路再调回去。
-- 这些字段都进签名；target 只读不写。
-- `grant_id` 指向 origin 签发的 grant；目标 orca node 校验其绑定关系（[§7.11](07-security.md#711-grant)）。
-- `workspace.kind` 当前只有 `"group"` 一个合法值，显式声明“在本 orca node 工作区执行”；没有发布式目录（[§6.12](06-execution.md#612-明确不做)）。
-
-**实现状态（Phase 3）**：`chain.ts` 的 `validatePodMetadata` 在 `submit` 时校验——`pod.hop` 必须是 ≥0 的整数（**没有深度上限**）；`pod.chain` 必须是字符串数组，包含本 orca node → `403 ancestor_call_forbidden`；`pod.permission_mode` 必须是合法权限模式（非法 → `400 bad_request`），且本机 `config.permission_mode` 作为上限与继承值取窄；`pod.model` 校验 `{provider, model, reasoning_effort?}` 形状（非法 → `400 bad_request`）；类型不合法 → `400 bad_request`。子任务元数据由 `childPodMetadata` 生成（`hop+1`、`chain + [self]`、`root` 沿用父 task、继承 `permission_mode`）；多跳派发由 agent 通过 CLI/插件工具显式发起，`hop` 只是记账。
+- 元数据是不可信输入：在 `submit` 时一次性解析成类型化的 `TaskMeta`，之后的代码不再读原始 metadata；类型不合法 → `400 bad_request`。
 
 ### 5.2 任务回报
 
 ```text
-origin: POST message/send（带 grant）→ { task_id }
-origin: 本地任务日志落库（state=dispatched）
-origin: 轮询 tasks/get，500ms 起，指数退避到 2s
-target: task store（SQLite，见 §5.5）推进 submitted/working/completed
-origin: 终态 → 落结果 + 展示工作区状态 → 停止轮询
+origin: POST message/send → { task_id }
+origin: 派发日志落库（记下 peer 与最后看到的状态）
+origin: tracker 每 1s 拉一次 tasks/get
+target: 推进 submitted / working / input-required / 终态，每步写 SQLite
+origin: 终态 → 合并成一条 notice 交还发起会话 → 停止轮询
 ```
-
-**Phase 0 现状**：协议层已经支持 `tasks/get` 轮询；`scripts/cross.ts task` 用固定 100ms、最多 300 次轮询到终态，只是联调脚本。下面的退避与自动判定属于 plugin tracker 的设计，尚未实现。target 侧 TTL 已实现：默认 3600s，可由 `metadata.pod.task_ttl_s` 覆盖，`input-required` 期间暂停、`resume` 后重新计时，到期置 `failed(reason=timeout)`；origin 侧超时后补发 `tasks/cancel` 也尚未实现。
-
-轮询规则（plugin 目标实现）：
-
-- 初始 500ms，退避到 2s，加 ±20% 抖动；
-- 终态立即停；连续 `404` 说明目标重启丢了 task → 记 `failed(reason=task_lost)`；
-- 连续连接失败达到 `offline_after`（自适应，约 3 拍）→ origin 直接记 `failed(reason=node_unreachable, effects_unknown=true)`，**不重发**（[§8.2](08-reliability.md#82-orca-node-失联-任务失败不重发)）；
-- 总时长受 `task_ttl_s` 约束（等待 `input-required` 时暂停、恢复后继续计时），超时记 `failed(reason=timeout)` 并发 `tasks/cancel`（若还能连上）。
 
 #### 轮询归 Host，不归 agent
 
 轮询是插件的后台行为，不是 agent 的一条命令：
 
 - `orca_pod` 的 `send` 方法建完 task 立刻返回 `task_id`，不挂着连接等结果；
-- 插件里的 tracker 按上面的参数拉 `tasks/get`（target 开了 `message/stream` 就改成持有一条 SSE），状态写进内存与本地任务日志；
-- agent 只看到一个薄工具 `orca_pod`，没有一个方法会阻塞：`send`（建完 task 立刻返回 `task_id`）、`status`（读缓存/任务存储，立即返回）、`cancel`、`members`。**没有等待方法**——等待不是 agent 的职责。
+- 插件里的 tracker 拉 `tasks/get`，状态写进内存与本地派发日志；
+- agent 只看到一个薄工具 `orca_pod`，没有一个方法会阻塞：`send`、`status`（读目标侧任务状态，立即返回）、`cancel`、`members`、`connect`。**没有等待方法**——等待不是 agent 的职责，也没有批准方法（批准只在 UI，[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
-**Phase 0 现状**：`orca-pod` 插件只注册单个 `orca_pod` 工具（`method` 分派 `send`/`status`/`cancel`/`approve`/`members`/`connect`，见 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包)），后台 tracker 已实现：`send` 成功后在插件侧登记 `(peer, task_id, agent)`，tracker 每 1s 拉 `tasks/get`，终态按 2s 窗口合并成一条 notice，`running` 时 `inject()`、idle 时 `followup()`，连续唤醒预算 3。明确不做等待方法；`scripts/cross.ts` 仍是跨进程/跨机联调入口。
+派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会由 tracker 注入或唤醒。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
 
-派发即返回，所以 agent 的循环里没有“等”：任务在跑就继续干别的，或者干脆结束本轮、把控制权还给用户；完成会由 tracker 注入或唤醒（[§5.2](05-tasks.md#52-任务回报) 完成唤醒）。target 忙（`429 orca_node_busy`）时也没有可等的东西——要不要重试、什么时候重试，由模型判断（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），不由协议层排队。
+**为什么不让模型用 bash 长轮询**：每等一次就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消，也知道什么时候该停。
 
-**为什么不让模型用 bash 长轮询**：每等 2 秒再调一次 `orca_pod` 的 `status` 方法，就是一次工具调用、一轮上下文；`timeout` 杀掉的是 shell 不是等待语义，容易留孤儿；退避策略交给模型，token 花在等待上而不是决策上。Host 有单调时钟、可取消、能挂 SSE，也知道任务该等多久。
+tracker 的行为：
 
-状态怎么回到会话——不塞 user 消息，也不让 agent 猜：
+- **轮询**：固定 1s，自调度（上一轮结束才排下一轮，不重叠）；只在有待跟踪任务时运行。
+- **瞬时失败**（超时、网络错误、5xx）：该任务按 1s 起翻倍、上限 30s 退避重试；连续 5 次失败后放弃跟踪，告诉 agent `tracking of task … was interrupted: …; the task may still be running — call orca_pod with method "status" to check it`。**不**把任务记成 failed，也不补发 `tasks/cancel`。
+- **确定性失败**（`404 task_not_found`、401/403）：立即放弃跟踪，同样告知 agent。
+- **终态**：照常合并成 notice。结论文本以 `BLOCKED` 开头的 completed 任务会被标注为“completed with a blocker report”（[§6.14](06-execution.md#614-acpexecutor)）。
+- **权限请求**：任务进入 `input-required` 且带 `permission_request` 时，tracker 把它交给 `ApprovalBroker`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）等 UI 作答，**不产生聊天 notice**，不唤醒 agent；任务继续被跟踪到终态。`blocked` 载荷不会被 tracker 单独提示，任务停在 `input-required`，要靠 `status` 或面板看到（见 [§11](11-open-questions.md#11-未决问题)“blocked 载荷没有提示”）。
+- **宿主重启**：派发时 tracker 把发起会话 id 写进派发日志；插件就绪后，对“非终态、且该会话此刻在宿主里存在”的任务恢复跟踪。其余任务不会被恢复，靠 `status` 或面板查看（见 [§11](11-open-questions.md#11-未决问题)“tracker 为后续恢复的 agent 恢复跟踪”）。
 
-| 事件 | 手段 | 效果 |
-|---|---|---|
-| 任务完成 / 失败（普通） | 由 tracker 投递：running → `agent.inject()`；idle → `agent.followup()` | 2s 窗口内多个终态合并成一条 notice；`inject` 落 `agent/inbox/spliced` 等下一步，`followup` 叫醒新一轮 |
-| `input-required` 的 `permission_request`、祖先禁调的 `blocked`、需要人立刻决定 | `agent.followup()` | 唤醒 agent 开新一轮，走 Orca Pod UI 审批/回报流程（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
-| 任何时刻用户主动问 | `orca_pod` 的 `status` 方法 | 从任务存储/缓存读，与会话历史无关 |
+#### 状态怎么回到会话
 
-普通完成由 tracker 投递：同一轮还没结束时 `inject()`（不打断），idle 时 `followup()`（开新一轮）；`input-required` 里的 `permission_request`、祖先禁调的 `blocked` 这类“必须现在处理”的事件无条件走 `followup()`。唤醒是有代价的（新一轮模型调用、可能打断用户），所以用预算和 idle 判定兜住。
+不塞 user 消息伪装成用户，也不让 agent 猜：notice 是 `source.kind = "orca-pod"` 的 user 角色消息，内容形如 `[orca-pod] task <id> on <peer> is completed; …`，远端结论文本放在 `<untrusted-remote-result>` 块里（[§7.5](07-security.md#75-远程任务是不可信输入)）。
 
-`followup()` 的语义与边界：
+| 会话状态                     | 手段                                   | 效果                                                              |
+| ---------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| 仍在 `running`（同一轮没结束） | `agent.inject()`，并把唤醒计数清零     | 落 `agent/inbox/spliced`，等下一步读到，不打断这一轮              |
+| idle，且连续唤醒不足 3 次    | `agent.followup()`，唤醒计数 +1        | 开新一轮；UI 里是同一会话里新的一轮 assistant 回复，不伪造 user 气泡 |
+| idle，但已连续唤醒 3 次      | `agent.inject()`                       | 留在 inbox，不再叫醒；用户下一次说话后重置预算                    |
+| 用户随时想看                 | `orca_pod` 的 `status`                 | 直接读目标侧任务状态，与会话历史无关                              |
 
-- 它只对**仍然活着**的 session 有效：DSH 进程里还有这个 `Agent` 实例，插件才有对象可唤醒。会话已关闭/归档时没有对象，任务结果留在任务存储里，等会话下次恢复时再由 `inject()` 进入上下文——不存在“插件把 DSH 会话从磁盘拉起来”。
-- 被唤醒的 turn 不是用户消息：上下文从注入的 notice 开始，UI 里表现为同一会话里新的一轮 assistant 回复，不会伪造一个 user 气泡。
-- 它继承该 session 的审批策略：唤醒后若需要权限，仍然弹 DSH 卡片；用户不在电脑前就会超时。
-- 因此“完成即唤醒”是默认行为：同一轮内完成只 `inject()`，轮次结束后才完成则 `followup()` 唤醒；想做“用户离开时提醒”，也可以由客户端插件做徽标/桌面通知，而不是让模型空转一轮。
+要点：
 
-会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`orca_pod` 的 `status` 方法 随时可重放，插件内存只是缓存。
+- **合并**：2s 窗口内到达的多个终态按会话合成一条 notice、一次 `followup()`；五个任务同时完成不该叫醒五次。
+- **预算**：连续后台唤醒轮次 ≤3（中间没有用户输入）。**用户给该 agent 发消息时重置**（监听 `agent/inbox/claimed` 且 `source.kind === "user"`）。这是防 A→B→A 自动循环烧 token 的闸，不是防正常续跑。
+- **不反向**：唤醒是 origin 自己对自己做的，不涉及任何 target→origin 的连接。
+- `followup()` 只对**仍然活着**的 session 有效：DSH 进程里还有这个 `Agent` 实例，插件才有对象可唤醒。会话已关闭/归档时没有对象，任务结果留在目标侧任务存储里，靠 `status` 重读——不存在“插件把 DSH 会话从磁盘拉起来”。
+- 会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`status` 随时可重放，插件内存只是缓存。
 
-CLI 的 `orca-node wait <task_id>` 只给人和测试用（harness、脚本、没装插件的机器），不作为 agent 工具暴露——那是 [§9.5](09-implementation.md#95-组合入口库根在-orca_nodets安装根是整个包) 里 harness 入口的一部分；`orca-node log [--json]` 直接读 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），用于重启后对账。
-
-#### 完成唤醒
-
-典型场景：A 把“编译验证”派给 B，A 结束这一轮；十几分钟后 B 完成，A 需要被叫醒、看结果、继续修。所以默认行为就是“完成即找机会回到会话”——不需要声明、也没有 `notify` 字段：
-
-- 终态到达时 session 仍活着、且当前 `running`（同一轮还没结束）→ `inject()`，不打断这一轮；
-- session 活着且 idle → `followup()` 唤醒新一轮；
-- session 已归档（没有 Agent 实例）→ 结果留在任务存储，等会话恢复后由 `orca_pod` 的 `status` 方法 重读。
-
-`inject()` 落 `agent/inbox/spliced`，`agent.status` 只用来区分“同一轮内”与“轮次之间”，不做 `turn/end` 记账。
-
-其余细节：
-
-- **合并**：2s 窗口内到达的多个终态合成一条 notice、一次 `followup()`；五个任务同时完成不该叫醒五次。
-- **唤醒后的指令**：注入的 notice 带一句明确要求——“这是后台任务完成，接着干：检查结果，修/继续/汇报；只有被阻塞才问用户；结束时一句话总结”。避免唤醒后模型又去问“你想让我做什么”。
-- **预算**：连续后台唤醒轮次 ≤3（中间没有用户输入）；超了就不再唤醒，结果标未读并留在 inbox。用户下一次说话重置。这是防 A→B→A 自动循环烧 token 的闸，不是防正常续跑。
-- **不反向**：唤醒是 origin 自己对自己做的，不涉及任何 target→origin 的连接；B 那边只是任务变终态。
-
-例子：A 用 `orca_pod` 的 `send` 方法派给 B，随后结束这一轮；B 在 12 分钟后 `completed`；插件看到 session 活着且 idle → `inject()` notice + `followup()`；A 开新一轮，读到 `status.message`，发现编译报错，继续改代码。若编译通过，A 一句话总结并停。
-
-**Phase 0 实现边界**：tracker 只看 `agent.status`（running → `inject`，idle → `followup`），不监听用户新消息重置预算；会话已归档时 notice 丢弃（任务仍在存储里，可 `orca_pod` 的 `status` 方法重读）。
+CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 agent 用（它们没有插件工具），不作为插件工具暴露；`orca-node log [--json]` 直接读 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），用于重启后对账。
 
 ### 5.3 取消
 
 `tasks/cancel` 必须传到 LocalExecutor：
 
-- ACP：`session/cancel`，等待确认，超时后终止子进程；
-- in-process：调取消钩子。
+- ACP：发 `session/cancel`；2s 宽限后如果该 session 仍是连接上正在跑的那个，就关闭连接、终止子进程树（避免误杀已复用同一连接的下一个任务）；
+- Echo：中止脚本。
 
-取消后 task 置 `canceled`；若执行器已完成，返回 `completed` 并说明“取消未生效”。取消同时**吊销该 task 的 grant**（[§7.11](07-security.md#711-grant)）。
+取消后 task 置 `canceled`；如果它正挂着一个替子任务上交的权限请求，同时向子任务发 `permission_denied`，子任务随之失败而不是悬挂。task 已是终态时原样返回，不报错、不改状态。
 
 **谁可以取消**：只有 task 的 origin（以及执行该 task 的本机节点自身，用于本地控制路径）。同组其他成员可以 `tasks/get` 读，但 `tasks/cancel` 返回 `403 not_task_origin`——共享 workgroup 密钥下“同组”不等于“可以互相杀任务”，取消按任务归属校验而不是按签名身份。
 
 ### 5.4 流式与隐私
 
 - ACP `session/update` 可能含 assistant message、thought、tool call、usage。
-- 只把**已提交助手消息、工具状态、最终 artifact**映射给 A2A。
-- 不转发原始 thought / chain-of-thought。
-- 不暴露本地绝对路径、环境变量、凭据；artifact 用相对路径 + manifest（[§6.11](06-execution.md#611-任务结果与产物)）。
-- artifact 有类型与大小上限；超限改引用或拒绝。
+- 只累积 `agent_message_chunk` 的文本作为结论；thought、tool_call、usage 都不映射、不转发。
+- 任务视图里没有流式事件：origin 只能轮询到状态与最终结论。
+- 结论文本是 agent 自己说的话，节点不过滤其中的路径或凭据（[§7.15](07-security.md#715-凭据回传与注入防护)）。
 
 ### 5.5 任务存储
 
 每个 orca node 的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个 orca node 不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
-**Phase 2 现状（已实现）**：`storage.ts` 定义 `TaskStore` 接口（`save/load/list`），`sqlite.ts` 用 Node 内置 `node:sqlite` 的 `DatabaseSync` 实现：`<data_root>/tasks.db`、WAL 模式、`synchronous=NORMAL`，一条 task 记录序列化进 `tasks(task_id, payload, updated_at)`。`tasks.ts` 在每次状态变迁后写入，并在 orca node 启动时把库里所有非终态 task 标成 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）；`tasks/get` 对不在内存的 task 回落到 SQLite，因此重启后仍可查。内存 `TaskStore` 保留给单测与 harness。尚未做：`task_events` 表、origin 侧本地任务日志、`blobs` 表（blob 元数据目前在 fs sidecar 里）。
-
-**目标字段**（当前 payload JSON 已包含其中的视图部分，`target_node/workgroup_id/session_id/grant_id` 等字段随里程碑补齐）：
-
-```text
-task_id, context_id, origin_orca_node, target_node,
-state, created_at, updated_at,
-idempotency_key, trace_id, grant_id,
-workgroup_id, session_id, artifacts, error, reason
-```
-
-持久化：
-
-- **单机 SQLite**：`<data_root>/tasks.db`，WAL 模式，`synchronous=NORMAL`；
-- 表：`tasks`（状态与元数据，已实现）、`dispatches`（origin 派发日志，已实现；[§8.3](08-reliability.md#83-目标重启)）、`blobs`（blob_id + size + name + refs + expires_at，未实现；当前在 fs sidecar 与 `file_blobs` 映射）；
-- 一个进程独占写；不做连接池、不做服务、不共享库；
-- 备份 = 拷贝 db（WAL 下先 checkpoint）；损坏时允许丢未落盘的最近事件，不允许静默重建；
+- **单机 SQLite**：`<data_root>/tasks.db`，Node 内置 `node:sqlite`，WAL 模式，`synchronous=NORMAL`；一个进程独占写；不做连接池、不做服务、不共享库。
+- 三张表，结构相同——`(task_id TEXT PRIMARY KEY, payload TEXT /* JSON */, updated_at TEXT)`：`tasks`（目标侧任务：`{view, origin_orca_node, created_at, updated_at}`）、`dispatches`（origin 派发日志，[§8.3](08-reliability.md#83-目标重启)）；另有 `file_blobs`（`publish` 登记的本机文件，`blob_id, path, size, expires_at`）。
+- 任务每次状态变迁都写库；`tasks/get` 先查内存，再回落 SQLite，所以重启后仍可查。进程启动时所有非终态 task 标 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）。
+- 备份 = 拷贝 db（WAL 下先 checkpoint）；落盘失败只记 warning，任务继续留在内存里可读。
 - 内存 store 只用于协议单测与 harness。
-
-发起 orca node 另有**本地任务日志**（同一张表的 `role=origin` 行或独立表），只记录“我派过什么、最后一次看到什么”，不与目标库对账（[§8.2](08-reliability.md#82-orca-node-失联-任务失败不重发)）。
+- blob 内容与元数据不在这里：fs 内容寻址目录 `<data_root>/blobs/`（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
 
 **可见性**
 
-- 同 workgroup 的任意 orca node 凭 `task_id` 可 `tasks/get`；没有列表接口，`task_id` 就是句柄（ULID，不可枚举）。
-- origin 额外拥有交互权：`input-required` 后补发消息、`tasks/cancel`；其他 orca node 只读（不能取消、看不到 live 事件）。
+- 同 workgroup 的任意 orca node 凭 `task_id` 可 `tasks/get`；没有列表接口，`task_id` 就是句柄。
+- origin 额外拥有交互权：`input-required` 后补发消息（`message/send` 带 `taskId`）与 `tasks/cancel`；其他成员只读。
 - 因此**`task_id` 泄露 = 结果泄露**。它只该出现在任务消息和给人看的日志里，不要贴到公开 issue 或截图里。
-- 同组是信任域：密钥共享、orca node 身份可伪造，所以“谁能读”是约定与信任问题，不是密码学保证（[§7.1](07-security.md#71-workgroup-与密码)）；取消按 task 归属校验（[§5.3](#53-取消)）。
-
-**Phase 0 实现**：`tasks/get`、`tasks/cancel` 与 `message/send` 恢复只校验 workgroup 签名，不区分 origin 与其他同组 orca node；上面“origin 额外拥有交互权、其他 orca node 只读”尚未实现。修复前应把 `task_id` 当作同组内可读写的句柄。
+- 同组是信任域：密钥共享，“谁能读”是约定与信任问题，不是密码学保证（[§7.1](07-security.md#71-workgroup-与密码)）；取消与恢复按 task 归属校验。
 
 ### 5.6 文件交换（blob 通道）
 
-任务素材与产物不走 JSON 内联：base64 会膨胀 33%，而且没法流式、没法续传、没法去重。单独一条内容寻址通道：
+任务素材与产物不走 JSON 内联：base64 会膨胀 33%，而且没法流式、没法去重。单独一条内容寻址通道：
 
 ```http
-POST /blobs
+POST /blobs?name=input.zip
 Authorization: Pod orca_node_id=<43-char public key>; target=<receiver orca_node_id>; ts=...; nonce=...; sig=<base64url>
 X-Pod-Body-SHA256: <hex>
 Content-Type: application/octet-stream
-Content-Length: 1048576
 
 <bytes>
 
@@ -186,17 +143,8 @@ Content-Length: 1048576
 ```
 
 ```http
-GET /blobs/<blob_id>
-Authorization: Pod ...
-
-200 <stream>
-```
-
-```http
-POST /blobs/<blob_id>/link
-Authorization: Pod ...
-
-200 { "url": "https://host.example/blobs/<id>?exp=...&sig=...", "expires_at": "..." }
+GET /blobs/<blob_id>                       # 签名，或 ?exp=<unix>&sig=<base64url> 直链
+POST /blobs/<blob_id>/link                 # → 200 { "url": ".../blobs/<id>?exp=...&sig=...", "expires_at": "..." }
 ```
 
 ```text
@@ -208,22 +156,21 @@ http://host.example/blobs/<sha256>?exp=...&sig=...
 规则：
 
 - `blob_id = sha256(bytes)`，内容寻址 → 天然去重；同内容重复上传返回 `200` 且不占新空间，首次返回 `201`。
-- 上传与下载都**流式**：客户端先算摘要再签名（签名覆盖 `X-Pod-Body-SHA256` 而不是 body 本身），服务端边收边算、写临时文件后 rename，内存里不攒整个文件；`GET` 走流式响应，不 `readFile` 整个 blob。
-- 上限：单 blob 默认 256 MiB；单个任务附带的 inputs 默认 32 个文件 / 512 MiB（本地 `max_input_files`、`max_input_bytes` 可调）；超限 `413`/`400`。
-- 文件名只作提示（`name`），不参与寻址；存储路径由 blob_id 决定，元数据里出现 `../`、绝对路径、驱动器号一律拒绝。
-- 生命周期：上传的 blob、`publish` 登记的文件、`/link` 直链统一 **默认 7 天**（同一个 `DEFAULT_BLOB_TTL_MS` / `DEFAULT_BLOB_TTL_S` 常量）。到期由本地 GC 清理，不传播；下载方拿不到就是被清了，按 `410 blob_expired` 处理。**GC 全自动，不依赖用户到子 orca node 手动清理**——没人会去 B 的机器上清 blob；要保住某个产物，就在 7 天内下载它。
-- 下载支持直链：任意同组 orca node 调 `POST /blobs/{id}/link` 拿与 blob 保留期相同的 URL（默认 7 天），方便 `curl` / 浏览器 / 前端直链，不必把长期密钥给第三方。直链只是省掉签名头，不改变可读范围。
-- **本地文件按路径登记（不让文件离开工作区也能给 URL）**：子节点在结论文本里要引用一个已生成的文件时，用 `orca-node publish <path> [--ttl <seconds>]` 登记本机路径：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite（`<data_root>/tasks.db` 的 `file_blobs` 表），打印一条带 `?exp&sig` 的直链。字节不复制，`GET` 时网关按映射从磁盘流式读出；TTL 到期或文件被删 → `410`。默认 TTL 7 天；映射落盘，节点重启后旧 URL 仍可用。
-- **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥意味着任何成员都能为任意 `orca_node_id` 伪造签名（[§7.1](07-security.md#71-workgroup-与密码)），所以“只有本 orca node 能登记”无法靠签名身份在网络层实现——那会变成任何 peer 都能命令目标节点读任意本机路径。因此登记只在本地发生：CLI 直写节点自己的数据库，网关没有 `POST /blobs/register`（访问它是 `404`）。这也让登记不依赖节点进程（节点没跑也能登记，起来后立即生效）。
+- 上传与下载都**流式**：客户端先算摘要再签名（签名覆盖 `X-Pod-Body-SHA256` 而不是 body 本身），服务端边收边算、写临时文件后 rename，内存里不攒整个文件；摘要与实际字节不符 → `400 blob_digest_mismatch`。`GET` 走流式响应。
+- 上限：单 blob 256 MiB（`413 blob_too_large`）；单个任务附带的 inputs 默认 32 个文件 / 512 MiB（`max_input_files`、`max_input_bytes` 可调）。
+- **存储配额**：`max_blob_store_bytes`（默认 5 GiB）限制 blob 存储总量（已落盘 + 正在上传的字节）；超出的上传 `507 quota_exceeded`。
+- 文件名只作提示（`name`），不参与寻址；存储路径由 blob_id 决定。上传时 `?name=` 必须是无路径分隔符、无 `..`、无盘符的纯文件名，否则 `400 bad_request`。下载响应不带文件名。
+- **生命周期**：上传的 blob 与 `publish` 登记的文件默认 **7 天**过期（`publish --ttl` 可改）。**GC 全自动**：节点启动时跑一次，之后每 10 分钟跑一次，清理过期 blob 及其元数据，以及超过 10 分钟没写入的残留 `.part` 临时文件；`publish` 登记行过期后不再提供下载但行不清理。过期未被 GC 的下载返回 `410 blob_expired`，GC 之后返回 `404 blob_not_found`。没人会去 B 的机器上清 blob；要保住某个产物，就在 7 天内下载它。
+- **直链**：任意同组 orca node 调 `POST /blobs/{id}/link` 拿一条直链，有效期 7 天（与 blob 默认保留期一致）；面板的产物链接默认 300 秒；`orca-node publish` 打印的链接 24 小时有效。直链的 `sig` 是**该 blob 所在节点自己的 Ed25519 签名**（签 `orca-pod/blob-link|<blob_id>|<exp>`），用它自己的公钥验证；篡改 `blob_id`/`exp` → `403 link_invalid`，过期 → `410 link_expired`。直链只是省掉请求签名头，不改变可读范围，浏览器/curl 不必拿长期密钥。
+- **本地文件按路径登记（文件不离开工作区也能给 URL）**：子节点在结论文本里要引用一个已生成的文件时，用 `orca-node publish <path> [--ttl <seconds>]`：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，打印一条带 `?exp&sig` 的直链。字节不复制，`GET` 时网关按映射从磁盘流式读出；映射跨重启保留；TTL 到期 → `410 blob_expired`，文件被删 → `410 blob_file_missing`。
+- **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥，任何成员都能让目标节点替它去读本机路径，“只有本机能登记”无法靠成员签名在网络层实现，所以登记只在本地发生：CLI 直写节点自己的数据库，网关没有 `POST /blobs/register`（访问它是 `404`）。这也让登记不依赖节点进程。
 - **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道 `blob_id` 就能 `GET`。跨 orca node 直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
-- **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。跨 orca node 交接产物就是传一个 id；id 泄露 = 内容泄露，按这个标准管理它。
+- **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新 blob。
 
-**实现状态**：`POST /blobs`、`GET /blobs/{id}`、`POST /blobs/{id}/link` 已实现；存储默认 fs（内容寻址目录 + sidecar 元数据 + 临时文件 rename），`gc()` 在 orca node 启动时跑一次，默认 7 天过期；`201/200` 去重、`X-Pod-Body-SHA256` 校验（`400 blob_digest_mismatch`）、256 MiB 上限（`413 blob_too_large`）、文件名清洗（`400 bad_blob_name`）已可用。上传与下载均已流式（`putStream`/`openRead`，客户端 `send --file` 与 `publish` 共享同一签名摘要机制）。直链用 `?exp=&sig=`：`sig = base64url(HMAC(k, "link|"+blob_id+"|"+exp))`，TTL 与 blob 保留期一致（默认 7 天）；未知 blob `404`、过期直链 `403 link_invalid`/`410`。本地文件登记：没有 HTTP 路由（`POST /blobs/register` 为 `404`），由 `orca-node publish` 直写 `file_blobs` 表；`GET` 走文件流、文件消失 `410 blob_file_missing`、映射跨重启保留。任务 inputs：`send --file` 上传 + `metadata.pod.inputs` 物化 + 附录 + 终态清理已实现（`test/inputs.test.ts`）。**未实现**：每 workgroup 5 GiB 配额、`Content-Disposition` 文件名恢复、断点续传、`file_blobs` 过期行清理。
+**输入**：origin 先把素材 `POST /blobs` 到 target（`orca-node send --file <path>` 会自动做这一步，文件名取 basename），再在任务消息里带 `metadata.pod.inputs: [{blob_id, name}]`。`name` 必须匹配 `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`。target 在**建 task 之前**检查（blob 缺失 `400 input_blob_missing`、超上限 `400 too_many_inputs` / `400 inputs_too_large`、重名 `409 duplicate_input_name`、名字不安全 `400 bad_request`），任何失败都不建任务；通过后在任务开始前把 blob 物化到 `inputs/<task_id>/`（cwd 相对，见 [§6.7](06-execution.md#67-工作区一份持久)），任务书里列出相对清单，终态删除目录。
 
-**输入**：origin 先把素材 `POST /blobs` 到 target（`orca-node send --file <path>` 会自动做这一步），再在任务消息里带 `metadata.pod.inputs: [{blob_id, name}]`；target 在**建 task 之前**把 blob 物化到 `inputs/<task_id>/`（cwd 相对，见 [§6.7](06-execution.md#67-工作区一份持久)），任务书末尾附相对清单，终态删除目录。任何失败都不建任务：blob 缺失 `400 input_blob_missing`、超上限 `400 too_many_inputs` / `400 inputs_too_large`、重名 `409 duplicate_input_name`、名字不安全 `400 bad_request`。小于 64 KiB 的可以直接内联 `bytes`（A2A file part），省一次往返。
-
-**输出**：任务终态时 manifest 给 `artifacts: [{blob_id, name, media_type, bytes}]`；origin 按需 `GET /blobs/{id}`。**不自动全量回传**：大产物由人或 agent 显式取，避免把网络当同步盘。已实现的路径是更简的一版：子节点完成时自己决定交不交、交哪个文件，`publish` 出 URL 贴在结论文本附录里；manifest 全量 `artifacts` 尚未实现。
+**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；大文件由子节点 `publish` 后把 URL 写进结论文本，origin 按需 `GET`，**不自动全量回传**，避免把网络当同步盘。只有 Echo 脚本会产生 `artifacts` 数组（`artifactId` 就是 `blob_id`）。
 
 方向始终是 origin → target 的请求（上传素材、下载产物），target 从不反向连 origin。NAT 下只需要 target 可达，与 [§3.2](03-membership.md#32-引导与加入) 的单向出站原则一致。
 
@@ -242,7 +189,7 @@ A 在 B 上跑完一段，想把后续交给 C（另一台机器、另一个模�
 - 工作区跨任务、跨 session、跨重启持久（[§6.7](06-execution.md#67-工作区一份持久)）；
 - 同一 orca node 单槽串行（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)），所以不会有两个任务同时写同一份工作区。
 
-旧 task 天然不可变：C 的新任务和 A 的旧 task 是两个独立记录，各自的 artifacts、`updated_at` 互不影响；追溯靠时间戳与 task id 还原，不需要一个指向“前一个 task”的字段。
+旧 task 天然不可变：C 的新任务和 A 的旧 task 是两个独立记录，追溯靠时间戳与 task id 还原，不需要一个指向“前一个 task”的字段。
 
 一句话：**交接 = 共享工作区里的现场 + 一个新任务**；协议不解释“接着干”，agent 自己看现场决定。
 

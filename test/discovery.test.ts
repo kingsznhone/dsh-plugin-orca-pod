@@ -22,12 +22,12 @@ const orcaNodes: OrcaNode[] = [];
 function make(displayName: string): OrcaNode {
   const orcaNode = createOrcaNode({
     config: createOrcaNodeConfig({
-      workgroupId: "orca-dev",
-      password: "secret",
-      displayName,
-      host: "127.0.0.1",
+      workgroup_id: "orca-dev",
+      workgroup_password: "secret",
+      display_name: displayName,
+      bind_host: "127.0.0.1",
       port: 0,
-      dataRoot: mkdtempSync(join(tmpdir(), "orca-discovery-")),
+      data_root: mkdtempSync(join(tmpdir(), "orca-discovery-")),
     }),
     timings: TIMINGS,
   });
@@ -93,7 +93,8 @@ describe("lazy discovery", () => {
     // 心跳里只带摘要；摘要不一致时对端回目录，orca node 据此补齐候选并建立心跳边
     await waitFor(() =>
       [a, b, c, d].every(
-        (orcaNode) => orcaNode.members().length === 3 && orcaNode.members().every((member) => member.state === "online"),
+        (orcaNode) =>
+          orcaNode.members().length === 3 && orcaNode.members().every((member) => member.state === "online"),
       ),
     );
 

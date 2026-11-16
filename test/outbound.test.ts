@@ -28,12 +28,12 @@ function tempRoot(): string {
 
 function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: number): OrcaNode {
   const config = createOrcaNodeConfig({
-    workgroupId: WORKGROUP,
-    password: PASSWORD,
-    dataRoot: tempRoot(),
-    host: "127.0.0.1",
+    workgroup_id: WORKGROUP,
+    workgroup_password: PASSWORD,
+    data_root: tempRoot(),
+    bind_host: "127.0.0.1",
     port: 0,
-    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+    request_timeout_ms: requestTimeoutMs,
   });
   const node = createOrcaNode({ config, ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) });
   nodes.push(node);
@@ -42,18 +42,79 @@ function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: number): 
 
 describe("outbound A2A calls (11)", () => {
   it("gives every outbound call a deadline", async () => {
-    const stalled: FetchLike = (_url, init) =>
-      new Promise<Response>((_resolve, reject) => {
-        init.signal?.addEventListener(
-          "abort",
-          () => reject((init.signal as AbortSignal).reason ?? new Error("aborted")),
-          { once: true },
-        );
-      });
-    const node = makeNode(stalled, 25);
+    const peer = makeNode(undefined);
+    await peer.start();
+    const stalled: FetchLike = (url, init) =>
+      url.pathname !== "/a2a"
+        ? fetch(url, init)
+        : new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener(
+              "abort",
+              () => reject((init.signal as AbortSignal).reason ?? new Error("aborted")),
+              { once: true },
+            );
+          });
+    const node = makeNode(stalled, 250);
+    await node.start();
+    await node.join(peer.endpoints[0]!);
     const started = Date.now();
-    await expect(node.getTask("http://127.0.0.1:9", "01TASK")).rejects.toBeDefined();
+    await expect(node.getTask(peer.endpoints[0]!, "01TASK")).rejects.toBeDefined();
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("does not join a stranger to answer a read", async () => {
+    const stranger = makeNode(undefined);
+    await stranger.start();
+    const node = makeNode(undefined);
+    await node.start();
+
+    for (const call of [
+      () => node.getTask(stranger.endpoints[0]!, "01TASK"),
+      () => node.cancelTask(stranger.endpoints[0]!, "01TASK"),
+      () => node.sendTask(stranger.endpoints[0]!, { message: { role: "user", parts: [{ kind: "text", text: "hi" }] } }),
+      () => node.heartbeat(stranger.endpoints[0]!),
+    ]) {
+      await expect(call()).rejects.toMatchObject({ code: "unknown_peer" });
+    }
+    // Nothing was sent: the stranger never saw the node's admission proof.
+    expect(stranger.members()).toHaveLength(0);
+    expect(node.members()).toHaveLength(0);
+
+    await node.join(stranger.endpoints[0]!);
+    await expect(node.getTask(stranger.endpoints[0]!, "01MISSING")).rejects.toMatchObject({
+      code: "task_not_found",
+      status: 404,
+    });
+  });
+
+  it("stops reading a response body once it passes the size cap", async () => {
+    const peer = makeNode(undefined);
+    await peer.start();
+    let pulled = 0;
+    let cancelled = false;
+    const endless: FetchLike = (url, init) =>
+      url.pathname !== "/a2a"
+        ? fetch(url, init)
+        : Promise.resolve(
+            new Response(
+              new ReadableStream<Uint8Array>({
+                pull(controller) {
+                  pulled += 1;
+                  controller.enqueue(new Uint8Array(1024 * 1024));
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+          );
+    const origin = makeNode(endless);
+    await origin.start();
+    await origin.join(peer.endpoints[0]!);
+    await expect(origin.getTask(peer.endpoints[0]!, "01TASK")).rejects.toThrow(/too large/);
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(16);
   });
 
   it("rejects a response that is not JSON", async () => {

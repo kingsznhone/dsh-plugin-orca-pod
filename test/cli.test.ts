@@ -8,8 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { configPath, createOrcaNodeConfig, saveConfig, validateConfig, type OrcaNodeConfig } from "../src/config.ts";
-import { KEY_DERIVATION } from "../src/crypto.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/index.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
 import { sha256Hex } from "../src/storage.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -23,11 +22,12 @@ function runCli(args: string[], input?: string): Promise<CliResult> {
       ["--no-warnings", CLI, ...args],
       { env: process.env, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
-        const code = error !== null && typeof (error as { code?: unknown }).code === "number"
-          ? ((error as { code: number }).code)
-          : error === null
-            ? 0
-            : 1;
+        const code =
+          error !== null && typeof (error as { code?: unknown }).code === "number"
+            ? (error as { code: number }).code
+            : error === null
+              ? 0
+              : 1;
         resolve({ code, stdout, stderr });
       },
     );
@@ -45,9 +45,9 @@ describe("orca-node CLI", () => {
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "orca-cli-test-"));
     config = createOrcaNodeConfig({
-      workgroupId: "cli-test",
-      password: "correct horse",
-      dataRoot: root,
+      workgroup_id: "cli-test",
+      workgroup_password: "correct horse",
+      data_root: root,
       port: 0,
     });
     await saveConfig(configPath(root), config);
@@ -67,7 +67,18 @@ describe("orca-node CLI", () => {
     const created = JSON.parse(sent.stdout) as { id: string; status: { state: string } };
     expect(created.id).toMatch(/^[0-9A-Z]{26}$/);
 
-    const waited = await runCli(["wait", "--data-root", root, "--peer", endpoint, "--task", created.id, "--timeout", "5", "--json"]);
+    const waited = await runCli([
+      "wait",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--task",
+      created.id,
+      "--timeout",
+      "5",
+      "--json",
+    ]);
     expect(waited.code).toBe(0);
     const done = JSON.parse(waited.stdout) as { status: { state: string } };
     expect(done.status.state).toBe("completed");
@@ -99,12 +110,36 @@ describe("orca-node CLI", () => {
       steps: [],
       final: { state: "completed", text: "from echo flag" },
     });
-    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "scripted", "--echo", script, "--json"]);
+    const sent = await runCli([
+      "send",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--text",
+      "scripted",
+      "--echo",
+      script,
+      "--json",
+    ]);
     expect(sent.code).toBe(0);
     const created = JSON.parse(sent.stdout) as { id: string };
-    const waited = await runCli(["wait", "--data-root", root, "--peer", endpoint, "--task", created.id, "--timeout", "5", "--json"]);
+    const waited = await runCli([
+      "wait",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--task",
+      created.id,
+      "--timeout",
+      "5",
+      "--json",
+    ]);
     expect(waited.code).toBe(0);
-    const view = JSON.parse(waited.stdout) as { status: { state: string; message?: { parts: Array<{ text?: string }> } } };
+    const view = JSON.parse(waited.stdout) as {
+      status: { state: string; message?: { parts: Array<{ text?: string }> } };
+    };
     expect(view.status.state).toBe("completed");
     expect(view.status.message?.parts[0]?.text).toBe("from echo flag");
   });
@@ -116,11 +151,33 @@ describe("orca-node CLI", () => {
         final: { state: "completed", text: "done" },
       },
     });
-    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "needs permission", "--metadata", script, "--json"]);
+    const sent = await runCli([
+      "send",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--text",
+      "needs permission",
+      "--metadata",
+      script,
+      "--json",
+    ]);
     expect(sent.code).toBe(0);
     const created = JSON.parse(sent.stdout) as { id: string };
 
-    const waited = await runCli(["wait", "--data-root", root, "--peer", endpoint, "--task", created.id, "--timeout", "5", "--json"]);
+    const waited = await runCli([
+      "wait",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--task",
+      created.id,
+      "--timeout",
+      "5",
+      "--json",
+    ]);
     expect(waited.code).toBe(3);
     const view = JSON.parse(waited.stdout) as { status: { state: string } };
     expect(view.status.state).toBe("input-required");
@@ -129,11 +186,33 @@ describe("orca-node CLI", () => {
 
   it("returns 2 when the task is still running", async () => {
     const script = JSON.stringify({ echo: { final: { state: "hang" } } });
-    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "hang", "--metadata", script, "--json"]);
+    const sent = await runCli([
+      "send",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--text",
+      "hang",
+      "--metadata",
+      script,
+      "--json",
+    ]);
     expect(sent.code).toBe(0);
     const created = JSON.parse(sent.stdout) as { id: string };
 
-    const waited = await runCli(["wait", "--data-root", root, "--peer", endpoint, "--task", created.id, "--timeout", "1", "--json"]);
+    const waited = await runCli([
+      "wait",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--task",
+      created.id,
+      "--timeout",
+      "1",
+      "--json",
+    ]);
     expect(waited.code).toBe(2);
     const view = JSON.parse(waited.stdout) as { status: { state: string } };
     expect(view.status.state).toBe("working");
@@ -141,10 +220,24 @@ describe("orca-node CLI", () => {
   });
 
   it("reads the task text from stdin", async () => {
-    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "-", "--json"], "piped task text\n");
+    const sent = await runCli(
+      ["send", "--data-root", root, "--peer", endpoint, "--text", "-", "--json"],
+      "piped task text\n",
+    );
     expect(sent.code).toBe(0);
     const created = JSON.parse(sent.stdout) as { id: string };
-    const waited = await runCli(["wait", "--data-root", root, "--peer", endpoint, "--task", created.id, "--timeout", "5", "--json"]);
+    const waited = await runCli([
+      "wait",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--task",
+      created.id,
+      "--timeout",
+      "5",
+      "--json",
+    ]);
     expect(waited.code).toBe(0);
   });
 
@@ -173,7 +266,16 @@ describe("orca-node CLI", () => {
     expect(sent.code).toBe(0);
     const created = JSON.parse(sent.stdout) as { id: string };
     const escalated = await runCli([
-      "escalate", "--data-root", root, "--peer", endpoint, "--task", created.id, "--local-task", created.id, "--json",
+      "escalate",
+      "--data-root",
+      root,
+      "--peer",
+      endpoint,
+      "--task",
+      created.id,
+      "--local-task",
+      created.id,
+      "--json",
     ]);
     expect(escalated.code).toBe(1);
     expect(escalated.stderr).toContain("not waiting for permission");
@@ -196,50 +298,22 @@ describe("orca-node CLI", () => {
     expect(Buffer.from(await response.arrayBuffer()).equals(content)).toBe(true);
 
     // The CLI writes the mapping locally; there is no registration endpoint to
-    // abuse from another orca node (a shared workgroup key cannot prove identity).
+    // abuse from another orca node.
     const register = await fetch(`${endpoint}/blobs/register`, { method: "POST", body: "{}" });
     expect(register.status).toBe(404);
   });
 });
 
-describe("scrypt key derivation", () => {
-  it("stamps fresh configs with the version marker", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "orca-kdf-"));
+describe("config validation", () => {
+  it("rejects a config with a missing required field instead of filling a default", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orca-config-"));
     const created = createOrcaNodeConfig({
-      workgroupId: "orca-kdf",
-      password: "kdf-password-123",
-      dataRoot: dir,
+      workgroup_id: "orca-kdf",
+      workgroup_password: "kdf-password-123",
+      data_root: dir,
     });
-    expect(created.key_derivation).toBe(KEY_DERIVATION);
-    expect(created.key_base64.length).toBeGreaterThan(0);
-  });
-
-  it("refuses a config from another key derivation", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "orca-kdf-legacy-"));
-    const created = createOrcaNodeConfig({
-      workgroupId: "orca-kdf",
-      password: "kdf-password-123",
-      dataRoot: dir,
-    });
-    expect(() => validateConfig({ ...created, key_derivation: "hkdf-v1" })).toThrow(/key_derivation/);
-  });
-
-  it("asks for --password when serve loads an unmarked config", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "orca-kdf-serve-"));
-    const legacy: Record<string, unknown> = {
-      ...createOrcaNodeConfig({
-        workgroupId: "orca-kdf",
-        password: "kdf-password-123",
-        dataRoot: dir,
-      }),
-    };
-    delete legacy["key_derivation"];
-    const path = join(dir, "old-config.json");
-    await writeFile(path, JSON.stringify(legacy), "utf8");
-
-    const served = await runCli(["serve", "--config", path]);
-    expect(served.code).toBe(1);
-    expect(served.stderr).toContain("older key function");
-    expect(served.stderr).toContain("--password");
+    const { data_root: _dataRoot, ...partial } = created;
+    expect(() => validateConfig(partial)).toThrow(/data_root/);
+    expect(() => validateConfig({ ...created, port: "11811" })).toThrow(/port/);
   });
 });

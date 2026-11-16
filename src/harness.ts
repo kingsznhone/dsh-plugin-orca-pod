@@ -6,7 +6,7 @@ import { createOrcaNodeConfig } from "./config.ts";
 import type { MembershipTimings } from "./membership.ts";
 import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "./orca_node.ts";
 
-export type MeshOptions = {
+type MeshOptions = {
   orcaNodes?: number;
   workgroupId?: string;
   password?: string;
@@ -41,12 +41,12 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
   try {
     for (let index = 0; index < count; index += 1) {
       const config = createOrcaNodeConfig({
-        workgroupId,
-        password,
-        dataRoot: join(dataRoot, `orca-node-${index}`),
+        workgroup_id: workgroupId,
+        workgroup_password: password,
+        data_root: join(dataRoot, `orca-node-${index}`),
         port: options.basePort ? options.basePort + index : 0,
-        displayName: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
-        ...(options.approvalTimeoutS !== undefined ? { approvalTimeoutS: options.approvalTimeoutS } : {}),
+        display_name: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
+        approval_timeout_s: options.approvalTimeoutS,
       });
       orcaNodes.push(createOrcaNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
     }
@@ -81,7 +81,18 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
   }
 }
 
-export type WaitForOptions = {
+/** Admit every node at every other node: peer calls only reach members, so tests that wire nodes by hand join first. */
+export async function connectAll(orcaNodes: readonly OrcaNode[]): Promise<void> {
+  for (const [index, orcaNode] of orcaNodes.entries()) {
+    for (const other of orcaNodes.slice(index + 1)) {
+      const [endpoint] = other.endpoints;
+      if (endpoint === undefined) throw new Error("orca node has no endpoint; start it first");
+      await orcaNode.join(endpoint);
+    }
+  }
+}
+
+type WaitForOptions = {
   timeoutMs?: number;
   intervalMs?: number;
   /** What is being waited for, used in the timeout error. */

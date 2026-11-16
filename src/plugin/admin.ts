@@ -1,168 +1,261 @@
 /**
  * Host-side data surface for the UI panel (§9.2).
  *
- * The panel renders members, local tasks, pending approvals, workspace files and
- * artifact links. Everything here is a thin projection over `OrcaNode` plus the
- * tracker; permission decisions bypass the model on purpose, because the human is
- * sitting at this node (see §7.12) and should not need a tool round-trip.
+ * The panel renders members, tasks, pending approvals, workspace files and
+ * artifact links. Everything here is a projection over `OrcaNode`, the tracker
+ * and the approval broker, already resolved for display (names, labels, links,
+ * what can be cancelled): the client holds no business logic. Permission
+ * decisions bypass the model on purpose, because the human is sitting at this
+ * node (see §7.12) and should not need a tool round-trip.
  */
 
-import { readdirSync } from "node:fs"
-import { join } from "node:path"
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
-import { defaultDataRoot } from "../config.ts"
-import { detectLocalEndpoints } from "../net.ts"
-import { permissionRequestOf } from "../protocol.ts"
-import type { DispatchEntry } from "../dispatches.ts"
-import type { PeerView, PermissionMode, SelfRecord, TaskView } from "../protocol.ts"
-import type { OrcaNode } from "../orca_node.ts"
-import type { PodHandle } from "./lifecycle.ts"
-import type { TrackedTask, Tracker } from "./tracker.ts"
-import type { ApprovalPrompt, ApprovalPrompts } from "./prompts.ts"
+import { defaultDataRoot } from "../config.ts";
+import type { DispatchEntry } from "../dispatches.ts";
+import { shortenNodeId } from "../identity.ts";
+import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../net.ts";
+import { isTerminal } from "../protocol.ts";
+import type {
+  PeerView,
+  PermissionMode,
+  PermissionRequest,
+  PodTaskMetadata,
+  SelfRecord,
+  TaskView,
+} from "../protocol.ts";
+import type { OrcaNode } from "../orca_node.ts";
+import type { PodHandle } from "./lifecycle.ts";
+import type { Tracker } from "./tracker.ts";
+import type { ApprovalBroker } from "./broker.ts";
 
-/** One artifact attached to a task, with a directly usable download URL. */
-export interface PodArtifact {
-  name: string
-  blob_id: string
-  bytes: number
-  /** Signed direct link, or null when this node advertises no endpoint yet. */
-  url: string | null
+/** One artifact attached to a task. */
+interface PodArtifact {
+  name: string;
+  blob_id: string;
+  bytes: number;
+  /** Signed direct link; null for tasks that live on another node (this node cannot sign for it). */
+  url: string | null;
+}
+
+/** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
+export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | null };
+
+/** One hop of an approval chain, root first. */
+interface PodChainEntry {
+  name: string;
+  self: boolean;
+}
+
+/** One permission request waiting for the human (tracker and broker views merged). */
+export interface PodApproval {
+  /** `peer|task_id`: stable across polls. */
+  id: string;
+  peer: string;
+  task_id: string;
+  tool: string;
+  /** Short preview of the requested arguments. */
+  requested: string;
+  /** Label of the node that actually needs the permission. */
+  from: string;
+  /** Approval path, this node first and the requesting node last. */
+  chain: PodChainEntry[];
+  /** DSH session that dispatched the task; null when only the tracker has seen the request. */
+  agent_id: string | null;
+}
+
+/** One row of the task tables: a task this node runs, or one it dispatched. */
+export interface PodTaskRow {
+  id: string;
+  /** Where details and cancel are addressed: this node's URL for local tasks, the target for dispatched ones. */
+  peer: string;
+  state: string;
+  /** Origin of a local task, target of a dispatched one, as a display label. */
+  who: string;
+  who_title: string;
+  at: string;
+  artifacts: PodArtifact[];
+  cancellable: boolean;
+}
+
+/** Everything the task detail dialog shows. */
+interface PodTaskDetail {
+  task: TaskView;
+  origin: string;
+  dispatch: DispatchEntry | null;
+  artifacts: PodArtifact[];
+  inputs: string[];
 }
 
 /** Workspace directories plus a shallow listing for the UI browser. */
-export interface WorkspaceView {
-  root: string
-  notes: string
-  inputs: string
-  state: string
+interface WorkspaceView {
+  root: string;
+  notes: string;
+  inputs: string;
+  state: string;
   /** Top-level files a later task will see in its appendix (`notes/<name>`). */
-  notes_files: string[]
-  /** Per-task input directories, newest task ids last. */
-  inputs_dirs: Array<{ task_id: string; files: string[] }>
+  notes_files: string[];
+  /** The newest per-task input directories (bounded so a poll stays cheap) with their file counts. */
+  inputs_dirs: Array<{ task_id: string; files: number }>;
 }
 
 /** Advanced local controls the panel may edit; null means "not overridden". */
-export interface PodAdvancedConfig {
-  task_timeout_s: number | null
-  approval_timeout_s: number | null
-  result_max_bytes: number | null
-  max_input_files: number | null
-  max_input_bytes: number | null
-  allow_public_peers: boolean | null
-  allow_loopback_peers: boolean | null
-  permission_mode: PermissionMode | null
-  default_reasoning_effort: string | null
-  executor: "echo" | "acp" | null
+interface PodAdvancedConfig {
+  task_timeout_s: number | null;
+  approval_timeout_s: number | null;
+  result_max_bytes: number | null;
+  max_input_files: number | null;
+  max_input_bytes: number | null;
+  max_workspace_bytes: number;
+  max_workspace_files: number;
+  max_blob_store_bytes: number;
+  allow_public_peers: boolean | null;
+  allow_loopback_peers: boolean | null;
+  permission_mode: PermissionMode | null;
+  default_reasoning_effort: string | null;
+  executor: "echo" | "acp" | null;
 }
 
 /** Effective pod configuration as the panel may see it (never the password). */
-export interface PodConfigView {
+interface PodConfigView {
   /** True once the panel finished setup (an override file exists). */
-  configured: boolean
-  workgroup_id: string
+  configured: boolean;
+  workgroup_id: string;
   /** This node's orca node id (also the default display name), null before first start. */
-  node_id: string | null
-  display_name: string | null
-  /** Listen address the node actually uses; null means the loopback default. */
-  bind_host: string | null
-  port: number
+  node_id: string | null;
+  display_name: string | null;
+  /** Listen address the node actually uses. */
+  bind_host: string;
+  port: number;
   /** Currently advertised dial URLs (the node's own list when it is running). */
-  endpoints: string[]
-  /** Host addresses the panel offers as first-run endpoint suggestions. */
-  detected_endpoints: string[]
-  peers: string[]
-  data_root: string
+  endpoints: string[];
+  /** Dial URLs the form starts from: the usable advertised ones, else this machine's detected addresses. */
+  suggested_endpoints: string[];
+  /** Listen addresses the form offers. */
+  bind_choices: string[];
+  peers: string[];
+  data_root: string;
   /** Local connection/timeout controls; null means the bundle default applies. */
-  advanced: PodAdvancedConfig
-  password_set: boolean
-  running: boolean
-  error: string | null
+  advanced: PodAdvancedConfig;
+  password_set: boolean;
+  running: boolean;
+  error: string | null;
 }
 
 /** Read-only data surface plus approval actions. */
 export interface PodAdmin {
   /** This node's own advertised record, or null while it is not running. */
-  self(): SelfRecord | null
-  members(): PeerView[]
-  tasks(limit?: number): TaskView[]
-  dispatches(): DispatchEntry[]
-  task(peer: string, taskId: string): Promise<TaskView>
-  /** Watched remote tasks currently blocked on a permission request. */
-  approvals(): TrackedTask[]
-  /** `orca_pod` approve calls currently parked on a human answer. */
-  prompts(): ApprovalPrompt[]
-  approve(peer: string, taskId: string): Promise<TaskView>
-  deny(peer: string, taskId: string, reason?: string): Promise<TaskView>
-  cancel(peer: string, taskId: string): Promise<TaskView>
-  artifacts(view: TaskView): PodArtifact[]
-  workspace(): WorkspaceView | null
+  self(): PodPeer<SelfRecord> | null;
+  /** Reachable members only: offline records are dropped. */
+  members(): PodPeer[];
+  /** Local tasks and dispatched tasks merged, newest first. */
+  recent(limit: number): PodTaskRow[];
+  /** Permission requests waiting for the human, one per task. */
+  approvals(): PodApproval[];
+  task(peer: string, taskId: string): Promise<PodTaskDetail>;
+  approve(peer: string, taskId: string): Promise<TaskView>;
+  deny(peer: string, taskId: string, reason?: string): Promise<TaskView>;
+  cancel(peer: string, taskId: string): Promise<TaskView>;
+  workspace(): WorkspaceView | null;
   /** Effective config plus setup state; the password itself is never returned. */
-  config(): PodConfigView
+  config(): PodConfigView;
   /** Persist a panel override and restart the orca node with the merged config. */
-  saveConfig(patch: Record<string, unknown>): Promise<PodConfigView>
+  saveConfig(patch: Record<string, unknown>): Promise<PodConfigView>;
   /** `join` one peer now and remember it for later starts. */
-  connect(peer: string): Promise<PodConfigView>
+  connect(peer: string): Promise<PodConfigView>;
   /** Leave the workgroup: tell known peers and forget them locally. */
-  disconnect(): Promise<PodConfigView>
+  disconnect(): Promise<PodConfigView>;
   /** Delete the panel override and the persisted orca node identity. */
-  reset(): Promise<PodConfigView>
+  reset(): Promise<PodConfigView>;
   /** Change notification; subscribes to both node events and tracker updates. */
-  subscribe(listener: () => void): () => void
+  subscribe(listener: () => void): () => void;
 }
+
+/** Newest input directories listed in the workspace summary. */
+const WORKSPACE_INPUT_DIRS = 10;
+const REQUESTED_PREVIEW_CHARS = 160;
 
 /** List regular entries of one directory, sorted; missing paths yield []. */
 function entries(dir: string): Array<{ name: string; is_dir: boolean }> {
   try {
     return readdirSync(dir, { withFileTypes: true })
       .map((entry) => ({ name: entry.name, is_dir: entry.isDirectory() }))
-      .sort((left, right) => left.name.localeCompare(right.name))
+      .sort((left, right) => left.name.localeCompare(right.name));
   } catch {
-    return []
+    return [];
   }
 }
 
-/** Poll until a parked `orca_pod` approve call has resumed the task (or it settles). */
-async function waitForResume(node: OrcaNode, peer: string, taskId: string): Promise<TaskView> {
-  const deadline = Date.now() + 10_000
-  let view = await node.getTask(peer, taskId)
-  while (view.status.state === "input-required" && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    view = await node.getTask(peer, taskId)
+const podOf = (view: TaskView): PodTaskMetadata => (view.metadata?.pod ?? {}) as PodTaskMetadata;
+
+const isActive = (state: string): boolean => state !== "unknown" && !isTerminal(state);
+
+function preview(value: unknown): string {
+  const text = JSON.stringify(value) ?? "";
+  return text.length > REQUESTED_PREVIEW_CHARS ? `${text.slice(0, REQUESTED_PREVIEW_CHARS - 1)}…` : text;
+}
+
+/** Display names for node ids and endpoint URLs, resolved against one roster snapshot. */
+function labeller(current: OrcaNode | null): (key: string | undefined) => string {
+  const peers: PeerView[] = current === null ? [] : [current.self(), ...current.members()];
+  return (key) => {
+    if (key === undefined || key.length === 0) return "-";
+    const known = peers.find((peer) => peer.orca_node_id === key || peer.endpoints.includes(key));
+    if (known !== undefined) return known.display_name;
+    return URL.canParse(key) ? new URL(key).host : shortenNodeId(key);
+  };
+}
+
+/** Approval path root first: this node, then each hop down to the node that needs the permission. */
+function chainOf(request: PermissionRequest, self: SelfRecord | null, label: (key: string) => string): PodChainEntry[] {
+  const chain: PodChainEntry[] = self === null ? [] : [{ name: label(self.orca_node_id), self: true }];
+  for (const id of [request.requested_by, ...[...(request.upstream ?? [])].reverse()]) {
+    const name = label(id);
+    if (chain.at(-1)?.name !== name) chain.push({ name, self: false });
   }
-  return view
+  return chain;
 }
 
 /** Build the admin surface over one running orca node. */
-export function createPodAdmin(
-  handle: PodHandle,
-  tracker: Tracker,
-  options: { prompts?: ApprovalPrompts } = {},
-): PodAdmin {
+export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: ApprovalBroker): PodAdmin {
   /** The node, or null while startup failed / has not completed yet. */
   function node(): OrcaNode | null {
-    return handle.runtime.orcaNode
+    return handle.runtime.orcaNode;
   }
 
   function requireNode(): OrcaNode {
-    const current = node()
-    if (current === null) throw new Error("orca node is not running")
-    return current
+    const current = node();
+    if (current === null) throw new Error("orca node is not running");
+    return current;
+  }
+
+  function artifactsOf(current: OrcaNode, view: TaskView, local: boolean): PodArtifact[] {
+    return (view.artifacts ?? []).map((artifact) => ({
+      name: artifact.name,
+      blob_id: artifact.artifactId,
+      bytes: artifact.bytes,
+      url: local ? current.blobLink(artifact.artifactId) : null,
+    }));
   }
 
   function configView(): PodConfigView {
-    const config = handle.config
-    const current = node()
-    const self = current?.self() ?? null
-    const port = handle.runtime.port ?? config.port
+    const config = handle.config;
+    const current = node();
+    const self = current?.self() ?? null;
+    const port = handle.runtime.port ?? config.port;
+    const endpoints = current?.endpoints ?? [...config.endpoints];
+    const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));
     return {
       configured: handle.uiConfigured,
-      workgroup_id: config.workgroup_id,
+      workgroup_id: config.workgroup_id ?? "",
       node_id: self?.orca_node_id ?? null,
       display_name: self?.display_name ?? config.display_name ?? null,
-      bind_host: config.bind_host ?? null,
+      bind_host: config.bind_host,
       port,
-      endpoints: current?.endpoints ?? [...(config.endpoints ?? [])],
-      detected_endpoints: detectLocalEndpoints(port),
+      endpoints,
+      suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
+      bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
       peers: [...config.peers],
       data_root: config.data_root ?? defaultDataRoot(),
       advanced: {
@@ -171,6 +264,9 @@ export function createPodAdmin(
         result_max_bytes: config.result_max_bytes ?? null,
         max_input_files: config.max_input_files ?? null,
         max_input_bytes: config.max_input_bytes ?? null,
+        max_workspace_bytes: config.max_workspace_bytes,
+        max_workspace_files: config.max_workspace_files,
+        max_blob_store_bytes: config.max_blob_store_bytes,
         allow_public_peers: config.allow_public_peers ?? null,
         allow_loopback_peers: config.allow_loopback_peers ?? null,
         permission_mode: config.permission_mode ?? null,
@@ -180,160 +276,167 @@ export function createPodAdmin(
       password_set: config.workgroup_password.length > 0,
       running: current !== null,
       error: handle.runtime.error === null ? null : handle.runtime.error.message,
-    }
+    };
   }
 
   return {
     self() {
-      return node()?.self() ?? null
+      const current = node();
+      if (current === null) return null;
+      const self = current.self();
+      return { ...self, busy_from: self.busy === null ? null : labeller(current)(self.busy.origin_orca_node) };
     },
     members() {
-      return node()?.members() ?? []
+      const current = node();
+      if (current === null) return [];
+      const label = labeller(current);
+      return current
+        .members()
+        .filter((member) => member.state !== "offline")
+        .map((member) => ({ ...member, busy_from: member.busy === null ? null : label(member.busy.origin_orca_node) }));
     },
-    tasks(limit = 200) {
-      return node()?.listTasks(limit) ?? []
-    },
-    dispatches() {
-      return node()?.listDispatches() ?? []
-    },
-    async task(peer, taskId) {
-      return requireNode().getTask(peer, taskId)
+    recent(limit) {
+      const current = node();
+      if (current === null) return [];
+      const label = labeller(current);
+      const own = current.endpoints[0] ?? "";
+      const tasks = current.listTasks(limit);
+      const local = new Set(tasks.map((view) => view.id));
+      const rows: PodTaskRow[] = [
+        ...tasks.map((view) => {
+          const origin = podOf(view).root_origin;
+          return {
+            id: view.id,
+            peer: own,
+            state: view.status.state,
+            who: label(origin),
+            who_title: origin ?? "",
+            at: view.status.timestamp,
+            artifacts: artifactsOf(current, view, true),
+            cancellable: isActive(view.status.state),
+          };
+        }),
+        ...current
+          .listDispatches()
+          .slice(-limit)
+          .filter((entry) => !local.has(entry.task_id))
+          .map((entry) => ({
+            id: entry.task_id,
+            peer: entry.peer,
+            state: entry.state,
+            who: label(entry.peer),
+            who_title: entry.peer,
+            at: entry.updated_at,
+            artifacts: [],
+            cancellable: isActive(entry.state),
+          })),
+      ];
+      return rows.sort((left, right) => right.at.localeCompare(left.at)).slice(0, limit);
     },
     approvals() {
-      return tracker.list().filter((tracked) => tracked.request !== null)
-    },
-    prompts() {
-      return options.prompts?.list() ?? []
-    },
-    async approve(peer, taskId) {
-      // A pending `orca_pod` approve call may be parked on this task; answering here
-      // is the same decision the chat card / popup sends.
-      const resolved = options.prompts?.resolve(peer, taskId, "allow") ?? false
-      const current = requireNode()
-      if (resolved) {
-        return waitForResume(current, peer, taskId)
+      const current = node();
+      const label = labeller(current);
+      const self = current?.self() ?? null;
+      const waiting = new Map<
+        string,
+        { peer: string; taskId: string; request: PermissionRequest; agentId: string | null }
+      >();
+      for (const prompt of broker.list()) {
+        waiting.set(`${prompt.peer}|${prompt.task_id}`, {
+          peer: prompt.peer,
+          taskId: prompt.task_id,
+          request: prompt.request,
+          agentId: prompt.agent_id,
+        });
       }
-      const view = await current.getTask(peer, taskId)
-      if (permissionRequestOf(view) === null) throw new Error("task has no pending permission request")
-      return current.approveTask(peer, view)
-    },
-    async deny(peer, taskId, reason = "denied from the UI") {
-      const resolved = options.prompts?.resolve(peer, taskId, "deny") ?? false
-      const current = requireNode()
-      if (resolved) {
-        return waitForResume(current, peer, taskId)
+      for (const tracked of tracker.list()) {
+        const id = `${tracked.peer}|${tracked.taskId}`;
+        if (tracked.request !== null && !waiting.has(id)) {
+          waiting.set(id, { peer: tracked.peer, taskId: tracked.taskId, request: tracked.request, agentId: null });
+        }
       }
-      const view = await current.getTask(peer, taskId)
-      if (permissionRequestOf(view) === null) throw new Error("task has no pending permission request")
-      return current.denyTask(peer, view, reason)
+      return [...waiting].map(([id, { peer, taskId, request, agentId }]) => {
+        const chain = chainOf(request, self, label);
+        return {
+          id,
+          peer,
+          task_id: taskId,
+          tool: request.tool,
+          requested: preview(request.requested),
+          from: chain.at(-1)?.name ?? "-",
+          chain,
+          agent_id: agentId,
+        };
+      });
     },
+    async task(peer, taskId) {
+      const current = requireNode();
+      const task = await current.getTask(peer, taskId);
+      // Only a task this node runs has artifacts and inputs here.
+      const local = current.endpoints.includes(peer);
+      return {
+        task,
+        origin: labeller(current)(podOf(task).root_origin),
+        dispatch: current.listDispatches().find((entry) => entry.task_id === task.id) ?? null,
+        artifacts: artifactsOf(current, task, local),
+        inputs: local ? entries(join(current.workspacePaths().inputs, task.id)).map((file) => file.name) : [],
+      };
+    },
+    approve: (peer, taskId) => broker.approve(peer, taskId),
+    deny: (peer, taskId, reason) => broker.deny(peer, taskId, reason),
     async cancel(peer, taskId) {
-      return requireNode().cancelTask(peer, taskId)
-    },
-    artifacts(view) {
-      const current = node()
-      return (view.artifacts ?? []).map((artifact) => ({
-        name: artifact.name,
-        blob_id: artifact.artifactId,
-        bytes: artifact.bytes,
-        url: current?.blobLink(artifact.artifactId) ?? null,
-      }))
+      return requireNode().cancelTask(peer, taskId);
     },
     workspace() {
-      const paths = node()?.workspacePaths() ?? null
-      if (paths === null) return null
-      const notesFiles = entries(paths.notes)
-        .filter((entry) => !entry.is_dir)
-        .map((entry) => entry.name)
-      const inputsDirs = entries(paths.inputs)
-        .filter((entry) => entry.is_dir)
-        .map((entry) => ({
-          task_id: entry.name,
-          files: entries(join(paths.inputs, entry.name)).map((file) => file.name),
-        }))
-      return { ...paths, notes_files: notesFiles, inputs_dirs: inputsDirs }
+      const paths = node()?.workspacePaths() ?? null;
+      if (paths === null) return null;
+      return {
+        ...paths,
+        notes_files: entries(paths.notes)
+          .filter((entry) => !entry.is_dir)
+          .map((entry) => entry.name),
+        inputs_dirs: entries(paths.inputs)
+          .filter((entry) => entry.is_dir)
+          .slice(-WORKSPACE_INPUT_DIRS)
+          .map((entry) => ({ task_id: entry.name, files: entries(join(paths.inputs, entry.name)).length })),
+      };
     },
     config() {
-      return configView()
+      return configView();
     },
     async saveConfig(patch) {
-      const rawPassword = patch["workgroup_password"]
+      const rawPassword = patch.workgroup_password;
       if (rawPassword !== undefined && (typeof rawPassword !== "string" || rawPassword.trim().length === 0)) {
         // A passwordless mesh is not supported: either set a password or omit
         // the field to keep the current one.
-        throw new Error("a workgroup password is required; a passwordless mesh is not supported")
+        throw new Error("a workgroup password is required; a passwordless mesh is not supported");
       }
       // Switching workgroups reuses the current password unless the panel sends a
       // new one: the password is a local secret, not a claim tied to one group.
-      await handle.reconfigure(patch)
-      return configView()
+      await handle.reconfigure(patch);
+      return configView();
     },
     async connect(peer) {
-      await handle.addPeer(normalizePeer(peer))
-      return configView()
+      await handle.addPeer(normalizePeerUrl(peer));
+      return configView();
     },
     async disconnect() {
-      await handle.disconnect()
-      return configView()
+      await handle.disconnect();
+      return configView();
     },
     async reset() {
-      await handle.reset()
-      return configView()
+      await handle.reset();
+      return configView();
     },
     subscribe(listener) {
-      const offNode = node()?.subscribe(listener) ?? (() => {})
-      const offTracker = tracker.subscribe(listener)
+      const offNode = node()?.subscribe(listener) ?? (() => {});
+      const offTracker = tracker.subscribe(listener);
+      const offBroker = broker.subscribe(listener);
       return () => {
-        offNode()
-        offTracker()
-      }
+        offNode();
+        offTracker();
+        offBroker();
+      };
     },
-  }
+  };
 }
-
-/** Accept `host:port` shorthand and strip one trailing slash. */
-export function normalizePeer(peer: string): string {
-  const trimmed = peer.trim()
-  if (trimmed.length === 0) throw new Error("peer address is required")
-  const schemeMatch = /^(https?):\/\//i.exec(trimmed)
-  const scheme = schemeMatch === null ? "http" : schemeMatch[1]!.toLowerCase()
-  let rest = schemeMatch === null ? trimmed : trimmed.slice(schemeMatch[0].length)
-  rest = rest.replace(/\/+$/, "")
-  if (rest.length === 0) throw new Error(`peer address must include a host: ${trimmed}`)
-  if (rest.includes("/") || rest.includes("?") || rest.includes("#")) {
-    throw new Error(`peer address must be host[:port], without a path: ${trimmed}`)
-  }
-  let hostPart: string
-  let portText: string | undefined
-  if (rest.startsWith("[")) {
-    const close = rest.indexOf("]")
-    if (close === -1) throw new Error(`invalid IPv6 peer address: ${trimmed}`)
-    hostPart = rest.slice(1, close)
-    const after = rest.slice(close + 1)
-    if (after.length > 0) {
-      if (!after.startsWith(":")) throw new Error(`invalid IPv6 peer address: ${trimmed}`)
-      portText = after.slice(1)
-    }
-  } else {
-    const parts = rest.split(":")
-    if (parts.length > 2) {
-      // A bare IPv6 literal has more than one colon and no explicit port.
-      hostPart = rest
-    } else if (parts.length === 2) {
-      hostPart = parts[0]!
-      portText = parts[1]
-    } else {
-      hostPart = rest
-    }
-  }
-  if (hostPart.length === 0) throw new Error(`peer address must include a host: ${trimmed}`)
-  const fallbackPort = schemeMatch === null ? 11811 : scheme === "https" ? 443 : 80
-  const port = portText === undefined || portText.length === 0 ? fallbackPort : Number(portText)
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new Error(`invalid peer port: ${portText ?? ""}`)
-  }
-  const host = hostPart.includes(":") ? `[${hostPart}]` : hostPart
-  return `${scheme}://${host}:${port}`
-}
-
-

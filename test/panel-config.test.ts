@@ -11,12 +11,15 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath } from "../src/config.ts";
 import { shortenNodeId } from "../src/identity.ts";
-import { createPodAdmin, normalizePeer } from "../src/plugin/admin.ts";
+import { normalizePeerUrl } from "../src/net.ts";
+import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodAdmin } from "../src/plugin/admin.ts";
 import type { Config } from "../src/plugin/config.ts";
 import type { HostLogger } from "../src/plugin/dsh.ts";
 import { overridePath, startPod, stopPod } from "../src/plugin/lifecycle.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
+import { parseSettings } from "../src/settings.ts";
+import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
 
 const logger: HostLogger = { info: () => {}, warn: () => {}, error: () => {} };
@@ -36,19 +39,22 @@ afterEach(async () => {
 });
 
 function baseConfig(root: string, workgroupId = "wg-panel"): Config {
-  return {
+  return parseSettings({
     workgroup_id: workgroupId,
     workgroup_password: "panel-password",
     display_name: "panel node",
     port: 0,
-    skill_injection: false,
-    peers: [],
     data_root: root,
-  };
+  });
 }
 
 function adminFor(handle: PodHandle): PodAdmin {
-  return createPodAdmin(handle, createTracker(() => null, { intervalMs: 60_000 }));
+  const broker = createApprovalBroker(() => null);
+  return createPodAdmin(
+    handle,
+    createTracker(() => null, broker, logger, { intervalMs: 60_000 }),
+    broker,
+  );
 }
 
 /**
@@ -82,8 +88,8 @@ describe("panel override lifecycle", () => {
       expect(handle.runtime.error).toBeNull();
       const firstId = handle.runtime.orcaNode!.self().orca_node_id;
       const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
-      expect(stored["setup_complete"]).toBe(true);
-      expect(stored["display_name"]).toBe("renamed node");
+      expect(stored.setup_complete).toBe(true);
+      expect(stored.display_name).toBe("renamed node");
 
       await handle.reconfigure({ display_name: "renamed again", peers: [] });
       expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
@@ -102,6 +108,27 @@ describe("panel override lifecycle", () => {
       await handle.reconfigure({ display_name: "recovered" });
       expect(handle.runtime.orcaNode).not.toBeNull();
       expect(handle.config.display_name).toBe("recovered");
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("ignores non-panel keys, rejects mistyped values and lets null clear a bundle value", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod({ ...baseConfig(root), task_timeout_s: 90 }, logger);
+    await handle.ready;
+    try {
+      await handle.reconfigure({ data_root: "/elsewhere", display_name: "kept" });
+      expect(handle.config.data_root).toBe(root);
+      expect(handle.config.task_timeout_s).toBe(90);
+
+      await expect(handle.reconfigure({ port: "11812" })).rejects.toThrow(/port/);
+      expect(handle.config.display_name).toBe("kept");
+
+      await handle.reconfigure({ task_timeout_s: null });
+      expect(handle.config.task_timeout_s).toBeUndefined();
+      const nodeConfig = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
+      expect(nodeConfig.task_timeout_s).toBeUndefined();
     } finally {
       await stopPod(handle, logger);
     }
@@ -129,14 +156,14 @@ describe("panel override lifecycle", () => {
     await handle.ready;
     try {
       await handle.reconfigure({ peers: [] });
-      const saved = JSON.parse(await readFile(configPath(root), "utf8")) as { bind?: { host?: string } };
-      expect(saved.bind?.host).toBe("127.0.0.1");
+      const saved = JSON.parse(await readFile(configPath(root), "utf8")) as { bind_host?: string };
+      expect(saved.bind_host).toBe("127.0.0.1");
 
       const admin = adminFor(handle);
       const view = await admin.saveConfig({ bind_host: "0.0.0.0" });
       expect(view.bind_host).toBe("0.0.0.0");
-      const updated = JSON.parse(await readFile(configPath(root), "utf8")) as { bind?: { host?: string } };
-      expect(updated.bind?.host).toBe("0.0.0.0");
+      const updated = JSON.parse(await readFile(configPath(root), "utf8")) as { bind_host?: string };
+      expect(updated.bind_host).toBe("0.0.0.0");
     } finally {
       await stopPod(handle, logger);
     }
@@ -167,6 +194,9 @@ describe("panel override lifecycle", () => {
         result_max_bytes: 4096,
         max_input_files: 4,
         max_input_bytes: 1048576,
+        max_workspace_bytes: 5 * 1024 ** 3,
+        max_workspace_files: 50_000,
+        max_blob_store_bytes: 5 * 1024 ** 3,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
@@ -176,13 +206,13 @@ describe("panel override lifecycle", () => {
       expect(handle.runtime.error).toBeNull();
 
       const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
-      expect(stored["task_timeout_s"]).toBe(120);
+      expect(stored.task_timeout_s).toBe(120);
       const nodeConfig = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
-      expect(nodeConfig["task_timeout_s"]).toBe(120);
-      expect(nodeConfig["max_input_bytes"]).toBe(1048576);
-      expect(nodeConfig["permission_mode"]).toBe("workspace-write");
-      expect(nodeConfig["default_reasoning_effort"]).toBe("max");
-      expect(nodeConfig["executor"]).toBe("echo");
+      expect(nodeConfig.task_timeout_s).toBe(120);
+      expect(nodeConfig.max_input_bytes).toBe(1048576);
+      expect(nodeConfig.permission_mode).toBe("workspace-write");
+      expect(nodeConfig.default_reasoning_effort).toBe("max");
+      expect(nodeConfig.executor).toBe("echo");
 
       // Clearing a field removes it from the override and the persisted config,
       // so the local default applies again instead of a stale stored value.
@@ -191,11 +221,11 @@ describe("panel override lifecycle", () => {
       expect(cleared.advanced.default_reasoning_effort).toBeNull();
       expect(cleared.advanced.executor).toBeNull();
       const clearedConfig = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
-      expect(clearedConfig["task_timeout_s"]).toBeUndefined();
-      expect(clearedConfig["default_reasoning_effort"]).toBeUndefined();
+      expect(clearedConfig.task_timeout_s).toBeUndefined();
+      expect(clearedConfig.default_reasoning_effort).toBeUndefined();
       // Clearing the executor falls back to the plugin default (acp), which is
       // written back so the persisted node config never loses it.
-      expect(clearedConfig["executor"]).toBe("acp");
+      expect(clearedConfig.executor).toBe("acp");
     } finally {
       await stopPod(handle, logger);
     }
@@ -255,8 +285,8 @@ describe("panel override lifecycle", () => {
       await a.addPeer(peerUrl);
       expect(a.config.peers).toContain(peerUrl);
       const stored = JSON.parse(await readFile(overridePath(rootA), "utf8")) as Record<string, unknown>;
-      expect(stored["setup_complete"]).toBe(true);
-      expect(stored["peers"]).toEqual([peerUrl]);
+      expect(stored.setup_complete).toBe(true);
+      expect(stored.peers).toEqual([peerUrl]);
     } finally {
       await stopPod(a, logger);
       await stopPod(b, logger);
@@ -299,7 +329,7 @@ describe("panel override lifecycle", () => {
       // The failed join must not add a peer to the persisted override: only the
       // setup marker is there.
       const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
-      expect(stored["peers"]).toBeUndefined();
+      expect(stored.peers).toBeUndefined();
     } finally {
       await stopPod(handle, logger);
     }
@@ -339,7 +369,7 @@ describe("panel admin configuration", () => {
       expect(handle.config.workgroup_password).toBe("panel-password");
       expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
       const stored = JSON.parse(await readFile(configPath(root), "utf8")) as Record<string, unknown>;
-      expect(stored["workgroup_id"]).toBe("wg-other");
+      expect(stored.workgroup_id).toBe("wg-other");
     } finally {
       await stopPod(handle, logger);
     }
@@ -350,62 +380,55 @@ describe("panel admin configuration", () => {
     const handle: PodHandle = {
       ready: Promise.resolve(),
       runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
-      config: {
-        workgroup_id: "wg-panel",
-        workgroup_password: "pw",
-        port: 11811,
-        skill_injection: false,
-        peers: [],
-      },
+      config: parseSettings({ workgroup_id: "wg-panel", workgroup_password: "pw" }),
       uiConfigured: false,
       reconfigure: async () => {},
       addPeer: async (peer) => {
         seen.push(peer);
       },
       disconnect: async () => {},
-        reset: async () => {},
+      reset: async () => {},
+      dispose: async () => {},
     };
     const admin = adminFor(handle);
     await admin.connect("192.168.1.20:11811");
     await admin.connect("http://desk.example.com/");
     expect(seen).toEqual(["http://192.168.1.20:11811", "http://desk.example.com:80"]);
-    expect(normalizePeer("10.0.0.2")).toBe("http://10.0.0.2:11811");
-    expect(normalizePeer("10.0.0.2:11811")).toBe("http://10.0.0.2:11811");
-    expect(normalizePeer("http://10.0.0.2:11811/")).toBe("http://10.0.0.2:11811");
-    expect(normalizePeer("https://desk.example.com")).toBe("https://desk.example.com:443");
-    expect(normalizePeer("http://desk.example.com")).toBe("http://desk.example.com:80");
-    expect(normalizePeer("[fd00::12]")).toBe("http://[fd00::12]:11811");
-    expect(normalizePeer("[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
-    expect(normalizePeer("fd00::12")).toBe("http://[fd00::12]:11811");
-    expect(normalizePeer("http://[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
-    expect(() => normalizePeer("")).toThrow(/peer address is required/);
-    expect(() => normalizePeer("http://")).toThrow(/must include a host/);
-    expect(() => normalizePeer("http://desk.example.com/a2a")).toThrow(/without a path/);
-    expect(() => normalizePeer("http://desk.example.com?x=1")).toThrow(/without a path/);
-    expect(() => normalizePeer("10.0.0.2:0")).toThrow(/invalid peer port/);
-    expect(() => normalizePeer("10.0.0.2:99999")).toThrow(/invalid peer port/);
-    expect(() => normalizePeer("10.0.0.2:abc")).toThrow(/invalid peer port/);
+    expect(normalizePeerUrl("10.0.0.2")).toBe("http://10.0.0.2:11811");
+    expect(normalizePeerUrl("10.0.0.2:11811")).toBe("http://10.0.0.2:11811");
+    expect(normalizePeerUrl("http://10.0.0.2:11811/")).toBe("http://10.0.0.2:11811");
+    expect(normalizePeerUrl("https://desk.example.com")).toBe("https://desk.example.com:443");
+    expect(normalizePeerUrl("http://desk.example.com")).toBe("http://desk.example.com:80");
+    expect(normalizePeerUrl("[fd00::12]")).toBe("http://[fd00::12]:11811");
+    expect(normalizePeerUrl("[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
+    expect(normalizePeerUrl("fd00::12")).toBe("http://[fd00::12]:11811");
+    expect(normalizePeerUrl("http://[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
+    expect(() => normalizePeerUrl("")).toThrow(/peer address is required/);
+    expect(() => normalizePeerUrl("http://")).toThrow(/must include a host/);
+    expect(() => normalizePeerUrl("http://desk.example.com/a2a")).toThrow(/without a path/);
+    expect(() => normalizePeerUrl("http://desk.example.com?x=1")).toThrow(/without a path/);
+    expect(() => normalizePeerUrl("10.0.0.2:0")).toThrow(/invalid peer port/);
+    expect(() => normalizePeerUrl("10.0.0.2:99999")).toThrow(/invalid peer port/);
+    expect(() => normalizePeerUrl("10.0.0.2:abc")).toThrow(/invalid peer port/);
   });
 
   it("defaults the display name to the orca node id and suggests local endpoints", async () => {
     const root = await tempRoot("orca-panel-");
-    const config: Config = {
-      workgroup_id: "wg-id",
-      workgroup_password: "pw",
-      port: 0,
-      skill_injection: false,
-      peers: [],
-      data_root: root,
-    };
+    const config = parseSettings({ workgroup_id: "wg-id", workgroup_password: "pw", port: 0, data_root: root });
     const handle = await startedPod(config);
     try {
       const admin = adminFor(handle);
       const self = admin.self()!;
       expect(self.display_name).toBe(shortenNodeId(self.orca_node_id));
       expect(admin.config().display_name).toBe(shortenNodeId(self.orca_node_id));
-      const detected = admin.config().detected_endpoints;
-      expect(Array.isArray(detected)).toBe(true);
-      for (const url of detected) expect(url.startsWith("http://")).toBe(true);
+      const { suggested_endpoints: suggested, bind_choices: choices, advanced } = admin.config();
+      for (const url of suggested) expect(url.startsWith("http://")).toBe(true);
+      expect(choices.slice(0, 2)).toEqual(["127.0.0.1", "::"]);
+      expect(advanced).toMatchObject({
+        max_workspace_bytes: 5 * 1024 ** 3,
+        max_workspace_files: 50_000,
+        max_blob_store_bytes: 5 * 1024 ** 3,
+      });
     } finally {
       await stopPod(handle, logger);
     }
@@ -413,14 +436,7 @@ describe("panel admin configuration", () => {
 
   it("stays idle until the first-run wizard supplies a workgroup", async () => {
     const root = await tempRoot("orca-panel-");
-    const config: Config = {
-      workgroup_id: "",
-      workgroup_password: "",
-      port: 0,
-      skill_injection: false,
-      peers: [],
-      data_root: root,
-    };
+    const config = parseSettings({ port: 0, data_root: root });
     const handle = startPod(config, logger);
     await handle.ready;
     try {
@@ -462,12 +478,8 @@ describe("panel admin configuration", () => {
     const handle = startPod(baseConfig(root), logger);
     await handle.ready;
     try {
-      await expect(adminFor(handle).saveConfig({ workgroup_password: "" })).rejects.toThrow(
-        /password is required/,
-      );
-      await expect(adminFor(handle).saveConfig({ workgroup_password: "   " })).rejects.toThrow(
-        /password is required/,
-      );
+      await expect(adminFor(handle).saveConfig({ workgroup_password: "" })).rejects.toThrow(/password is required/);
+      await expect(adminFor(handle).saveConfig({ workgroup_password: "   " })).rejects.toThrow(/password is required/);
     } finally {
       await stopPod(handle, logger);
     }
@@ -485,7 +497,7 @@ describe("panel admin configuration", () => {
       await admin.disconnect();
       expect(a.config.peers).toEqual([]);
       const stored = JSON.parse(await readFile(overridePath(rootA), "utf8")) as Record<string, unknown>;
-      expect(stored["peers"]).toEqual([]);
+      expect(stored.peers).toEqual([]);
       const remaining = admin.members().map((member) => member.orca_node_id);
       expect(remaining).toEqual([]);
     } finally {

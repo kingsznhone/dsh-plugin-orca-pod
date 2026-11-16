@@ -20,12 +20,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { configPath, createOrcaNodeConfig, saveConfig, type OrcaNodeConfig } from "./config.ts";
-import { waitFor } from "./harness.ts";
-import type { MembersResponse, TaskView } from "./protocol.ts";
+import { configPath, createOrcaNodeConfig, saveConfig } from "../src/config.ts";
+import { waitFor } from "../src/harness.ts";
+import { isTerminal, type MembersResponse, type TaskView } from "../src/protocol.ts";
 
 const execFileAsync = promisify(execFile);
-const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const NODE = process.execPath;
 const START_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 30_000;
@@ -112,51 +112,52 @@ async function main(): Promise<void> {
   const password = randomBytes(8).toString("hex");
   const running: RunningNode[] = [];
   try {
-    const configs: Array<{ config: OrcaNodeConfig; file: string }> = [];
-    for (const index of [0, 1]) {
+    const writeConfig = async (index: number): Promise<string> => {
       const dataRoot = join(root, `orca-node-${index}`);
       const config = createOrcaNodeConfig({
-        workgroupId,
-        password,
-        dataRoot,
+        workgroup_id: workgroupId,
+        workgroup_password: password,
+        data_root: dataRoot,
         port: 0,
-        displayName: `harness-${index}`,
+        display_name: `harness-${index}`,
       });
       const file = configPath(dataRoot);
       await saveConfig(file, config);
-      configs.push({ config, file });
-    }
+      return file;
+    };
+    const firstFile = await writeConfig(0);
+    const secondFile = await writeConfig(1);
 
-    const first = startNode("orca-node-0", configs[0]!.file, []);
+    const first = startNode("orca-node-0", firstFile, []);
     running.push(first);
     const firstUrl = await first.url;
     console.log(`orca-node-0 up at ${firstUrl}`);
 
     // A freshly configured node joins at startup through `--peer`, exactly like
     // an operator bootstrapping a second machine into an existing mesh.
-    const second = startNode("orca-node-1", configs[1]!.file, ["--peer", firstUrl]);
+    const second = startNode("orca-node-1", secondFile, ["--peer", firstUrl]);
     running.push(second);
     const secondUrl = await second.url;
     console.log(`orca-node-1 up at ${secondUrl}`);
 
     const members = await waitFor(
-      async () => JSON.parse(await runCli(["--config", configs[0]!.file, "members", "--json"])) as MembersResponse,
+      async () => JSON.parse(await runCli(["--config", firstFile, "members", "--json"])) as MembersResponse,
       (response) => response.members.filter((member) => member.state === "online").length >= 2,
       { timeoutMs: STEP_TIMEOUT_MS, label: "two online members" },
     );
     console.log(`mesh converged: ${String(members.members.length)} members`);
 
     const sent = JSON.parse(
-      await runCli(["--config", configs[0]!.file, "send", "--peer", secondUrl, "--text", "harness ping", "--json"]),
+      await runCli(["--config", firstFile, "send", "--peer", secondUrl, "--text", "harness ping", "--json"]),
     ) as TaskView;
     console.log(`dispatched task ${sent.id} to orca-node-1`);
 
     const final = await waitFor(
       async () =>
         JSON.parse(
-          await runCli(["--config", configs[0]!.file, "status", "--peer", secondUrl, "--task", sent.id, "--json"]),
+          await runCli(["--config", firstFile, "status", "--peer", secondUrl, "--task", sent.id, "--json"]),
         ) as TaskView,
-      (view) => ["completed", "failed", "canceled"].includes(view.status.state),
+      (view) => isTerminal(view.status.state),
       { timeoutMs: STEP_TIMEOUT_MS, label: "terminal task state" },
     );
     if (final.status.state !== "completed") {

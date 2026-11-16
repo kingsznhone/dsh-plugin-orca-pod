@@ -25,9 +25,9 @@ afterEach(async () => {
 
 function nodeFor(dataRoot: string): OrcaNode {
   const config = createOrcaNodeConfig({
-    workgroupId: "orca-persist",
-    password: "secret",
-    dataRoot,
+    workgroup_id: "orca-persist",
+    workgroup_password: "secret",
+    data_root: dataRoot,
     port: 0,
   });
   const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });

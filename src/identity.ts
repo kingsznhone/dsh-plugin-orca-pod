@@ -1,10 +1,4 @@
-import {
-  createPublicKey,
-  generateKeyPairSync,
-  sign as edSign,
-  verify as edVerify,
-  type KeyObject,
-} from "node:crypto";
+import { createPublicKey, generateKeyPairSync, sign as edSign, verify as edVerify, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -23,7 +17,7 @@ export type NodeIdentity = {
 };
 
 /** base64url of 32 bytes → 43 chars. */
-export const NODE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const NODE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RAW_KEY_BYTES = 32;
 
 export function isNodeId(value: unknown): value is string {
@@ -47,7 +41,7 @@ function rawPublicKeyBase64(publicKey: KeyObject): string {
   return raw.toString("base64url");
 }
 
-export function identityFromPrivateKeyPem(privateKeyPem: string): NodeIdentity {
+function identityFromPrivateKeyPem(privateKeyPem: string): NodeIdentity {
   const publicKey = createPublicKey({ key: privateKeyPem, format: "pem" });
   const orcaNodeId = rawPublicKeyBase64(publicKey);
   return { orcaNodeId, publicKey: orcaNodeId, privateKeyPem };
@@ -64,11 +58,7 @@ export function signWithIdentity(identity: NodeIdentity, message: string | Uint8
   return edSign(null, Buffer.from(message), identity.privateKeyPem).toString("base64url");
 }
 
-export function verifyWithNodeId(
-  orcaNodeId: string,
-  message: string | Uint8Array,
-  signature: string,
-): boolean {
+export function verifyWithNodeId(orcaNodeId: string, message: string | Uint8Array, signature: string): boolean {
   if (!isNodeId(orcaNodeId)) return false;
   try {
     const publicKey = createPublicKey({
@@ -97,7 +87,7 @@ export function loadIdentity(dataRoot: string): NodeIdentity | null {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (typeof parsed !== "object" || parsed === null) return null;
     const record = parsed as Record<string, unknown>;
-    const privateKeyPem = record["private_key_pem"];
+    const privateKeyPem = record.private_key_pem;
     if (typeof privateKeyPem !== "string" || privateKeyPem.length === 0) return null;
     return identityFromPrivateKeyPem(privateKeyPem);
   } catch {
@@ -105,7 +95,7 @@ export function loadIdentity(dataRoot: string): NodeIdentity | null {
   }
 }
 
-export function saveIdentity(dataRoot: string, identity: NodeIdentity): string {
+function saveIdentity(dataRoot: string, identity: NodeIdentity): string {
   const path = identityPath(dataRoot);
   mkdirSync(dataRoot, { recursive: true });
   const payload = {

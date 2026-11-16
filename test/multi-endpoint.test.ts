@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNode, createOrcaNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
+import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
 import type { MembershipTimings } from "../src/membership.ts";
 
 const TIMINGS: Partial<MembershipTimings> = {
@@ -54,10 +55,10 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
     const live = `http://127.0.0.1:${listenPort}`;
 
     const bConfig = createOrcaNodeConfig({
-      workgroupId,
-      password,
+      workgroup_id: workgroupId,
+      workgroup_password: password,
       port: listenPort,
-      dataRoot: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
+      data_root: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
       endpoints: [dead, live],
     });
     const b: OrcaNode = createOrcaNode({ config: bConfig, timings: TIMINGS });
@@ -69,10 +70,10 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       return fetch(url, init);
     };
     const aConfig = createOrcaNodeConfig({
-      workgroupId,
-      password,
+      workgroup_id: workgroupId,
+      workgroup_password: password,
       port: 0,
-      dataRoot: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
+      data_root: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
     });
     const a: OrcaNode = createOrcaNode({ config: aConfig, timings: TIMINGS, fetch: counting });
     await a.start();
@@ -100,8 +101,8 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
   it("rejects an empty endpoint list during config creation", () => {
     expect(() =>
       createOrcaNodeConfig({
-        workgroupId: newWorkgroupId(),
-        password: "correct horse",
+        workgroup_id: newWorkgroupId(),
+        workgroup_password: "correct horse",
         port: 0,
         endpoints: ["ftp://example.com"],
       }),

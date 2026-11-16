@@ -1,29 +1,27 @@
 /**
- * First-party modules. Everything in `src/` is one package so the DSH bundle
- * installs self-contained; modules stay single-purpose files, and dependency
- * direction is kept by review rather than by package boundaries.
+ * Package entry. Everything in `src/` is one package so the DSH bundle installs
+ * self-contained; this file lists the two deliberate public surfaces:
+ * the DSH bundle contract and the embeddable node API. Anything else is
+ * imported from its own module.
  */
-
-export * from "./protocol.ts";
-export * from "./crypto.ts";
-export * from "./chain.ts";
-export * from "./config.ts";
-export * from "./storage.ts";
-export * from "./blob_files.ts";
-export * from "./sqlite.ts";
-export * from "./workspace.ts";
-export * from "./gateway.ts";
-export * from "./membership.ts";
-export * from "./executor.ts";
-export * from "./acp.ts";
-export * from "./tasks.ts";
-export * from "./dispatches.ts";
-export * from "./events.ts";
-export * from "./preamble.ts";
-export * from "./orca_node.ts";
-export * from "./harness.ts";
-export * from "./plugin/admin.ts";
 
 /** DSH host bundle entry points (consumed by `cordis.patch.yml`). */
 export { Config, apply, inject } from "./plugin/index.ts";
 export type { Config as PodConfig } from "./plugin/index.ts";
+
+/** Embeddable node API. */
+export { createOrcaNodeConfig } from "./config.ts";
+export type { OrcaNodeConfig } from "./config.ts";
+export { PodError } from "./errors.ts";
+export type { PodErrorCode } from "./errors.ts";
+export { createOrcaNode, createPersistentStorage } from "./orca_node.ts";
+export type {
+  ApprovalOptions,
+  CreateNodeOptions,
+  FetchLike,
+  NodeLogger,
+  OrcaNode,
+  OrcaNodeStorage,
+} from "./orca_node.ts";
+export { ConfigValidationError, parseSettings, safeParseSettings } from "./settings.ts";
+export type { Settings, SettingsIssue } from "./settings.ts";

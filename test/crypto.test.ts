@@ -4,40 +4,48 @@ import type { Grant } from "../src/protocol.ts";
 import {
   DEFAULT_CLOCK_SKEW_MS,
   NonceCache,
-  PodAuthError,
+  admissionProof,
   blobLinkSignature,
   bodySha256,
   buildAuthHeader,
-  buildJoinProof,
   deriveWorkgroupKey,
   parseAuthHeader,
   signGrant,
+  verifyAdmissionProof,
   verifyAuth,
   verifyBlobLinkSignature,
   verifyGrant,
-  verifyJoinProof,
-  type AuthErrorCode,
+  type VerifyAuthOptions,
 } from "../src/crypto.ts";
+import { PodError, type PodErrorCode } from "../src/errors.ts";
 
 const WORKGROUP_ID = "orca-dev";
 const PASSWORD = "correct horse battery staple";
 const METHOD = "POST";
 const PATH = "/a2a/message";
+const TARGET = "target-orca-node";
+
+/** `verifyAuth` with the receiver id and restart cutoff every real caller supplies. */
+function verify(
+  options: Partial<VerifyAuthOptions> & Pick<VerifyAuthOptions, "method" | "url" | "header" | "nonceCache">,
+) {
+  return verifyAuth({ targetOrcaNodeId: TARGET, notBefore: 0, ...options });
+}
 
 function freshKey(): Buffer {
   return deriveWorkgroupKey(WORKGROUP_ID, PASSWORD);
 }
 
-function expectAuthError(code: AuthErrorCode, action: () => void): void {
+function expectAuthError(code: PodErrorCode, action: () => void): void {
   let caught: unknown;
   try {
     action();
   } catch (error) {
     caught = error;
   }
-  expect(caught).toBeInstanceOf(PodAuthError);
-  if (!(caught instanceof PodAuthError)) {
-    throw new Error(`expected PodAuthError with code ${code}`);
+  expect(caught).toBeInstanceOf(PodError);
+  if (!(caught instanceof PodError)) {
+    throw new Error(`expected PodError with code ${code}`);
   }
   expect(caught.code).toBe(code);
 }
@@ -49,9 +57,7 @@ describe("deriveWorkgroupKey", () => {
 
   it("uses the memory-hard KDF (known vector)", () => {
     // scrypt(password, "orca-pod\x00<workgroup>", N=2^15, r=8, p=1, len=32).
-    expect(freshKey().toString("hex")).toBe(
-      "91ccc5f4970b3dfd334eec59e845b15fcc2a416c89ae93505fdfff4ca1f54361",
-    );
+    expect(freshKey().toString("hex")).toBe("91ccc5f4970b3dfd334eec59e845b15fcc2a416c89ae93505fdfff4ca1f54361");
   });
 
   it("is deterministic", () => {
@@ -70,7 +76,6 @@ describe("deriveWorkgroupKey", () => {
 });
 
 describe("buildAuthHeader + verifyAuth", () => {
-  const TARGET = "target-orca-node";
   const URL_WITH_QUERY = `${PATH}?task=t_01JABD&x=1`;
 
   it("roundtrips and returns the signing orca node id", () => {
@@ -80,7 +85,7 @@ describe("buildAuthHeader + verifyAuth", () => {
 
     expect(header).toContain(`orca_node_id=${identity.orcaNodeId}`);
     expect(header).toContain(`target=${TARGET}`);
-    const verified = verifyAuth({
+    const verified = verify({
       method: METHOD,
       url: URL_WITH_QUERY,
       targetOrcaNodeId: TARGET,
@@ -97,7 +102,7 @@ describe("buildAuthHeader + verifyAuth", () => {
     const header = buildAuthHeader({ identity, method: METHOD, url: URL_WITH_QUERY, targetOrcaNodeId: TARGET });
 
     expectAuthError("bad_signature", () =>
-      verifyAuth({
+      verify({
         method: METHOD,
         url: `${PATH}?task=other`,
         targetOrcaNodeId: TARGET,
@@ -106,7 +111,7 @@ describe("buildAuthHeader + verifyAuth", () => {
       }),
     );
     expectAuthError("wrong_target", () =>
-      verifyAuth({
+      verify({
         method: METHOD,
         url: URL_WITH_QUERY,
         targetOrcaNodeId: "another-orca-node",
@@ -120,10 +125,10 @@ describe("buildAuthHeader + verifyAuth", () => {
     const identity = generateNodeIdentity();
     const header = buildAuthHeader({ identity, method: METHOD, url: PATH });
     expectAuthError("wrong_target", () =>
-      verifyAuth({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache: new NonceCache() }),
+      verify({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache: new NonceCache() }),
     );
     expect(
-      verifyAuth({
+      verify({
         method: METHOD,
         url: PATH,
         targetOrcaNodeId: TARGET,
@@ -139,7 +144,7 @@ describe("buildAuthHeader + verifyAuth", () => {
     const now = Date.now();
     const header = buildAuthHeader({ identity, method: METHOD, url: PATH, targetOrcaNodeId: TARGET, ts: now - 5_000 });
     expectAuthError("stale_request", () =>
-      verifyAuth({
+      verify({
         method: METHOD,
         url: PATH,
         targetOrcaNodeId: TARGET,
@@ -160,7 +165,7 @@ describe("buildAuthHeader + verifyAuth", () => {
       targetOrcaNodeId: TARGET,
       bodySha256: digest,
     });
-    const verified = verifyAuth({
+    const verified = verify({
       method: METHOD,
       url: PATH,
       targetOrcaNodeId: TARGET,
@@ -175,7 +180,7 @@ describe("buildAuthHeader + verifyAuth", () => {
     const identity = generateNodeIdentity();
     const header = buildAuthHeader({ identity, method: METHOD, url: PATH, targetOrcaNodeId: TARGET, body: "original" });
     expectAuthError("bad_signature", () =>
-      verifyAuth({
+      verify({
         method: METHOD,
         url: PATH,
         targetOrcaNodeId: TARGET,
@@ -197,7 +202,21 @@ describe("buildAuthHeader + verifyAuth", () => {
       ts: now - DEFAULT_CLOCK_SKEW_MS - 1_000,
     });
     expectAuthError("clock_skew", () =>
-      verifyAuth({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache: new NonceCache(), now }),
+      verify({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache: new NonceCache(), now }),
+    );
+  });
+
+  it("rejects a request issued before the process started", () => {
+    const identity = generateNodeIdentity();
+    const header = buildAuthHeader({
+      identity,
+      method: METHOD,
+      url: PATH,
+      targetOrcaNodeId: TARGET,
+      ts: Date.now() - 5_000,
+    });
+    expectAuthError("stale_request", () =>
+      verify({ method: METHOD, url: PATH, header, nonceCache: new NonceCache(), notBefore: Date.now() - 1_000 }),
     );
   });
 
@@ -205,27 +224,27 @@ describe("buildAuthHeader + verifyAuth", () => {
     const identity = generateNodeIdentity();
     const header = buildAuthHeader({ identity, method: METHOD, url: PATH, targetOrcaNodeId: TARGET });
     const nonceCache = new NonceCache();
-    verifyAuth({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache });
+    verify({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache });
     expectAuthError("nonce_replay", () =>
-      verifyAuth({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache }),
+      verify({ method: METHOD, url: PATH, targetOrcaNodeId: TARGET, header, nonceCache }),
     );
   });
 
   it("rejects a missing header with missing_auth", () => {
     expectAuthError("missing_auth", () =>
-      verifyAuth({ method: METHOD, url: PATH, header: undefined, nonceCache: new NonceCache() }),
+      verify({ method: METHOD, url: PATH, header: undefined, nonceCache: new NonceCache() }),
     );
   });
 
   it("rejects a malformed header with malformed_auth", () => {
     expectAuthError("malformed_auth", () =>
-      verifyAuth({ method: METHOD, url: PATH, header: "Bearer nope", nonceCache: new NonceCache() }),
+      verify({ method: METHOD, url: PATH, header: "Bearer nope", nonceCache: new NonceCache() }),
     );
   });
 
   it("rejects a header carrying a non-Ed25519 orca node id", () => {
     expectAuthError("malformed_auth", () =>
-      verifyAuth({
+      verify({
         method: METHOD,
         url: PATH,
         header: "Pod orca_node_id=ABC123; ts=1; nonce=n; sig=s",
@@ -255,12 +274,6 @@ describe("parseAuthHeader", () => {
     expect(parsed?.signature.length).toBeGreaterThan(0);
   });
 
-  it("accepts the legacy proof field name", () => {
-    const identity = generateNodeIdentity();
-    const header = buildAuthHeader({ identity, method: METHOD, url: PATH });
-    expect(parseAuthHeader(header.replace("; sig=", "; proof="))).not.toBeNull();
-  });
-
   it("returns null for garbage", () => {
     expect(parseAuthHeader(undefined)).toBeNull();
     expect(parseAuthHeader("")).toBeNull();
@@ -273,20 +286,25 @@ describe("join admission proof", () => {
   const fields = { workgroupId: WORKGROUP_ID, orcaNodeId: "x".repeat(43), ts: 1_700_000_000_000, nonce: "n1" };
 
   it("verifies with the derived workgroup key", () => {
-    const proof = buildJoinProof(freshKey(), fields);
-    expect(verifyJoinProof(freshKey(), fields, proof)).toBe(true);
+    const proof = admissionProof("join", freshKey(), fields);
+    expect(verifyAdmissionProof("join", freshKey(), fields, proof)).toBe(true);
+  });
+
+  it("does not let a join proof stand in for a heartbeat proof", () => {
+    const proof = admissionProof("join", freshKey(), fields);
+    expect(verifyAdmissionProof("heartbeat", freshKey(), fields, proof)).toBe(false);
   });
 
   it("is deterministic per field set", () => {
-    expect(buildJoinProof(freshKey(), fields)).toBe(buildJoinProof(freshKey(), fields));
+    expect(admissionProof("join", freshKey(), fields)).toBe(admissionProof("join", freshKey(), fields));
   });
 
   it("rejects a different password, node or nonce", () => {
-    const proof = buildJoinProof(freshKey(), fields);
+    const proof = admissionProof("join", freshKey(), fields);
     const wrongKey = deriveWorkgroupKey(WORKGROUP_ID, "different password");
-    expect(verifyJoinProof(wrongKey, fields, proof)).toBe(false);
-    expect(verifyJoinProof(freshKey(), { ...fields, orcaNodeId: "y".repeat(43) }, proof)).toBe(false);
-    expect(verifyJoinProof(freshKey(), { ...fields, nonce: "n2" }, proof)).toBe(false);
+    expect(verifyAdmissionProof("join", wrongKey, fields, proof)).toBe(false);
+    expect(verifyAdmissionProof("join", freshKey(), { ...fields, orcaNodeId: "y".repeat(43) }, proof)).toBe(false);
+    expect(verifyAdmissionProof("join", freshKey(), { ...fields, nonce: "n2" }, proof)).toBe(false);
   });
 });
 

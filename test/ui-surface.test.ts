@@ -4,6 +4,7 @@
  * model through a tool round-trip.
  */
 
+import { parseSettings } from "../src/settings.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,10 +17,15 @@ import type { PodEvent } from "../src/events.ts";
 import type { MembershipTimings } from "../src/membership.ts";
 import type { TaskView } from "../src/protocol.ts";
 import { isTerminal } from "../src/protocol.ts";
+import { shortenNodeId } from "../src/identity.ts";
 import { waitFor } from "../src/harness.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
+import type { PodTaskRow } from "../src/plugin/admin.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
+import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
+
+const logger = { info() {}, warn() {}, error() {} };
 
 const FAST: Partial<MembershipTimings> = {
   intervalMs: 50,
@@ -46,7 +52,12 @@ afterEach(async () => {
 });
 
 function makeNode(workgroupId: string, password: string): OrcaNode {
-  const config = createOrcaNodeConfig({ workgroupId, password, dataRoot: tempDir(), port: 0 });
+  const config = createOrcaNodeConfig({
+    workgroup_id: workgroupId,
+    workgroup_password: password,
+    data_root: tempDir(),
+    port: 0,
+  });
   const node = createOrcaNode({ config, storage: createPersistentStorage(config), timings: FAST });
   started.push(node);
   return node;
@@ -83,12 +94,13 @@ function handleFor(node: OrcaNode): PodHandle {
       started_at: null,
       error: null,
     },
-    config: { workgroup_id: "wg-ui", workgroup_password: "pw", port: 11811, skill_injection: false, peers: [] },
+    config: parseSettings({ workgroup_id: "wg-ui", workgroup_password: "pw" }),
     uiConfigured: true,
     reconfigure: async () => {},
     addPeer: async () => {},
     disconnect: async () => {},
-        reset: async () => {},
+    reset: async () => {},
+    dispose: async () => {},
   };
 }
 
@@ -156,7 +168,12 @@ describe("UI data surface", () => {
 
   it("exposes workspace paths, notes and artifact links through the admin surface", async () => {
     const { a, b } = await startPair();
-    const admin = createPodAdmin(handleFor(b), createTracker(() => b));
+    const broker = createApprovalBroker(() => b);
+    const admin = createPodAdmin(
+      handleFor(b),
+      createTracker(() => b, broker, logger),
+      broker,
+    );
     writeFileSync(join(admin.workspace()!.notes, "STATUS.md"), "handoff notes");
 
     const workspace = admin.workspace()!;
@@ -173,22 +190,103 @@ describe("UI data surface", () => {
         },
       },
     });
-    const tasks = await waitFor(
-      () => admin.tasks(),
-      (list: TaskView[]) => list.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
+    const rows = await waitFor(
+      () => admin.recent(10),
+      (list: PodTaskRow[]) => list.some((row) => row.id === submitted.id && isTerminal(row.state)),
       { label: "artifact task completes" },
     );
-    const view = tasks.find((task) => task.id === submitted.id)!;
-    const artifacts = admin.artifacts(view);
-    expect(artifacts).toHaveLength(1);
-    expect(artifacts[0]!.name).toBe("out.txt");
-    expect(artifacts[0]!.url).toContain("/blobs/");
+    const row = rows.find((entry) => entry.id === submitted.id)!;
+    expect(row).toMatchObject({ peer: b.endpoints[0], cancellable: false, who: a.self().display_name });
+    expect(row.artifacts).toHaveLength(1);
+    expect(row.artifacts[0]!.name).toBe("out.txt");
+    expect(row.artifacts[0]!.url).toContain("/blobs/");
     // The signed link serves the artifact bytes.
-    const response = await fetch(artifacts[0]!.url!);
+    const response = await fetch(row.artifacts[0]!.url!);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("hello");
 
     expect(admin.members().map((peer) => peer.orca_node_id)).toContain(a.self().orca_node_id);
+  });
+
+  it("merges local tasks and dispatches into one list and tells where each can be cancelled", async () => {
+    const { a, b } = await startPair();
+    const broker = createApprovalBroker(() => b);
+    const adminA = createPodAdmin(
+      handleFor(a),
+      createTracker(() => a, broker, logger),
+      broker,
+    );
+    const adminB = createPodAdmin(
+      handleFor(b),
+      createTracker(() => b, broker, logger),
+      broker,
+    );
+
+    const submitted = await a.sendTask(b.endpoints[0]!, {
+      message: text("keep working"),
+      metadata: { echo: { final: { state: "hang", text: "" } } },
+    });
+    await waitFor(
+      () => adminB.recent(10),
+      (list: PodTaskRow[]) => list.some((row) => row.id === submitted.id && row.cancellable),
+      { label: "task runs on b" },
+    );
+
+    // The origin knows it only through its dispatch log: the target is the peer's URL and
+    // there are no artifact links this node could sign.
+    const dispatched = adminA.recent(10).find((row) => row.id === submitted.id)!;
+    expect(dispatched).toMatchObject({
+      peer: b.endpoints[0],
+      who: b.self().display_name,
+      cancellable: true,
+      artifacts: [],
+    });
+
+    // The target runs it locally: the row addresses its own URL, and a call there works.
+    const local = adminB.recent(10).find((row) => row.id === submitted.id)!;
+    expect(local.peer).toBe(b.endpoints[0]);
+    expect(adminB.recent(10).filter((row) => row.id === submitted.id)).toHaveLength(1);
+    const detail = await adminB.task(local.peer, local.id);
+    expect(detail).toMatchObject({ origin: a.self().display_name, dispatch: null, inputs: [] });
+    expect((await adminB.cancel(local.peer, local.id)).status.state).toBe("canceled");
+    await waitFor(
+      () => adminB.recent(10),
+      (list: PodTaskRow[]) =>
+        list.some((row) => row.id === submitted.id && row.state === "canceled" && !row.cancellable),
+      { label: "cancelled on b" },
+    );
+  });
+
+  it("serves a remote task with its dispatch record and no artifact link this node cannot sign", async () => {
+    const { a, b } = await startPair();
+    const broker = createApprovalBroker(() => a);
+    const adminA = createPodAdmin(
+      handleFor(a),
+      createTracker(() => a, broker, logger),
+      broker,
+    );
+    const submitted = await a.sendTask(b.endpoints[0]!, {
+      message: text("produce an artifact"),
+      metadata: {
+        echo: {
+          steps: [],
+          final: { state: "completed", text: "done" },
+          artifacts: [{ name: "out.txt", content: "hello" }],
+        },
+      },
+    });
+    await waitFor(
+      () => b.listTasks(),
+      (tasks) => tasks.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
+      { label: "task completes on b" },
+    );
+
+    const detail = await adminA.task(b.endpoints[0]!, submitted.id);
+    expect(detail.task.id).toBe(submitted.id);
+    expect(detail.dispatch).toMatchObject({ task_id: submitted.id, peer: b.endpoints[0] });
+    expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, url: null }]);
+    expect(detail.inputs).toEqual([]);
+    expect(detail.origin).toBe(a.self().display_name);
   });
 
   it("lists pending approvals from tracked remote tasks", async () => {
@@ -220,24 +318,32 @@ describe("UI data surface", () => {
         },
       },
     };
-    const tracker = createTracker(() => ({ getTask: async () => suspended }), { intervalMs: 20 });
-    const admin = createPodAdmin(handleFor(b), tracker);
+    const broker = createApprovalBroker(() => b);
+    const tracker = createTracker(() => ({ getTask: async () => suspended, annotateDispatch() {} }), broker, logger, {
+      intervalMs: 20,
+    });
+    const admin = createPodAdmin(handleFor(b), tracker, broker);
     let notified = 0;
     const offAdmin = admin.subscribe(() => {
-      notified += 1
+      notified += 1;
     });
-    tracker.track(
-      { id: "agent-1", status: "idle", inject() {}, followup() {} },
-      "http://127.0.0.1:1",
-      suspended.id,
-    );
+    tracker.track({ id: "agent-1", status: "idle", inject() {}, followup() {} }, "http://127.0.0.1:1", suspended.id);
     const approvals = await waitFor(
       () => admin.approvals(),
       (list) => list.length === 1,
       { label: "pending approval appears" },
     );
-    expect(approvals[0]!.taskId).toBe(suspended.id);
-    expect(approvals[0]!.request?.request_id).toBe("req-1");
+    // The tracker and the broker both know the task: one entry, answerable by the UI.
+    expect(approvals).toMatchObject([
+      {
+        id: `http://127.0.0.1:1|${suspended.id}`,
+        task_id: suspended.id,
+        tool: "write_file",
+        agent_id: "agent-1",
+        from: shortenNodeId("orca-node-leaf"),
+      },
+    ]);
+    expect(approvals[0]!.chain.map((entry) => entry.self)).toEqual([true, false]);
     await waitFor(
       () => notified,
       (count) => count > 0,
@@ -249,7 +355,7 @@ describe("UI data surface", () => {
     // Approving a task that is not blocked on a permission request is reported.
     const submitted = await a.sendTask(b.endpoints[0]!, { message: text("finished quickly") });
     await waitFor(
-      () => admin.tasks(),
+      () => b.listTasks(),
       (tasks) => tasks.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
       { label: "task completes" },
     );

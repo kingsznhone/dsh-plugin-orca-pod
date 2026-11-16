@@ -4,7 +4,6 @@ import {
   isHttpEndpoint,
   isOrcaNodeId,
   isWorkgroupId,
-  MAX_ENDPOINTS,
   membersDigest,
   normalizeEndpoints,
   normalizeOrcaNodeId,
@@ -165,22 +164,18 @@ describe("membersDigest", () => {
   });
 
   it("changes when an orca node id changes", () => {
-    expect(membersDigest([{ ...alpha, orca_node_id: "ABC124" }, beta])).not.toBe(
-      membersDigest([alpha, beta]),
-    );
+    expect(membersDigest([{ ...alpha, orca_node_id: "ABC124" }, beta])).not.toBe(membersDigest([alpha, beta]));
   });
 
   it("changes when an endpoint changes", () => {
-    expect(
-      membersDigest([{ ...alpha, endpoints: ["http://127.0.0.1:11813"] }, beta]),
-    ).not.toBe(membersDigest([alpha, beta]));
+    expect(membersDigest([{ ...alpha, endpoints: ["http://127.0.0.1:11813"] }, beta])).not.toBe(
+      membersDigest([alpha, beta]),
+    );
   });
 
   it("changes when a runtime digest changes", () => {
     const otherRuntime = runtimeDigest({ ...runtime, arch: "arm64" });
-    expect(membersDigest([{ ...alpha, runtime_digest: otherRuntime }, beta])).not.toBe(
-      membersDigest([alpha, beta]),
-    );
+    expect(membersDigest([{ ...alpha, runtime_digest: otherRuntime }, beta])).not.toBe(membersDigest([alpha, beta]));
   });
 
   it("is a stable 64-hex digest for an empty member list", () => {
@@ -219,10 +214,7 @@ describe("normalizeEndpoints", () => {
   });
 
   it("strips one trailing slash and deduplicates", () => {
-    expect(normalizeEndpoints(["http://a:1/", "http://a:1", "http://b:2/"])).toEqual([
-      "http://a:1",
-      "http://b:2",
-    ]);
+    expect(normalizeEndpoints(["http://a:1/", "http://a:1", "http://b:2/"])).toEqual(["http://a:1", "http://b:2"]);
   });
 
   it("rejects empty, malformed and oversized lists", () => {
@@ -230,6 +222,6 @@ describe("normalizeEndpoints", () => {
     expect(normalizeEndpoints(undefined)).toBeNull();
     expect(normalizeEndpoints(["ftp://a:1"])).toBeNull();
     expect(normalizeEndpoints(["http://a:1", "nope"])).toBeNull();
-    expect(normalizeEndpoints(Array.from({ length: MAX_ENDPOINTS + 1 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
+    expect(normalizeEndpoints(Array.from({ length: 9 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
   });
 });

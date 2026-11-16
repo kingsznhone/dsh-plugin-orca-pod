@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createMesh, createOrcaNode, createOrcaNodeConfig, type FetchLike, type OrcaNode } from "../src/index.ts";
+import { createOrcaNodeConfig } from "../src/config.ts";
+import { createMesh } from "../src/harness.ts";
+import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
 import type { MembershipTimings } from "../src/membership.ts";
 import type { TaskView } from "../src/protocol.ts";
 
@@ -76,11 +78,11 @@ function makeNode(
   options: { timings?: Partial<MembershipTimings>; fetch?: FetchLike; display_name?: string } = {},
 ): OrcaNode {
   const config = createOrcaNodeConfig({
-    workgroupId,
-    password,
-    displayName: options.display_name,
+    workgroup_id: workgroupId,
+    workgroup_password: password,
+    display_name: options.display_name,
     port: 0,
-    dataRoot: mkdtempSync(join(tmpdir(), "orca-transport-")),
+    data_root: mkdtempSync(join(tmpdir(), "orca-transport-")),
   });
   return createOrcaNode({ config, timings: options.timings ?? JITTER, fetch: options.fetch });
 }
@@ -123,7 +125,9 @@ describe("transport jitter during formation", () => {
 
     try {
       await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 2));
-      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().every((peer) => peer.state === "online")));
+      await waitFor(() =>
+        mesh.orcaNodes.every((orcaNode) => orcaNode.members().every((peer) => peer.state === "online")),
+      );
       expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest())).size).toBe(1);
     } finally {
       await mesh.stop();

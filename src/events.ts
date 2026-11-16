@@ -23,12 +23,12 @@ export type PodEventInput =
 export type PodEvent = PodEventInput & { at: string };
 
 /** Emit side, used by the node; not exposed to UI consumers. */
-export type PodEventSink = (event: PodEventInput) => void;
+type PodEventSink = (event: PodEventInput) => void;
 
 /** Subscribe side, used by the plugin/admin surface. */
 export type PodEventListener = (event: PodEvent) => void;
 
-export type PodEventBus = {
+type PodEventBus = {
   emit: PodEventSink;
   /** Subscribe; returns an unsubscribe function. */
   subscribe(listener: PodEventListener): () => void;

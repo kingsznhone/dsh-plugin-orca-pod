@@ -3,58 +3,27 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import type { FileBlob, FileBlobStore } from "./blob_files.ts";
-import { TERMINAL_TASK_STATES, type DispatchEntry, type DispatchStore } from "./dispatches.ts";
+import { markInFlightUnknown, type DispatchEntry, type DispatchStore } from "./dispatches.ts";
 import type { PersistedTask, TaskStore } from "./storage.ts";
 
-export type SqliteTaskStore = TaskStore & { close(): void };
-
 /**
- * Durable task store (§5.5): one SQLite file, WAL mode, one process writing.
- * The payload column holds the whole record as JSON — the shape is still
- * moving in Phase 2; splitting columns buys nothing until it settles.
+ * One SQLite file holds all node state (§5.5): WAL mode, one process writing.
+ * Every store opens it through here, so the pragmas and the closed guard are
+ * the same: `stop()` can run twice, and an in-flight task may still try to
+ * persist after close, so late calls become no-ops.
  */
-export function createSqliteTaskStore(path: string): SqliteTaskStore {
+type Db = { db: DatabaseSync; closed(): boolean; close(): void };
+
+function openDb(path: string): Db {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS tasks (
-       task_id TEXT PRIMARY KEY,
-       payload TEXT NOT NULL,
-       updated_at TEXT NOT NULL
-     )`,
-  );
-  const upsert = db.prepare(
-    `INSERT INTO tasks (task_id, payload, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(task_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-  );
-  const selectOne = db.prepare("SELECT payload FROM tasks WHERE task_id = ?");
-  const selectAll = db.prepare("SELECT payload FROM tasks ORDER BY updated_at");
-
-  function parse(row: unknown): PersistedTask {
-    return JSON.parse((row as { payload: string }).payload) as PersistedTask;
-  }
-
-  // stop() can run twice (teardown + explicit stop); an in-flight pump may still
-  // try to persist after close, so late saves become no-ops.
   let closed = false;
-
   return {
-    save(task: PersistedTask): void {
-      if (closed) return;
-      upsert.run(task.view.id, JSON.stringify(task), task.updated_at);
-    },
-    load(taskId: string): PersistedTask | undefined {
-      if (closed) return undefined;
-      const row = selectOne.get(taskId);
-      return row === undefined ? undefined : parse(row);
-    },
-    list(): PersistedTask[] {
-      if (closed) return [];
-      return selectAll.all().map(parse);
-    },
-    close(): void {
+    db,
+    closed: () => closed,
+    close() {
       if (closed) return;
       closed = true;
       db.close();
@@ -62,19 +31,66 @@ export function createSqliteTaskStore(path: string): SqliteTaskStore {
   };
 }
 
-export type SqliteFileBlobStore = FileBlobStore & { close(): void };
+/** A table of JSON records keyed by task id: the whole record is the payload column. */
+function jsonTable<T>(
+  handle: Db,
+  table: "tasks" | "dispatches",
+  idOf: (item: T) => string,
+  updatedAtOf: (item: T) => string,
+) {
+  const { db } = handle;
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS ${table} (
+       task_id TEXT PRIMARY KEY,
+       payload TEXT NOT NULL,
+       updated_at TEXT NOT NULL
+     )`,
+  );
+  const upsert = db.prepare(
+    `INSERT INTO ${table} (task_id, payload, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(task_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+  );
+  const selectOne = db.prepare(`SELECT payload FROM ${table} WHERE task_id = ?`);
+  const selectAll = db.prepare(`SELECT payload FROM ${table} ORDER BY updated_at`);
+  const removeOne = db.prepare(`DELETE FROM ${table} WHERE task_id = ?`);
+  const parse = (row: unknown): T => JSON.parse((row as { payload: string }).payload) as T;
+  return {
+    save(item: T): void {
+      if (!handle.closed()) upsert.run(idOf(item), JSON.stringify(item), updatedAtOf(item));
+    },
+    get(taskId: string): T | undefined {
+      const row = handle.closed() ? undefined : selectOne.get(taskId);
+      return row === undefined ? undefined : parse(row);
+    },
+    list(): T[] {
+      return handle.closed() ? [] : selectAll.all().map(parse);
+    },
+    remove(taskId: string): void {
+      if (!handle.closed()) removeOne.run(taskId);
+    },
+  };
+}
+
+/** Durable task store (§5.5). */
+export function createSqliteTaskStore(path: string): TaskStore {
+  const handle = openDb(path);
+  const table = jsonTable<PersistedTask>(
+    handle,
+    "tasks",
+    (task) => task.view.id,
+    (task) => task.updated_at,
+  );
+  return { save: table.save, load: table.get, list: table.list, close: handle.close };
+}
 
 /**
  * Durable file-blob mapping (§5.6), in the same database as tasks so one
  * `data_root` holds all node state. The CLI writes rows directly; the gateway
  * reads them, which is why publishing needs no network route at all.
  */
-export function createSqliteFileBlobStore(path: string): SqliteFileBlobStore {
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
-  db.exec(
+export function createSqliteFileBlobStore(path: string): FileBlobStore {
+  const handle = openDb(path);
+  handle.db.exec(
     `CREATE TABLE IF NOT EXISTS file_blobs (
        blob_id TEXT PRIMARY KEY,
        path TEXT NOT NULL,
@@ -82,104 +98,47 @@ export function createSqliteFileBlobStore(path: string): SqliteFileBlobStore {
        expires_at TEXT
      )`,
   );
-  const upsert = db.prepare(
+  const upsert = handle.db.prepare(
     `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
   );
-  const selectOne = db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?");
-
-  let closed = false;
+  const selectOne = handle.db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?");
   return {
     save(blob: FileBlob): void {
-      if (closed) return;
-      upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
+      if (!handle.closed()) upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
     },
     get(blobId: string): FileBlob | undefined {
-      if (closed) return undefined;
-      const row = selectOne.get(blobId) as
-        | { blob_id: string; path: string; size: number; expires_at: string | null }
-        | undefined;
-      if (row === undefined) return undefined;
-      return { blob_id: row.blob_id, path: row.path, size: Number(row.size), expires_at: row.expires_at };
+      const row = handle.closed()
+        ? undefined
+        : (selectOne.get(blobId) as
+            | { blob_id: string; path: string; size: number; expires_at: string | null }
+            | undefined);
+      return row && { blob_id: row.blob_id, path: row.path, size: Number(row.size), expires_at: row.expires_at };
     },
-    close(): void {
-      if (closed) return;
-      closed = true;
-      db.close();
-    },
+    close: handle.close,
   };
 }
 
-export type SqliteDispatchStore = DispatchStore & { close(): void };
-
 /**
- * Durable origin-side dispatch log (§13.4), in the same database as tasks and
+ * Durable origin-side dispatch log (§8.3), in the same database as tasks and
  * file blobs. Entries survive a restart; reconciliation marks in-flight rows
- * `unknown` instead of inventing a failure (§13.3).
+ * `unknown` instead of inventing a failure (§8.3).
  */
-export function createSqliteDispatchStore(path: string): SqliteDispatchStore {
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS dispatches (
-       task_id TEXT PRIMARY KEY,
-       payload TEXT NOT NULL,
-       updated_at TEXT NOT NULL
-     )`,
+export function createSqliteDispatchStore(path: string): DispatchStore {
+  const handle = openDb(path);
+  const table = jsonTable<DispatchEntry>(
+    handle,
+    "dispatches",
+    (entry) => entry.task_id,
+    (entry) => entry.updated_at,
   );
-  const upsert = db.prepare(
-    `INSERT INTO dispatches (task_id, payload, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(task_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-  );
-  const selectOne = db.prepare("SELECT payload FROM dispatches WHERE task_id = ?");
-  const selectAll = db.prepare("SELECT payload FROM dispatches ORDER BY updated_at");
-  const removeOne = db.prepare("DELETE FROM dispatches WHERE task_id = ?");
-
-  function parse(row: unknown): DispatchEntry {
-    return JSON.parse((row as { payload: string }).payload) as DispatchEntry;
-  }
-
-  let closed = false;
-  return {
-    save(entry: DispatchEntry): void {
-      if (closed) return;
-      upsert.run(entry.task_id, JSON.stringify(entry), entry.updated_at);
-    },
-    get(taskId: string): DispatchEntry | undefined {
-      if (closed) return undefined;
-      const row = selectOne.get(taskId);
-      return row === undefined ? undefined : parse(row);
-    },
-    list(): DispatchEntry[] {
-      if (closed) return [];
-      return selectAll.all().map(parse);
-    },
-    markUnknown(reason = "origin_restart"): number {
-      if (closed) return 0;
-      let count = 0;
-      for (const entry of selectAll.all().map(parse)) {
-        if (TERMINAL_TASK_STATES.has(entry.state)) continue;
-        const next: DispatchEntry = {
-          ...entry,
-          state: "unknown",
-          last_error: reason,
-          updated_at: new Date().toISOString(),
-        };
-        upsert.run(next.task_id, JSON.stringify(next), next.updated_at);
-        count += 1;
-      }
-      return count;
-    },
-    remove(taskId: string): void {
-      if (closed) return;
-      removeOne.run(taskId);
-    },
-    close(): void {
-      if (closed) return;
-      closed = true;
-      db.close();
-    },
+  const store: DispatchStore = {
+    save: table.save,
+    get: table.get,
+    list: table.list,
+    markUnknown: () => markInFlightUnknown(store),
+    remove: table.remove,
+    close: handle.close,
   };
+  return store;
 }
