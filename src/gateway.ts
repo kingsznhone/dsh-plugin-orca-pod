@@ -176,6 +176,30 @@ function authenticate(
   });
 }
 
+/**
+ * A valid signature proves possession of a node key, not admission to the
+ * workgroup: anyone can generate an Ed25519 key. Every signed route except
+ * `/cluster/join` is therefore member-only (§7.1): the caller must be this node
+ * itself or a peer still in the roster. Tombstoned peers have no record and are
+ * rejected until they join again.
+ */
+function authenticateMember(
+  request: FastifyRequest,
+  deps: GatewayDeps,
+  reply: FastifyReply,
+  bodySha256?: string,
+): VerifiedAuth | null {
+  const auth = authenticate(request, deps, bodySha256);
+  if (auth.orcaNodeId === deps.orcaNode.orca_node_id || deps.peers.get(auth.orcaNodeId) !== undefined) {
+    return auth;
+  }
+  void reply.code(403).send({
+    code: "not_a_member",
+    message: "this orca node is not a member of the workgroup; join with the workgroup password first",
+  });
+  return null;
+}
+
 /** Roster view incl. self; reads `deps.orcaNode.endpoints` live and digests self too. */
 function membership(deps: GatewayDeps): {
   self: SelfRecord;
@@ -261,7 +285,8 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   });
 
   app.post("/a2a", async (request, reply) => {
-    const auth = authenticate(request, deps);
+    const auth = authenticateMember(request, deps, reply);
+    if (auth === null) return;
     const body = asObject(request.body) as JsonRpcEnvelope | null;
     if (!body || typeof body.method !== "string") {
       return badRequest(reply, "body must be a JSON-RPC request");
@@ -347,7 +372,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     if (declared === undefined || !/^[0-9a-f]{64}$/.test(declared)) {
       return reply.code(400).send({ code: "blob_digest_missing", message: "x-pod-body-sha256 is required" });
     }
-    authenticate(request, deps, declared);
+    if (authenticateMember(request, deps, reply, declared) === null) return;
     const rawName = (request.query as { name?: unknown }).name;
     let name: string | undefined;
     if (rawName !== undefined) {
@@ -389,8 +414,8 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
       if (Number(query.exp) * 1000 <= Date.now()) {
         return reply.code(410).send({ code: "link_expired" });
       }
-    } else {
-      authenticate(request, deps);
+    } else if (authenticateMember(request, deps, reply) === null) {
+      return;
     }
     // Stream when the store supports it; only the small in-memory test store
     // buffers the whole blob (§5.6).
@@ -426,7 +451,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   });
 
   app.post("/blobs/:blob_id/link", async (request, reply) => {
-    authenticate(request, deps);
+    if (authenticateMember(request, deps, reply) === null) return;
     const { blob_id: blobId } = request.params as { blob_id: string };
     if (!deps.blobs.has(blobId)) return reply.code(404).send({ code: "blob_not_found" });
     const expiresAtMs = Date.now() + BLOB_LINK_TTL_S * 1000;
@@ -542,7 +567,8 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   });
 
   app.post("/cluster/heartbeat", async (request, reply) => {
-    const auth = authenticate(request, deps);
+    const auth = authenticateMember(request, deps, reply);
+    if (auth === null) return;
     const body = asObject(request.body);
     if (!body) return badRequest(reply, "body must be a JSON object");
 
@@ -600,15 +626,16 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     return response;
   });
 
-  app.get("/cluster/members", async (request) => {
-    authenticate(request, deps);
+  app.get("/cluster/members", async (request, reply) => {
+    if (authenticateMember(request, deps, reply) === null) return;
     const { roster, digest } = membership(deps);
     const response: MembersResponse = { members_digest: digest, members: roster };
     return response;
   });
 
-  app.post("/cluster/leave", async (request) => {
-    const auth = authenticate(request, deps);
+  app.post("/cluster/leave", async (request, reply) => {
+    const auth = authenticateMember(request, deps, reply);
+    if (auth === null) return;
     deps.peers.remove(auth.orcaNodeId);
     return { ok: true };
   });
@@ -629,7 +656,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     if (proxied || !loopback) {
       return reply.code(403).send({ code: "local_only", message: "child links are a local control" });
     }
-    authenticate(request, deps);
+    if (authenticateMember(request, deps, reply) === null) return;
     const body = asObject(request.body);
     if (!body) return badRequest(reply, "body must be a JSON object");
     const parentTaskId = body["parent_task_id"];
@@ -665,7 +692,7 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     if (proxied || !loopback) {
       return reply.code(403).send({ code: "local_only", message: "local task reads are a local control" });
     }
-    authenticate(request, deps);
+    if (authenticateMember(request, deps, reply) === null) return;
     const query = request.query as { task?: unknown } | undefined;
     const taskId = query?.task;
     if (typeof taskId !== "string" || taskId.length === 0) {

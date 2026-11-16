@@ -20,6 +20,7 @@ k = HKDF-SHA256(ikm = password, salt = "orca-pod", info = workgroup_id, len = 32
 - 换密码：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，下一拍心跳的准入证明对不上，双方互相 401 丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)），每个请求由本节点私钥签名，接收方用目录里的公钥验签——签名现在能证明“谁在调用”，伪造不了的。密码不再参与请求签名。
 - **local-only 能力仍用传输层判定（纵深防御）**：签名身份虽然不可伪造，但“只有本机可以做”的操作仍只看 socket 与转发头，不靠 `auth.orca_node_id`——代理可能改写来源地址，传输层事实更难伪造。已落实的例子是文件 blob 登记（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`publish` 由 CLI 直写本机 SQLite，根本不提供 HTTP 路由。
+- **先证明是成员，再谈签名**：签名只证明“持有这把私钥”，陌生人生成一把 Ed25519 密钥同样能签出合法格式的请求。因此除 `/health`、agent card、`/cluster/join` 和 blob 直链（`?exp&sig`）外，所有签名路由在验签后都要过成员闸门：调用者必须是本机，或在成员目录里（未固定为墓碑），否则 `403 not_a_member`（`test/authorization.test.ts`）。`/cluster/join` 是唯一的准入入口——它同时校验密码派生的 `pod-join-v1` 证明；初次派发的节点若还没 join 过对端，`sendTask`/`getTask` 等会先按密码准入再发请求。
 - **授权按记录归属，不按签名身份**：签名能证明“谁”，但写操作仍按记录归属校验：普通读接口允许同组成员读，但写操作必须在**记录归属**上校验——`tasks/cancel` 只接受 task 的 origin（或执行它的本机节点），其他成员 `403 not_task_origin`（[§5.3](05-tasks.md#53-取消)）；`tasks/resume`、`tasks/escalate` 同理只接受 origin / 本机（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。`/cluster/child-link` 则同时要求传输层回环——它登记的是“本机任务在等某个子任务的权限”，不能让别的节点替你登记。
 
 ### 7.2 请求签名（没有 session token）
@@ -39,7 +40,7 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 1. `ts` 与本地时间差 ≤ 60s（时钟漂移单独报错，别混进 401）；
 2. `nonce` 未在 5 分钟窗口内出现过（每 orca node LRU，容量 10k）；
 3. 用 `orca_node_id` 对应的公钥验 `sig`；
-4. 通过后按 `orca_node_id` 找/建 peer 记录（首次即登记，见 [§3.2](03-membership.md#32-引导与加入)）。
+4. 通过后检查成员资格：`orca_node_id` 必须是本机或已在成员目录里（[§3.2](03-membership.md#32-引导与加入)），否则 `403 not_a_member`；唯一的例外是 `/cluster/join`（准入入口）以及 `/health`、agent card、blob 直链。
 
 性质与代价：
 
@@ -49,7 +50,7 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 - **重放窗口**：60s + nonce 去重；跨 orca node 时钟必须大致同步（NTP）；
 - **代理友好**：签名覆盖 method/path/body，代理改写 body 会验签失败（这是特性）。
 - **大 body 的签名**：带 body 的请求加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘后再自校验，不一致即 `400 body_digest_mismatch`。
-- **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = Ed25519(identity.private_key, "blob-link-v1|" + blob_id + "|" + exp)`，TTL 5 分钟。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
+- **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix>&sig=<base64url>`，`sig = Ed25519(identity.private_key, "blob-link-v1|" + blob_id + "|" + exp)`，TTL 与 blob 保留期一致（默认 7 天）。浏览器/curl/前端直链不用带长期请求头。Phase 0 用**无状态 HMAC**而不存 token：持有 `k` 的成员本来就能直接 `GET` 这个 blob，所以直链只是省掉签名头的便利，不扩大可读范围；真正需要“授权方才能发链接”时再换成服务端签发、存库、可撤销的随机 token（多一张表、多一次读写）。
 
 `/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = HMAC-SHA256(HKDF(password), "pod-join-v1|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce)`——密码只出现在这一步。`/cluster/heartbeat` 同样带 `ts`/`nonce`/`proof`（域分离 `pod-hb-v1`），验不过回 `401 bad_proof`，双方据此在下一拍互相丢弃。`/health` 不签。
 

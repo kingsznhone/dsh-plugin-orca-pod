@@ -501,6 +501,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       proof,
     });
     peers.upsert(response.self);
+    admittedPeers.add(peerUrl);
     membership.observeInbound(response.self.orca_node_id);
     membership.mergeRemote(response.members);
     emitMembersIfChanged();
@@ -540,10 +541,16 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       try {
         response = await sendHeartbeat(peerUrl);
       } catch (error) {
-        if ((error as { status?: number }).status !== 404) throw error;
-        // 对端已把本 orca node 的记录修剪掉：join 一次让它重新认识我，并带回它的目录。
-        await join(peerUrl);
-        response = await sendHeartbeat(peerUrl);
+        const failure = error as { status?: number; code?: string };
+        // The peer pruned our record (404) or no longer lists us as a member (403):
+        // join once so it re-admits us, then retry. A real password mismatch makes
+        // that join fail with 401 and the outer handler drops the peer (§7.1).
+        if (failure.status === 404 || failure.code === "not_a_member") {
+          await join(peerUrl);
+          response = await sendHeartbeat(peerUrl);
+        } else {
+          throw error;
+        }
       }
       membership.observeInbound(response.from);
       membership.observeOutboundOk(response.from);
@@ -638,13 +645,37 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return view;
   }
 
+  /**
+   * Every signed route except `/cluster/join` is member-only (§7.1), so a peer
+   * this node has never met must be admitted before the first call. Joining is
+   * idempotent and re-uses the workgroup password.
+   */
+  async function ensurePeer(peerUrl: string): Promise<PeerView> {
+    // A node can address its own gateway (local dispatch/tests); membership never
+    // contains this node itself, so answer with the self record instead of joining.
+    const me = selfPeer();
+    if (me.endpoints.includes(peerUrl)) return me;
+    // A roster can list a peer before either side admitted the other (§7.7), and
+    // the receiver rejects non-members, so join once per endpoint before calling.
+    if (!admittedPeers.has(peerUrl)) await join(peerUrl);
+    const admitted = membership.findByEndpoint(peerUrl);
+    if (admitted === null) throw new Error(`peer ${peerUrl} did not admit this orca node`);
+    return admitted;
+  }
+
   async function sendTask(
     peerUrl: string,
     input: SubmitTaskInput,
     options: { parentTaskId?: string } = {},
   ): Promise<TaskView> {
-    const peer = membership.findByEndpoint(peerUrl);
-    if (peer && peer.state !== "online") {
+    const known = membership.findByEndpoint(peerUrl);
+    if (known !== null && known.state !== "online") {
+      const error = new Error(`peer ${known.orca_node_id} is ${known.state}`) as Error & { code: string };
+      error.code = "peer_not_online";
+      throw error;
+    }
+    const peer = await ensurePeer(peerUrl);
+    if (peer.state !== "online") {
       const error = new Error(`peer ${peer.orca_node_id} is ${peer.state}`) as Error & { code: string };
       error.code = "peer_not_online";
       throw error;
@@ -676,11 +707,13 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", body));
   }
 
-  function getTask(peerUrl: string, taskId: string): Promise<TaskView> {
+  async function getTask(peerUrl: string, taskId: string): Promise<TaskView> {
+    await ensurePeer(peerUrl);
     return tracked(peerUrl, postA2a<TaskView>(peerUrl, "tasks/get", { id: taskId }));
   }
 
-  function cancelTask(peerUrl: string, taskId: string): Promise<TaskView> {
+  async function cancelTask(peerUrl: string, taskId: string): Promise<TaskView> {
+    await ensurePeer(peerUrl);
     return tracked(peerUrl, postA2a<TaskView>(peerUrl, "tasks/cancel", { id: taskId }));
   }
 
@@ -691,9 +724,10 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return { role: "user", parts: [{ kind: "data", data }], taskId: view.id, messageId: randomUUID() };
   }
 
-  function approveTask(peerUrl: string, view: TaskView, options: ApprovalOptions = {}): Promise<TaskView> {
+  async function approveTask(peerUrl: string, view: TaskView, options: ApprovalOptions = {}): Promise<TaskView> {
     const request = permissionRequestOf(view);
     if (request === null) throw new Error("task is not waiting for a permission decision");
+    await ensurePeer(peerUrl);
     let signed;
     if (options.parentGrant !== undefined) {
       // Chained approval: derive a child grant from the grant this orca node
@@ -724,14 +758,19 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
   }
 
-  function denyTask(peerUrl: string, view: TaskView, reason = "denied by origin"): Promise<TaskView> {
+  async function denyTask(peerUrl: string, view: TaskView, reason = "denied by origin"): Promise<TaskView> {
+    await ensurePeer(peerUrl);
     const message = resumeMessage(view, { permission_denied: true, reason });
     return tracked(peerUrl, postA2a<TaskView>(peerUrl, "message/send", { message }));
   }
 
-  function escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView> {
+  async function escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView> {
+    await ensurePeer(peerUrl);
     return postA2a<TaskView>(peerUrl, "tasks/escalate", { taskId, relay });
   }
+
+  /** Peers this node has explicitly joined (admitted with the workgroup password). */
+  const admittedPeers = new Set<string>();
 
   type ChildLink = { parent_task_id: string; peer: string; child_task_id: string; failures: number };
 
