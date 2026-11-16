@@ -1,11 +1,11 @@
 /**
  * Minimal fake ACP server for AcpExecutor tests: NDJSON JSON-RPC on stdio.
  * Usage: node fake-acp.mjs <mode> <logFile>
- * Modes: ok | permission | hang | resume-fail
+ * Modes: ok | permission | hang | resume-fail | crash-once
  * Every request/notification is appended to <logFile> as one JSON object per line.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 // Skip trailing option-looking args the executor appends (e.g. `--profile acp`):
@@ -54,6 +54,13 @@ function promptTurn(id, params) {
   const sessionId = params.sessionId;
   const text = (params.prompt ?? []).map((part) => part.text ?? "").join("");
   log({ method: "session/prompt", sessionId, text });
+  if (mode === "crash-once") {
+    const marker = `${logFile ?? ""}.crashed`;
+    if (!existsSync(marker)) {
+      writeFileSync(marker, "1");
+      process.exit(1);
+    }
+  }
   update(sessionId, {
     sessionUpdate: "agent_message_chunk",
     messageId: "m1",

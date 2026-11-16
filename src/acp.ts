@@ -16,6 +16,17 @@ import { orchestrationPreamble, withPreamble } from "./preamble.ts";
 import { readSessions, writeSessions } from "./session_store.ts";
 
 const STDERR_TAIL = 4096;
+/** Handshake requests must not hang a task forever if the child is wedged. */
+const HANDSHAKE_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
 
 /** Extra executor-local options not part of the DSH-facing config. */
 export type AcpExecutorOptions = AcpExecutorConfig & { data_root?: string };
@@ -135,6 +146,8 @@ class AcpConnection {
       this.stderr = (this.stderr + chunk).slice(-STDERR_TAIL);
     });
     child.on("error", (error: Error) => this.fail(new Error(`cannot start acp server: ${error.message}`)));
+    // EPIPE on a dead child must not surface as an uncaught exception.
+    child.stdin?.on("error", (error: Error) => this.fail(new Error(`acp stdin failed: ${error.message}`)));
     child.on("exit", (code) => {
       if (!this.closed) this.fail(new Error(`acp server exited (code ${code ?? "null"})${this.stderrSuffix()}`));
     });
@@ -143,7 +156,9 @@ class AcpConnection {
   }
 
   isClosed(): boolean {
-    return this.closed;
+    // A crashed child (failure) is closed even though we never called close():
+    // otherwise ensureConnection would keep reusing a dead connection.
+    return this.closed || this.failure !== null;
   }
 
   setHandlers(handlers: {
@@ -190,9 +205,16 @@ class AcpConnection {
   }
 
   private fail(error: Error): void {
-    this.failure = error;
-    for (const pending of this.pending.values()) pending.reject(error);
+    if (this.failure === null) this.failure = error;
+    for (const pending of this.pending.values()) pending.reject(this.failure);
     this.pending.clear();
+    // A failure without close() (stdin EPIPE, spawn error) would otherwise leak
+    // a live child while a fresh connection is created.
+    if (!this.closed) {
+      this.closed = true;
+      killTree(this.child, "SIGTERM");
+      setTimeout(() => killTree(this.child, "SIGKILL"), KILL_GRACE_MS).unref?.();
+    }
   }
 
   private respond(id: unknown, result: unknown): void {
@@ -269,6 +291,8 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
   let connection: AcpConnection | null = null;
   let connecting: Promise<AcpConnection> | null = null;
   const activeSessions = new Map<string, string>();
+  /** ACP session currently running in the single task slot; guards late aborts. */
+  let runningSession: string | null = null;
 
   function startConnection(cwd: string): AcpConnection {
     const resolved = resolveCommand(command);
@@ -297,13 +321,25 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
     if (connecting !== null) return connecting;
     connecting = (async (): Promise<AcpConnection> => {
       const next = startConnection(cwd);
-      await next.request("initialize", {
-        protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false,
-        },
-      });
+      try {
+        await withTimeout(
+          next.request("initialize", {
+            protocolVersion: PROTOCOL_VERSION,
+            clientCapabilities: {
+              fs: { readTextFile: false, writeTextFile: false },
+              terminal: false,
+            },
+          }),
+          HANDSHAKE_TIMEOUT_MS,
+          "acp initialize",
+        );
+      } catch (error) {
+        next.close();
+        throw error;
+      }
+      // Session ids belong to one ACP connection: a fresh child cannot resume
+      // ids cached for the old one.
+      activeSessions.clear();
       connection = next;
       connecting = null;
       return next;
@@ -326,7 +362,11 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
       const bound = bindings[key];
       if (bound !== undefined) {
         try {
-          await conn.request("session/resume", { sessionId: bound, cwd, mcpServers });
+          await withTimeout(
+            conn.request("session/resume", { sessionId: bound, cwd, mcpServers }),
+            HANDSHAKE_TIMEOUT_MS,
+            "acp session/resume",
+          );
           activeSessions.set(key, bound);
           return bound;
         } catch {
@@ -334,7 +374,11 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
         }
       }
     }
-    const created = (await conn.request("session/new", { cwd, mcpServers })) as { sessionId?: unknown };
+    const created = (await withTimeout(
+      conn.request("session/new", { cwd, mcpServers }),
+      HANDSHAKE_TIMEOUT_MS,
+      "acp session/new",
+    )) as { sessionId?: unknown };
     const sessionId = typeof created.sessionId === "string" ? created.sessionId : null;
     if (sessionId === null) throw new Error("acp server returned no session id");
     if (key !== null) {
@@ -355,6 +399,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
       connection = null;
       connecting = null;
       activeSessions.clear();
+      runningSession = null;
     },
 
     async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, unknown> {
@@ -414,6 +459,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
       const events = new AsyncQueue<RunEvent>();
       const permissionResolvers: Array<(value: unknown) => void> = [];
       let text = "";
+      runningSession = sessionId;
 
       conn.setHandlers({
         request: (method, params) => {
@@ -456,7 +502,12 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
       const onAbort = (): void => {
         aborted = true;
         conn.notify("session/cancel", { sessionId });
-        setTimeout(() => conn.close(), KILL_GRACE_MS).unref?.();
+        // The ACP process is shared with later tasks. Only force-close when this
+        // session is still the one running on the current connection; otherwise
+        // the grace timer could kill the next task that already reused it.
+        setTimeout(() => {
+          if (connection === conn && runningSession === sessionId) conn.close();
+        }, KILL_GRACE_MS).unref?.();
       };
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
@@ -505,6 +556,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
+        runningSession = null;
       }
     },
   };

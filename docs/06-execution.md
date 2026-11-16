@@ -275,9 +275,11 @@ cwd = workgroup 根；每次任务一条 in-flight prompt（ACP 服务端本身�
 | resume 为拒绝/取消 | 回 `{outcome:{outcome:"cancelled"}}`（服务端按 rejected 处理） |
 | `stopReason: "end_turn"` | `completed(累积文本)` |
 | `stopReason: "max_tokens"` / `"refusal"` | `failed(原因文本)` |
-| 取消 | 发 `session/cancel`，`KILL_GRACE_MS`（2s）后关连接/杀进程树 |
+| 取消 | 发 `session/cancel`；只有宽限期后该 session 仍是当前连接上正在跑的那个，才关连接/杀进程树（避免误杀已复用同一连接的下一个任务） |
 
 **grant 与 ACP 的对齐**：[§7.11](07-security.md#711-grant) 的 grant 第一版就是 `allow_once`，与 ACP 的 `session/request_permission`（one-shot allow/reject）语义一一对应；target 侧不需要理解 grant 的具体工具参数，只把“允许/拒绝”翻译成 optionId。
+
+**连接生命周期**：子进程退出或 `fail()`（stdin EPIPE、spawn 错误）后 `isClosed()` 视为关闭，下一任务自动重建 `dsh --profile acp` 并清空连接级 session 缓存（`sessions.json` 绑定仍可 `session/resume`）；`initialize`/`session/new` 有 30s 握手超时，失败即关闭子进程；`stdin` 监听 `error`，不会把 EPIPE 变成未捕获异常。
 
 **会话复用**：`state/<workgroup_id>/sessions.json` 的键是 `acp|<origin_orca_node>|<context_id>`；同一 origin+context 的重试与重启都复用同一 ACP session（重启时 `session/resume`）。
 
@@ -293,7 +295,7 @@ DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
 
 本机实测（2026-11-14，Windows）：`Reply with exactly the word pong` → `completed`、结论文本 `pong`、约 2.6s；`state/<workgroup_id>/sessions.json` 写入 `acp|<origin_orca_node>|ctx-e2e-acp` 的绑定。
 
-**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail | model-reject`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`，以及按任务选模型（`session/set_config_option` 先于 `session/prompt`；目标拒绝时 `failed(model_unavailable)`）。
+**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail | crash-once | model-reject`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、子进程崩溃后下一次任务重建连接、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`，以及按任务选模型（`session/set_config_option` 先于 `session/prompt`；目标拒绝时 `failed(model_unavailable)`）。
 
 ### 6.15 按任务选择模型
 

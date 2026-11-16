@@ -173,6 +173,20 @@ describe("AcpExecutor", () => {
     expect(entries.filter((entry) => entry.method === "session/prompt")).toHaveLength(2);
   }, 15_000);
 
+  it("starts a fresh ACP connection after the child crashes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "crash-once"));
+    const first = await send(node, "crash me");
+    await waitForState(node, first.id, ["failed"]);
+
+    const second = await send(node, "survive");
+    const completed = await waitForState(node, second.id, ["completed"]);
+    expect(taskText(completed)).toBe("acp done");
+
+    const entries = await logEntries(join(root, "acp.log"));
+    expect(entries.filter((entry) => entry.method === "initialize")).toHaveLength(2);
+  }, 20_000);
+
   it("resumes the stored ACP session after the orca node restarts", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const config = configFor(root, "ok");
