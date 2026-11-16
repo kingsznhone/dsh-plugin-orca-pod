@@ -111,6 +111,12 @@ function badRequest(reply: FastifyReply, message: string): FastifyReply {
   return reply.code(400).send({ code: "bad_request", message });
 }
 
+/**
+ * Default cap for signed requests. Authentication needs the body bytes, so the
+ * body is buffered before signature verification; keep that buffer small and
+ * raise the limit only where large payloads are expected (§7.1).
+ */
+const MAX_REQUEST_BYTES = 1024 * 1024;
 /** Blob channel limits and link TTL (§5.6). */
 const MAX_BLOB_BYTES = 256 * 1024 * 1024;
 /** §5.6: a direct link lives as long as the blob it points at (one TTL). */
@@ -239,7 +245,7 @@ function membership(deps: GatewayDeps): {
 export function createGateway(deps: GatewayDeps): FastifyInstance {
   // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
   // shutdown must not wait for it.
-  const app = Fastify({ logger: false, bodyLimit: MAX_BLOB_BYTES, forceCloseConnections: true });
+  const app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
   const fileBlobs = deps.fileBlobs ?? createFileBlobRegistry();
 
   app.addContentTypeParser<Buffer>(
@@ -364,7 +370,8 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
     }
   });
 
-  app.post("/blobs", async (request, reply) => {
+  // The only route that legitimately receives more than MAX_REQUEST_BYTES (§5.6).
+  app.post("/blobs", { bodyLimit: MAX_BLOB_BYTES }, async (request, reply) => {
     // Streaming uploads sign the digest up front, so auth is verified before
     // any body bytes are read; the store hashes while it writes (§5.6).
     const declaredHeader = request.headers["x-pod-body-sha256"];

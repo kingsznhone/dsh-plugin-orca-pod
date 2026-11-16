@@ -170,6 +170,29 @@ describe("blob channel", () => {
     expect(response.rawPayload.equals(payload)).toBe(true);
   });
 
+  it("accepts an upload above the default request cap on the blob route", async () => {
+    const harness = createHarness();
+    const payload = Buffer.alloc(2 * 1024 * 1024, 9);
+    const uploaded = await upload(harness, payload, { name: "two-megabytes.bin" });
+    expect(uploaded.statusCode).toBe(201);
+    expect(uploaded.json<{ size: number }>().size).toBe(payload.length);
+  });
+
+  it("rejects an oversized JSON body before the route handler runs", async () => {
+    const harness = createHarness();
+    const body = JSON.stringify({ workgroup_id: "orca-dev", padding: "x".repeat(1024 * 1024) });
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/cluster/join",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        authorization: harness.sign("POST", "/cluster/join", body),
+      },
+    });
+    expect(response.statusCode).toBe(413);
+  });
+
   it("dedupes a repeated upload with 200 and the same blob_id", async () => {
     const harness = createHarness();
     const payload = Buffer.from("dedupe me");

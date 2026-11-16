@@ -40,7 +40,7 @@
   - 任务进度 → `/a2a` 的 `message/stream`（SSE，同一 endpoint）；
   - 成员变化 → 心跳周期（自适应 `N` 秒，[§3.3](03-membership.md#33-心跳与在线判定)）已足够；UI 需要更实时就等下一次心跳。
 - Agent Card 的 `url` 指向 `/a2a`，不是根路径。
-- 请求体上限（默认 8 MiB，artifact 走独立通道/引用）、读超时、连接数上限都要显式配置，别吃 Node 默认值。Phase 0 为了 blob 上传把全局 `bodyLimit` 放到 256 MiB，JSON 路由也一起放宽；后续应改成 blob 路由单独限额、JSON 回落到 8 MiB。
+- 请求体上限：全局 `bodyLimit` 默认 **1 MiB**（签名需要 body 字节，认证发生在解析之后，所以未认证请求能缓冲的上限必须小）；只有 `/blobs` 上传路由单独放宽到 **256 MiB**（`test/blobs.test.ts` 覆盖 2 MiB 上传与超大 JSON 请求被 413 拒绝）。读超时与连接数上限仍未显式配置。
 
 ### 4.3 反向代理注意事项
 
