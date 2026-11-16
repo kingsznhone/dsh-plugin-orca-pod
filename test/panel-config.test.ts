@@ -51,26 +51,61 @@ function adminFor(handle: PodHandle): PodAdmin {
   return createPodAdmin(handle, createTracker(() => null, { intervalMs: 60_000 }));
 }
 
+/**
+ * Start a pod and, when it is still waiting for the panel wizard, complete the
+ * setup the wizard would perform. Tests that assert the idle state use
+ * `startPod` directly.
+ */
+async function startedPod(config: Config, patch: Record<string, unknown> = {}): Promise<PodHandle> {
+  const handle = startPod(config, logger);
+  await handle.ready;
+  if (handle.runtime.orcaNode === null) await handle.reconfigure(patch);
+  return handle;
+}
+
 describe("panel override lifecycle", () => {
-  it("starts unconfigured, then records and applies a reconfigure", async () => {
+  it("waits for the panel setup before starting a node", async () => {
     const root = await tempRoot("orca-panel-");
     const handle = startPod(baseConfig(root), logger);
     await handle.ready;
     try {
       expect(handle.uiConfigured).toBe(false);
       expect(handle.runtime.error).toBeNull();
-      const firstId = handle.runtime.orcaNode!.self().orca_node_id;
+      // A bundle config that still carries a workgroup is not enough: a fresh
+      // install must not listen before the wizard completes (§7.1).
+      expect(handle.runtime.orcaNode).toBeNull();
 
       await handle.reconfigure({ display_name: "renamed node", peers: [] });
 
       expect(handle.uiConfigured).toBe(true);
       expect(handle.config.display_name).toBe("renamed node");
       expect(handle.runtime.error).toBeNull();
-      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
-
+      const firstId = handle.runtime.orcaNode!.self().orca_node_id;
       const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
       expect(stored["setup_complete"]).toBe(true);
       expect(stored["display_name"]).toBe("renamed node");
+
+      await handle.reconfigure({ display_name: "renamed again", peers: [] });
+      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("listens on loopback until the panel picks an interface", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod(baseConfig(root), logger);
+    await handle.ready;
+    try {
+      await handle.reconfigure({ peers: [] });
+      const saved = JSON.parse(await readFile(configPath(root), "utf8")) as { bind?: { host?: string } };
+      expect(saved.bind?.host).toBe("127.0.0.1");
+
+      const admin = adminFor(handle);
+      const view = await admin.saveConfig({ bind_host: "0.0.0.0" });
+      expect(view.bind_host).toBe("0.0.0.0");
+      const updated = JSON.parse(await readFile(configPath(root), "utf8")) as { bind?: { host?: string } };
+      expect(updated.bind?.host).toBe("0.0.0.0");
     } finally {
       await stopPod(handle, logger);
     }
@@ -149,12 +184,14 @@ describe("panel override lifecycle", () => {
       expect(handle.uiConfigured).toBe(false);
       expect(handle.config.workgroup_id).toBe("wg-panel");
       expect(handle.runtime.error).toBeNull();
+      // Reset returns to the wizard: nothing restarts until setup completes.
+      expect(handle.runtime.orcaNode).toBeNull();
       await expect(readFile(overridePath(root), "utf8")).rejects.toThrow();
-      // The persisted identity was deleted too, so the restarted node wrote a
-      // fresh config.json with a new id.
-      const rebuilt = JSON.parse(await readFile(configPath(root), "utf8")) as { orca_node_id: string };
-      expect(rebuilt.orca_node_id).not.toBe(before);
-      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(rebuilt.orca_node_id);
+      await expect(readFile(configPath(root), "utf8")).rejects.toThrow();
+
+      const view = await adminFor(handle).saveConfig({ workgroup_password: "panel-password" });
+      expect(view.running).toBe(true);
+      expect(handle.runtime.orcaNode!.self().orca_node_id).not.toBe(before);
     } finally {
       await stopPod(handle, logger);
     }
@@ -162,10 +199,8 @@ describe("panel override lifecycle", () => {
 
   it("reloads the override and keeps the orca node id on the next start", async () => {
     const root = await tempRoot("orca-panel-");
-    const first = startPod(baseConfig(root), logger);
-    await first.ready;
+    const first = await startedPod(baseConfig(root));
     const firstId = first.runtime.orcaNode!.self().orca_node_id;
-    await first.reconfigure({ peers: [] });
     await stopPod(first, logger);
 
     const second = startPod(baseConfig(root), logger);
@@ -182,10 +217,8 @@ describe("panel override lifecycle", () => {
   it("joins a peer live and persists it into the override", async () => {
     const rootA = await tempRoot("orca-panel-a-");
     const rootB = await tempRoot("orca-panel-b-");
-    const a = startPod(baseConfig(rootA), logger);
-    await a.ready;
-    const b = startPod(baseConfig(rootB), logger);
-    await b.ready;
+    const a = await startedPod(baseConfig(rootA));
+    const b = await startedPod(baseConfig(rootB));
     try {
       const peerUrl = b.runtime.url!;
       await a.addPeer(peerUrl);
@@ -202,13 +235,12 @@ describe("panel override lifecycle", () => {
   it("rejoins the remembered peers when the node starts", async () => {
     const rootA = await tempRoot("orca-panel-a-");
     const rootB = await tempRoot("orca-panel-b-");
-    const b = startPod(baseConfig(rootB), logger);
-    await b.ready;
+    const b = await startedPod(baseConfig(rootB));
     try {
       const peerUrl = b.runtime.url!;
       // `peers` is what the previous session left behind; startup should try it
       // once without waiting for the operator to click Connect again.
-      const a = startPod({ ...baseConfig(rootA), peers: [peerUrl] }, logger);
+      const a = await startedPod({ ...baseConfig(rootA), peers: [peerUrl] });
       await a.ready;
       try {
         const want = b.runtime.orcaNode!.self().orca_node_id;
@@ -229,12 +261,14 @@ describe("panel override lifecycle", () => {
 
   it("does not remember a peer that cannot be joined", async () => {
     const root = await tempRoot("orca-panel-");
-    const handle = startPod(baseConfig(root), logger);
-    await handle.ready;
+    const handle = await startedPod(baseConfig(root));
     try {
       await expect(handle.addPeer("http://127.0.0.1:1")).rejects.toThrow();
       expect(handle.config.peers).toEqual([]);
-      await expect(readFile(overridePath(root), "utf8")).rejects.toThrow();
+      // The failed join must not add a peer to the persisted override: only the
+      // setup marker is there.
+      const stored = JSON.parse(await readFile(overridePath(root), "utf8")) as Record<string, unknown>;
+      expect(stored["peers"]).toBeUndefined();
     } finally {
       await stopPod(handle, logger);
     }
@@ -244,12 +278,11 @@ describe("panel override lifecycle", () => {
 describe("panel admin configuration", () => {
   it("never exposes the workgroup password", async () => {
     const root = await tempRoot("orca-panel-");
-    const handle = startPod(baseConfig(root), logger);
-    await handle.ready;
+    const handle = await startedPod(baseConfig(root));
     try {
       const view = adminFor(handle).config();
       expect(view).toMatchObject({
-        configured: false,
+        configured: true,
         workgroup_id: "wg-panel",
         password_set: true,
         running: true,
@@ -263,8 +296,7 @@ describe("panel admin configuration", () => {
 
   it("switches the workgroup with the existing password", async () => {
     const root = await tempRoot("orca-panel-");
-    const handle = startPod(baseConfig(root), logger);
-    await handle.ready;
+    const handle = await startedPod(baseConfig(root));
     try {
       const admin = adminFor(handle);
       const firstId = handle.runtime.orcaNode!.self().orca_node_id;
@@ -334,8 +366,7 @@ describe("panel admin configuration", () => {
       peers: [],
       data_root: root,
     };
-    const handle = startPod(config, logger);
-    await handle.ready;
+    const handle = await startedPod(config);
     try {
       const admin = adminFor(handle);
       const self = admin.self()!;
@@ -414,10 +445,8 @@ describe("panel admin configuration", () => {
   it("disconnects: leaves known peers and forgets them", async () => {
     const rootA = await tempRoot("orca-panel-a-");
     const rootB = await tempRoot("orca-panel-b-");
-    const a = startPod(baseConfig(rootA, "wg-leave"), logger);
-    await a.ready;
-    const b = startPod(baseConfig(rootB, "wg-leave"), logger);
-    await b.ready;
+    const a = await startedPod(baseConfig(rootA, "wg-leave"));
+    const b = await startedPod(baseConfig(rootB, "wg-leave"));
     try {
       await a.addPeer(b.runtime.url!);
       expect(a.config.peers).toHaveLength(1);

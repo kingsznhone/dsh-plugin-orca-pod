@@ -8,15 +8,14 @@
 # The package is self-contained: its only runtime dependency is fastify, and
 # all first-party modules live under `src/`.
 #
-# SECURITY NOTE: this row carries a plaintext workgroup password for the
-# prototype only. Do not reuse a real workgroup password here: keep local
-# testing throwaway, and move the password to the DSH credentials service for a
-# production install (see README.md).
+# No credentials are bundled. The first start waits for the panel wizard, which
+# writes a local override (`<data_root>/ui-config.json`) with the workgroup id,
+# password and listen address; until then the node does not listen at all
+# (§7.1). The default listen address is loopback, and the wizard asks which
+# interface should be exposed to peers.
 - insert:
     - id: orca-pod
       name: 'orca-pod'
       config:
-        workgroup_id: orca-demo
-        workgroup_password: change-me
         port: 11811
         peers: []

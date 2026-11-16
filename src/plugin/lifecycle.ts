@@ -35,11 +35,12 @@ import type { HostLogger } from "./dsh.ts"
 import { errorMessage } from "./util.ts"
 
 /**
- * Default listen address for the bundle: `::` accepts both IPv4 and IPv6 on
- * Windows and Linux, which is what a LAN mesh needs. Loopback-only setups can
- * set `bind_host: "127.0.0.1"`.
+ * Default listen address for the bundle: loopback only. A fresh install must not
+ * accept peers before the panel wizard has picked an interface, so the first
+ * start is local and the wizard writes a LAN address (or `::` for all
+ * interfaces) into the local override (§7.1).
  */
-export const DEFAULT_PLUGIN_BIND_HOST = "::"
+export const DEFAULT_PLUGIN_BIND_HOST = "127.0.0.1"
 
 /** Observable state of the pod owned by one plugin fiber. */
 export interface PodRuntime {
@@ -79,6 +80,7 @@ const OVERRIDE_KEYS = [
   "workgroup_id",
   "workgroup_password",
   "display_name",
+  "bind_host",
   "port",
   "endpoints",
   "peers",
@@ -257,6 +259,7 @@ export async function resolveOrcaNodeConfig(config: Config, logger: HostLogger):
     ...(config.default_reasoning_effort === undefined
       ? {}
       : { default_reasoning_effort: config.default_reasoning_effort }),
+    ...(config.bind_host === undefined ? {} : { bind_host: config.bind_host }),
     executor,
   }
 
@@ -491,7 +494,9 @@ export function startPod(
         effective = baseConfig
         handle.config = effective
         runtime.error = null
-        if (effective.workgroup_id.length === 0) return
+        // Reset returns to the first-run wizard: without a panel override the
+        // node must not restart, even if the bundle still carries a workgroup.
+        if (!uiConfigured || needsSetup(effective)) return
         try {
           await startNode(effective, runtime, logger, hooks)
         } catch (error) {
@@ -514,9 +519,10 @@ export function startPod(
     } catch (error) {
       logger.warn(`orca-pod: ignoring panel config: ${errorMessage(error)}`)
     }
-    if (needsSetup(effective)) {
-      // No workgroup or no password yet: the panel shows its first-run wizard
-      // and calls `reconfigure` once the user has picked both.
+    if (!uiConfigured || needsSetup(effective)) {
+      // No completed panel setup yet: the panel shows its first-run wizard and
+      // calls `reconfigure` once the user has picked a workgroup, password and
+      // listen address. The bundle no longer carries credentials (§7.1).
       logger.info("orca-pod: waiting for workgroup setup from the panel")
       return
     }

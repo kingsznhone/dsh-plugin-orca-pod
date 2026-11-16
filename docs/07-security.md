@@ -9,7 +9,7 @@
 - `workgroup_id`：`[a-z0-9][a-z0-9-]{1,31}`，创建时指定，之后不可改（改名 = 新建 workgroup）。
 - 密码：**必填，不可为空**；推荐最短 12 字符，面板首启向导强制填写，保存空密码会被拒绝（`a workgroup password is required`）。空密码的旧配置视为“未配置”：节点保持空闲、首屏向导要求补密码，绝不启动无密码 mesh——`HKDF(ikm = "")` 是公开常量，等于没有准入控制。**密码只用于组网准入**（`/cluster/join` 与每拍心跳的 HMAC 证明），请求签名与 grant 都用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
 - 密码不入库明文：首选系统钥匙串引用；退而求其次才在插件配置里存 `HKDF` 派生密钥（文件权限 0600）。存派生密钥的代价是：配置文件泄露 = 直接获得签名能力，所以推荐前者。面板覆盖层 `<data_root>/ui-config.json` 目前以明文保存 `workgroup_password`（只由回环闸门写入，生产应换成 credentials 引用）。
-- DSH 插件默认 `bind_host: "::"`（整机网卡监听），并用识别到的 LAN/IPv6 地址做 advertised endpoints：否则局域网 peer 拨不到。代价是**同网段任何人都能打到 `/health`、`/a2a` 与 `/blobs`**——认证仍靠 workgroup 签名，密码为空（开放 mesh）时就等于没有认证，只适合受信 LAN；需要更严格时设 `bind_host: "127.0.0.1"` 并让流量只走代理。
+- DSH 插件默认 `bind_host: "127.0.0.1"`，而且 bundle 不再携带任何 workgroup/密码：首次启动必须先在面板向导里完成 setup（workgroup、密码、监听地址），否则节点根本不启动监听。向导默认仍选 loopback，只有显式选择 LAN 地址或 `::` 才接受 peer——同网段访问是运维的显式决定，不是默认。认证仍靠 workgroup 签名；不支持无密码的开放 mesh。需要更严格时保持 loopback 并让流量只走代理。
 - 日志、配置文件、错误信息里都不出现密码或派生密钥。
 - 密钥派生：
 

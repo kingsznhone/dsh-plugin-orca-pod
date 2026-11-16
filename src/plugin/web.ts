@@ -143,6 +143,9 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
           for (const key of ["workgroup_id", "workgroup_password", "display_name"]) {
             if (typeof body[key] === "string") patch[key] = body[key]
           }
+          // The listen address is owned by the panel too: omitting it keeps the
+          // loopback default, and the wizard writes the chosen interface here.
+          if (typeof body["bind_host"] === "string") patch["bind_host"] = body["bind_host"]
           if (body["port"] !== undefined) {
             patch["port"] = typeof body["port"] === "string" ? Number(body["port"]) : body["port"]
           }

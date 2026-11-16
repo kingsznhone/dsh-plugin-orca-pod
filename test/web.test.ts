@@ -69,6 +69,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       port: 11811,
       endpoints: ["http://127.0.0.1:11811"],
       detected_endpoints: ["http://192.168.1.5:11811"],
+    bind_host: null,
       peers: [],
       data_root: "/data",
       advanced: {

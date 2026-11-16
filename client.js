@@ -171,6 +171,10 @@ window.__ModuleLoader__.load({
         cfgPasswordRequired: "Enter a workgroup password before saving.",
         cfgDisplayName: "display name",
         cfgDisplayNamePlaceholder: "blank = node id",
+  cfgListenAddress: "listen address",
+  cfgListenAddressHint: "127.0.0.1 keeps this node local; pick a LAN address (or :: for all interfaces) to accept peers.",
+  cfgListenLoopback: "127.0.0.1 (this machine only)",
+  cfgListenAll: ":: (all interfaces)",
         cfgListenPort: "listen port",
         cfgAdvertised: "local node addresses",
         cfgAdvanced: "advanced settings",
@@ -320,6 +324,10 @@ window.__ModuleLoader__.load({
         cfgPasswordRequired: "请先填写工作组密码再保存。",
         cfgDisplayName: "显示名称",
         cfgDisplayNamePlaceholder: "留空则使用节点 id",
+  cfgListenAddress: "监听地址",
+  cfgListenAddressHint: "127.0.0.1 只允许本机访问；要接受其他节点的任务，请选择局域网地址（或 :: 监听全部网卡）。",
+  cfgListenLoopback: "127.0.0.1（仅本机）",
+  cfgListenAll: "::（全部网卡）",
         cfgListenPort: "监听端口",
         cfgAdvertised: "本地节点地址",
         cfgAdvanced: "高级设置",
@@ -1316,6 +1324,18 @@ window.__ModuleLoader__.load({
       /* First-run wizard starts from this node's own id; a configured install
        * keeps whatever display name was saved (both default to the node id). */
       const [displayName, setDisplayName] = React.useState(wizard ? config.node_id || "" : config.display_name || "");
+      /* The node listens on loopback until the wizard chooses a LAN interface. */
+      const [bindHost, setBindHost] = React.useState(config.bind_host || "127.0.0.1");
+      const detectedHosts = detected
+        .map((url) => {
+          try {
+            return new URL(url).hostname.replace(/^\[|\]$/g, "");
+          } catch {
+            return "";
+          }
+        })
+        .filter((host) => host.length > 0);
+      const bindChoices = Array.from(new Set(["127.0.0.1", "::", ...detectedHosts]));
       const [port, setPort] = React.useState(String(config.port === undefined ? 11811 : config.port));
       const [endpoints, setEndpoints] = React.useState(suggested.length > 0 ? suggested : [""]);
       const advanced = config.advanced || {};
@@ -1369,6 +1389,7 @@ window.__ModuleLoader__.load({
           };
           const name = displayName.trim();
           if (name.length > 0) patch.display_name = name;
+          patch.bind_host = bindHost;
           const addresses = endpoints.map((row) => row.trim()).filter((row) => row.length > 0);
           if (addresses.length > 0) patch.endpoints = addresses;
           if (wizard || password.length > 0) patch.workgroup_password = password;
@@ -1504,6 +1525,23 @@ window.__ModuleLoader__.load({
           { style: FIELD },
           h("label", { style: LABEL }, t("cfgDisplayName")),
           h("input", { style: INPUT, value: displayName, onChange: (event) => setDisplayName(event.target.value), placeholder: t("cfgDisplayNamePlaceholder") }),
+        ),
+        h(
+          "div",
+          { style: FIELD },
+          h("label", { style: LABEL }, t("cfgListenAddress")),
+          h(
+            "select",
+            { style: INPUT, value: bindHost, onChange: (event) => setBindHost(event.target.value) },
+            bindChoices.map((host) =>
+              h(
+                "option",
+                { key: host, value: host },
+                host === "127.0.0.1" ? t("cfgListenLoopback") : host === "::" ? t("cfgListenAll") : host,
+              ),
+            ),
+          ),
+          h("div", { style: HINT }, t("cfgListenAddressHint")),
         ),
         h(
           "div",

@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { configPath, createOrcaNodeConfig, saveConfig } from "./config.ts";
+import { detectLocalEndpoints } from "./net.ts";
 
 export interface InstallOptions {
   /** Install a system-wide unit instead of a user unit. */
@@ -87,6 +88,8 @@ export interface PromptQuestion {
   message: string;
   default?: string;
   secret?: boolean;
+  /** Suggested answers the interactive prompt can print (bind-host interface list). */
+  choices?: string[];
 }
 
 export type PromptFn = (question: PromptQuestion) => Promise<string>;
@@ -239,11 +242,29 @@ export function installQuestions(
   return questions;
 }
 
+/** Read the host part out of an advertised endpoint URL (IPv6 kept unbracketed). */
+function endpointHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return "";
+  }
+}
+
 /** Extra prompts shown only in the interactive setup; answers have defaults. */
 export function optionalInstallQuestions(options: InstallOptions): PromptQuestion[] {
+  const port = options.port ?? 11811;
+  const choices = Array.from(
+    new Set(["127.0.0.1", "::", ...detectLocalEndpoints(port).map(endpointHost).filter((host) => host.length > 0)]),
+  );
   return [
-    { option: "bind-host", message: "Listen address", default: options.bindHost ?? "::" },
-    { option: "port", message: "Listen port", default: String(options.port ?? 11811) },
+    {
+      option: "bind-host",
+      message: "Listen address (127.0.0.1 = local only, :: = all interfaces)",
+      default: options.bindHost ?? "::",
+      choices,
+    },
+    { option: "port", message: "Listen port", default: String(port) },
   ];
 }
 
@@ -257,7 +278,11 @@ export async function promptForInstall(
   const next: InstallOptions = { ...options };
   const questions = [...installQuestions(plan, options, exists), ...optionalInstallQuestions(options)];
   for (const question of questions) {
-    const raw = (await prompt(question)).trim();
+    const asked =
+      question.choices === undefined || question.choices.length === 0
+        ? question
+        : { ...question, message: `${question.message} (${question.choices.join(", ")})` };
+    const raw = (await prompt(asked)).trim();
     const value = raw === "" ? (question.default ?? "") : raw;
     if (value === "") throw new Error(`${question.message} is required`);
     switch (question.option) {

@@ -18,7 +18,7 @@ import { createSqliteDispatchStore, createSqliteFileBlobStore } from "./sqlite.t
 const USAGE = `orca-node
 
 Usage:
-  orca-node serve   --config <path> [--peer <url>]        start an orca node from a config file
+  orca-node serve   --config <path> [--peer <url>] [--bind <host>] [--port <n>]  start an orca node from a config file
   orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
@@ -216,6 +216,17 @@ async function serve(args: string[]): Promise<void> {
   const flags = parseFlags(args);
   const explicit = requireFlag(flags, "config");
   const config = await loadConfig(explicit);
+  // Explicit listen overrides are useful for one-off runs and for the harness:
+  // the persisted config keeps whatever the operator installed.
+  const bindOverride = flag(flags, "bind");
+  const portOverride = flag(flags, "port");
+  if (bindOverride !== undefined || portOverride !== undefined) {
+    const parsedPort = portOverride === undefined ? config.bind.port : Number(portOverride);
+    if (!Number.isInteger(parsedPort) || parsedPort < 0 || parsedPort > 65535) {
+      throw new Error("--port must be an integer between 0 and 65535");
+    }
+    config.bind = { host: bindOverride ?? config.bind.host, port: parsedPort };
+  }
   const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });
   const { url } = await orcaNode.start();
   const writeback = endpointWriteback(config, url);
