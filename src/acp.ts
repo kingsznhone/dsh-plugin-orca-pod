@@ -501,6 +501,11 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
       let aborted = false;
       const onAbort = (): void => {
         aborted = true;
+        // Answer a pending session/request_permission: aborting the task without
+        // a reply would leave the child prompt waiting forever.
+        for (const resolver of permissionResolvers.splice(0)) {
+          resolver({ outcome: { outcome: "cancelled" } });
+        }
         conn.notify("session/cancel", { sessionId });
         // The ACP process is shared with later tasks. Only force-close when this
         // session is still the one running on the current connection; otherwise

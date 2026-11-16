@@ -157,6 +157,11 @@ function onResponse(message) {
   log({ responseTo: message.id, result: message.result });
   if (mode === "permission" && message.id >= 1000) {
     const outcome = message.result?.outcome;
+    log({
+      method: "permission_response",
+      outcome: outcome?.outcome ?? null,
+      optionId: outcome?.optionId ?? null,
+    });
     const allowed = outcome?.outcome === "selected" && outcome?.optionId === "allow-once";
     for (const [sessionId, promptId] of heldPrompts) {
       update(sessionId, {

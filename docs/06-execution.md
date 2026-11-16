@@ -295,7 +295,7 @@ DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
 
 本机实测（2026-11-14，Windows）：`Reply with exactly the word pong` → `completed`、结论文本 `pong`、约 2.6s；`state/<workgroup_id>/sessions.json` 写入 `acp|<origin_orca_node>|ctx-e2e-acp` 的绑定。
 
-**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail | crash-once | model-reject`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、子进程崩溃后下一次任务重建连接、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`，以及按任务选模型（`session/set_config_option` 先于 `session/prompt`；目标拒绝时 `failed(model_unavailable)`）。
+**测试**：`test/acp.test.ts` + `test/fixtures/fake-acp.mjs`（模式 `ok | permission | hang | resume-fail | crash-once | model-reject`）。覆盖：完成与 cwd、权限挂起→`approveTask`→继续、取消发 `session/cancel`、拒绝/超时后以 `cancelled` 应答挂起的权限请求、子进程崩溃后下一次任务重建连接、同 context 复用 session（`session/new` 一次）、重启后 `session/resume`、命令不存在直接 `failed`，以及按任务选模型（`session/set_config_option` 先于 `session/prompt`；目标拒绝时 `failed(model_unavailable)`）。
 
 ### 6.15 按任务选择模型
 

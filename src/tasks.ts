@@ -325,7 +325,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       if (rec.abort.signal.aborted) return;
       const code = error instanceof TaskError ? error.code : "relay_failed";
       const text = error instanceof Error ? error.message : String(error);
-      finish(rec, "failed", textMessage(`relay to child failed: ${text}`), code);
+      terminate(rec, "failed", textMessage(`relay to child failed: ${text}`), code);
     }
   }
 
@@ -350,7 +350,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       if (rec.abort.signal.aborted) return;
       const code = error instanceof TaskError ? error.code : "relay_failed";
       const text = error instanceof Error ? error.message : String(error);
-      finish(rec, "failed", textMessage(`escalation to child failed: ${text}`), code);
+      terminate(rec, "failed", textMessage(`escalation to child failed: ${text}`), code);
     }
   }
 
@@ -421,10 +421,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     clearTtl(rec);
     rec.ttl = setTimeout(() => {
       if (!isTerminal(rec.view.status.state)) {
-        // Terminal state first: the abort that follows rejects the executor's
-        // iterator, and pump() must not overwrite this reason with "canceled".
-        finish(rec, "failed", textMessage("task ttl exceeded"), "timeout");
-        rec.abort.abort();
+        // Terminal state first: terminate() also aborts the executor so its
+        // pending permission request is answered and pump() cannot overwrite
+        // this reason with "canceled".
+        terminate(rec, "failed", textMessage("task ttl exceeded"), "timeout");
       }
     }, rec.ttl_s * 1000);
     rec.ttl.unref?.();
@@ -450,7 +450,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         void sendRelayControl(relay, { permission_denied: true, reason: "permission_timeout" }).catch(() => {});
       }
       rec.pending_permission = null;
-      finish(rec, "failed", textMessage("permission request timed out"), "permission_timeout");
+      terminate(rec, "failed", textMessage("permission request timed out"), "permission_timeout");
     }, permissionTtlS * 1000);
     rec.permission_timer.unref?.();
   }
@@ -469,7 +469,21 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     emit(rec);
   }
 
+  /**
+   * Finish a task that still owns a live executor. Terminal state is recorded
+   * first (so trapped executor events cannot overwrite it), then the abort
+   * answers any pending ACP permission request with "cancelled" and stops the
+   * iterator instead of leaving the child prompt hanging.
+   */
+  function terminate(rec: Running, state: TaskState, message: A2AMessage | undefined, reason: string): void {
+    if (isTerminal(rec.view.status.state)) return;
+    finish(rec, state, message, reason);
+    rec.abort.abort();
+  }
+
   async function pump(rec: Running, resume?: A2AMessage): Promise<void> {
+    if (isTerminal(rec.view.status.state)) return;
+
     const inheritedMode = permissionModeOf(rec.metadata);
     const permissionMode =
       inheritedMode === undefined
@@ -533,6 +547,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     try {
       let step = resume === undefined ? await iterator.next() : await iterator.next(resume);
       while (!step.done) {
+        if (isTerminal(rec.view.status.state)) {
+          await iterator.return?.(undefined);
+          return;
+        }
         const event = step.value;
         if (event.type === "suspend") {
           rec.view.status = { state: "input-required", timestamp: nowIso(), message: suspendMessage(rec, event) };
@@ -552,15 +570,21 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           persist(rec);
           emit(rec);
         } else if (event.type === "completed") {
+          if (isTerminal(rec.view.status.state)) return;
           if (event.usage) rec.view.usage = event.usage;
           finish(rec, "completed", textMessage(event.text));
           return;
         } else if (event.type === "failed") {
+          if (isTerminal(rec.view.status.state)) return;
           if (event.usage) rec.view.usage = event.usage;
           finish(rec, "failed", textMessage(event.text), event.reason ?? "executor_error");
           return;
         }
         step = await iterator.next();
+        if (isTerminal(rec.view.status.state)) {
+          await iterator.return?.(undefined);
+          return;
+        }
       }
       finish(rec, "failed", textMessage("executor exited without a terminal event"), "executor_exited");
     } catch (error) {
@@ -711,7 +735,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
           rec.pending_escalation = null;
           void sendRelayControl(parked, { permission_denied: true, reason: control.denied }).catch(() => {});
         }
-        finish(rec, "failed", textMessage(`permission denied: ${control.denied}`), "permission_denied");
+        terminate(rec, "failed", textMessage(`permission denied: ${control.denied}`), "permission_denied");
         return cloneView(rec.view);
       }
       if (control.grant === undefined) {
@@ -719,7 +743,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       }
       const failure = checkGrant(rec, control.grant, rec.pending_permission);
       if (failure !== null) {
-        finish(rec, "failed", textMessage(`permission grant rejected: ${failure}`), failure);
+        terminate(rec, "failed", textMessage(`permission grant rejected: ${failure}`), failure);
         return cloneView(rec.view);
       }
       grant = control.grant;
@@ -736,7 +760,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       // The parked task's executor never stopped, so re-acquire the slot and
       // hand the derived child grant to the child without touching the iterator.
       if (activeTaskId !== null && activeTaskId !== taskId) {
-        finish(rec, "failed", textMessage("orca node is busy with another task"), "orca_node_busy");
+        terminate(rec, "failed", textMessage("orca node is busy with another task"), "orca_node_busy");
         return cloneView(rec.view);
       }
       activeTaskId = taskId;
@@ -843,8 +867,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       rec.pending_escalation = null;
       void sendRelayControl(parked, { permission_denied: true, reason: "task canceled" }).catch(() => {});
     }
-    rec.abort.abort();
-    finish(rec, "canceled", undefined, "canceled");
+    terminate(rec, "canceled", undefined, "canceled");
     return cloneView(rec.view);
   }
 

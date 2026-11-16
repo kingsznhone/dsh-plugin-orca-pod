@@ -76,31 +76,28 @@ async function waitForRemoteState(
   return view;
 }
 
-async function logEntries(
-  path: string,
-): Promise<
-  Array<{ method?: string; text?: string; cwd?: string; mcpServers?: number; configId?: string; value?: string }>
-> {
+type LogEntry = {
+  method?: string;
+  text?: string;
+  cwd?: string;
+  mcpServers?: number;
+  configId?: string;
+  value?: string;
+  outcome?: string | null;
+  optionId?: string | null;
+};
+
+async function logEntries(path: string): Promise<LogEntry[]> {
   const text = await readFile(path, "utf8").catch(() => "");
   return text
     .split("\n")
     .filter(Boolean)
-    .map(
-      (line) =>
-        JSON.parse(line) as {
-          method?: string;
-          text?: string;
-          cwd?: string;
-          mcpServers?: number;
-          configId?: string;
-          value?: string;
-        },
-    );
+    .map((line) => JSON.parse(line) as LogEntry);
 }
 
 async function waitForLog(
   path: string,
-  predicate: (entry: { method?: string }) => boolean,
+  predicate: (entry: LogEntry) => boolean,
   timeoutMs = 2_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -149,6 +146,23 @@ describe("AcpExecutor", () => {
     await node.approveTask(node.endpoints[0]!, suspended);
     const done = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(done)).toContain("allowed");
+  }, 15_000);
+
+  it("answers a denied permission request so the child prompt does not hang", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
+    const node = await startNode(configFor(root, "permission"));
+    const submitted = await send(node, "write a file");
+    const suspended = await waitForState(node, submitted.id, ["input-required"]);
+
+    const denied = await node.denyTask(node.endpoints[0]!, suspended);
+    expect(denied.status.state).toBe("failed");
+    expect(denied.status.reason).toBe("permission_denied");
+
+    const answered = await waitForLog(
+      join(root, "acp.log"),
+      (entry) => entry.method === "permission_response" && entry.outcome === "cancelled",
+    );
+    expect(answered).toBe(true);
   }, 15_000);
 
   it("cancels the ACP prompt when the task is cancelled", async () => {
