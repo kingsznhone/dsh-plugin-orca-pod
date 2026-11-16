@@ -154,9 +154,16 @@ interface InvokeOptions {
 async function invoke(handler: (request: never, response: never) => Promise<void>, options: InvokeOptions) {
   const payload = options.body === undefined ? "" : JSON.stringify(options.body);
   const request = Readable.from(payload.length === 0 ? [] : [Buffer.from(payload)]) as unknown as Record<string, unknown>;
-  request["method"] = options.method ?? "GET";
+  const method = options.method ?? "GET";
+  const headers: Record<string, string> = {
+    host: "127.0.0.1:7775",
+    "x-orca-pod": "1",
+    ...(method === "GET" ? {} : { "content-type": "application/json" }),
+    ...(options.headers ?? {}),
+  };
+  request["method"] = method;
   request["url"] = options.url;
-  request["headers"] = options.headers ?? {};
+  request["headers"] = headers;
   request["socket"] = { remoteAddress: options.address ?? "127.0.0.1" };
 
   let status = 0;
@@ -200,6 +207,41 @@ describe("panel HTTP bridge", () => {
       headers: { "x-forwarded-for": "192.168.1.20" },
     });
     expect(proxied.status).toBe(403);
+  });
+
+  it("rejects a hostile origin, a foreign Host and a missing panel header", async () => {
+    const handler = createPodApiHandler(fakeAdmin());
+
+    const rebound = await invoke(handler, {
+      url: `${POD_API_PREFIX}/state`,
+      headers: { host: "evil.example:7775" },
+    });
+    expect(rebound.status).toBe(403);
+    expect(rebound.body.error).toBe("cross_origin");
+
+    const crossSite = await invoke(handler, {
+      url: `${POD_API_PREFIX}/state`,
+      headers: { origin: "https://evil.example" },
+    });
+    expect(crossSite.status).toBe(403);
+
+    const noHeader = await invoke(handler, {
+      url: `${POD_API_PREFIX}/state`,
+      headers: { "x-orca-pod": "" },
+    });
+    expect(noHeader.status).toBe(403);
+    expect(noHeader.body.error).toBe("cross_origin");
+  });
+
+  it("requires a JSON content type for panel writes", async () => {
+    const handler = createPodApiHandler(fakeAdmin());
+    const plain = await invoke(handler, {
+      method: "POST",
+      url: `${POD_API_PREFIX}/reset`,
+      headers: { "content-type": "text/plain" },
+    });
+    expect(plain.status).toBe(403);
+    expect(plain.body.error).toBe("json_required");
   });
 
   it("drives approve, deny and cancel without a model round-trip", async () => {

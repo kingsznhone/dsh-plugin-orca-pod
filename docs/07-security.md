@@ -113,7 +113,7 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 - 排查靠现有记录：`orca-node log`（origin 派发）、`tasks/get` 的任务状态与 `reason`、插件 tracker 的通知文本；`permission_request` 全文留在任务状态里，便于事后回答“它当时要什么”。
 - 真要合规审计属于部署层外挂（代理访问日志 + DSH 会话留档），不在插件内实现。
 - 网关状态（`<data_root>/state/<workgroup_id>/`：session 绑定、任务目录）也必须在 workgroup 根之外：agent 对 cwd 有写权限，看得见就能删；放进工作区等于把会话绑定和网关状态交给被调用的 agent（[§6.7](06-execution.md#67-工作区一份持久)）。
-- 面板写入的配置覆盖层 `<data_root>/ui-config.json` 与插件配置同属明文（`workgroup_password` 会在里面），只由回环闸门后的 `/orca-api/config` 写入；面板读取的配置视图永不返回密码（只给 `password_set`）。这是原型取舍：生产应把密码换成 DSH credentials 引用，让 UI 只写引用名。
+- 面板写入的配置覆盖层 `<data_root>/ui-config.json` 与插件配置同属明文（`workgroup_password` 会在里面），只由回环闸门后的 `/orca-api/config` 写入；面板读取的配置视图永不返回密码（只给 `password_set`）。这是原型取舍：生产应把密码换成 DSH credentials 引用，让 UI 只写引用名。回环闸门之外，面板 API 还有一层同源闸门（CSRF / DNS rebinding）：`Host` 只接受 `localhost`/`127.0.0.1`/`[::1]`，带 `Origin` 时必须与 `Host` 同源、带 `Sec-Fetch-Site` 时必须为 `same-origin`，每个请求必须带 `X-Orca-Pod: 1` 自定义头（跨源无法以简单请求发出），写请求必须是 `Content-Type: application/json`——否则 403 `cross_origin` / `json_required`。攻击者页面即使把域名解析到 127.0.0.1，浏览器发出的 `Host`/`Origin` 仍不是本机，跨站简单 POST 也缺自定义头，因此无法替用户批准或改配置。
 
 ### 7.9 权限跟随发起 orca node
 

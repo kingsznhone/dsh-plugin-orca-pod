@@ -25,6 +25,16 @@ const MAX_BODY_BYTES = 64 * 1024
 /** Loopback peers accepted by the transport gate. */
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 
+/**
+ * Hostnames a same-origin panel request may carry. This is the DNS-rebinding
+ * defense: a malicious page can point `evil.example` at 127.0.0.1, but the
+ * browser still sends `Host: evil.example`, which fails this check.
+ */
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"])
+
+/** Custom header the panel sends on every call; browsers preflight it cross-origin. */
+export const PANEL_HEADER = "x-orca-pod"
+
 /** True when the request came straight from this machine. */
 export function isLocalRequest(request: IncomingMessage): boolean {
   const address = request.socket?.remoteAddress
@@ -33,6 +43,47 @@ export function isLocalRequest(request: IncomingMessage): boolean {
     if (request.headers[header] !== undefined) return false
   }
   return true
+}
+
+function headerOf(request: IncomingMessage, name: string): string | undefined {
+  const raw = request.headers[name]
+  return Array.isArray(raw) ? raw[0] : raw
+}
+
+function hostNameOf(host: string): string {
+  const value = host.trim()
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]")
+    return end === -1 ? value.toLowerCase() : value.slice(0, end + 1).toLowerCase()
+  }
+  return value.split(":")[0]!.toLowerCase()
+}
+
+/**
+ * Same-origin gate for the panel API (CSRF). Any page can send a "simple"
+ * cross-site POST to a loopback server, and DNS rebinding can make a hostile
+ * origin look local; both fail here because the browser still sends the real
+ * `Origin`/`Host`. The custom header is the second half: it cannot be attached
+ * cross-origin without a CORS preflight, which this route never approves.
+ */
+export function isSameOriginPanelRequest(request: IncomingMessage): boolean {
+  const host = headerOf(request, "host")
+  if (host === undefined || !LOCAL_HOSTS.has(hostNameOf(host))) return false
+  const origin = headerOf(request, "origin")
+  if (origin !== undefined) {
+    try {
+      if (new URL(origin).host !== host.trim().toLowerCase()) return false
+    } catch {
+      return false
+    }
+  }
+  const site = headerOf(request, "sec-fetch-site")
+  if (site !== undefined && site !== "same-origin") return false
+  return headerOf(request, PANEL_HEADER) === "1"
+}
+
+function hasJsonContentType(request: IncomingMessage): boolean {
+  return (headerOf(request, "content-type") ?? "").toLowerCase().startsWith("application/json")
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -100,6 +151,14 @@ export function createPodApiHandler(admin: PodAdmin): (request: IncomingMessage,
   return async (request, response) => {
     if (!isLocalRequest(request)) {
       sendJson(response, 403, { error: "local_only" })
+      return
+    }
+    if (!isSameOriginPanelRequest(request)) {
+      sendJson(response, 403, { error: "cross_origin" })
+      return
+    }
+    if (request.method !== "GET" && !hasJsonContentType(request)) {
+      sendJson(response, 403, { error: "json_required" })
       return
     }
     const url = new URL(request.url ?? POD_API_PREFIX, "http://localhost")

@@ -689,7 +689,9 @@ window.__ModuleLoader__.load({
     }
 
     async function api(path, init) {
-      const response = await fetch(path, init);
+      const options = Object.assign({}, init || {});
+      options.headers = Object.assign({ "x-orca-pod": "1" }, (init && init.headers) || {});
+      const response = await fetch(path, options);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body && body.error ? body.error : "HTTP " + response.status);
       return body;
