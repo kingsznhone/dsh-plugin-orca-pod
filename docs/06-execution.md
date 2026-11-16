@@ -147,6 +147,7 @@ Pod gateway (local)
 
 - 建任务时列出 `notes/` 顶层文件（最多 20 个）追加到任务书附录，agent 打开就知道有哪些前情（`notes/STATUS.md`、决策、待办）；
 - ACP 的 preamble 里说明 cwd 是共享 workgroup 根、开工先读 `notes/STATUS.md`、收尾更新它；
+- 任务正文来自远端，`promptWithAttachments` 把它包进 `<untrusted-task-input>` 并注明是数据而非本地用户指令（正文里伪造的结束标签会被转义）；inputs/notes 附录放在块外，notes 文件名 JSON 转义；
 - 同一 workgroup 多 origin 交替派任务时，靠的也是这份笔记而不是互相看不见（[§6.7](#67-工作区一份持久)）。
 
 **实现状态**：`src/workspace.ts` 的 `createWorkspaceManager({dataRoot, workgroupId})` 负责这份布局；orca node `start()` 时 `ensure()` 一次建齐并 `purgeInputs()`。任务执行时把 workgroup 根作为 `ExecuteInput.workspaceDir`（executor 的 cwd），把 `state/<workgroup_id>/` 作为 `podDir`。物化、附录（inputs 清单 + notes 清单）与清理在 `src/tasks.ts`（`materializeInputs`、`promptWithAttachments`、`finish`）；notes 提示在 `src/preamble.ts`。

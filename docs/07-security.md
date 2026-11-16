@@ -86,6 +86,8 @@ sig = Ed25519(identity.private_key, "pod-v1|" + method + "|" + path + "|" + sha2
 
 - 任务 prompt、artifact 内容、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
+- 目标侧：ACP preamble 保持在最前；远端任务正文放进显式的 `<untrusted-task-input>` 块（正文里伪造的结束标签会被转义），inputs/notes 附录在块外、notes 文件名 JSON 转义（`src/tasks.ts` 的 `promptWithAttachments`）；
+- origin 侧：tracker 通知只给状态/摘要，远端结果放进 `<untrusted-remote-result>` 块并截断（`UNTRUSTED_RESULT_MAX_CHARS = 800`，结束标签转义），agent 要用 `orca_pod` 的 `status` 自己拉全文；`permission_request` 里的 `requested` 也截断（`src/plugin/tracker.ts`）；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
 - 可观测：谁（origin_orca_node）、何时、对哪个任务/工作区、用了什么 mode、批了什么——这些都留在任务记录与派发日志里（`tasks/get`、`orca-node log`），不另落一份审计文件。
 
