@@ -92,6 +92,37 @@ describe("panel override lifecycle", () => {
     }
   });
 
+  it("keeps the lifecycle queue usable after a rejected reconfigure", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startPod(baseConfig(root), logger);
+    await handle.ready;
+    try {
+      await expect(handle.reconfigure({ port: -1 })).rejects.toThrow();
+      // The failed operation must not poison the serial lane (§ plugin H9).
+      await handle.reconfigure({ display_name: "recovered" });
+      expect(handle.runtime.orcaNode).not.toBeNull();
+      expect(handle.config.display_name).toBe("recovered");
+    } finally {
+      await stopPod(handle, logger);
+    }
+  });
+
+  it("stops instead of starting a node when it is disposed mid-reconfigure", async () => {
+    const root = await tempRoot("orca-panel-");
+    const handle = startedPod(baseConfig(root));
+    const pod = await handle;
+    try {
+      const reconfiguring = pod.reconfigure({ display_name: "late rename" });
+      const stopping = stopPod(pod, logger);
+      await Promise.allSettled([reconfiguring, stopping]);
+      // stopPod waits for the queued reconfigure, and that operation must not
+      // start a fresh listener after the host disposed the pod (§ plugin H9).
+      expect(pod.runtime.orcaNode).toBeNull();
+    } finally {
+      await stopPod(pod, logger);
+    }
+  });
+
   it("listens on loopback until the panel picks an interface", async () => {
     const root = await tempRoot("orca-panel-");
     const handle = startPod(baseConfig(root), logger);

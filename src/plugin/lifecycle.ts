@@ -73,6 +73,12 @@ export interface PodHandle {
   disconnect(): Promise<void>
   /** Delete the panel override and the persisted orca node identity (full reset). */
   reset(): Promise<void>
+  /**
+   * Stop accepting lifecycle writes: wait for the current operation, and make
+   * pending queue entries skip starting a new node. Used by `stopPod` so a
+   * reconfiguration cannot leak a listener after host shutdown (§9.2).
+   */
+  dispose?(): Promise<void>
 }
 
 /** Fields the panel may override; the rest stays owned by the bundle config. */
@@ -418,7 +424,22 @@ export function startPod(
 
   let effective = baseConfig
   let uiConfigured = false
+  let disposed = false
   let queue: Promise<void> = Promise.resolve()
+
+  /**
+   * Serialize panel writes (override file + node restart). A failed operation
+   * must not poison the lane: the caller still sees its rejection, but the next
+   * operation runs against a clean queue.
+   */
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = queue.catch(() => {}).then(operation)
+    queue = run.then(
+      () => {},
+      () => {},
+    )
+    return run
+  }
 
   const handle: PodHandle = {
     runtime,
@@ -426,7 +447,7 @@ export function startPod(
     uiConfigured: false,
     ready: Promise.resolve(),
     reconfigure: async (patch) => {
-      queue = queue.then(async () => {
+      return enqueue(async () => {
         const previous = await loadOverride(dataRoot, logger)
         const next: Override = {
           ...(previous ?? {}),
@@ -440,6 +461,7 @@ export function startPod(
         effective = merged
         handle.config = merged
         await stopNode(runtime, logger)
+        if (disposed) return
         if (needsSetup(merged)) {
           runtime.error = null
           return
@@ -450,20 +472,21 @@ export function startPod(
           logger.error(`orca-pod: reconfigure failed: ${errorMessage(error)}`)
         }
       })
-      return queue
     },
     addPeer: async (peer) => {
-      const orcaNode = runtime.orcaNode
-      if (orcaNode === null) throw new Error("orca node is not running")
-      await orcaNode.join(peer)
-      const peers = effective.peers.includes(peer) ? effective.peers : [...effective.peers, peer]
-      effective = { ...effective, peers }
-      handle.config = effective
-      const previous = (await loadOverride(dataRoot, logger)) ?? {}
-      await saveOverride(dataRoot, { ...previous, peers, setup_complete: true })
+      return enqueue(async () => {
+        const orcaNode = runtime.orcaNode
+        if (orcaNode === null) throw new Error("orca node is not running")
+        await orcaNode.join(peer)
+        const peers = effective.peers.includes(peer) ? effective.peers : [...effective.peers, peer]
+        effective = { ...effective, peers }
+        handle.config = effective
+        const previous = (await loadOverride(dataRoot, logger)) ?? {}
+        await saveOverride(dataRoot, { ...previous, peers, setup_complete: true })
+      })
     },
     disconnect: async () => {
-      queue = queue.then(async () => {
+      return enqueue(async () => {
         const orcaNode = runtime.orcaNode
         if (orcaNode !== null) {
           try {
@@ -477,10 +500,9 @@ export function startPod(
         const previous = (await loadOverride(dataRoot, logger)) ?? {}
         await saveOverride(dataRoot, { ...previous, peers: [], setup_complete: true })
       })
-      return queue
     },
     reset: async () => {
-      queue = queue.then(async () => {
+      return enqueue(async () => {
         await stopNode(runtime, logger)
         for (const path of [overridePath(dataRoot), configPath(dataRoot), identityPath(dataRoot)]) {
           try {
@@ -496,15 +518,19 @@ export function startPod(
         runtime.error = null
         // Reset returns to the first-run wizard: without a panel override the
         // node must not restart, even if the bundle still carries a workgroup.
-        if (!uiConfigured || needsSetup(effective)) return
+        if (disposed || !uiConfigured || needsSetup(effective)) return
         try {
           await startNode(effective, runtime, logger, hooks)
         } catch (error) {
           logger.error(`orca-pod: restart after reset failed: ${errorMessage(error)}`)
         }
       })
-      return queue
     },
+  }
+
+  handle.dispose = async () => {
+    disposed = true
+    await queue
   }
 
   handle.ready = (async () => {
@@ -551,6 +577,9 @@ function pickOverride(patch: Record<string, unknown>): Override {
 /** Stop the pod; safe to call after a failed startup and safe to await twice. */
 export async function stopPod(handle: PodHandle, logger: HostLogger): Promise<void> {
   await handle.ready
+  // Let an in-flight reconfiguration finish (or skip its restart), so shutdown
+  // cannot race a new listener into existence after the host disposed us.
+  await handle.dispose?.()
   const orcaNode = handle.runtime.orcaNode
   if (orcaNode === null) return
   try {
