@@ -115,7 +115,7 @@
 - `tasks/get`（已实现）：按 task id 取状态与 artifact；未知 id 返回 `task_not_found`。
 - `tasks/cancel`（已实现）：请求取消；对终态 task 原样返回，不报错；`hang` 任务只能被取消或 TTL 结束。
 
-客户端侧（出站）约定：每次 A2A/集群请求都带 `AbortSignal.timeout`（默认 30s，`config.request_timeout_ms` 可调；心跳用自己更短的 deadline），响应必须是 `application/json` 且不超过 4 MiB，否则按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用、tracker 与 child-link 轮询。只有 `sendTask` 会新建 origin 派发日志；`tasks/get`、`tasks/cancel`、审批等读取只刷新已存在的条目，避免面板和轮询把别人的任务记成本机派发（§13.4）。
+客户端侧（出站）约定：每次 A2A/集群请求都带 `AbortSignal.timeout`（默认 30s，`config.request_timeout_ms` 可调；心跳用自己更短的 deadline），响应必须是 `application/json` 且不超过 4 MiB，否则按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用、tracker 与 child-link 轮询。只有 `sendTask` 会新建 origin 派发日志；`tasks/get`、`tasks/cancel`、审批等读取只刷新已存在的条目，避免面板和轮询把别人的任务记成本机派发（§13.4）。出站签名携带接收方 `orca_node_id` 与完整 URL（含查询串，[§7.2](07-security.md#72-请求签名没有-session-token)）；接收方 id 来自成员目录或 join 成功时记下的映射，唯一例外是首次 `/cluster/join`（`target` 留空），CLI 对陌生节点先读公开的 `/health` 拿 id。
 
 设计与尚未实现的方法：
 

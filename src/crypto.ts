@@ -9,7 +9,12 @@ import {
 import type { Grant, OrcaNodeId, SignedGrant } from "./protocol.ts";
 
 export const AUTH_SCHEME = "Pod";
-export const PROOF_VERSION = "pod-v1";
+/**
+ * Signature domain version. v2 binds the receiver id and the full request URL
+ * (path *and* query) into every signature: a request captured from one node
+ * cannot be replayed against another node or with different query parameters.
+ */
+export const PROOF_VERSION = "pod-v2";
 export const JOIN_PROOF_VERSION = "pod-join-v1";
 export const KEY_DERIVATION_SALT = "orca-pod";
 /**
@@ -33,7 +38,9 @@ export type AuthErrorCode =
   | "malformed_auth"
   | "clock_skew"
   | "nonce_replay"
-  | "bad_signature";
+  | "bad_signature"
+  | "wrong_target"
+  | "stale_request";
 
 export class PodAuthError extends Error {
   readonly code: AuthErrorCode;
@@ -86,7 +93,10 @@ export function bodySha256(body?: Uint8Array | string): string {
 
 export type SignatureFields = {
   method: string;
-  path: string;
+  /** Request target on the receiver, path *and* query included (§7.1). */
+  url: string;
+  /** The node the request is addressed to; empty only for a first join. */
+  targetOrcaNodeId: string;
   bodySha256: string;
   ts: number;
   nonce: string;
@@ -96,7 +106,8 @@ export function signatureInput(fields: SignatureFields): string {
   return [
     PROOF_VERSION,
     fields.method.toUpperCase(),
-    fields.path,
+    fields.targetOrcaNodeId,
+    fields.url,
     fields.bodySha256,
     String(fields.ts),
     fields.nonce,
@@ -106,7 +117,8 @@ export function signatureInput(fields: SignatureFields): string {
 export type AuthHeaderOptions = {
   identity: NodeIdentity;
   method: string;
-  path: string;
+  url: string;
+  targetOrcaNodeId?: string;
   body?: Uint8Array | string;
   /**
    * Digest of a body that is streamed rather than held in memory (§5.6): the
@@ -120,21 +132,25 @@ export type AuthHeaderOptions = {
 export function buildAuthHeader(options: AuthHeaderOptions): string {
   const ts = options.ts ?? Date.now();
   const nonce = options.nonce ?? randomBytes(16).toString("base64url");
+  const target = options.targetOrcaNodeId ?? "";
   const signature = signWithIdentity(
     options.identity,
     signatureInput({
       method: options.method,
-      path: options.path,
+      url: options.url,
+      targetOrcaNodeId: target,
       bodySha256: options.bodySha256 ?? bodySha256(options.body),
       ts,
       nonce,
     }),
   );
-  return `${AUTH_SCHEME} orca_node_id=${options.identity.orcaNodeId}; ts=${ts}; nonce=${nonce}; sig=${signature}`;
+  const targetField = target === "" ? "" : `target=${target}; `;
+  return `${AUTH_SCHEME} orca_node_id=${options.identity.orcaNodeId}; ${targetField}ts=${ts}; nonce=${nonce}; sig=${signature}`;
 }
 
 export type ParsedAuthHeader = {
   orcaNodeId: string;
+  target: string;
   ts: number;
   nonce: string;
   signature: string;
@@ -158,7 +174,7 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
   if (!orcaNodeId || !ts || !nonce || !signature) return null;
   const tsValue = Number(ts);
   if (!Number.isSafeInteger(tsValue)) return null;
-  return { orcaNodeId, ts: tsValue, nonce, signature };
+  return { orcaNodeId, target: fields.get("target") ?? "", ts: tsValue, nonce, signature };
 }
 
 /** Bounded set of recently seen nonces. remember() returns false on replay. */
@@ -197,7 +213,13 @@ export class NonceCache {
 
 export type VerifyAuthOptions = {
   method: string;
-  path: string;
+  url: string;
+  /** This node's id; a request addressed to another node is rejected. */
+  targetOrcaNodeId?: string;
+  /** `/cluster/join` cannot know the receiver's id before first contact. */
+  allowEmptyTarget?: boolean;
+  /** Reject requests issued before this process started: blocks restart replay. */
+  notBefore?: number;
   body?: Uint8Array | string;
   /** Digest signed by a streaming client; overrides hashing `body` when set. */
   bodySha256?: string;
@@ -229,11 +251,22 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (Math.abs(now - parsed.ts) > skewMs) {
     throw new PodAuthError("clock_skew", "timestamp outside the allowed skew window");
   }
+  if (options.notBefore !== undefined && parsed.ts < options.notBefore) {
+    throw new PodAuthError("stale_request", "timestamp predates this node process; restart replay rejected");
+  }
+  if (parsed.target === "") {
+    if (options.allowEmptyTarget !== true) {
+      throw new PodAuthError("wrong_target", "request is not bound to a target orca node");
+    }
+  } else if (options.targetOrcaNodeId !== undefined && parsed.target !== options.targetOrcaNodeId) {
+    throw new PodAuthError("wrong_target", "request is addressed to another orca node");
+  }
   const valid = verifyWithNodeId(
     parsed.orcaNodeId,
     signatureInput({
       method: options.method,
-      path: options.path,
+      url: options.url,
+      targetOrcaNodeId: parsed.target,
       bodySha256: options.bodySha256 ?? bodySha256(options.body),
       ts: parsed.ts,
       nonce: parsed.nonce,

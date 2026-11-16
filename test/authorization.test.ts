@@ -75,8 +75,15 @@ function createHarness(): Harness {
     identity,
     orcaNodeId,
     peers,
-    sign: (method, path, body, bodySha256) =>
-      buildAuthHeader({ identity, method, path, body, ...(bodySha256 === undefined ? {} : { bodySha256 }) }),
+    sign: (method, url, body, bodySha256) =>
+      buildAuthHeader({
+        identity,
+        method,
+        url,
+        targetOrcaNodeId: orcaNodeId,
+        body,
+        ...(bodySha256 === undefined ? {} : { bodySha256 }),
+      }),
   };
 }
 
@@ -119,7 +126,8 @@ function strangerSign(
   return buildAuthHeader({
     identity: stranger,
     method,
-    path,
+    url: path,
+    targetOrcaNodeId: harness.orcaNodeId,
     body,
     ...(bodySha256 === undefined ? {} : { bodySha256 }),
   });

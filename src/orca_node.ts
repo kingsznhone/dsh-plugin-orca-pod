@@ -483,19 +483,38 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     }
   }
 
+  /** A probe of our own endpoint signs itself as its receiver (§7.1). */
+  function isSelfEndpoint(peerUrl: string): boolean {
+    const candidate = peerUrl.replace(/\/+$/, "");
+    return actualEndpoints.some((endpoint) => endpoint.replace(/\/+$/, "") === candidate);
+  }
+
   async function postSigned<T>(
     peerUrl: string,
     path: string,
     payload: unknown,
     signal?: AbortSignal,
+    targetOrcaNodeId?: string,
   ): Promise<T> {
     const url = new URL(path, peerUrl);
     const body = JSON.stringify(payload);
+    const target = targetOrcaNodeId
+      ?? membership.findByEndpoint(peerUrl)?.orca_node_id
+      ?? targetNodeIds.get(peerUrl)
+      ?? (isSelfEndpoint(peerUrl) ? orcaNodeId : "");
     const response = await httpFetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: buildAuthHeader({ identity, method: "POST", path: url.pathname, body }),
+        authorization: buildAuthHeader({
+          identity,
+          method: "POST",
+          url: `${url.pathname}${url.search}`,
+          // Bind the request to the receiver. A first join has no record yet and
+          // leaves it empty; the gateway accepts that only on `/cluster/join`.
+          targetOrcaNodeId: target,
+          body,
+        }),
       },
       body,
       // Heartbeats pass their own (shorter) deadline; everything else gets the
@@ -533,20 +552,26 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       nonce,
     });
     const expected = membership.findByEndpoint(peerUrl);
-    const response = await postSigned<JoinResponse>(peerUrl, "/cluster/join", {
-      workgroup_id: config.workgroup_id,
-      orca_node_id: orcaNodeId,
-      display_name: selfPeer().display_name,
-      endpoints: actualEndpoints,
-      runtime,
-      max_task_ttl_s: maxTaskTtlS,
-      ...(modelCatalog.length > 0 ? { models: modelCatalog } : {}),
-      default_model: defaultModel,
-      default_reasoning_effort: defaultReasoningEffort,
-      ts,
-      nonce,
-      proof,
-    });
+    const response = await postSigned<JoinResponse>(
+      peerUrl,
+      "/cluster/join",
+      {
+        workgroup_id: config.workgroup_id,
+        orca_node_id: orcaNodeId,
+        display_name: selfPeer().display_name,
+        endpoints: actualEndpoints,
+        runtime,
+        max_task_ttl_s: maxTaskTtlS,
+        ...(modelCatalog.length > 0 ? { models: modelCatalog } : {}),
+        default_model: defaultModel,
+        default_reasoning_effort: defaultReasoningEffort,
+        ts,
+        nonce,
+        proof,
+      },
+      undefined,
+      expected?.orca_node_id ?? "",
+    );
     // The response carries no signature of its own, so bind it to the node we
     // dialed: a known endpoint must not be able to introduce a new identity
     // (first contact is TOFU, as there is nothing to compare it with yet).
@@ -557,13 +582,14 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     }
     peers.upsert(response.self);
     admittedPeers.add(peerUrl);
+    targetNodeIds.set(peerUrl, response.self.orca_node_id);
     membership.observeInbound(response.self.orca_node_id);
     membership.mergeRemote(response.members);
     emitMembersIfChanged();
     return response;
   }
 
-  function sendHeartbeat(peerUrl: string): Promise<HeartbeatResponse> {
+  function sendHeartbeat(peerUrl: string, targetOrcaNodeId: string): Promise<HeartbeatResponse> {
     const ts = Date.now();
     const nonce = randomUUID();
     const proof = buildHeartbeatProof(key, {
@@ -585,16 +611,20 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         digest: currentDigest(),
       },
       AbortSignal.timeout(membership.timings.heartbeatTimeoutMs),
+      targetOrcaNodeId,
     );
   }
 
   /** `observeFailure: false` lets the caller count one failure per peer, not per URL. */
   async function heartbeat(peerUrl: string, observeFailure = true): Promise<HeartbeatResponse> {
     const peer = membership.findByEndpoint(peerUrl);
+    const targetOrcaNodeId = peer?.orca_node_id
+      ?? targetNodeIds.get(peerUrl)
+      ?? (isSelfEndpoint(peerUrl) ? orcaNodeId : "");
     try {
       let response: HeartbeatResponse;
       try {
-        response = await sendHeartbeat(peerUrl);
+        response = await sendHeartbeat(peerUrl, targetOrcaNodeId);
       } catch (error) {
         const failure = error as { status?: number; code?: string };
         // The peer pruned our record (404) or no longer lists us as a member (403):
@@ -602,7 +632,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         // that join fail with 401 and the outer handler drops the peer (§7.1).
         if (failure.status === 404 || failure.code === "not_a_member") {
           await join(peerUrl);
-          response = await sendHeartbeat(peerUrl);
+          response = await sendHeartbeat(peerUrl, targetNodeIds.get(peerUrl) ?? "");
         } else {
           throw error;
         }
@@ -643,7 +673,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       const [endpoint] = peer.endpoints;
       if (endpoint !== undefined) {
         try {
-          await postSigned(endpoint, "/cluster/leave", { orca_node_id: orcaNodeId });
+          await postSigned(endpoint, "/cluster/leave", { orca_node_id: orcaNodeId }, undefined, peer.orca_node_id);
           left.push(peer.orca_node_id);
         } catch {
           // Best effort: peers that are unreachable are cleared locally below.
@@ -664,7 +694,15 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: buildAuthHeader({ identity, method: "POST", path: url.pathname, body }),
+        authorization: buildAuthHeader({
+          identity,
+          method: "POST",
+          url: `${url.pathname}${url.search}`,
+          targetOrcaNodeId: membership.findByEndpoint(peerUrl)?.orca_node_id
+            ?? targetNodeIds.get(peerUrl)
+            ?? (isSelfEndpoint(peerUrl) ? orcaNodeId : ""),
+          body,
+        }),
       },
       body,
       signal: AbortSignal.timeout(requestTimeoutMs),
@@ -760,6 +798,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     if (!admittedPeers.has(peerUrl)) await join(peerUrl);
     const admitted = membership.findByEndpoint(peerUrl);
     if (admitted === null) throw new Error(`peer ${peerUrl} did not admit this orca node`);
+    targetNodeIds.set(peerUrl, admitted.orca_node_id);
     return admitted;
   }
 
@@ -1012,6 +1051,12 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const warnedCandidates = new Set<string>();
   /** Last endpoint that worked per peer, tried first on the next round. */
   const preferredEndpoints = new Map<string, string>();
+/**
+ * Receiver id learned when a peer admitted us (or when we admitted it). The
+ * signature binds this id (§7.1); membership can lag behind a fresh join, so it
+ * cannot be the only source.
+ */
+const targetNodeIds = new Map<string, string>();
 
   /** A 401-shaped failure proves the peer no longer shares this password (§7.1). */
   function isAdmissionRejection(error: unknown): boolean {
@@ -1029,6 +1074,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     membership.remove(orcaNodeIdToDrop);
     peers.remove(orcaNodeIdToDrop);
     preferredEndpoints.delete(orcaNodeIdToDrop);
+    for (const [endpoint, knownId] of targetNodeIds) {
+      if (knownId === orcaNodeIdToDrop) targetNodeIds.delete(endpoint);
+    }
     emitMembersIfChanged();
   }
 

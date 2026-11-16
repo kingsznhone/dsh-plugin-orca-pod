@@ -67,6 +67,8 @@ export type GatewayDeps = {
   workgroupKey: Buffer;
   peers: PeerStore;
   nonceCache: NonceCache;
+  /** When this gateway process started; requests older than this are replays. */
+  startedAt?: number;
   runtime: RuntimeInfo | null;
   tasks: TaskRunner;
   blobs: BlobStore;
@@ -172,9 +174,16 @@ function authenticate(
   deps: GatewayDeps,
   bodySha256?: string,
 ): VerifiedAuth {
+  const path = request.url.split("?")[0] ?? request.url;
   return verifyAuth({
     method: request.method,
-    path: request.url.split("?")[0] ?? request.url,
+    // The signature covers the full request target, query included: a captured
+    // request cannot be replayed with different query parameters (§7.1).
+    url: request.url,
+    targetOrcaNodeId: deps.orcaNode.orca_node_id,
+    // A first join cannot know the receiver's id yet; the URL still binds the host.
+    allowEmptyTarget: path === "/cluster/join",
+    ...(deps.startedAt === undefined ? {} : { notBefore: deps.startedAt }),
     body: (request as RawBodyRequest).rawBody,
     ...(bodySha256 === undefined ? {} : { bodySha256 }),
     header: request.headers.authorization,
@@ -243,6 +252,10 @@ function membership(deps: GatewayDeps): {
 }
 
 export function createGateway(deps: GatewayDeps): FastifyInstance {
+  // Nonces live only in this process. Recording its start time and rejecting
+  // anything issued earlier closes the replay window a restart would otherwise
+  // reopen (§7.1).
+  deps.startedAt ??= Date.now();
   // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
   // shutdown must not wait for it.
   const app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
@@ -276,7 +289,13 @@ export function createGateway(deps: GatewayDeps): FastifyInstance {
   );
   app.addContentTypeParser<Buffer>("*", { parseAs: "buffer" }, rawBodyParser);
 
-  app.get("/health", async () => ({ status: "ok", version: PROTOCOL_VERSION }));
+  app.get("/health", async () => ({
+    status: "ok",
+    version: PROTOCOL_VERSION,
+    // Public identity hint: a CLI or a first-time caller uses it to bind the
+    // target id into the request signature (the id is a public key).
+    orca_node_id: deps.orcaNode.orca_node_id,
+  }));
 
   app.get("/.well-known/agent-card.json", async () => {
     const [primary] = deps.orcaNode.endpoints;

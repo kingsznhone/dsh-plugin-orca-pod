@@ -137,6 +137,22 @@ function nodeIdentity(config: OrcaNodeConfig): NodeIdentity {
   return identity;
 }
 
+/**
+ * Receiver id for the request signature (§7.1). Local control calls address this
+ * node; a peer exposes its public key in `/health`, which is how a one-shot CLI
+ * invocation learns the target before sending a signed request.
+ */
+async function targetNodeId(config: OrcaNodeConfig, peer: string): Promise<string> {
+  if (normalizePeer(peer) === normalizePeer(localControlEndpoint(config))) return config.orca_node_id;
+  try {
+    const response = await fetch(new URL("/health", normalizePeer(peer)));
+    const parsed = (await response.json()) as { orca_node_id?: unknown };
+    return typeof parsed.orca_node_id === "string" ? parsed.orca_node_id : "";
+  } catch {
+    return "";
+  }
+}
+
 async function signedJson<T>(
   config: OrcaNodeConfig,
   peer: string,
@@ -146,6 +162,7 @@ async function signedJson<T>(
 ): Promise<T> {
   const url = new URL(path, normalizePeer(peer));
   const body = payload === undefined ? undefined : JSON.stringify(payload);
+  const target = await targetNodeId(config, peer);
   const response = await fetch(url, {
     method,
     headers: {
@@ -153,7 +170,8 @@ async function signedJson<T>(
       authorization: buildAuthHeader({
         identity: nodeIdentity(config),
         method,
-        path: url.pathname,
+        url: `${url.pathname}${url.search}`,
+        targetOrcaNodeId: target,
         ...(body !== undefined ? { body } : {}),
       }),
     },
@@ -169,19 +187,22 @@ async function signedJson<T>(
 function a2a<T>(config: OrcaNodeConfig, peer: string, method: string, params: unknown): Promise<T> {
   const url = "/a2a";
   const body = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
-  const response = fetch(new URL(url, normalizePeer(peer)), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: buildAuthHeader({
-        identity: nodeIdentity(config),
-        method: "POST",
-        path: url,
-        body,
-      }),
-    },
-    body,
-  }).then(async (res) => {
+  const response = targetNodeId(config, peer).then((target) =>
+    fetch(new URL(url, normalizePeer(peer)), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: buildAuthHeader({
+          identity: nodeIdentity(config),
+          method: "POST",
+          url,
+          targetOrcaNodeId: target,
+          body,
+        }),
+      },
+      body,
+    }),
+  ).then(async (res) => {
     const parsed = (await res.json().catch(() => ({}))) as {
       result?: T;
       error?: { message?: string; data?: { message?: string } };
@@ -280,6 +301,7 @@ async function uploadBlob(
   const body = Readable.toWeb(createReadStream(filePath)) as unknown as ReadableStream<Uint8Array>;
   const url = new URL("/blobs", normalizePeer(peer));
   url.searchParams.set("name", name);
+  const target = await targetNodeId(config, peer);
   const init: RequestInit & { duplex: "half" } = {
     method: "POST",
     headers: {
@@ -288,7 +310,8 @@ async function uploadBlob(
       authorization: buildAuthHeader({
         identity: nodeIdentity(config),
         method: "POST",
-        path: "/blobs",
+        url: `${url.pathname}${url.search}`,
+        targetOrcaNodeId: target,
         bodySha256: digest,
       }),
     },

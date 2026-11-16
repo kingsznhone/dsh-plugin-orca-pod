@@ -77,8 +77,15 @@ function createHarness(tasks: TaskRunner = idleTasks, fileBlobs?: FileBlobRegist
     key,
     identity,
     orcaNodeId,
-    sign: (method, path, body, bodySha256) =>
-      buildAuthHeader({ identity, method, path, body, ...(bodySha256 === undefined ? {} : { bodySha256 }) }),
+    sign: (method, url, body, bodySha256) =>
+      buildAuthHeader({
+        identity,
+        method,
+        url,
+        targetOrcaNodeId: orcaNodeId,
+        body,
+        ...(bodySha256 === undefined ? {} : { bodySha256 }),
+      }),
   };
 }
 
@@ -95,7 +102,7 @@ async function upload(
     payload,
     headers: {
       "content-type": "application/octet-stream",
-      authorization: harness.sign("POST", "/blobs", payload, digest),
+      authorization: harness.sign("POST", url, payload, digest),
       "x-pod-body-sha256": digest,
     },
   });

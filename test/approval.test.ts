@@ -92,6 +92,8 @@ async function signedResume(
     method: "message/send",
     params: { message },
   });
+  // Signatures bind the receiver id (§7.1); the test signs for a real target node.
+  const health = (await (await fetch(new URL("/health", targetUrl))).json()) as { orca_node_id: string };
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -99,7 +101,8 @@ async function signedResume(
       authorization: buildAuthHeader({
         identity: signer,
         method: "POST",
-        path: url.pathname,
+        url: `${url.pathname}${url.search}`,
+        targetOrcaNodeId: health.orca_node_id,
         body,
       }),
     },
