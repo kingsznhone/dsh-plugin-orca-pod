@@ -22,7 +22,8 @@ import { promisify } from "node:util";
 
 import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config.ts";
 import { waitFor } from "../src/node/harness.ts";
-import { isTerminal, type MembersResponse, type TaskView } from "../src/protocol/protocol.ts";
+import { isTerminal, type TaskView } from "../src/protocol/task.ts";
+import type { MembersResponse } from "../src/protocol/peer.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));

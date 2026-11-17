@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 
 import { deriveChildGrant } from "../delegation/index.ts";
-import type { BlobStore } from "../storage/index.ts";
+import type { BlobStore, TaskStore } from "../storage/index.ts";
 import { checkGrant, type GrantLedger } from "../security/index.ts";
 import { assertNever, errorMessage, PodError } from "../kernel/index.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/index.ts";
@@ -30,7 +30,6 @@ import {
 } from "../protocol/index.ts";
 import { composePrompt, listNotes, materializeInputs, removeInputs } from "./inputs.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
-import type { TaskStore } from "../storage/index.ts";
 import type { Workspace } from "./workspace.ts";
 
 /** What a record needs from the node and the task runner. */

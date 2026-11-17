@@ -16,5 +16,5 @@ export {
 export type { AdmissionKind, VerifiedAuth } from "./crypto.ts";
 export { checkGrant, createGrantLedger, parseSignedGrant, parseTaskRelay } from "./grants.ts";
 export type { GrantLedger } from "./grants.ts";
-export { identityPath, isNodeId, loadIdentity, loadOrCreateIdentity, shortenNodeId } from "./identity.ts";
+export { identityPath, loadIdentity, loadOrCreateIdentity, shortenNodeId } from "./identity.ts";
 export type { NodeIdentity } from "./identity.ts";

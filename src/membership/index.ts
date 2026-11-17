@@ -1,4 +1,4 @@
-/** Membership: the member table, its watchdog and the heartbeat/join/leave loop. */
+/** Membership: the member table, its watchdog, endpoint screening and the heartbeat/join/leave loop. */
 
 export { createMembership } from "./membership.ts";
 export type { Membership, MembershipClock, MembershipTimings, PeerStore } from "./membership.ts";

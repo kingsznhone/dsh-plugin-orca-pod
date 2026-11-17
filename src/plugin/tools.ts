@@ -8,7 +8,8 @@
  */
 
 import { normalizePeerUrl } from "../transport/index.ts";
-import { DEFAULT_PORT, isPermissionMode, isRecord, isTerminal, parseModelSpec } from "../protocol/index.ts";
+import { DEFAULT_PORT, isPermissionMode, isTerminal, parseModelSpec } from "../protocol/index.ts";
+import { isRecord } from "../kernel/index.ts";
 import type { PeerView, PermissionMode, SubmitTaskInput } from "../protocol/index.ts";
 import type { OrcaNode } from "../node/index.ts";
 

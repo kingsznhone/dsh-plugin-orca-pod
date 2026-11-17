@@ -1,13 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { NonceCache, admissionProof, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
-import {
-  runtimeDigest,
-  type BusyState,
-  type PeerView,
-  type SelfRecord,
-  type TaskRunner,
-} from "../src/protocol/protocol.ts";
+import { runtimeDigest, type BusyState, type PeerView, type SelfRecord } from "../src/protocol/peer.ts";
+import type { TaskRunner } from "../src/protocol/task.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createMembership } from "../src/membership/membership.ts";
 import type { PeerStore } from "../src/membership/membership.ts";

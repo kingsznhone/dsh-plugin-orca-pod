@@ -8,7 +8,8 @@ import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import type { PodAdmin, PodApproval, PodPeer, PodTaskRow } from "../src/plugin/admin.ts";
-import type { SelfRecord, TaskView } from "../src/protocol/protocol.ts";
+import type { SelfRecord } from "../src/protocol/peer.ts";
+import type { TaskView } from "../src/protocol/task.ts";
 import type { HostLogger } from "../src/plugin/dsh.ts";
 import { isDirectLoopbackRequest } from "../src/transport/net.ts";
 import { createPodApiHandler, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";

@@ -16,8 +16,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PodAdmin } from "./admin.ts";
 import type { HostContext, WebServerRoute } from "./dsh.ts";
 import { isDirectLoopbackRequest } from "../transport/index.ts";
-import { isRecord } from "../protocol/index.ts";
-import { errorMessage } from "../kernel/index.ts";
+import { isRecord, errorMessage } from "../kernel/index.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 export const POD_API_PREFIX = "/orca-api";

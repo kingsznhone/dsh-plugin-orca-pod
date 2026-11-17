@@ -8,16 +8,17 @@
 import { normalizePeerUrl } from "../transport/net.ts";
 import {
   DEFAULT_PORT,
-  isModelSelection,
   isPermissionMode,
   isReasoningEffort,
-  isRecord,
   isWorkgroupId,
   normalizeEndpoints,
+  validateModelOffers,
+  validateModelSelection,
   type ModelOffer,
   type ModelSelection,
   type PermissionMode,
 } from "../protocol/index.ts";
+import { isRecord } from "../kernel/index.ts";
 
 type ExecutorKind = "echo" | "acp";
 
@@ -151,28 +152,6 @@ function parsePeers(raw: unknown): string[] {
       raw.map((peer) => normalizePeerUrl(typeof peer === "string" ? peer : fail("must be an array of peer addresses"))),
     ),
   ];
-}
-
-export const MAX_MODEL_OFFERS = 128;
-
-/** Validate the advertised model catalog (§6.15). */
-export function validateModelOffers(raw: unknown): ModelOffer[] {
-  if (!Array.isArray(raw)) fail("must be an array");
-  if (raw.length > MAX_MODEL_OFFERS) fail(`must have at most ${MAX_MODEL_OFFERS} entries`);
-  return raw.map((entry, index) => {
-    if (!isRecord(entry)) fail(`[${index}] must be an object`);
-    const { provider, model, name, description } = entry;
-    if (typeof provider !== "string" || provider.length === 0) fail(`[${index}].provider must be a non-empty string`);
-    if (typeof model !== "string" || model.length === 0) fail(`[${index}].model must be a non-empty string`);
-    if (name !== undefined && typeof name !== "string") fail(`[${index}].name must be a string`);
-    if (description !== undefined && typeof description !== "string") fail(`[${index}].description must be a string`);
-    return { provider, model, name, description };
-  });
-}
-
-/** Validate one provider/model route, optionally pinned to a reasoning effort. */
-export function validateModelSelection(raw: unknown): ModelSelection {
-  return isModelSelection(raw) ? raw : fail("must name a provider, model and optional reasoning_effort");
 }
 
 function parseAcp(raw: unknown): AcpExecutorConfig {

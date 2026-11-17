@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
-import { permissionRequestOf, type PermissionMode, type TaskView } from "../src/protocol/protocol.ts";
+import { permissionRequestOf, type TaskView } from "../src/protocol/task.ts";
+import type { PermissionMode } from "../src/protocol/permission.ts";
 import { createAcpExecutor } from "../src/execution/acp/executor.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
 import { connectAll } from "../src/node/harness.ts";

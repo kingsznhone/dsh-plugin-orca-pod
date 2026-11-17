@@ -1,6 +1,7 @@
 /** Permission requests from the ACP child: parsing, the auto-answer policy and the reply shape. */
 
-import { isRecord, type PermissionMode } from "../../protocol/index.ts";
+import { isRecord } from "../../kernel/index.ts";
+import type { PermissionMode } from "../../protocol/index.ts";
 
 type PermissionOption = { optionId: string; kind: string };
 

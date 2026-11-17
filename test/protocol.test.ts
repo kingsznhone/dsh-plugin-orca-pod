@@ -5,13 +5,13 @@ import {
   isOrcaNodeId,
   isWorkgroupId,
   membersDigest,
-  newTaskId,
   normalizeEndpoints,
   normalizeOrcaNodeId,
   runtimeDigest,
   type PeerView,
   type RuntimeInfo,
-} from "../src/protocol/protocol.ts";
+} from "../src/protocol/peer.ts";
+import { newTaskId } from "../src/kernel/ids.ts";
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.
 const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

@@ -13,12 +13,10 @@
  * passes whatever appeared.
  */
 
-import { isRecord, type ModelOffer, type ModelSelection } from "../protocol/index.ts";
+import { isRecord, errorMessage } from "../kernel/index.ts";
+import type { ModelOffer, ModelSelection } from "../protocol/index.ts";
+import { MAX_MODEL_OFFERS } from "../protocol/index.ts";
 import type { AgentDefaultModelService, HostLogger, LlmCatalogService } from "./dsh.ts";
-import { errorMessage } from "../kernel/index.ts";
-
-/** Hard cap mirrored from `config.ts`; duplicated here to avoid a cycle. */
-const MAX_MODEL_OFFERS = 128;
 
 /** The host services the catalog reads; either may be absent. */
 export interface CatalogServices {

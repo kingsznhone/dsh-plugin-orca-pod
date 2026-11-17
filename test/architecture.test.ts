@@ -51,8 +51,6 @@ const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
  */
 const ALLOWED_VIOLATIONS: string[] = [
   "membership/mesh.ts -> transport/net.ts",
-  "protocol/protocol.ts -> security/identity.ts",
-  "transport/gateway/cluster-routes.ts -> node/settings.ts",
 ];
 
 function sourceFiles(directory: string): string[] {

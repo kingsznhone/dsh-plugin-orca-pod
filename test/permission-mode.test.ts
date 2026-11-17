@@ -11,7 +11,8 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
-import { narrowPermissionMode, permissionModeRank, type PodTaskMetadata } from "../src/protocol/protocol.ts";
+import { narrowPermissionMode, permissionModeRank } from "../src/protocol/permission.ts";
+import type { PodTaskMetadata } from "../src/protocol/task.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 

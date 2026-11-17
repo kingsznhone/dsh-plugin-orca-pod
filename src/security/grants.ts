@@ -6,8 +6,8 @@
  */
 
 import { verifyGrant } from "./crypto.ts";
-import { PodError, type PodErrorCode } from "../kernel/index.ts";
-import { isRecord, type PermissionRequest, type SignedGrant, type TaskRelay } from "../protocol/index.ts";
+import { PodError, type PodErrorCode, isRecord } from "../kernel/index.ts";
+import type { PermissionRequest, SignedGrant, TaskRelay } from "../protocol/index.ts";
 
 function need(ok: boolean, code: PodErrorCode, message: string): asserts ok {
   if (!ok) throw new PodError(code, message);

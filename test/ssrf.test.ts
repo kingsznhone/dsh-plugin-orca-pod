@@ -8,7 +8,7 @@ import {
   isLoopbackEndpoint,
   pickFreePort,
 } from "../src/transport/net.ts";
-import type { PeerView } from "../src/protocol/protocol.ts";
+import type { PeerView } from "../src/protocol/peer.ts";
 
 function peer(orcaNodeId: string, endpoint: string): PeerView {
   return {

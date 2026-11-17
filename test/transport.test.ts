@@ -9,7 +9,7 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createMesh } from "../src/node/harness.ts";
 import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
-import type { TaskView } from "../src/protocol/protocol.ts";
+import type { TaskView } from "../src/protocol/task.ts";
 
 /**
  * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，

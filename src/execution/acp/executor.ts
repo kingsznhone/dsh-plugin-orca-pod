@@ -6,15 +6,14 @@
  */
 
 import type { NodeLogger } from "../../membership/index.ts";
-import { isRecord, type ModelSelection } from "../../protocol/index.ts";
+import { isRecord, CLI_PATH, errorMessage } from "../../kernel/index.ts";
+import type { ModelSelection } from "../../protocol/index.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../executor.ts";
 import { KILL_GRACE_MS, abortError } from "../process.ts";
 import type { AcpExecutorConfig } from "../../node/index.ts";
-import { CLI_PATH } from "../../kernel/index.ts";
 import type { AcpConnection, SessionRoute } from "./connection.ts";
 import { CANCELLED, autoDecision, outcomeFor, parsePermissionRequest, type PermissionRequest } from "./permissions.ts";
 import { createAcpSessions } from "./session.ts";
-import { errorMessage } from "../../kernel/index.ts";
 
 /** Extra executor-local options not part of the DSH-facing config. */
 type AcpExecutorOptions = AcpExecutorConfig & {

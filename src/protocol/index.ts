@@ -1,45 +1,44 @@
 /** Wire protocol: peer, task, grant, model and permission shapes shared by every context. */
 
+export { DEFAULT_PORT } from "./constants.ts";
+export type { Grant, GrantMode, PermissionRequest, SignedGrant, TaskRelay } from "./grant.ts";
 export {
-  DEFAULT_PORT,
-  isHttpEndpoint,
+  MAX_MODEL_OFFERS,
   isModelSelection,
-  isPermissionMode,
   isReasoningEffort,
-  isRecord,
-  isTerminal,
+  parseModelSpec,
+  validateModelOffers,
+  validateModelSelection,
+} from "./model.ts";
+export type { ModelOffer, ModelSelection } from "./model.ts";
+export {
+  isHttpEndpoint,
+  isOrcaNodeId,
   isWorkgroupId,
   membersDigest,
-  narrowPermissionMode,
-  newTaskId,
   normalizeEndpoints,
-  parseModelSpec,
-  permissionRequestOf,
   runtimeDigest,
-} from "./protocol.ts";
+} from "./peer.ts";
 export type {
-  A2AMessage,
   BusyState,
-  Grant,
-  GrantMode,
   HeartbeatResponse,
   JoinResponse,
   MembersResponse,
-  ModelOffer,
-  ModelSelection,
   OrcaNodeId,
   PeerState,
   PeerView,
-  PermissionMode,
-  PermissionRequest,
-  PodTaskMetadata,
   RuntimeInfo,
   SelfRecord,
-  SignedGrant,
+} from "./peer.ts";
+export { isPermissionMode, narrowPermissionMode } from "./permission.ts";
+export type { PermissionMode } from "./permission.ts";
+export { isTerminal, permissionRequestOf } from "./task.ts";
+export type {
+  A2AMessage,
+  PodTaskMetadata,
   SubmitTaskInput,
   TaskInputRef,
-  TaskRelay,
   TaskRunner,
   TaskState,
   TaskView,
-} from "./protocol.ts";
+} from "./task.ts";

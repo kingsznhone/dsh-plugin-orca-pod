@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config.ts";
 import { connectAll } from "../src/node/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
-import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/protocol.ts";
+import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/task.ts";
 
 const WORKGROUP = "orca-escalate";
 const PASSWORD = "escalate-secret";

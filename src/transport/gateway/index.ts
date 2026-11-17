@@ -1,12 +1,10 @@
 import type { Readable } from "node:stream";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
-import type { NonceCache } from "../../security/index.ts";
-import type { NodeIdentity } from "../../security/index.ts";
+import type { NonceCache, NodeIdentity } from "../../security/index.ts";
 import type { SelfRecord, TaskRunner } from "../../protocol/index.ts";
-import type { FileBlobRegistry } from "../../storage/index.ts";
+import type { FileBlobRegistry, BlobStore } from "../../storage/index.ts";
 import type { PeerStore } from "../../membership/index.ts";
-import type { BlobStore } from "../../storage/index.ts";
 import { a2aRoutes } from "./a2a-routes.ts";
 import { installAccessPolicy } from "./auth.ts";
 import { blobRoutes } from "./blob-routes.ts";

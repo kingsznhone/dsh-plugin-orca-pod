@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createMembership, type MembershipTimings } from "../src/membership/membership.ts";
-import type { PeerView } from "../src/protocol/protocol.ts";
+import type { PeerView } from "../src/protocol/peer.ts";
 
 const TIMINGS: MembershipTimings = {
   intervalMs: 200,

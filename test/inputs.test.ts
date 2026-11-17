@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/execution/executor.ts";
-import { isTerminal, type TaskRunner, type TaskView } from "../src/protocol/protocol.ts";
+import { isTerminal, type TaskRunner, type TaskView } from "../src/protocol/task.ts";
 import { runnerDeps, createTestRunner } from "./fixtures/runner.ts";
 
 function message(text = "use the files") {

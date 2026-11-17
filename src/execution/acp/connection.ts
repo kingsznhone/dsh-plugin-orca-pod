@@ -8,9 +8,8 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import { isRecord } from "../../protocol/index.ts";
+import { isRecord, errorMessage } from "../../kernel/index.ts";
 import { isCmdShim, quoteForCmd, resolveCommand, terminateChild } from "../process.ts";
-import { errorMessage } from "../../kernel/index.ts";
 
 const PROTOCOL_VERSION = 1;
 const STDERR_TAIL = 4096;

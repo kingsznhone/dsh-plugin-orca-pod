@@ -6,9 +6,8 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { PodError } from "../kernel/index.ts";
+import { PodError, isRecord } from "../kernel/index.ts";
 import { parseTaskRelay } from "../security/index.ts";
-import { isRecord } from "../protocol/index.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "./executor.ts";
 import { abortError } from "./process.ts";
 

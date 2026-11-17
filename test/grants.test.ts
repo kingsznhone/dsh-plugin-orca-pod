@@ -9,7 +9,7 @@ import {
   type GrantExpectation,
 } from "../src/security/grants.ts";
 import { generateNodeIdentity } from "../src/security/identity.ts";
-import type { Grant, PermissionRequest } from "../src/protocol/protocol.ts";
+import type { Grant, PermissionRequest } from "../src/protocol/grant.ts";
 
 const origin = generateNodeIdentity();
 const SELF = "SELF";

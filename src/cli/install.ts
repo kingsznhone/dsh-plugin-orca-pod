@@ -17,9 +17,15 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/index.ts";
+import {
+  configPath,
+  createOrcaNodeConfig,
+  defaultDataRoot,
+  saveConfig,
+  parseSettings,
+  type Settings,
+} from "../node/index.ts";
 import { bindChoices } from "../transport/index.ts";
-import { parseSettings, type Settings } from "../node/index.ts";
 import { errorMessage } from "../kernel/index.ts";
 
 /** A service listens on all interfaces unless told otherwise (the plugin defaults to loopback). */

@@ -11,8 +11,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import type { BlobStore } from "../storage/index.ts";
-import { CLI_PATH } from "../kernel/index.ts";
-import { PodError } from "../kernel/index.ts";
+import { CLI_PATH, PodError } from "../kernel/index.ts";
 import type { TaskInputRef } from "../protocol/index.ts";
 
 export const DEFAULT_MAX_INPUT_FILES = 32;

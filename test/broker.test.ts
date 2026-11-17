@@ -6,7 +6,8 @@ import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { BrokerNode } from "../src/plugin/broker.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import type { Tracker } from "../src/plugin/tracker.ts";
-import type { PermissionRequest, TaskView } from "../src/protocol/protocol.ts";
+import type { PermissionRequest } from "../src/protocol/grant.ts";
+import type { TaskView } from "../src/protocol/task.ts";
 
 const PEER = "http://127.0.0.1:11812";
 const TASK = "TASK01";

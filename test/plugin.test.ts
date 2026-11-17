@@ -5,7 +5,7 @@ import type { DispatchEntry } from "../src/storage/dispatches.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { HostLogger, PermissionPresetsService } from "../src/plugin/dsh.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import type { TaskView } from "../src/protocol/protocol.ts";
+import type { TaskView } from "../src/protocol/task.ts";
 import { createPodTools, sessionSandboxMode } from "../src/plugin/tools.ts";
 import type { TrackerAgent } from "../src/plugin/tracker.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";

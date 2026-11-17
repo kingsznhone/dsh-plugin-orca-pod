@@ -7,10 +7,9 @@
 import type { ExecuteInput } from "../executor.ts";
 import type { NodeLogger } from "../../membership/index.ts";
 import { readSessions, writeSessions } from "./session-store.ts";
-import { isRecord } from "../../protocol/index.ts";
+import { isRecord, errorMessage } from "../../kernel/index.ts";
 import type { AcpMcpServer } from "../../node/index.ts";
 import { AcpConnection, AcpRpcError, HANDSHAKE_TIMEOUT_MS, spawnAcpChild, type AcpSpawnSpec } from "./connection.ts";
-import { errorMessage } from "../../kernel/index.ts";
 
 /** JSON-RPC code ACP agents use for a session they do not know. */
 const RESOURCE_NOT_FOUND = -32002;

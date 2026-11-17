@@ -2,6 +2,8 @@ import { createPublicKey, generateKeyPairSync, sign as edSign, verify as edVerif
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { isOrcaNodeId } from "../protocol/index.ts";
+
 /**
  * Per-node identity (§7.1): an Ed25519 keypair created at first start. The
  * orca node id *is* the public key, so any request a node signs proves which
@@ -16,18 +18,7 @@ export type NodeIdentity = {
   privateKeyPem: string;
 };
 
-/** base64url of 32 bytes → 43 chars. */
-const NODE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RAW_KEY_BYTES = 32;
-
-export function isNodeId(value: unknown): value is string {
-  if (typeof value !== "string" || !NODE_ID_PATTERN.test(value)) return false;
-  try {
-    return Buffer.from(value, "base64url").length === RAW_KEY_BYTES;
-  } catch {
-    return false;
-  }
-}
 
 /** Short label for UI/logs: first 6 and last 4 characters. */
 export function shortenNodeId(orcaNodeId: string): string {
@@ -59,7 +50,7 @@ export function signWithIdentity(identity: NodeIdentity, message: string | Uint8
 }
 
 export function verifyWithNodeId(orcaNodeId: string, message: string | Uint8Array, signature: string): boolean {
-  if (!isNodeId(orcaNodeId)) return false;
+  if (!isOrcaNodeId(orcaNodeId)) return false;
   try {
     const publicKey = createPublicKey({
       key: Buffer.concat([

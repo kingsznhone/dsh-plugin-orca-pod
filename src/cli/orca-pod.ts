@@ -35,10 +35,9 @@ import {
   type PromptFn,
   type PromptQuestion,
 } from "./install.ts";
-import { CLI_PATH } from "../kernel/index.ts";
+import { CLI_PATH, errorMessage } from "../kernel/index.ts";
 import { DEFAULT_PORT } from "../protocol/index.ts";
 import { parseSettings } from "../node/index.ts";
-import { errorMessage } from "../kernel/index.ts";
 
 const USAGE = `Usage: orca-pod install [options]
 

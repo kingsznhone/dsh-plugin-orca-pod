@@ -14,14 +14,14 @@ import {
   loadConfig,
   saveConfig,
   type OrcaNodeConfig,
+  createOrcaNode,
+  createPersistentStorage,
+  joinRoster,
+  parseSettings,
 } from "../node/index.ts";
-import { blobLinkSignature } from "../security/index.ts";
+import { blobLinkSignature, loadIdentity, type NodeIdentity } from "../security/index.ts";
 import { parseEchoScript } from "../execution/index.ts";
-import { loadIdentity, type NodeIdentity } from "../security/index.ts";
-import { createOrcaNode, createPersistentStorage, joinRoster } from "../node/index.ts";
-import { normalizePeerUrl } from "../transport/index.ts";
-import { parseSettings } from "../node/index.ts";
-import { createPeerClient, type PeerClient } from "../transport/index.ts";
+import { normalizePeerUrl, createPeerClient, type PeerClient } from "../transport/index.ts";
 import type { A2AMessage, MembersResponse, PeerView, TaskRelay, TaskView } from "../protocol/index.ts";
 import { isTerminal, parseModelSpec, permissionRequestOf } from "../protocol/index.ts";
 import { createSqliteDispatchStore, createSqliteFileBlobStore } from "../storage/sqlite.ts";

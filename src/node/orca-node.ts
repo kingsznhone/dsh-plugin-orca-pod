@@ -3,19 +3,27 @@ import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { createFileBlobRegistry, createMemoryFileBlobStore, type FileBlobStore } from "../storage/blob-files.ts";
-import { blobLinkSignature, NonceCache } from "../security/index.ts";
+import { blobLinkSignature, NonceCache, loadOrCreateIdentity } from "../security/index.ts";
 import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../delegation/index.ts";
 import { createMemoryDispatchStore, type DispatchEntry, type DispatchStore } from "../storage/dispatches.ts";
-import { EchoExecutor } from "../execution/index.ts";
+import { EchoExecutor, createAcpExecutor } from "../execution/index.ts";
 import type { LocalExecutor } from "../execution/index.ts";
-import { createPodEventBus, type PodEventListener } from "../kernel/index.ts";
-import { detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/index.ts";
-import { createAcpExecutor } from "../execution/index.ts";
-import { createGateway } from "../transport/index.ts";
-import { loadOrCreateIdentity } from "../security/index.ts";
-import { createWorkgroup, type NodeLogger } from "../membership/index.ts";
-import { createMembership, type MembershipClock, type MembershipTimings } from "../membership/index.ts";
-import { createPeerClient, type FetchLike } from "../transport/index.ts";
+import { createPodEventBus, type PodEventListener, errorMessage } from "../kernel/index.ts";
+import {
+  detectLocalEndpoints,
+  isBlockedFetchPort,
+  pickFreePort,
+  createGateway,
+  createPeerClient,
+  type FetchLike,
+} from "../transport/index.ts";
+import {
+  createWorkgroup,
+  type NodeLogger,
+  createMembership,
+  type MembershipClock,
+  type MembershipTimings,
+} from "../membership/index.ts";
 import type {
   HeartbeatResponse,
   JoinResponse,
@@ -37,9 +45,7 @@ import {
   type BlobStore,
   type TaskStore,
 } from "../storage/index.ts";
-import { createTaskRunner } from "../tasks/index.ts";
-import { createWorkspaceManager } from "../tasks/index.ts";
-import { errorMessage } from "../kernel/index.ts";
+import { createTaskRunner, createWorkspaceManager } from "../tasks/index.ts";
 
 export type { ApprovalOptions, TaskCallOptions } from "../delegation/index.ts";
 export type { NodeLogger } from "../membership/index.ts";

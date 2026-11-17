@@ -7,7 +7,7 @@ import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from ".
 import { loadIdentity } from "../src/security/identity.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { createPeerClient } from "../src/transport/peer-client.ts";
-import { DEFAULT_PORT } from "../src/protocol/protocol.ts";
+import { DEFAULT_PORT } from "../src/protocol/constants.ts";
 
 const SERVE = {
   workgroup: { type: "string" },

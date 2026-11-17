@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createMesh, type Mesh } from "../src/node/harness.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import type { TaskState, TaskView } from "../src/protocol/protocol.ts";
+import type { TaskState, TaskView } from "../src/protocol/task.ts";
 
 let mesh: Mesh | null = null;
 

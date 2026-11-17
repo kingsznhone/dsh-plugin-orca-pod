@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
-import { isNodeId, signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
+import { isOrcaNodeId } from "../protocol/index.ts";
+import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
 import { PodError } from "../kernel/index.ts";
 import type { Grant, OrcaNodeId, SignedGrant } from "../protocol/index.ts";
 
@@ -211,7 +212,7 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
       options.header ? "malformed Authorization header" : "missing Authorization header",
     );
   }
-  if (!isNodeId(parsed.orcaNodeId)) {
+  if (!isOrcaNodeId(parsed.orcaNodeId)) {
     throw new PodError("malformed_auth", "orca_node_id in the Authorization header is not an Ed25519 public key");
   }
   const now = options.now ?? Date.now();

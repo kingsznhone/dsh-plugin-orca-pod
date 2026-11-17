@@ -1,10 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
-import { MAX_MODEL_OFFERS } from "../../node/settings.ts";
-import { DEFAULT_CLOCK_SKEW_MS, verifyAdmissionProof, type AdmissionKind } from "../../security/index.ts";
-import { PodError } from "../../kernel/index.ts";
-import { EXPLICIT_DIAL_POLICY, isDirectLoopbackRequest, screenEndpoint } from "../net.ts";
 import {
+  MAX_MODEL_OFFERS,
   membersDigest,
   normalizeEndpoints,
   runtimeDigest,
@@ -18,6 +15,9 @@ import {
   type RuntimeInfo,
   type SelfRecord,
 } from "../../protocol/index.ts";
+import { DEFAULT_CLOCK_SKEW_MS, verifyAdmissionProof, type AdmissionKind } from "../../security/index.ts";
+import { PodError } from "../../kernel/index.ts";
+import { EXPLICIT_DIAL_POLICY, isDirectLoopbackRequest, screenEndpoint } from "../net.ts";
 import type { GatewayDeps } from "./index.ts";
 
 type AdmissionBody = {

@@ -2,8 +2,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveWorkgroupKey } from "../security/index.ts";
-import { isNodeId, loadOrCreateIdentity, shortenNodeId } from "../security/index.ts";
+import { deriveWorkgroupKey, loadOrCreateIdentity, shortenNodeId } from "../security/index.ts";
+import { isOrcaNodeId } from "../protocol/index.ts";
 import { nodeSettings, parseSettings, type NodeSettings, type Settings } from "./settings.ts";
 
 /** What `config.json` holds: the node settings plus the identity and the derived workgroup key. */
@@ -102,7 +102,7 @@ export async function loadConfig(path: string): Promise<OrcaNodeConfig> {
 export function validateConfig(value: unknown): OrcaNodeConfig {
   const settings = parseSettings(value);
   const { orca_node_id, key_base64 } = value as Record<string, unknown>;
-  if (!isNodeId(orca_node_id)) throw new Error("config.orca_node_id must be an Ed25519 public key");
+  if (!isOrcaNodeId(orca_node_id)) throw new Error("config.orca_node_id must be an Ed25519 public key");
   if (typeof key_base64 !== "string") throw new Error("config.key_base64 must be a string");
   for (const key of ["workgroup_id", "display_name", "data_root"] as const) {
     if (settings[key] === undefined) throw new Error(`config.${key} is required`);

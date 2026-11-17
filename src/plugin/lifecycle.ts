@@ -20,19 +20,26 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/index.ts";
+import {
+  configPath,
+  createOrcaNodeConfig,
+  defaultDataRoot,
+  saveConfig,
+  createOrcaNode,
+  createPersistentStorage,
+  parseSettings,
+  passwordRefFor,
+  pickPanelFields,
+} from "../node/index.ts";
 import { identityPath } from "../security/index.ts";
 import { isLoopbackEndpoint, normalizePeerUrl } from "../transport/index.ts";
-import { createOrcaNode, createPersistentStorage } from "../node/index.ts";
 import type { OrcaNode } from "../node/index.ts";
-import { parseSettings, passwordRefFor, pickPanelFields } from "../node/index.ts";
 
 import type { Config } from "./config.ts";
 import type { HostContext, HostLogger } from "./dsh.ts";
 import { discoverModelCatalog } from "./models.ts";
 import type { CatalogServices, ModelCatalog } from "./models.ts";
-import { errorMessage } from "../kernel/index.ts";
-import { isRecord } from "../protocol/index.ts";
+import { errorMessage, isRecord } from "../kernel/index.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
 interface PodRuntime {

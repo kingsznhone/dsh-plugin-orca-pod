@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateNodeIdentity } from "../src/security/identity.ts";
-import type { Grant } from "../src/protocol/protocol.ts";
+import type { Grant } from "../src/protocol/grant.ts";
 import {
   DEFAULT_CLOCK_SKEW_MS,
   NonceCache,

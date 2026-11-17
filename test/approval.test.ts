@@ -6,8 +6,9 @@ import { buildAuthHeader, signGrant } from "../src/security/crypto.ts";
 import { loadIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createMesh, type Mesh } from "../src/node/harness.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import { permissionRequestOf } from "../src/protocol/protocol.ts";
-import type { A2AMessage, Grant, SignedGrant, TaskState, TaskView } from "../src/protocol/protocol.ts";
+import { permissionRequestOf } from "../src/protocol/task.ts";
+import type { A2AMessage, TaskState, TaskView } from "../src/protocol/task.ts";
+import type { Grant, SignedGrant } from "../src/protocol/grant.ts";
 
 const WORKGROUP = "orca-approval";
 const PASSWORD = "approval-secret";

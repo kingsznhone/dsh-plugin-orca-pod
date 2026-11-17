@@ -5,12 +5,11 @@
  */
 
 import { parseEchoScript, type EchoScript } from "../execution/index.ts";
-import { PodError } from "../kernel/index.ts";
+import { PodError, isRecord } from "../kernel/index.ts";
 import {
   isModelSelection,
   isPermissionMode,
   isReasoningEffort,
-  isRecord,
   type A2AMessage,
   type ModelSelection,
   type PermissionMode,

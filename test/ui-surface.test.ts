@@ -15,8 +15,8 @@ import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.t
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import type { PodEvent } from "../src/kernel/events.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
-import type { TaskView } from "../src/protocol/protocol.ts";
-import { isTerminal } from "../src/protocol/protocol.ts";
+import type { TaskView } from "../src/protocol/task.ts";
+import { isTerminal } from "../src/protocol/task.ts";
 import { shortenNodeId } from "../src/security/identity.ts";
 import { waitFor } from "../src/node/harness.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";

@@ -13,7 +13,7 @@ import type { OrcaNodeConfig } from "../src/node/config.ts";
 import { generateNodeIdentity } from "../src/security/identity.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import type { TaskView } from "../src/protocol/protocol.ts";
+import type { TaskView } from "../src/protocol/task.ts";
 
 const FAST: Partial<MembershipTimings> = {
   intervalMs: 50,

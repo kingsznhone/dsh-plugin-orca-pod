@@ -1,4 +1,4 @@
-/** Delegation: origin-side dispatch, approvals, escalation and child-link polling. */
+/** Delegation: origin-side dispatch, approvals, escalation, child-link polling and the dispatch log. */
 
 export { deriveChildGrant } from "./chain.ts";
 export { createDelegation } from "./delegation.ts";
