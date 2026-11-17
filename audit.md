@@ -43,7 +43,6 @@
 
 | # | 位置 | 问题 |
 |---|---|---|
-| R1 | `npm run build` | 构建不清理 `lib/`。文件搬家后，旧产物（`lib/cli.js`、`lib/orca_node.js` 等）留在原地，`files: ["lib"]` 会把它们一起打进包里。重组后第一次构建前要先删 `lib/`；长期做法是在 `build` 前加一步清理 |
 | R2 | 只在类型层面的逆向依赖 | 架构测试按约定不计 `import type`，以下几条在运行期被擦除，但归属是反的：`delegation/delegation.ts`、`membership/mesh.ts` → `transport` 的 `PeerClient`；`membership/mesh.ts` → `node` 的 `OrcaNodeConfig`；`execution/acp/executor.ts`、`execution/acp/session.ts` → `node` 的 `AcpExecutorConfig`/`AcpMcpServer`；`kernel/events.ts` → `protocol` 的 `PeerView`/`TaskView` 与 `storage` 的 `DispatchEntry`。方向：ACP 配置类型归 `execution/`，由 `node/settings.ts` 引用；`mesh` 只收它用到的配置字段；出站客户端的接口下沉到使用方或 `protocol/`；事件载荷类型随事件总线一起重新定位。另外 `NodeLogger` 定义在 `membership/mesh.ts`，却被 tasks、execution、node 共用，应归 `kernel/` |
 | R3 | 插件侧工厂的签名 | 核心服务都是 `createX(deps)`；插件侧仍是位置参数：`startPod(config, logger, stores, hooks, defaultRoot)`、`createTracker(node, broker, logger)`、`createPodAdmin(handle, tracker, broker)`、`createPodTools(handle, tracker, presets)`。重组只搬家、不改签名，按 §9.6 的约定逐个改成单个 deps 对象 |
 | R4 | `cli/*` 子命令 | 每个子命令导出 `run(args)`，没有 I/O 依赖参数，仍直接写 `process.stdout`；CLI 测试因此只能起子进程。需要进程内测 CLI 时，再给 `run` 加一个 `{ stdout, stderr, stdin, env }` 参数 |

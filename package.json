@@ -55,7 +55,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/build-client.ts",
+    "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/build-client.ts",
     "prepare": "npm run build",
     "check": "biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run",
     "format": "biome format --write .",

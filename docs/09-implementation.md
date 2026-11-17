@@ -203,7 +203,8 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 
 ### 9.6 工程约定
 
-- TypeScript、ESM、Node ≥ 24（用内置 `node:sqlite`；开发时靠类型剥离直接跑 `.ts`，发布的是 `tsc -p tsconfig.build.json` 编译出的 `lib/`，相对 import 由 `rewriteRelativeImportExtensions` 改写）；npm（单包，`npm install` 在仓库根目录一次装齐）；vitest；biome（lint + format，`biome.json` 在根目录）；`tsc --noEmit`。
+- TypeScript、ESM、Node ≥ 24（用内置 `node:sqlite`；开发时靠类型剥离直接跑 `.ts`，发布的是 `tsc -p tsconfig.build.json` 编译出的 `lib/`，相对 import 由 `rewriteRelativeImportExtensions` 改写；`npm run build` 先清空 `lib/`，搬过的文件不会留下旧产物）；npm（单包，`npm install` 在仓库根目录一次装齐）；vitest；biome（lint + format，`biome.json` 在根目录）；`tsc --noEmit`。
+- **发布形态是编译产物，不是 `.ts`**：`main`/`exports`/`types`/`bin` 都指向 `lib/`，`files` 不含 `src/`，`prepare` 即 `npm run build`。DSH 的插件加载器用原生 `import()` 加载入口，没有转译钩子，发行版（Electron 内置 Node 24）里也没有任何 TS 转译器，所以不需要也不能依赖 tsx。Node 的类型剥离对 `node_modules` 下的文件直接报 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，tarball 安装的包里放 `.ts` 必然加载失败。`dsh plugin add <本地路径>` 装的是 `link:`，真实路径在 `node_modules` 之外，原始 `.ts` 碰巧能跑——这只是本地开发的特例，不能据此推断发布也能跑。加载器会把说明符里的 `.ts` 改写成 `.js`，那只是对源码风格写法的兼容，不是编译。客户端 bundle（`dsh.client`、`platform: web`）另由 esbuild 产出，与此无关但同样必需。
 - **验收入口：`npm run check`** = `biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run`。另有 `npm run format`、`npm run typecheck`、`npm test`、`npm run harness`。
 - 不引入 DI 容器（awilix、inversify 等）：服务是 `createX(deps)` 工厂、依赖显式传入，装配只在 `node/`（插件与 CLI 各自再装配一层）。服务图只有约 20 个节点、一个装配根；装饰器与运行时反射和 `erasableSyntaxOnly` 冲突；插件侧已跑在 Cordis 里，它本身就是 DI 容器。新代码不再新增 class 形式的服务；`TaskRecord` 这类有状态实体保留 class。
 - 存储：task store 用 `node:sqlite`（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM）；成员表是内存；blob 用内容寻址的 fs 目录 + GC；工作区目录由 `tasks/workspace.ts` 管理。内存实现只给单测与 harness 用（[§5.5](05-tasks.md#55-任务存储)）。

@@ -138,7 +138,7 @@ orca-node members  [--peer <url>] [--json]
 
 ```bash
 npm install         # 同时触发 prepare -> npm run build，产出 lib/
-npm run build       # tsc -p tsconfig.build.json + 客户端 esbuild，产出 lib/（已进 .gitignore；不会清理旧产物，搬过文件后先删 lib/）
+npm run build       # 先清空 lib/，再 tsc -p tsconfig.build.json + 客户端 esbuild，产出 lib/（已进 .gitignore）
 npm run check       # biome check + tsc --noEmit + vitest run（唯一的验收入口）
 npm run format      # biome format --write
 npm run harness     # 两个真实 orca-node 进程的 smoke
