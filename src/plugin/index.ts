@@ -11,16 +11,15 @@
  * registration made there is tied to that scope's `effect`, never to the plugin's.
  */
 
-import { isDeepStrictEqual } from "node:util";
-
 import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
 import type { Config as PodConfig } from "./config.ts";
 import { defaultDataRoot } from "../node/index.ts";
 import type { AgentsService, HostContext, PermissionPresetsService, StandardSchemaV1, ToolAgent } from "./dsh.ts";
-import { createPodRuntime, stopPod } from "./lifecycle.ts";
-import type { PodStores } from "./lifecycle.ts";
+import { createModelCatalogFeed } from "./catalog.ts";
+import { startPod, stopPod } from "./lifecycle.ts";
+import { createHostStores } from "./stores.ts";
 import { skillRegistration } from "./skill.ts";
 import { createPodTools } from "./tools.ts";
 import { createTracker, restoreTrackedDispatches } from "./tracker.ts";
@@ -40,32 +39,6 @@ export const Config: StandardSchemaV1<Config> = createConfigSchema();
 export const inject: string[] = ["tools", "credentials", "configEditor"];
 
 /**
- * The lifecycle's persistence on a DSH host (§7.3): the password in the
- * credential store, settings in this plugin's profile entry. A config write goes
- * through `configEditor.edit`, which validates it with `Config`, writes the
- * profile patch and has the Loader restart this plugin with the new config.
- */
-export function createHostStores(ctx: Pick<HostContext, "credentials" | "configEditor" | "fiber">): PodStores {
-  return {
-    async readSecret(ref) {
-      const hit = await ctx.credentials.resolve(ref);
-      return hit === undefined || hit.value.length === 0 ? undefined : hit.value;
-    },
-    writeSecret: (ref, value) => ctx.credentials.set(ref, value),
-    clearSecret: (ref) => ctx.credentials.unset(ref),
-    async writeConfig(change) {
-      const entry = ctx.fiber.entry;
-      if (entry === undefined)
-        throw new Error("orca-pod was not loaded from a profile entry; its config cannot be saved");
-      const current = structuredClone((entry.options.config ?? {}) as Record<string, unknown>);
-      if (isDeepStrictEqual(change(structuredClone(current)), current)) return false;
-      await ctx.configEditor.edit(entry, (raw) => change(raw));
-      return true;
-    },
-  };
-}
-
-/**
  * Compose the plugin: runtime, approval broker, tracker, tool, panel route.
  *
  * Startup is asynchronous and never throws into the host: a failed orca node start
@@ -76,7 +49,9 @@ export function apply(ctx: HostContext, config: Config): void {
   // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
   // baseUrl is the profile hint that keeps two profiles apart.
   const defaultRoot = defaultDataRoot(process.env, ctx.baseUrl);
-  const handle = createPodRuntime(ctx, config, createHostStores(ctx), defaultRoot);
+  const catalog = createModelCatalogFeed(ctx);
+  const handle = startPod(config, ctx.logger, createHostStores(ctx), { onNodeStarted: catalog.advertise }, defaultRoot);
+  catalog.watch(handle);
   const node = () => handle.runtime.orcaNode;
   const broker = createApprovalBroker(node);
   const tracker = createTracker(node, broker, ctx.logger);

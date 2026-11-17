@@ -9,7 +9,7 @@
 
 import { normalizePeerUrl } from "../transport/index.ts";
 import { DEFAULT_PORT, isPermissionMode, isTerminal, parseModelSpec } from "../protocol/index.ts";
-import { isRecord } from "../kernel/index.ts";
+import { errorMessage, isRecord, PodError } from "../kernel/index.ts";
 import type { PeerView, PermissionMode, SubmitTaskInput } from "../protocol/index.ts";
 import type { OrcaNode } from "../node/index.ts";
 
@@ -23,7 +23,6 @@ import type {
 } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
-import { describeError } from "./util.ts";
 
 const METHOD_NAMES = ["send", "status", "cancel", "members", "connect"] as const;
 type PodMethod = (typeof METHOD_NAMES)[number];
@@ -253,6 +252,17 @@ function withSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promi
       },
     );
   });
+}
+
+/**
+ * Wrap an error with the operation that failed, keeping the pod error code (and
+ * its status) when the failure came from a pod call.
+ */
+export function describeError(operation: string, error: unknown): Error {
+  if (error instanceof PodError) {
+    return new PodError(error.code, `${operation} [${error.code}]: ${error.message}`, error.status);
+  }
+  return new Error(`${operation}: ${errorMessage(error)}`);
 }
 
 /** Dispatch one `orca_pod` method against the running node. */

@@ -16,9 +16,7 @@
  *   remembering a peer must not restart the plugin.
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { rm } from "node:fs/promises";
 
 import {
   configPath,
@@ -36,10 +34,9 @@ import { isLoopbackEndpoint, normalizePeerUrl } from "../transport/index.ts";
 import type { OrcaNode } from "../node/index.ts";
 
 import type { Config } from "./config.ts";
-import type { HostContext, HostLogger } from "./dsh.ts";
-import { discoverModelCatalog } from "./models.ts";
-import type { CatalogServices, ModelCatalog } from "./models.ts";
-import { errorMessage, isRecord } from "../kernel/index.ts";
+import type { HostLogger } from "./dsh.ts";
+import { loadRememberedPeers, peerStatePath, saveRememberedPeers, type PodStores, type RawConfig } from "./stores.ts";
+import { errorMessage } from "../kernel/index.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
 interface PodRuntime {
@@ -53,32 +50,6 @@ interface PodRuntime {
   started_at: string | null;
   /** First fatal startup error, if any. */
   error: Error | null;
-}
-
-/** A raw plugin config as stored in the profile: `null`/absent keys mean "default". */
-type RawConfig = Record<string, unknown>;
-
-/**
- * Persistence the lifecycle needs from its host. In DSH these are the
- * credential seam and the config editor (`createHostStores` in `index.ts`);
- * without a host, `createMemoryStores` keeps both in memory.
- */
-export interface PodStores {
-  /** The stored password behind a credential reference; undefined when absent or empty. */
-  readSecret(ref: string): Promise<string | undefined>;
-  writeSecret(ref: string, value: string): Promise<void>;
-  clearSecret(ref: string): Promise<void>;
-  /**
-   * Persist the next plugin config, derived from the stored raw one. Resolves to
-   * false when `change` changes nothing. On true the host applies the config the
-   * way it applies any config change: in DSH the Loader restarts the plugin (this
-   * handle is disposed before the promise settles), in memory the handle adopts
-   * it. Never call it from inside the lifecycle queue: a host restart waits for
-   * that queue to drain.
-   */
-  writeConfig(change: (raw: RawConfig) => RawConfig): Promise<boolean>;
-  /** In-memory stores only: the handle that receives config writes. */
-  attach?(handle: PodHandle): void;
 }
 
 /** Handle returned by `startPod`; cleanup and tools share it. */
@@ -121,35 +92,6 @@ function createRuntime(): PodRuntime {
   return { orcaNode: null, url: null, port: null, started_at: null, error: null };
 }
 
-/** Treat "file does not exist" as an empty install; other read errors are logged. */
-function isMissingFile(error: unknown): boolean {
-  return (
-    typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
-/** Path of the runtime peer state next to the persisted orca node config. */
-export function peerStatePath(dataRoot: string): string {
-  return join(dataRoot, "peers.json");
-}
-
-/** Peers remembered from earlier runs; a missing or unreadable file means none. */
-async function loadRememberedPeers(dataRoot: string, logger: HostLogger): Promise<string[]> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(peerStatePath(dataRoot), "utf8"));
-    const peers = isRecord(parsed) && Array.isArray(parsed.peers) ? parsed.peers : [];
-    return peers.filter((peer): peer is string => typeof peer === "string").map(normalizePeerUrl);
-  } catch (error) {
-    if (!isMissingFile(error)) logger.warn(`orca-pod: ignoring unreadable peer state: ${errorMessage(error)}`);
-    return [];
-  }
-}
-
-async function saveRememberedPeers(dataRoot: string, peers: string[]): Promise<void> {
-  await mkdir(dataRoot, { recursive: true });
-  await writeFile(peerStatePath(dataRoot), `${JSON.stringify({ peers }, null, 2)}\n`, "utf8");
-}
-
 /** Apply panel fields to a raw plugin config: a value sets the key, `null` removes it. */
 function applyPanelFields(raw: RawConfig, fields: RawConfig): RawConfig {
   const next: RawConfig = { ...raw };
@@ -173,47 +115,6 @@ function withoutSecret(config: Config): RawConfig {
  */
 function needsSetup(config: Config): boolean {
   return !config.workgroup_id || !config.workgroup_password;
-}
-
-/**
- * Stores for a pod without a DSH host (tests, smoke runs): the raw config and
- * the secrets live in memory, and a config write is handed to the attached
- * handle the way the Loader would restart the plugin.
- */
-export function createMemoryStores(raw: RawConfig = {}): PodStores & {
-  secrets: Map<string, string>;
-  raw(): RawConfig;
-  attach(handle: PodHandle): void;
-} {
-  let current: RawConfig = structuredClone(raw);
-  const secrets = new Map<string, string>();
-  let attached: PodHandle | null = null;
-  return {
-    secrets,
-    raw: () => structuredClone(current),
-    attach(handle) {
-      attached = handle;
-    },
-    async readSecret(ref) {
-      const value = secrets.get(ref);
-      return value === undefined || value.length === 0 ? undefined : value;
-    },
-    async writeSecret(ref, value) {
-      if (value.length === 0) throw new Error("an empty credential cannot be stored; remove it instead");
-      secrets.set(ref, value);
-    },
-    async clearSecret(ref) {
-      secrets.delete(ref);
-    },
-    async writeConfig(change) {
-      const next = change(structuredClone(current));
-      if (isDeepStrictEqual(next, current)) return false;
-      const parsed = parseSettings(next);
-      current = next;
-      await attached?.adopt(parsed);
-      return true;
-    },
-  };
 }
 
 async function startNode(
@@ -299,7 +200,7 @@ async function stopNode(runtime: PodRuntime, logger: HostLogger): Promise<void> 
  * only user today: it must be installed before the first `join` so the self
  * record peers receive already advertises it.
  */
-interface StartPodHooks {
+export interface StartPodHooks {
   onNodeStarted?: (orcaNode: OrcaNode) => void;
 }
 
@@ -475,59 +376,6 @@ export function startPod(
     handle.rememberedPeers = await loadRememberedPeers(dataRoot, logger);
     await boot();
   });
-  return handle;
-}
-
-/**
- * Start the pod for a DSH host. The host owns the real model catalog, the node
- * only advertises it: the catalog is read once the node is up and installed on
- * the running node (and on every later panel restart, before its first join).
- */
-export function createPodRuntime(ctx: HostContext, config: Config, stores: PodStores, defaultRoot?: string): PodHandle {
-  const catalog: ModelCatalog = { models: [], defaultModel: null };
-  /** Whatever `llm`/`agent-default-model` the host exposes; empty on CLI-only hosts. */
-  let services: CatalogServices = {};
-  const advertise = (orcaNode: OrcaNode): void =>
-    orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null);
-  /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
-  let generation = 0;
-  const refresh = async (): Promise<void> => {
-    const current = ++generation;
-    const next = await discoverModelCatalog(services, ctx.logger);
-    if (current !== generation) return;
-    Object.assign(catalog, next);
-    const orcaNode = handle.runtime.orcaNode;
-    if (orcaNode !== null) advertise(orcaNode);
-    if (catalog.models.length > 0) ctx.logger.info(`orca-pod: advertising ${catalog.models.length} models`);
-  };
-  const handle = startPod(config, ctx.logger, stores, { onNodeStarted: advertise }, defaultRoot);
-  // The two catalog services are optional and independent: fence on each one
-  // separately, so a host that offers only one still advertises what it has.
-  // A scope's cleanup runs when its service goes away, and the catalog is
-  // rebuilt without it.
-  ctx.inject(["llm"], (scope) => {
-    services = { ...services, llm: scope.llm };
-    void refresh();
-    scope.effect(
-      () => () => {
-        services = { ...services, llm: undefined };
-        void refresh();
-      },
-      "orca-pod.catalog-llm",
-    );
-  });
-  ctx.inject(["agentDefaultModel"], (scope) => {
-    services = { ...services, agentDefaultModel: scope.agentDefaultModel };
-    void refresh();
-    scope.effect(
-      () => () => {
-        services = { ...services, agentDefaultModel: undefined };
-        void refresh();
-      },
-      "orca-pod.catalog-default-model",
-    );
-  });
-  void handle.ready.then(refresh);
   return handle;
 }
 

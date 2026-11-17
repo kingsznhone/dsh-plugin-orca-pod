@@ -1,5 +1,5 @@
 /**
- * Build the node's model catalog (§6.15).
+ * The node's model catalog (§6.15).
  *
  * The catalog lives in the DSH host, not in the orca node: `llm` knows which
  * providers and models the running harness can actually serve, and
@@ -16,7 +16,9 @@
 import { isRecord, errorMessage } from "../kernel/index.ts";
 import type { ModelOffer, ModelSelection } from "../protocol/index.ts";
 import { MAX_MODEL_OFFERS } from "../protocol/index.ts";
-import type { AgentDefaultModelService, HostLogger, LlmCatalogService } from "./dsh.ts";
+import type { OrcaNode } from "../node/index.ts";
+import type { AgentDefaultModelService, HostContext, HostLogger, LlmCatalogService } from "./dsh.ts";
+import type { PodHandle } from "./lifecycle.ts";
 
 /** The host services the catalog reads; either may be absent. */
 export interface CatalogServices {
@@ -94,4 +96,73 @@ export async function discoverModelCatalog(services: CatalogServices, logger: Ho
   }
 
   return { models, defaultModel };
+}
+
+/** Feeds the host's model catalog to whichever node the pod runs. */
+export interface ModelCatalogFeed {
+  /**
+   * Install the current catalog on a node. Pass it as the `onNodeStarted` hook
+   * so every start advertises it before the first `join`.
+   */
+  advertise(orcaNode: OrcaNode): void;
+  /** Follow the host's catalog services for this pod and re-advertise on change. */
+  watch(handle: PodHandle): void;
+}
+
+/**
+ * The host owns the real model catalog, the node only advertises it: the
+ * catalog is read once the node is up and installed on the running node (and
+ * on every later panel restart, before its first join).
+ */
+export function createModelCatalogFeed(ctx: Pick<HostContext, "inject" | "logger">): ModelCatalogFeed {
+  const catalog: ModelCatalog = { models: [], defaultModel: null };
+  /** Whatever `llm`/`agent-default-model` the host exposes; empty on CLI-only hosts. */
+  let services: CatalogServices = {};
+  let pod: PodHandle | null = null;
+  const advertise = (orcaNode: OrcaNode): void =>
+    orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null);
+  /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
+  let generation = 0;
+  const refresh = async (): Promise<void> => {
+    const current = ++generation;
+    const next = await discoverModelCatalog(services, ctx.logger);
+    if (current !== generation) return;
+    Object.assign(catalog, next);
+    const orcaNode = pod?.runtime.orcaNode ?? null;
+    if (orcaNode !== null) advertise(orcaNode);
+    if (catalog.models.length > 0) ctx.logger.info(`orca-pod: advertising ${catalog.models.length} models`);
+  };
+  return {
+    advertise,
+    watch(handle) {
+      pod = handle;
+      // The two catalog services are optional and independent: fence on each one
+      // separately, so a host that offers only one still advertises what it has.
+      // A scope's cleanup runs when its service goes away, and the catalog is
+      // rebuilt without it.
+      ctx.inject(["llm"], (scope) => {
+        services = { ...services, llm: scope.llm };
+        void refresh();
+        scope.effect(
+          () => () => {
+            services = { ...services, llm: undefined };
+            void refresh();
+          },
+          "orca-pod.catalog-llm",
+        );
+      });
+      ctx.inject(["agentDefaultModel"], (scope) => {
+        services = { ...services, agentDefaultModel: scope.agentDefaultModel };
+        void refresh();
+        scope.effect(
+          () => () => {
+            services = { ...services, agentDefaultModel: undefined };
+            void refresh();
+          },
+          "orca-pod.catalog-default-model",
+        );
+      });
+      void handle.ready.then(refresh);
+    },
+  };
 }

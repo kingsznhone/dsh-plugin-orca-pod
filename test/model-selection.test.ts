@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { validateModelOffers, validateModelSelection } from "../src/protocol/model.ts";
 import type { Settings } from "../src/node/settings.ts";
-import { discoverModelCatalog } from "../src/plugin/models.ts";
+import { discoverModelCatalog } from "../src/plugin/catalog.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 
 const LIVE: OrcaNode[] = [];

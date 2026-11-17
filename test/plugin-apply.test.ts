@@ -32,7 +32,8 @@ vi.mock("../src/plugin/tracker.ts", async (importOriginal) => {
   };
 });
 
-const { apply, createHostStores } = await import("../src/plugin/index.ts");
+const { apply } = await import("../src/plugin/index.ts");
+const { createHostStores } = await import("../src/plugin/stores.ts");
 
 const roots: string[] = [];
 
