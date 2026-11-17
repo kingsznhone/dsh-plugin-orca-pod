@@ -2,9 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { FileBlob, FileBlobStore } from "./blob-files.ts";
-import { markInFlightUnknown, type DispatchEntry, type DispatchStore } from "./dispatches.ts";
-import type { PersistedTask, TaskStore } from "./index.ts";
+import type { FileBlob, FileBlobStore, DispatchEntry, DispatchStore, PersistedTask, TaskStore } from "./index.ts";
 
 /**
  * One SQLite file holds all node state (§5.5): WAL mode, one process writing.
@@ -136,7 +134,6 @@ export function createSqliteDispatchStore(path: string): DispatchStore {
     save: table.save,
     get: table.get,
     list: table.list,
-    markUnknown: () => markInFlightUnknown(store),
     remove: table.remove,
     close: handle.close,
   };

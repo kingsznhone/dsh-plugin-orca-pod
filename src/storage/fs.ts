@@ -1,3 +1,5 @@
+/** Disk blob store (§5.6). */
+
 import { createHash, randomBytes } from "node:crypto";
 import {
   createReadStream,
@@ -11,176 +13,13 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { copyFile, writeFile } from "node:fs/promises";
+import { copyFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { PodError } from "../kernel/index.ts";
-
-/**
- * Content-addressed blob store (§5.6): an in-memory store and a disk store
- * (with GC and a size quota) share one contract.
- */
-type BlobRecord = {
-  blob_id: string;
-  size: number;
-  name: string | null;
-  media_type: string | null;
-  expires_at: string | null;
-};
-
-type StoredBlob = BlobRecord & { bytes: Buffer };
-
-/** Streaming read handle: the caller pipes `stream` instead of buffering. */
-type BlobRead = {
-  stream: Readable;
-  size: number;
-  record: BlobRecord;
-};
-
-/** Raised when a streamed body exceeds the declared maximum (§5.6). */
-function tooLarge(limit: number): PodError {
-  return new PodError("blob_too_large", `blob body exceeds ${limit} bytes`);
-}
-
-function recordOf(blob: BlobRecord): BlobRecord {
-  return {
-    blob_id: blob.blob_id,
-    size: blob.size,
-    name: blob.name,
-    media_type: blob.media_type,
-    expires_at: blob.expires_at,
-  };
-}
-
-type PutStreamOptions = {
-  name?: string;
-  media_type?: string;
-  maxBytes?: number;
-  /** Digest the uploader declared (`X-Pod-Body-SHA256`). */
-  sha256?: string;
-};
-
-function digestMismatch(declared: string, actual: string): PodError {
-  return new PodError("blob_digest_mismatch", `declared sha256 ${declared}, received ${actual}`);
-}
-
-/** Later of two expiries; `null` means "never expires" and wins. */
-function laterExpiry(current: string | null, next: string | null): string | null {
-  if (current === null || next === null) return null;
-  return Date.parse(next) > Date.parse(current) ? next : current;
-}
-
-export interface BlobStore {
-  /**
-   * Store bytes; returns the content hash. Same bytes => same id, no duplicate;
-   * storing them again extends the expiry as if they were new.
-   */
-  put(bytes: Buffer | Uint8Array, options?: { name?: string; media_type?: string }): StoredBlob;
-  /**
-   * Streamed upload; never buffers the body (§5.6). With `sha256`, bytes whose
-   * digest differs are discarded and the call fails with `blob_digest_mismatch`
-   * instead of being stored under their real digest.
-   */
-  putStream(stream: Readable, options?: PutStreamOptions): Promise<BlobRecord>;
-  /** Streamed download; avoids reading the whole blob into memory. */
-  openRead(blobId: string): BlobRead | undefined;
-  /** Size and metadata of a blob, without reading or opening its content. */
-  stat(blobId: string): BlobRecord | undefined;
-  /** Copy a blob into `destination` (its directory must exist) without buffering it (task inputs, §6.7). */
-  copyTo(blobId: string, destination: string): Promise<boolean>;
-  get(blobId: string): StoredBlob | undefined;
-  has(blobId: string): boolean;
-  /** Best-effort TTL sweep; returns the number of removed blobs (§5.6). */
-  gc(): number;
-}
-
-export function sha256Hex(bytes: Buffer | Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
-  const blobs = new Map<string, StoredBlob>();
-  const expiry = (): string | null => (ttlMs === null ? null : new Date(Date.now() + ttlMs).toISOString());
-  const store: BlobStore = {
-    put(bytes, options): StoredBlob {
-      const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-      const blobId = sha256Hex(buffer);
-      const existing = blobs.get(blobId);
-      if (existing) {
-        existing.expires_at = laterExpiry(existing.expires_at, expiry());
-        return { ...existing };
-      }
-      const blob: StoredBlob = {
-        blob_id: blobId,
-        size: buffer.length,
-        name: options?.name ?? null,
-        media_type: options?.media_type ?? null,
-        expires_at: expiry(),
-        bytes: buffer,
-      };
-      blobs.set(blobId, blob);
-      return { ...blob };
-    },
-    async putStream(stream, options): Promise<BlobRecord> {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      for await (const chunk of stream) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-        size += buffer.length;
-        if (options?.maxBytes !== undefined && size > options.maxBytes) {
-          throw tooLarge(options.maxBytes);
-        }
-        chunks.push(buffer);
-      }
-      const bytes = Buffer.concat(chunks);
-      const actual = sha256Hex(bytes);
-      if (options?.sha256 !== undefined && options.sha256 !== actual) throw digestMismatch(options.sha256, actual);
-      return recordOf(store.put(bytes, options));
-    },
-    openRead(blobId): BlobRead | undefined {
-      const blob = blobs.get(blobId);
-      if (!blob) return undefined;
-      return { stream: Readable.from(blob.bytes), size: blob.size, record: recordOf(blob) };
-    },
-    stat(blobId) {
-      const blob = blobs.get(blobId);
-      return blob && recordOf(blob);
-    },
-    async copyTo(blobId, destination) {
-      const blob = blobs.get(blobId);
-      if (!blob) return false;
-      await writeFile(destination, blob.bytes);
-      return true;
-    },
-    get(blobId) {
-      const blob = blobs.get(blobId);
-      return blob ? { ...blob } : undefined;
-    },
-    has(blobId) {
-      return blobs.has(blobId);
-    },
-    gc() {
-      const now = Date.now();
-      let removed = 0;
-      for (const [blobId, blob] of blobs) {
-        if (blob.expires_at !== null && Date.parse(blob.expires_at) <= now) {
-          blobs.delete(blobId);
-          removed += 1;
-        }
-      }
-      return removed;
-    },
-  };
-  return store;
-}
-
-/** Default retention for blobs nobody referenced (§5.6). */
-export const DEFAULT_BLOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** The one retention constant: uploads, published files and direct links. */
-export const DEFAULT_BLOB_TTL_S = Math.floor(DEFAULT_BLOB_TTL_MS / 1000);
+import { digestMismatch, laterExpiry, sha256Hex, tooLarge } from "./blob-common.ts";
+import { DEFAULT_BLOB_TTL_MS, type BlobRecord, type BlobStore, type StoredBlob } from "./index.ts";
 
 type FsBlobStoreOptions = {
   ttlMs?: number | null;

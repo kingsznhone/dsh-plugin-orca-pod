@@ -5,7 +5,7 @@ import { afterEach } from "vitest";
 
 import { EchoExecutor } from "../../src/execution/echo.ts";
 import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/protocol/task.ts";
-import { createMemoryBlobStore, createMemoryTaskStore } from "../../src/storage/index.ts";
+import { createMemoryBlobStore, createMemoryTaskStore } from "../../src/storage/memory.ts";
 import { createTaskRunner, type TaskRunnerDeps } from "../../src/tasks/runner.ts";
 import { createWorkspaceManager } from "../../src/tasks/workspace.ts";
 

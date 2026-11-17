@@ -6,8 +6,9 @@ import type { TaskRunner } from "../src/protocol/task.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createMembership } from "../src/membership/membership.ts";
 import type { PeerStore } from "../src/membership/membership.ts";
-import { createMemoryBlobStore, sha256Hex } from "../src/storage/index.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore } from "../src/storage/blob-files.ts";
+import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage/memory.ts";
+import { sha256Hex } from "../src/storage/blob-common.ts";
+import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
 import { createGateway, type GatewayDeps } from "../src/transport/gateway/index.ts";
 
 const ENDPOINT = "http://orca-node.test";

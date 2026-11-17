@@ -16,7 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { DispatchEntry } from "../storage/dispatches.ts";
+import type { DispatchEntry } from "../storage/index.ts";
 import { isTerminal, permissionRequestOf } from "../protocol/index.ts";
 import type { PermissionRequest, TaskView } from "../protocol/index.ts";
 import type { ApprovalBroker } from "./broker.ts";

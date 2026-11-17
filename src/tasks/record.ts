@@ -11,9 +11,8 @@
 
 import { randomUUID } from "node:crypto";
 
-import { deriveChildGrant } from "../delegation/index.ts";
+import { deriveChildGrant, checkGrant, type GrantLedger } from "../security/index.ts";
 import type { BlobStore, TaskStore } from "../storage/index.ts";
-import { checkGrant, type GrantLedger } from "../security/index.ts";
 import { assertNever, errorMessage, PodError } from "../kernel/index.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/index.ts";
 import type { NodeLogger } from "../membership/index.ts";

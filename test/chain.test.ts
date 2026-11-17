@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { childPodMetadata, deriveChildGrant, grantCovers } from "../src/delegation/chain.ts";
+import { childPodMetadata } from "../src/delegation/chain.ts";
+import { deriveChildGrant, grantCovers } from "../src/security/grants.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
 import { signGrant } from "../src/security/crypto.ts";

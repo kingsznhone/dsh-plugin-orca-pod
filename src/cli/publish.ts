@@ -5,7 +5,7 @@ import process from "node:process";
 
 import { errorMessage } from "../kernel/index.ts";
 import { blobLinkSignature } from "../security/index.ts";
-import { createFileBlobRegistry } from "../storage/blob-files.ts";
+import { createFileBlobRegistry } from "../storage/file-registry.ts";
 import { createSqliteFileBlobStore } from "../storage/sqlite.ts";
 import {
   COMMON_OPTIONS,

@@ -8,10 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PART_GRACE_MS } from "../src/storage/blobs.ts";
+import { PART_GRACE_MS, createFsBlobStore } from "../src/storage/fs.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { BLOB_GC_INTERVAL_MS, createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
-import { createFsBlobStore } from "../src/storage/index.ts";
 import { createTestRunner, runnerDeps } from "./fixtures/runner.ts";
 
 afterEach(() => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
-import type { DispatchEntry } from "../src/storage/dispatches.ts";
+import type { DispatchEntry } from "../src/storage/index.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { HostLogger, PermissionPresetsService } from "../src/plugin/dsh.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";

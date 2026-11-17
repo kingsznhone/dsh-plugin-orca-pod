@@ -15,42 +15,8 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { resolve } from "node:path";
-import { DEFAULT_BLOB_TTL_S } from "./blobs.ts";
 
-export type FileBlob = {
-  /** sha256 of the file contents; doubles as the content address. */
-  blob_id: string;
-  /** Absolute path on this orca node. */
-  path: string;
-  size: number;
-  expires_at: string | null;
-};
-
-/** Mapping storage; the durable SQLite implementation lives in `sqlite.ts`. */
-export type FileBlobStore = {
-  save(blob: FileBlob): void;
-  get(blobId: string): FileBlob | undefined;
-  /** SQLite handles need closing so Windows can delete the data dir. */
-  close(): void;
-};
-
-/** A mapping that lives as long as the process: unit tests and in-memory orca nodes. */
-export function createMemoryFileBlobStore(): FileBlobStore {
-  const entries = new Map<string, FileBlob>();
-  return {
-    save(blob) {
-      entries.set(blob.blob_id, blob);
-    },
-    get: (blobId) => entries.get(blobId),
-    close() {},
-  };
-}
-
-export type FileBlobRegistry = {
-  register(path: string, ttlS?: number): Promise<FileBlob>;
-  get(blobId: string): FileBlob | undefined;
-  has(blobId: string): boolean;
-};
+import { DEFAULT_BLOB_TTL_S, type FileBlob, type FileBlobRegistry, type FileBlobStore } from "./index.ts";
 
 async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   const hash = createHash("sha256");

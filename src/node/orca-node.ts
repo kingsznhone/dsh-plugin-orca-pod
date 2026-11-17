@@ -2,10 +2,23 @@ import { cpus, platform as osPlatform, release as osRelease, totalmem } from "no
 import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore, type FileBlobStore } from "../storage/blob-files.ts";
+import { createFileBlobRegistry } from "../storage/file-registry.ts";
+import {
+  createMemoryFileBlobStore,
+  createMemoryDispatchStore,
+  createMemoryBlobStore,
+  createMemoryTaskStore,
+} from "../storage/memory.ts";
+import {
+  type FileBlobStore,
+  type DispatchEntry,
+  type DispatchStore,
+  DEFAULT_BLOB_TTL_MS,
+  type BlobStore,
+  type TaskStore,
+} from "../storage/index.ts";
 import { blobLinkSignature, NonceCache, loadOrCreateIdentity } from "../security/index.ts";
 import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../delegation/index.ts";
-import { createMemoryDispatchStore, type DispatchEntry, type DispatchStore } from "../storage/dispatches.ts";
 import { EchoExecutor, createAcpExecutor } from "../execution/index.ts";
 import type { LocalExecutor } from "../execution/index.ts";
 import { createPodEventBus, type PodEventListener, errorMessage } from "../kernel/index.ts";
@@ -37,14 +50,7 @@ import type {
   TaskView,
 } from "../protocol/index.ts";
 import { createSqliteDispatchStore, createSqliteFileBlobStore, createSqliteTaskStore } from "../storage/sqlite.ts";
-import {
-  createFsBlobStore,
-  createMemoryBlobStore,
-  createMemoryTaskStore,
-  DEFAULT_BLOB_TTL_MS,
-  type BlobStore,
-  type TaskStore,
-} from "../storage/index.ts";
+import { createFsBlobStore } from "../storage/fs.ts";
 import { createTaskRunner, createWorkspaceManager } from "../tasks/index.ts";
 
 export type { ApprovalOptions, TaskCallOptions } from "../delegation/index.ts";

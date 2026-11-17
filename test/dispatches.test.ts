@@ -4,8 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { markInFlightUnknown } from "../src/delegation/dispatch-log.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import type { DispatchEntry } from "../src/storage/dispatches.ts";
+import type { DispatchEntry } from "../src/storage/index.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { createSqliteDispatchStore } from "../src/storage/sqlite.ts";
 
@@ -68,7 +69,7 @@ describe("dispatch store (13.4)", () => {
     store.save(entry({ task_id: "done", state: "completed" }));
     store.save(entry({ task_id: "failed", state: "failed" }));
 
-    expect(store.markUnknown()).toBe(2);
+    expect(markInFlightUnknown(store)).toBe(2);
     expect(store.get("running")).toMatchObject({ state: "unknown", last_error: "origin_restart" });
     expect(store.get("parked")?.state).toBe("unknown");
     expect(store.get("done")?.state).toBe("completed");

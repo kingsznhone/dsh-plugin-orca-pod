@@ -15,7 +15,7 @@ import {
   type OrcaNodeConfig,
 } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
-import { sha256Hex } from "../src/storage/index.ts";
+import { sha256Hex } from "../src/storage/blob-common.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 

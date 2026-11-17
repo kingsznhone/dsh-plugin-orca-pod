@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import { childPodMetadata, deriveChildGrant } from "./chain.ts";
-import { signGrant } from "../security/index.ts";
+import { markInFlightUnknown } from "./dispatch-log.ts";
+import { childPodMetadata } from "./chain.ts";
+import { deriveChildGrant, signGrant } from "../security/index.ts";
 import type { DispatchEntry, DispatchStore } from "../storage/index.ts";
 import { PodError } from "../kernel/index.ts";
 import type { PodEventInput } from "../kernel/index.ts";
@@ -310,7 +311,7 @@ export function createDelegation(deps: DelegationDeps): Delegation {
     },
     start() {
       // A restart means this node no longer knows what its in-flight dispatches did (§8.3).
-      dispatches.markUnknown();
+      markInFlightUnknown(dispatches);
       running = true;
     },
     stop() {

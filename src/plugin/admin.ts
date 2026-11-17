@@ -13,7 +13,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { defaultDataRoot } from "../node/index.ts";
-import type { DispatchEntry } from "../storage/dispatches.ts";
+import type { DispatchEntry } from "../storage/index.ts";
 import { shortenNodeId } from "../security/index.ts";
 import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/index.ts";
 import { isTerminal } from "../protocol/index.ts";
