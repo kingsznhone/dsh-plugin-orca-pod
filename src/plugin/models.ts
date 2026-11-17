@@ -9,34 +9,21 @@
  *
  * Both services are optional: CLI-only nodes and smoke hosts start without
  * them, in which case the catalog stays empty and every task runs with the
- * executor's own default.
+ * executor's own default. The caller fences on them with `ctx.inject` and
+ * passes whatever appeared.
  */
 
 import { isRecord, type ModelOffer, type ModelSelection } from "../protocol.ts";
-import type { HostContext, HostLogger } from "./dsh.ts";
+import type { AgentDefaultModelService, HostLogger, LlmCatalogService } from "./dsh.ts";
 import { errorMessage } from "../errors.ts";
-import { service } from "./util.ts";
 
 /** Hard cap mirrored from `config.ts`; duplicated here to avoid a cycle. */
 const MAX_MODEL_OFFERS = 128;
 
-type LlmProvider = { id?: unknown; name?: unknown };
-type LlmModel = { id?: unknown; name?: unknown; description?: unknown };
-
-/** Subset of the DSH `llm` service used to enumerate the model catalog. */
-interface LlmCatalogService {
-  listProviders(): LlmProvider[] | Promise<LlmProvider[]>;
-  listModels(provider: string): Promise<LlmModel[]>;
-}
-
-/** Subset of the DSH `agent-default-model` service. */
-interface AgentDefaultModelService {
-  currentSelection(): {
-    provider?: unknown;
-    model?: unknown;
-    reasoningEffort?: unknown;
-    reasoning_effort?: unknown;
-  };
+/** The host services the catalog reads; either may be absent. */
+export interface CatalogServices {
+  llm?: LlmCatalogService;
+  agentDefaultModel?: AgentDefaultModelService;
 }
 
 export type ModelCatalog = {
@@ -60,13 +47,13 @@ function selectionOf(raw: unknown): ModelSelection | null {
  * Read the catalog from the host. Failures per provider stay local: one broken
  * adapter must not hide the models that other providers report.
  */
-export async function discoverModelCatalog(ctx: HostContext, logger: HostLogger): Promise<ModelCatalog> {
+export async function discoverModelCatalog(services: CatalogServices, logger: HostLogger): Promise<ModelCatalog> {
   const models: ModelOffer[] = [];
   const seen = new Set<string>();
 
-  const llm = service<LlmCatalogService>(ctx, "llm");
+  const llm = services.llm;
   if (llm !== undefined) {
-    let providers: LlmProvider[] = [];
+    let providers: Awaited<ReturnType<LlmCatalogService["listProviders"]>> = [];
     try {
       providers = await Promise.resolve(llm.listProviders());
     } catch (error) {
@@ -75,7 +62,7 @@ export async function discoverModelCatalog(ctx: HostContext, logger: HostLogger)
     for (const entry of providers) {
       const provider = nonEmpty(entry.id);
       if (provider === undefined) continue;
-      let available: LlmModel[] = [];
+      let available: Awaited<ReturnType<LlmCatalogService["listModels"]>> = [];
       try {
         available = await llm.listModels(provider);
       } catch (error) {
@@ -101,9 +88,8 @@ export async function discoverModelCatalog(ctx: HostContext, logger: HostLogger)
   }
 
   let defaultModel: ModelSelection | null = null;
-  const agentDefaultModel = service<AgentDefaultModelService>(ctx, "agentDefaultModel");
   try {
-    const raw = agentDefaultModel?.currentSelection();
+    const raw = services.agentDefaultModel?.currentSelection();
     if (raw !== undefined) defaultModel = selectionOf(raw);
   } catch (error) {
     logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);

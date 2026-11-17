@@ -9,17 +9,14 @@
 import { readdir } from "node:fs/promises";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { BlobStore } from "./blobs.ts";
+import { CLI_PATH } from "./entry.ts";
 import { PodError } from "./errors.ts";
 import type { TaskInputRef } from "./protocol.ts";
 
 export const DEFAULT_MAX_INPUT_FILES = 32;
 export const DEFAULT_MAX_INPUT_BYTES = 512 * 1024 * 1024;
-
-/** Absolute path of the `orca-node` CLI entry, handed to the agent in the preamble. */
-export const CLI_PATH = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
 /**
  * Refuse a request whose inputs are missing or over a cap, before any task or
@@ -103,11 +100,12 @@ function preamble({ taskId, selfOrcaNodeId, dataRoot }: PromptParts): string {
     `Check a child with: ${cli} wait --peer <host:port> --task <id> --local-task ${taskId} --json`,
     `  (exit 0 completed, 1 failed/canceled, 2 still running, 3 needs permission)`,
     `If you need to retry an escalation by hand: ${cli} escalate --peer <child:port> --task <child task id> --local-task ${taskId} --json`,
-    `A required peer can be offline. Retry the same command at most once after a few seconds; do not poll for long.`,
-    `If it is still unreachable, finish this task as completed (do not leave it waiting) and report the blocker:`,
-    `start the final message with "BLOCKED: <peer> unreachable", then list what you already finished, what is`,
-    `blocked, and the exact commands to rerun after the peer recovers. A child task that cannot continue may`,
-    `end failed on its own; do not wait on it.`,
+    `There is no way to pause this task and ask the origin a question: only permission requests wait for the origin.`,
+    `If you cannot continue (missing information, a decision only the origin can make, a required peer offline),`,
+    `finish this task as completed and report the blocker: start the final message with "BLOCKED: <reason>",`,
+    `then list what you already finished, what is blocked, and what the origin should provide or rerun.`,
+    `A required peer can be offline: retry the same command at most once after a few seconds; do not poll for long.`,
+    `A child task that cannot continue ends on its own with its own BLOCKED report; do not wait on it.`,
     `To share a file with the origin, attach a blob URL to your summary:`,
     `  ${cli} publish <path> --json`,
     `Never approve your own permission requests; escalate them instead.`,

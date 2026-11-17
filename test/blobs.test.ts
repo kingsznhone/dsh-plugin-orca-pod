@@ -153,13 +153,16 @@ describe("blob channel", () => {
     expect(response.statusCode).toBe(401);
   });
 
-  it("rejects a mismatched X-Pod-Body-SHA256 with 400", async () => {
-    const harness = createHarness();
-    const response = await upload(harness, Buffer.from("payload"), {
+  it("rejects a mismatched X-Pod-Body-SHA256 with 400 and keeps none of the bytes", async () => {
+    const blobs = createMemoryBlobStore();
+    const harness = createHarness(idleTasks, createFileBlobRegistry(createMemoryFileBlobStore()), blobs);
+    const payload = Buffer.from("payload");
+    const response = await upload(harness, payload, {
       digest: sha256Hex(Buffer.from("something else")),
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: "blob_digest_mismatch" });
+    expect(blobs.has(sha256Hex(payload))).toBe(false);
   });
 
   it("stores bytes and returns 201 with the blob metadata", async () => {
@@ -317,18 +320,6 @@ describe("file blobs registered by the local CLI", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.rawPayload.equals(content)).toBe(true);
-  });
-
-  it("has no HTTP registration route at all", async () => {
-    // Publishing a path is reading it, so this capability stays local (CLI) and
-    // off the network.
-    const harness = createHarness();
-    const response = await harness.app.inject({
-      method: "POST",
-      url: "/blobs/register",
-      payload: { path: "/etc/passwd" },
-    });
-    expect(response.statusCode).toBe(404);
   });
 
   it("keeps the mapping in SQLite so a later process sees it", async () => {

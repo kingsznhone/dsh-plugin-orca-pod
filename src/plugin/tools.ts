@@ -12,7 +12,14 @@ import { DEFAULT_PORT, isPermissionMode, isRecord, isTerminal, parseModelSpec } 
 import type { PeerView, PermissionMode, SubmitTaskInput } from "../protocol.ts";
 import type { OrcaNode } from "../orca_node.ts";
 
-import type { ContentBlock, PermissionPresetsService, RawJsonSchema, ToolDefinition, ToolExecution } from "./dsh.ts";
+import type {
+  ContentBlock,
+  PermissionPresetsService,
+  RawJsonSchema,
+  ToolDefinition,
+  ToolExecution,
+  ToolRunContext,
+} from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
 import { describeError } from "./util.ts";
@@ -116,9 +123,10 @@ async function runSend(
   handle: PodHandle,
   tracker: Tracker,
   args: Record<string, unknown>,
-  exec: ToolExecution | undefined,
+  exec: ToolRunContext | undefined,
   presets: PermissionPresetsService | undefined,
 ): Promise<unknown> {
+  const signal = exec?.signal;
   const peer = normalizePeerUrl(requiredString(args, "peer"));
   const text = requiredString(args, "text");
   const echo = optionalEchoScript(args);
@@ -151,26 +159,34 @@ async function runSend(
       },
     },
   };
-  const view = await orcaNode.sendTask(peer, input);
+  throwIfAborted(signal);
+  const view = await orcaNode.sendTask(peer, input, signal === undefined ? {} : { signal });
+  if (signal?.aborted === true) {
+    // The remote accepted the task after the caller's turn was cancelled: the
+    // caller never learns its id, so it must not keep running unobserved.
+    // Best effort; the dispatch log still lists it for the panel.
+    orcaNode.cancelTask(peer, view.id).catch(() => {});
+    throw abortError();
+  }
   // Track the task so the dispatching agent is told when it finishes, even
   // after its turn ends.
   if (exec?.agent !== undefined) tracker.track(exec.agent, peer, view.id);
   return { task_id: view.id, state: view.status.state, peer };
 }
 
-async function runStatus(handle: PodHandle, args: Record<string, unknown>): Promise<unknown> {
+async function runStatus(handle: PodHandle, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   const peer = normalizePeerUrl(requiredString(args, "peer"));
   const taskId = requiredString(args, "task_id");
   const orcaNode = await requireNode(handle);
-  const view = await orcaNode.getTask(peer, taskId);
+  const view = await orcaNode.getTask(peer, taskId, signal === undefined ? {} : { signal });
   return { ...view, terminal: isTerminal(view.status.state) };
 }
 
-async function runCancel(handle: PodHandle, args: Record<string, unknown>): Promise<unknown> {
+async function runCancel(handle: PodHandle, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   const peer = normalizePeerUrl(requiredString(args, "peer"));
   const taskId = requiredString(args, "task_id");
   const orcaNode = await requireNode(handle);
-  const view = await orcaNode.cancelTask(peer, taskId);
+  const view = await orcaNode.cancelTask(peer, taskId, signal === undefined ? {} : { signal });
   return { ...view, terminal: isTerminal(view.status.state) };
 }
 
@@ -184,9 +200,11 @@ async function runMembers(handle: PodHandle): Promise<unknown> {
   };
 }
 
-async function runConnect(handle: PodHandle, args: Record<string, unknown>): Promise<unknown> {
+async function runConnect(handle: PodHandle, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   const peer = normalizePeerUrl(requiredString(args, "peer"));
   await requireNode(handle);
+  // Joining persists the peer; do not start it for a turn that is already gone.
+  throwIfAborted(signal);
   await handle.addPeer(peer);
   const orcaNode = await requireNode(handle);
   return {
@@ -196,11 +214,74 @@ async function runConnect(handle: PodHandle, args: Record<string, unknown>): Pro
   };
 }
 
+/** Rejection used when the caller's turn is cancelled mid-call. */
+function abortError(): Error {
+  const error = new Error("cancelled by the caller");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw abortError();
+}
+
+/**
+ * Race one method against the caller's abort signal, so a cancelled turn stops
+ * waiting (for node startup, the panel queue, a slow peer). This only ends the
+ * wait; the methods forward the same signal to their outbound requests and
+ * check it before any step with a lasting effect.
+ */
+function withSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return work;
+  if (signal.aborted) {
+    // Nobody waits for the abandoned work any more; keep its rejection handled.
+    work.catch(() => {});
+    return Promise.reject(abortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Dispatch one `orca_pod` method against the running node. */
+function runMethod(
+  handle: PodHandle,
+  tracker: Tracker,
+  method: PodMethod,
+  args: Record<string, unknown>,
+  exec: ToolRunContext | undefined,
+  presets: PermissionPresetsService | undefined,
+): Promise<unknown> {
+  switch (method) {
+    case "send":
+      return runSend(handle, tracker, args, exec, presets);
+    case "status":
+      return runStatus(handle, args, exec?.signal);
+    case "cancel":
+      return runCancel(handle, args, exec?.signal);
+    case "members":
+      return runMembers(handle);
+    case "connect":
+      return runConnect(handle, args, exec?.signal);
+  }
+}
+
 /** Build the single `orca_pod` tool definition bound to one running pod handle. */
 export function createPodTools(
   handle: PodHandle,
   tracker: Tracker,
-  presets?: PermissionPresetsService,
+  presets?: () => PermissionPresetsService | undefined,
 ): ToolDefinition[] {
   const tool: ToolDefinition = {
     name: "orca_pod",
@@ -250,22 +331,12 @@ export function createPodTools(
       additionalProperties: false,
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
-    async execute(args, exec: ToolExecution | undefined) {
+    async execute(args, exec: ToolRunContext | undefined) {
       const record = asRecord(args);
       const method = methodOf(record);
       try {
-        switch (method) {
-          case "send":
-            return await runSend(handle, tracker, record, exec, presets);
-          case "status":
-            return await runStatus(handle, record);
-          case "cancel":
-            return await runCancel(handle, record);
-          case "members":
-            return await runMembers(handle);
-          case "connect":
-            return await runConnect(handle, record);
-        }
+        throwIfAborted(exec?.signal);
+        return await withSignal(runMethod(handle, tracker, method, record, exec, presets?.()), exec?.signal);
       } catch (error) {
         throw describeError("orca_pod", error);
       }

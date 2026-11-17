@@ -10,7 +10,7 @@ import { isRecord, type ModelSelection } from "../protocol.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../executor.ts";
 import { KILL_GRACE_MS, abortError } from "../process.ts";
 import type { AcpExecutorConfig } from "../settings.ts";
-import { CLI_PATH } from "../task_inputs.ts";
+import { CLI_PATH } from "../entry.ts";
 import type { AcpConnection, SessionRoute } from "./connection.ts";
 import { CANCELLED, autoDecision, outcomeFor, parsePermissionRequest, type PermissionRequest } from "./permissions.ts";
 import { createAcpSessions } from "./session.ts";

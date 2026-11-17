@@ -56,7 +56,7 @@
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
 | 403  | `not_a_member`、`local_only`、`link_invalid`、`not_task_origin`、`ancestor_call_forbidden`                                  |
-| 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`blob_digest_mismatch`、`input_blob_missing`、`too_many_inputs`、`inputs_too_large` |
+| 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`blob_digest_mismatch`、`input_blob_missing`、`too_many_inputs`、`inputs_too_large`、`endpoint_refused` |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
 | 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`escalation_required`、`duplicate_input_name`                        |
 | 410  | `link_expired`、`blob_expired`、`blob_file_missing`                                                                         |
@@ -158,10 +158,10 @@ submitted ──► working ──► input-required ──► working
 
 - `submitted`：已接收，未开始（准备素材）。
 - `working`：LocalExecutor 正在执行。
-- `input-required`：需要发起 orca node 补输入或**补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷在 task 的 `status.message.parts` 的 data part 里，不依赖推送。载荷有两种：`permission_request`（补授权）和 `blocked`（要决策：`{reason, question, options?}`）；`blocked` 只有 Echo 脚本会产生，ACP 执行器只会产生权限请求（ACP agent 的阻塞按 [§6.14](06-execution.md#614-acpexecutor) 写进结论文本）。
+- `input-required`：需要发起 orca node **补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷是 task 的 `status.message.parts` 里 data part 的 `permission_request`，不依赖推送；恢复消息必须是签名 grant 或拒绝。没有“补输入”的挂起：任务不能继续时以 `completed` 结束，结论首行写 `BLOCKED: …`（[§6.14](06-execution.md#614-acpexecutor)）。
 - `input-required` **不占用执行槽**：任务挂起时槽位释放，恢复时重新竞争，不预留、不排队。槽被占就回 `429 orca_node_busy`，由 origin 决定重试还是放弃。
 - 恢复 ACP 任务时复用同一个 ACP session（它没有退出），不是新开会话。
-- 远程 agent 不能回调祖先 orca node：子任务的 `pod.chain` 含目标自己时 `403 ancestor_call_forbidden`（[§5.1](05-tasks.md#51-任务标识与元数据)）。
+- 远程 agent 不能回调祖先 orca node：子任务的 `pod.chain` 含目标自己、或 `pod.root_origin` 就是目标时 `403 ancestor_call_forbidden`（[§5.1](05-tasks.md#51-任务标识与元数据)）。
 - `completed` / `failed` / `canceled`：终态。终态不可逆；重试就是显式再派一个新 task，不复活旧 task。
 - 任务状态每次变迁都写 SQLite（[§5.5](05-tasks.md#55-任务存储)）；进程重启时所有非终态 task 标 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）。
 

@@ -41,12 +41,15 @@ running, `3` the target is waiting for a human decision.
   escalated to your origin automatically; `wait` keeps going after the decision.
 - **Never approve your own escalation.** If `wait` exits `3`, run
   `escalate` and tell the user what is blocked and why.
-- Treat an offline required peer as a blocker, not a reason to hang: retry the
-  same command at most once after a few seconds. If it is still unreachable,
-  finish **your own task as completed** and start the final report with
-  `BLOCKED: <peer> unreachable`; then list what you finished, the blocked step,
-  and the exact command to rerun once the peer recovers. Do not poll for
-  minutes, and do not wait on a child task that can no longer continue.
+- A task cannot pause to ask its origin a question; only permission requests
+  wait for the origin. When you cannot continue (missing information, a
+  decision only the origin can make, a required peer offline), finish **your
+  own task as completed** and start the final report with
+  `BLOCKED: <reason>`; then list what you finished, the blocked step, and what
+  the origin should provide or rerun. For an offline peer, retry the same
+  command at most once after a few seconds first. Do not poll for minutes, and
+  do not wait on a child task that can no longer continue — it ends with its
+  own `BLOCKED:` report.
 - Pass `--text -` so the task text travels on stdin (no shell quoting).
 - Use `--json` whenever you need exact ids, states, or artifacts.
 - A task you dispatch is single-hop: this orca node does not forward it.

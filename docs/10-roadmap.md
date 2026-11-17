@@ -8,7 +8,7 @@
 
 - 单端口：`/health`、Agent Card、`/a2a`、`/cluster/join|heartbeat|members`。
 - Ed25519 身份生成 + `identity.json` 持久化；workgroup_id + 非空密码（空 = 未配置、节点不启动）；密码派生 join/心跳准入证明 + 请求用节点私钥签名。
-- EchoExecutor（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)）：按脚本模拟耗时、挂起（`blocked`/`permission`）、最终文本与产物。
+- EchoExecutor（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)）：按脚本模拟耗时、权限挂起（`permission`）、最终文本与产物。
 - `message/send` + `tasks/get` + `tasks/cancel`；SQLite task store。
 - 验收：`/health` OK；Agent Card 公开可读；join 成功；两个 orca node 双向心跳；kill 一方 3 拍内从在线集消失；重启后 task store 仍可查。
 
@@ -59,7 +59,8 @@
 #### Echo 脚本
 
 - [x] `echo.final.text` 原样出现在 `tasks/get` 的 `status.message.text`，逐字节相等
-- [x] 到 `at_ms` 时任务变 `input-required`，`blocked`/`permission_request` 可读，槽位释放
+- [x] 到 `at_ms` 时任务变 `input-required`，`permission_request` 可读，槽位释放
+- [x] 权限挂起只接受签名 grant 或拒绝：纯文本恢复回 `400 bad_request`，任务不变
 - [x] 恢复后从上次位置继续，不重放已过去的 step；总时长约等于各 step 间隔之和（不含挂起时间）
 - [x] `artifacts[].artifactId == sha256(content)`，artifact 元数据与字节数正确
 - [x] 产物 blob 可被另一 orca node GET（artifact id = sha256，与跨 orca node blob GET 同通道）
@@ -123,7 +124,7 @@
 - [x] 派发后本轮结束、任务才完成 → `followup()` 只唤醒一次，新一轮读到结果并继续；同一轮内完成的任务不触发唤醒
 - [x] 2s 内三个任务完成只产生一次 `followup()`；连续第 4 次后台唤醒被拦下并留 inbox
 - [x] 用户给 agent 发消息后，唤醒预算重置
-- [x] 标准 skill bundle：`skills/orca-node/` 随包发布；可选 `skill_injection` 复制到 user 根（默认关）
+- [x] 标准 skill bundle：`skills/orca-node/` 随包发布；可选 `skill_injection` 经 `ctx.skills.register` 注册进 Host（默认关，不写用户 skill 目录）
 
 #### 安全
 
@@ -138,7 +139,7 @@
 - [ ] 心跳链路稳定 24h，CPU/内存无泄漏
 - [ ] 单 orca node 故障不影响其余 orca node 任务
 - [ ] 任务延迟与 2 个 orca node 相比无数量级退化
-- [x] 多跳无深度上限：`pod.hop=2` 的任务照常执行（`hop` 只记账）；目标 orca node 已在 `chain` 中被 `403 ancestor_call_forbidden`
+- [x] 多跳无深度上限：`pod.hop=2` 的任务照常执行（`hop` 只记账）；目标 orca node 已在 `chain` 中、或是根 origin，被 `403 ancestor_call_forbidden`
 - [x] origin 对同一 target 并发 10 个请求：target 只创建 1 个 agent 进程，其余 429
 - [ ] B、C 互调：后到的一方拿到 `429 orca_node_busy` 并写进结论文本回报 A；不出现两边都卡到 TTL
 

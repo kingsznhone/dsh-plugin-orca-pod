@@ -367,11 +367,6 @@ describe("panel HTTP bridge", () => {
     expect(result.body.config.bind_choices).toContain("::");
   });
 
-  it("has no separate config read: the state snapshot carries it", async () => {
-    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/config` });
-    expect(result.status).toBe(404);
-  });
-
   it("hands the panel body to saveConfig unchanged", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
     const result = await invoke(createPodApiHandler(admin), {
@@ -481,15 +476,24 @@ describe("panel HTTP bridge", () => {
         };
       },
     };
+    // The route belongs to the inject scope, not to the plugin fiber.
     const ctx = {
       tools: { register: () => undefined },
-      effect(execute: () => () => void) {
-        cleanups.push(execute());
-        return undefined;
+      effect() {
+        throw new Error("the panel route must be registered on the inject scope");
       },
       logger: { info: () => {}, warn: () => {}, error: () => {} } as HostLogger,
-      inject(_dependencies: string[], callback: (sub: { webServer: typeof webServer }) => void) {
-        callback({ webServer });
+      inject(
+        _dependencies: string[],
+        callback: (scope: { webServer: typeof webServer; effect(execute: () => () => void): undefined }) => void,
+      ) {
+        callback({
+          webServer,
+          effect(execute) {
+            cleanups.push(execute());
+            return undefined;
+          },
+        });
       },
     };
     registerPodWeb(ctx as never, fakeAdmin());

@@ -54,11 +54,36 @@ function recordOf(blob: BlobRecord): BlobRecord {
   };
 }
 
+type PutStreamOptions = {
+  name?: string;
+  media_type?: string;
+  maxBytes?: number;
+  /** Digest the uploader declared (`X-Pod-Body-SHA256`). */
+  sha256?: string;
+};
+
+function digestMismatch(declared: string, actual: string): PodError {
+  return new PodError("blob_digest_mismatch", `declared sha256 ${declared}, received ${actual}`);
+}
+
+/** Later of two expiries; `null` means "never expires" and wins. */
+function laterExpiry(current: string | null, next: string | null): string | null {
+  if (current === null || next === null) return null;
+  return Date.parse(next) > Date.parse(current) ? next : current;
+}
+
 export interface BlobStore {
-  /** Store bytes; returns the content hash. Same bytes => same id, no duplicate. */
+  /**
+   * Store bytes; returns the content hash. Same bytes => same id, no duplicate;
+   * storing them again extends the expiry as if they were new.
+   */
   put(bytes: Buffer | Uint8Array, options?: { name?: string; media_type?: string }): StoredBlob;
-  /** Streamed upload; never buffers the body (§5.6). */
-  putStream(stream: Readable, options?: { name?: string; media_type?: string; maxBytes?: number }): Promise<BlobRecord>;
+  /**
+   * Streamed upload; never buffers the body (§5.6). With `sha256`, bytes whose
+   * digest differs are discarded and the call fails with `blob_digest_mismatch`
+   * instead of being stored under their real digest.
+   */
+  putStream(stream: Readable, options?: PutStreamOptions): Promise<BlobRecord>;
   /** Streamed download; avoids reading the whole blob into memory. */
   openRead(blobId: string): BlobRead | undefined;
   /** Size and metadata of a blob, without reading or opening its content. */
@@ -77,18 +102,22 @@ export function sha256Hex(bytes: Buffer | Uint8Array): string {
 
 export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
   const blobs = new Map<string, StoredBlob>();
+  const expiry = (): string | null => (ttlMs === null ? null : new Date(Date.now() + ttlMs).toISOString());
   const store: BlobStore = {
     put(bytes, options): StoredBlob {
       const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
       const blobId = sha256Hex(buffer);
       const existing = blobs.get(blobId);
-      if (existing) return { ...existing };
+      if (existing) {
+        existing.expires_at = laterExpiry(existing.expires_at, expiry());
+        return { ...existing };
+      }
       const blob: StoredBlob = {
         blob_id: blobId,
         size: buffer.length,
         name: options?.name ?? null,
         media_type: options?.media_type ?? null,
-        expires_at: ttlMs === null ? null : new Date(Date.now() + ttlMs).toISOString(),
+        expires_at: expiry(),
         bytes: buffer,
       };
       blobs.set(blobId, blob);
@@ -105,8 +134,10 @@ export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
         }
         chunks.push(buffer);
       }
-      const result = store.put(Buffer.concat(chunks), options);
-      return recordOf(result);
+      const bytes = Buffer.concat(chunks);
+      const actual = sha256Hex(bytes);
+      if (options?.sha256 !== undefined && options.sha256 !== actual) throw digestMismatch(options.sha256, actual);
+      return recordOf(store.put(bytes, options));
     },
     openRead(blobId): BlobRead | undefined {
       const blob = blobs.get(blobId);
@@ -167,9 +198,14 @@ type Meta = { size: number; name: string | null; media_type: string | null; expi
 
 /**
  * Disk blob store: content-addressed files under `<root>/<aa>/<sha256>`, with a
- * small JSON sidecar holding name/media type/expiry. Bytes are written to a
- * temp file and renamed, so a crashed write never looks like a complete blob;
- * `gc()` removes the temp files such a crash leaves behind.
+ * small JSON sidecar holding name/media type/expiry.
+ *
+ * The sidecar is the commit marker. Bytes go to a temp file that is renamed
+ * into place, and only then is the sidecar written (also temp + rename). A
+ * crash between the two leaves a data file without a sidecar: it is not a blob
+ * (`has`/`get`/`stat` all say no), the next upload of the same bytes completes
+ * it, and `gc()` removes it after the `.part` grace period. A sidecar whose data
+ * file vanished is likewise not a blob and is dropped by `gc()`.
  */
 export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}): BlobStore {
   const ttlMs = options.ttlMs ?? DEFAULT_BLOB_TTL_MS;
@@ -188,7 +224,14 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
     }
   }
 
-  function* committed(): Generator<{ blobId: string; meta: Meta }> {
+  /** The sidecar of a complete blob: both files present. */
+  function committedMeta(blobId: string): Meta | undefined {
+    if (!BLOB_ID_PATTERN.test(blobId)) return undefined;
+    const meta = readMeta(blobId);
+    return meta !== undefined && existsSync(pathFor(blobId)) ? meta : undefined;
+  }
+
+  function* sidecars(): Generator<{ blobId: string; meta: Meta }> {
     for (const prefix of readdirSync(root, { withFileTypes: true })) {
       if (!prefix.isDirectory()) continue;
       for (const entry of readdirSync(join(root, prefix.name))) {
@@ -203,27 +246,49 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
   // The quota counts bytes committed plus bytes of uploads still streaming in.
   let used = 0;
   let inflight = 0;
-  for (const { meta } of committed()) used += meta.size;
+  for (const { meta } of sidecars()) used += meta.size;
 
   const quotaExceeded = (): PodError => new PodError("quota_exceeded", `the blob store is full (${quota} bytes)`);
 
   const expiry = (): string | null => (ttlMs === null ? null : new Date(now() + ttlMs).toISOString());
 
-  function commit(blobId: string, meta: Meta): void {
-    const metaTemp = `${metaFor(blobId)}.part`;
+  function writeMeta(blobId: string, meta: Meta): void {
+    const metaTemp = `${metaFor(blobId)}.${randomBytes(6).toString("hex")}.part`;
     writeFileSync(metaTemp, JSON.stringify(meta));
     renameSync(metaTemp, metaFor(blobId));
+  }
+
+  /**
+   * The bytes are already stored: count this as a new upload and extend the
+   * expiry, so a re-upload made just before a task cannot expire under it.
+   */
+  function refresh(blobId: string, meta: Meta): Meta {
+    const expires_at = laterExpiry(meta.expires_at, expiry());
+    if (expires_at === meta.expires_at) return meta;
+    const next = { ...meta, expires_at };
+    writeMeta(blobId, next);
+    return next;
+  }
+
+  /** Place finished bytes (a temp file) and write the sidecar that commits them. */
+  function commit(blobId: string, temp: string, meta: Meta): void {
+    // A sidecar left without its data was already counted at startup.
+    const stale = readMeta(blobId);
+    if (stale !== undefined) used -= stale.size;
+    const final = pathFor(blobId);
+    mkdirSync(dirname(final), { recursive: true });
+    renameSync(temp, final);
+    writeMeta(blobId, meta);
     used += meta.size;
   }
 
-  function dropStalePart(path: string): void {
+  function dropStale(path: string, at: number): void {
     const stat = statSync(path, { throwIfNoEntry: false });
-    if (stat !== undefined && Date.now() - stat.mtimeMs > PART_GRACE_MS) rmSync(path, { force: true });
+    if (stat !== undefined && at - stat.mtimeMs > PART_GRACE_MS) rmSync(path, { force: true });
   }
 
   function stat(blobId: string): BlobRecord | undefined {
-    if (!BLOB_ID_PATTERN.test(blobId)) return undefined;
-    const meta = readMeta(blobId);
+    const meta = committedMeta(blobId);
     return meta && { blob_id: blobId, ...meta };
   }
 
@@ -231,33 +296,29 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
     put(bytes, putOptions): StoredBlob {
       const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
       const blobId = sha256Hex(buffer);
-      const existingMeta = readMeta(blobId);
-      if (existingMeta) {
-        return { blob_id: blobId, ...existingMeta, bytes: readFileSync(pathFor(blobId)) };
-      }
+      const existing = committedMeta(blobId);
+      if (existing) return { blob_id: blobId, ...refresh(blobId, existing), bytes: buffer };
       if (used + inflight + buffer.length > quota) throw quotaExceeded();
       const final = pathFor(blobId);
       mkdirSync(dirname(final), { recursive: true });
       const temp = `${final}.${randomBytes(6).toString("hex")}.part`;
       writeFileSync(temp, buffer);
-      renameSync(temp, final);
       const meta: Meta = {
         size: buffer.length,
         name: putOptions?.name ?? null,
         media_type: putOptions?.media_type ?? null,
         expires_at: expiry(),
       };
-      commit(blobId, meta);
+      commit(blobId, temp, meta);
       return { blob_id: blobId, ...meta, bytes: buffer };
     },
     get(blobId) {
-      if (!BLOB_ID_PATTERN.test(blobId)) return undefined;
-      const meta = readMeta(blobId);
+      const meta = committedMeta(blobId);
       if (!meta) return undefined;
       return { blob_id: blobId, ...meta, bytes: readFileSync(pathFor(blobId)) };
     },
     has(blobId) {
-      return BLOB_ID_PATTERN.test(blobId) && existsSync(pathFor(blobId));
+      return committedMeta(blobId) !== undefined;
     },
     async putStream(stream, putOptions) {
       const hasher = createHash("sha256");
@@ -285,32 +346,34 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
         inflight -= size;
       }
       const blobId = hasher.digest("hex");
-      const existingMeta = readMeta(blobId);
-      if (existingMeta) {
+      if (putOptions?.sha256 !== undefined && putOptions.sha256 !== blobId) {
+        // The uploader signed a different digest: these bytes are not what was
+        // authorized, so they are not kept under any id.
         rmSync(temp, { force: true });
-        return { blob_id: blobId, ...existingMeta };
+        throw digestMismatch(putOptions.sha256, blobId);
       }
-      const final = pathFor(blobId);
-      mkdirSync(dirname(final), { recursive: true });
-      renameSync(temp, final);
+      const existing = committedMeta(blobId);
+      if (existing) {
+        rmSync(temp, { force: true });
+        return { blob_id: blobId, ...refresh(blobId, existing) };
+      }
       const meta: Meta = {
         size,
         name: putOptions?.name ?? null,
         media_type: putOptions?.media_type ?? null,
         expires_at: expiry(),
       };
-      commit(blobId, meta);
+      commit(blobId, temp, meta);
       return { blob_id: blobId, ...meta };
     },
     openRead(blobId) {
       const record = stat(blobId);
-      const path = pathFor(blobId);
-      if (!record || !existsSync(path)) return undefined;
-      return { stream: createReadStream(path), size: record.size, record };
+      if (!record) return undefined;
+      return { stream: createReadStream(pathFor(blobId)), size: record.size, record };
     },
     stat,
     async copyTo(blobId, destination) {
-      if (!BLOB_ID_PATTERN.test(blobId) || !existsSync(pathFor(blobId))) return false;
+      if (committedMeta(blobId) === undefined) return false;
       await copyFile(pathFor(blobId), destination);
       return true;
     },
@@ -318,18 +381,24 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
       const at = now();
       let removed = 0;
       let kept = 0;
-      // Orphans of a crashed write: `.upload-*.part` in the root, temp files in the prefix directories.
       for (const entry of readdirSync(root, { withFileTypes: true })) {
         const path = join(root, entry.name);
-        if (entry.isFile() && entry.name.endsWith(".part")) dropStalePart(path);
+        // Orphans of a crashed upload: `.upload-*.part` in the root.
+        if (entry.isFile() && entry.name.endsWith(".part")) dropStale(path, at);
         if (!entry.isDirectory()) continue;
-        for (const name of readdirSync(path)) if (name.endsWith(".part")) dropStalePart(join(path, name));
+        for (const name of readdirSync(path)) {
+          const file = join(path, name);
+          // Temp files of a crashed write, and data files whose sidecar was never written.
+          if (name.endsWith(".part")) dropStale(file, at);
+          else if (BLOB_ID_PATTERN.test(name) && !existsSync(`${file}.json`)) dropStale(file, at);
+        }
       }
-      for (const { blobId, meta } of committed()) {
-        if (meta.expires_at !== null && Date.parse(meta.expires_at) <= at) {
+      for (const { blobId, meta } of sidecars()) {
+        const missing = !existsSync(pathFor(blobId));
+        if (missing || (meta.expires_at !== null && Date.parse(meta.expires_at) <= at)) {
           rmSync(pathFor(blobId), { force: true });
           rmSync(metaFor(blobId), { force: true });
-          removed += 1;
+          if (!missing) removed += 1;
         } else {
           kept += meta.size;
         }

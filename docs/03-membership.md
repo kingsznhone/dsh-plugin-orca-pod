@@ -107,7 +107,7 @@ POST /cluster/heartbeat
 | `offline_after` | `interval × 3`                    | 累计未收到，移出在线集                       |
 | `recover_probe` | 15s → 30s 退避                    | offline 后的探测                             |
 | `record_ttl`    | 7d                                | offline 记录保留上限，之后修剪               |
-| `tombstone`     | 10 min                            | 被移除/修剪的 id 在这段时间内不再登记        |
+| `tombstone`     | 10 min                            | 被移除/修剪的 id 在这段时间内不再从他人目录登记；本人 join 会清除墓碑 |
 
 超时判定用**单调时钟**。墙上时钟只用于显示与 `ts` 校验：墙钟会因休眠、校时跳变，用它算“多久没心跳”会把全网点成 offline。
 
@@ -167,7 +167,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 1. **候选**：未知 `orca_node_id` + endpoints 进表，`state=unknown`、来源标 `candidate`；拨号前先过 [§7.7](07-security.md#77-ssrf--候选端点防护) 的地址筛查，之后和其他 peer 一样每拍拨一次（按 endpoints 顺序）。对方不认识我就 join，成功后等对方心跳自然转 online。
 2. **已知但 offline**：不复活，只按 `recover_probe` 退避探测。
 3. **对端把我修剪掉**（`403 not_a_member` / `404 unknown_orca_node`）：我重新 join 对端（join 会带回它的目录），再补一拍心跳。
-4. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。
+4. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。墓碑只挡**他人目录**，不挡本人：该节点自己发来、准入证明通过的 join 会清除墓碑并重新登记，否则网关回了 200 却不记录它，之后它的每个签名请求都会被 403。
 5. **探测即扩散**：每次 join 对端都会回目录，所以知识沿 join 边继续扩散，不需要额外的 gossip 协议。
 
 > 回答“能不能用 `offline_after` 阻止别人的缓存进入我的表”：不要。`offline_after` 是**在线阈值**，不是**入表过滤器**。该做的是：目录只进候选 + 只有本人能复活 + 被拒就重 join。

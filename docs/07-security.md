@@ -15,9 +15,9 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 ```
 
   join/heartbeat 的 `proof` 是 HMAC，输入（workgroup_id、节点 id、ts、nonce）全是明文；明文 HTTP 上嗅到一个心跳就能离线跑字典。scrypt 每次猜测要 ~32 MiB 内存与 ~100 ms，把爆破成本抬到数量级之上。仍然没有 `/cluster/join` 的按 IP 限速（要限速在代理层做）——scrypt 只抬高单次猜测成本，弱口令仍应避免。
-- **密码和密钥现在放在哪里**（当前行为，如何改进见 [§11](11-open-questions.md#11-未决问题)“口令与配置的存放”）：
-  - `<data_root>/config.json`：存**派生密钥** `key_base64`（不存密码），原子写入、文件权限 0600；`orca-node serve` 之后只读它，不再需要密码。配置文件泄露 = 直接获得准入证明能力。
-  - `<data_root>/ui-config.json`：DSH 面板的配置覆盖层，**明文**保存 `workgroup_password`（以及 peers、端口等），按默认文件权限写，没有 0600。面板读到的配置视图永不返回密码，只给 `password_set`。
+- **密码和密钥放在哪里**：
+  - **DSH 插件**：密码是 DSH 凭据（`ctx.credentials`，默认是 `$DSH_HOME/.credentials.yaml`），引用名默认按 workgroup 派生为 `ORCA_POD_PASSWORD_<WORKGROUP>`（`-` 换成 `_`，全大写），也可以用 `workgroup_password_ref` 指定。凭据文件为整个 DSH home 共用，所以引用名按 workgroup 区分：同一 workgroup 的 profile 共用密码，不同 workgroup 互不覆盖。凭据库里没有值时依次回落到启动环境变量与 `.env`，无头宿主可以直接导出同名变量。插件配置（profile 的 `cordis.patch.yml`）**不接受**明文 `workgroup_password`，校验直接报错。面板读到的配置视图永不返回密码，只给 `password_set`。
+  - `<data_root>/config.json`：存**派生密钥** `key_base64`（不存密码），原子写入、文件权限 0600；`orca-node serve` 与 CLI 只读它，不再需要密码。配置文件泄露 = 直接获得准入证明能力。
   - `<data_root>/identity.json`：节点私钥，0600。
   - 同一个节点的 agent 能读到这些文件：ACP 子进程继承 `ORCA_POD_DATA_ROOT`，CLI 就是用这里的私钥以本节点身份签名；agent 也可以不带 `--local-task` 直接以本节点身份发根任务（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
 - DSH 插件默认 `bind_host: "127.0.0.1"`，bundle 不携带任何 workgroup/密码：首次启动必须先在面板向导里完成 setup（workgroup、密码、监听地址）。向导默认仍选 loopback，只有显式选择 LAN 地址或 `::` 才接受 peer——同网段访问是运维的显式决定，不是默认。认证仍靠节点签名与成员闸门；不支持无密码的开放 mesh。需要更严格时保持 loopback 并让流量只走代理。
@@ -62,7 +62,7 @@ sig = Ed25519(identity.private_key,
 - **重放窗口**：60s + nonce 去重 + 重启拒绝；跨 orca node 时钟必须大致同步（NTP）；
 - **同组内的定向往返**：签名绑定接收方 id 与完整 URL，因此 A 发给 B 的请求不能被转发给 C、也不能被代理换掉查询串参数；代价是所有出站调用都要先知道对方 id（成员表/join 已提供）；
 - **代理友好**：签名覆盖 method/url（含 query）/body，代理改写 body 或查询串会验签失败（这是特性）；路径大小写、百分号编码也要求前后一致；
-- **大 body 的签名**：带 body 的流式上传加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘并计算实际摘要，不一致即 `400 blob_digest_mismatch`；
+- **大 body 的签名**：带 body 的流式上传加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘并计算实际摘要，不一致即 `400 blob_digest_mismatch` 并丢弃这些字节；
 - **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix 秒>&sig=<base64url>`，`sig = Ed25519(该节点私钥, "orca-pod/blob-link|" + blob_id + "|" + exp)`，用该节点自己的公钥验。直链只是省掉签名头的便利，不扩大可读范围（持有成员身份的人本来就能直接 `GET`）；有效期见 [§5.6](05-tasks.md#56-文件交换blob-通道)。
 
 `/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = base64url(HMAC-SHA256(k, "orca-pod/join|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce))`，其中 `k` 是上面的 scrypt 密钥——密码只出现在这一步。`/cluster/heartbeat` 同样带 `ts`/`nonce`/`proof`（标签 `orca-pod/heartbeat`），验不过回 `401 bad_proof`，双方据此在下一拍互相丢弃。`/health` 不签，会返回 `orca_node_id`（公开信息，不扩大权限面）。
@@ -70,7 +70,7 @@ sig = Ed25519(identity.private_key,
 ### 7.3 密钥与密码的分发
 
 - 推荐：`workgroup_id` + 密码通过带外通道给（人当面、密码管理器、私聊），不放进任何仓库；
-- 面板向导与 `orca-pod install` 接收明文密码，之后只保留派生密钥（`config.json`）与面板覆盖层（见 [§7.1](07-security.md#71-workgroup-与密码)）；
+- 面板向导接收明文密码，交给 DSH 凭据库保存；`orca-pod install` 接收明文密码，只把派生密钥写进 `config.json`（见 [§7.1](07-security.md#71-workgroup-与密码)）；
 - 轮换（“解散再重建”，是特性不是缺陷）：
   1. A 改密码并重启监听 → A 的心跳准入证明换成新密码，旧成员在下一拍收到 401 并把 A 丢弃，A 也把旧成员丢弃；
   2. B 也改成同一新密码、重启、重新 join A → 新 group 成立（此刻 A、B 互见）；
@@ -120,9 +120,12 @@ sig = Ed25519(identity.private_key,
 - 候选端点（从别人目录里学到、尚未直接 join 的）在拨号前校验；显式配置、CLI `--peer`、直接 `join` 的端点不在此列；
 - 恒定拒绝：`0.0.0.0`/`::`、组播与保留段（≥ 224.0.0.0）、`169.254.0.0/16`（含元数据地址 `169.254.169.254`）、`fe80::/10`；
 - 允许 RFC1918、`100.64/10`、`fd00::/8`；**回环默认允许**（同机多进程是常见部署），可用 `allow_loopback_peers: false` 收紧为拒绝；公网地址需要 `allow_public_peers: true`；
-- 主机名先解析、再按**所有**解析结果判断，解析失败即拒；每个端点每个进程只判断一次；被拒的候选只 warning 一次，不进 online。
+- 主机名先解析、再按**所有**解析结果判断，解析失败即拒；判定结果只缓存 60 秒，过期重新解析；被拒的候选只 warning 一次，不进 online；
+- **入站 join 自报的端点**在登记前筛查：恒定拒绝的地址剔除；回环地址只在 join 本身经回环到达时接受（远端机器不可能在我的 127.0.0.1 上）；公网地址可以（对方已证明持有密码）；解析不出来的主机名保留；一个都不剩 → `400 endpoint_refused`；
+- **不跟随重定向**：出站请求带 `redirect: "manual"`，3xx 按失败处理，签名请求不会被弹到别的地址；
+- 已知残余：校验与 `fetch` 各自解析一次 DNS，两次之间改答案（DNS rebinding）的窗口仍在。
 
-实现：`membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/net.ts` 的 `candidateEndpointAllowed`。
+实现：`membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/net.ts` 的 `candidateEndpointAllowed`；入站 join 走 `screenEndpoint`。
 
 ### 7.8 审计
 

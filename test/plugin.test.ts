@@ -99,14 +99,20 @@ describe("plugin config", () => {
   it("exposes the config as a Standard Schema", () => {
     const schema = plugin.Config["~standard"];
     expect(schema.version).toBe(1);
-    const ok = schema.validate({ workgroup_id: "wg-a", workgroup_password: "pw" });
+    const ok = schema.validate({ workgroup_id: "wg-a", workgroup_password_ref: "MY_ORCA_PASSWORD" });
     expect("value" in ok).toBe(true);
     const bad = schema.validate({ workgroup_id: "Bad ID" });
     expect("issues" in bad && bad.issues.length > 0).toBe(true);
   });
 
-  it("declares the tools hard dependency", () => {
-    expect(plugin.inject).toEqual(["tools"]);
+  it("declares the tool registry, credential store and config editor as hard dependencies", () => {
+    expect(plugin.inject).toEqual(["tools", "credentials", "configEditor"]);
+  });
+
+  it("refuses a plaintext workgroup password in the plugin config", () => {
+    const result = plugin.Config["~standard"].validate({ workgroup_id: "wg-a", workgroup_password: "secret" });
+    expect(result).toMatchObject({ issues: [{ path: ["workgroup_password"] }] });
+    expect(plugin.Config["~standard"].validate({ workgroup_id: "wg-a" })).toHaveProperty("value");
   });
 });
 
@@ -115,7 +121,9 @@ describe("orca_pod tool", () => {
     ready: Promise.resolve(),
     runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
     config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-    uiConfigured: true,
+    configured: true,
+    rememberedPeers: [],
+    adopt: async () => {},
     reconfigure: async () => {},
     addPeer: async () => {},
     disconnect: async () => {},
@@ -134,8 +142,6 @@ describe("orca_pod tool", () => {
     for (const method of ["send", "status", "cancel", "members", "connect"]) {
       expect(description).toContain(method);
     }
-    // Granting authority is user-only: the model has no approve method.
-    expect(description).not.toContain("approve");
     expect(description).not.toContain("§");
     expect(description).toContain("asynchronously");
     expect(description).toContain("task_id");
@@ -158,9 +164,6 @@ describe("orca_pod tool", () => {
     await expect(tool(tools).execute({ method: "cancel", peer: "http://127.0.0.1:1" })).rejects.toThrow(/task_id/);
     await expect(tool(tools).execute({ method: "connect" })).rejects.toThrow(/peer/);
     await expect(tool(tools).execute({ method: "connect", peer: "not a url" })).rejects.toThrow(/http/);
-    await expect(tool(tools).execute({ method: "approve", peer: "http://127.0.0.1:1", task_id: "t" })).rejects.toThrow(
-      /method must be one of/,
-    );
   });
 
   it("rejects a malformed model selector before touching the orca node", async () => {
@@ -191,7 +194,9 @@ describe("orca_pod tool", () => {
       ready: Promise.resolve(),
       runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
       config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-      uiConfigured: true,
+      configured: true,
+      rememberedPeers: [],
+      adopt: async () => {},
       reconfigure: async () => {},
       addPeer: async () => {},
       disconnect: async () => {},
@@ -202,7 +207,7 @@ describe("orca_pod tool", () => {
     const presets: PermissionPresetsService = {
       permissionState: (target) => (target === session ? { sandbox: "workspace-write" } : {}),
     };
-    const sendTools = createPodTools(handleForSend, tracker, presets);
+    const sendTools = createPodTools(handleForSend, tracker, () => presets);
     const agent = {
       id: "session-1",
       status: "running" as const,
@@ -220,6 +225,66 @@ describe("orca_pod tool", () => {
     );
     const explicit = sent[1] as { metadata?: { pod?: Record<string, unknown> } };
     expect(explicit.metadata?.pod?.permission_mode).toBe("read-only");
+  });
+
+  it("forwards the caller's abort signal and cancels a task accepted after the turn was cancelled", async () => {
+    const controller = new AbortController();
+    const signals: Array<AbortSignal | undefined> = [];
+    const cancelled: string[] = [];
+    const fakeNode = {
+      sendTask: async (_peer: string, _input: unknown, options?: { signal?: AbortSignal }) => {
+        signals.push(options?.signal);
+        // The remote accepts, but the user cancels the turn before the reply lands.
+        controller.abort();
+        return { id: "task-late", status: { state: "submitted" } };
+      },
+      cancelTask: async (_peer: string, taskId: string) => {
+        cancelled.push(taskId);
+        return { id: taskId, status: { state: "canceled" } };
+      },
+    } as unknown as import("../src/orca_node.ts").OrcaNode;
+    const handleForSend = {
+      ready: Promise.resolve(),
+      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
+      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
+    } as unknown as PodHandle;
+    const watched: string[] = [];
+    const recorder = { track: (_agent: unknown, _peer: string, taskId: string) => watched.push(taskId) > 0 };
+    const sendTools = createPodTools(handleForSend, recorder as unknown as typeof tracker);
+    const agent = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
+    await expect(
+      tool(sendTools).execute(
+        { method: "send", peer: "http://127.0.0.1:11811", text: "hi" },
+        { agent, signal: controller.signal },
+      ),
+    ).rejects.toThrow(/cancelled by the caller/);
+    expect(signals[0]).toBe(controller.signal);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(cancelled).toEqual(["task-late"]);
+    expect(watched).toEqual([]);
+  });
+
+  it("does not dispatch at all when the turn is already cancelled", async () => {
+    let sent = 0;
+    const fakeNode = {
+      sendTask: async () => {
+        sent += 1;
+        return { id: "never", status: { state: "submitted" } };
+      },
+    } as unknown as import("../src/orca_node.ts").OrcaNode;
+    const handleForSend = {
+      ready: Promise.resolve(),
+      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
+      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
+    } as unknown as PodHandle;
+    const sendTools = createPodTools(handleForSend, tracker);
+    await expect(
+      tool(sendTools).execute(
+        { method: "send", peer: "http://127.0.0.1:11811", text: "hi" },
+        { signal: AbortSignal.abort() },
+      ),
+    ).rejects.toThrow(/cancelled by the caller/);
+    expect(sent).toBe(0);
   });
 
   it("reads sandbox modes from the session's permission preset", () => {
@@ -251,7 +316,9 @@ describe("orca_pod tool", () => {
       ready: Promise.resolve(),
       runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
       config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-      uiConfigured: true,
+      configured: true,
+      rememberedPeers: [],
+      adopt: async () => {},
       reconfigure: async () => {},
       addPeer: async (peer: string) => {
         seen.push(peer);

@@ -1,8 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { MAX_MODEL_OFFERS } from "../settings.ts";
 import { DEFAULT_CLOCK_SKEW_MS, verifyAdmissionProof, type AdmissionKind } from "../crypto.ts";
 import { PodError } from "../errors.ts";
+import { EXPLICIT_DIAL_POLICY, isDirectLoopbackRequest, screenEndpoint } from "../net.ts";
 import {
   membersDigest,
   normalizeEndpoints,
@@ -159,6 +160,27 @@ function roster(deps: GatewayDeps): { self: SelfRecord; members: PeerView[]; dig
   return { self, members, digest: membersDigest(members) };
 }
 
+/**
+ * The endpoints of a joining node this node is willing to dial back (§7.7).
+ * The joiner proved the password, so public addresses are fine, but what it
+ * declares is still input: link-local (cloud metadata), multicast and
+ * unspecified addresses are dropped, and so are loopback addresses unless the
+ * join itself came over loopback (a remote machine cannot be reached at our
+ * 127.0.0.1, so such an endpoint could only aim our heartbeats at a local
+ * service). The transport repeats the check on every connection.
+ */
+async function dialableEndpoints(declared: string[], request: FastifyRequest): Promise<string[]> {
+  const policy = { ...EXPLICIT_DIAL_POLICY, allowLoopbackPeers: isDirectLoopbackRequest(request) };
+  // A name that does not resolve from here is kept: it is not known to be bad,
+  // and the transport screens whatever it resolves to when it is dialed.
+  const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, policy)));
+  const allowed = declared.filter((_, index) => verdicts[index] !== "refused");
+  if (allowed.length === 0) {
+    throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
+  }
+  return allowed;
+}
+
 export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   app.get("/health", { config: { access: "public" } }, async () => ({
     status: "ok",
@@ -183,10 +205,11 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
     async (request) => {
       const body = request.body;
       admit(deps, "join", request.auth.orcaNodeId, body);
-      const endpoints = normalizeEndpoints(body.endpoints);
-      if (endpoints === null) {
+      const declared = normalizeEndpoints(body.endpoints);
+      if (declared === null) {
         throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
       }
+      const endpoints = await dialableEndpoints(declared, request);
       const runtime = body.runtime ?? null;
       deps.peers.upsert({
         orca_node_id: body.orca_node_id,

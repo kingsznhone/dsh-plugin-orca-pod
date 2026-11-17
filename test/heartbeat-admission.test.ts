@@ -79,7 +79,10 @@ describe("heartbeat admission", () => {
         // The first attempt can reuse a pooled socket to the stopped node.
         const refusal = await b.heartbeat(a2.endpoints[0]!).catch((error: unknown) => error);
         const failure =
-          refusal instanceof TypeError ? await b.heartbeat(a2.endpoints[0]!).catch((error: unknown) => error) : refusal;
+          // By name, not instanceof: fetch's TypeError may come from another realm (vm pools).
+          (refusal as { name?: unknown } | null)?.name === "TypeError"
+            ? await b.heartbeat(a2.endpoints[0]!).catch((error: unknown) => error)
+            : refusal;
         expect(failure).toMatchObject({ status: 401 });
         // The old mesh forgets the node on the very first rejected heartbeat.
         expect(b.members().some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(false);

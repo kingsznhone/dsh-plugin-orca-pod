@@ -31,7 +31,7 @@ import type { Tracker } from "./tracker.ts";
 import type { ApprovalBroker } from "./broker.ts";
 
 /** One artifact attached to a task. */
-interface PodArtifact {
+export interface PodArtifact {
   name: string;
   blob_id: string;
   bytes: number;
@@ -43,7 +43,7 @@ interface PodArtifact {
 export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | null };
 
 /** One hop of an approval chain, root first. */
-interface PodChainEntry {
+export interface PodChainEntry {
   name: string;
   self: boolean;
 }
@@ -80,7 +80,7 @@ export interface PodTaskRow {
 }
 
 /** Everything the task detail dialog shows. */
-interface PodTaskDetail {
+export interface PodTaskDetail {
   task: TaskView;
   origin: string;
   dispatch: DispatchEntry | null;
@@ -89,7 +89,7 @@ interface PodTaskDetail {
 }
 
 /** Workspace directories plus a shallow listing for the UI browser. */
-interface WorkspaceView {
+export interface WorkspaceView {
   root: string;
   notes: string;
   inputs: string;
@@ -101,7 +101,7 @@ interface WorkspaceView {
 }
 
 /** Advanced local controls the panel may edit; null means "not overridden". */
-interface PodAdvancedConfig {
+export interface PodAdvancedConfig {
   task_timeout_s: number | null;
   approval_timeout_s: number | null;
   result_max_bytes: number | null;
@@ -118,8 +118,8 @@ interface PodAdvancedConfig {
 }
 
 /** Effective pod configuration as the panel may see it (never the password). */
-interface PodConfigView {
-  /** True once the panel finished setup (an override file exists). */
+export interface PodConfigView {
+  /** True once a workgroup and its stored password exist (first-run setup done). */
   configured: boolean;
   workgroup_id: string;
   /** This node's orca node id (also the default display name), null before first start. */
@@ -160,13 +160,13 @@ export interface PodAdmin {
   workspace(): WorkspaceView | null;
   /** Effective config plus setup state; the password itself is never returned. */
   config(): PodConfigView;
-  /** Persist a panel override and restart the orca node with the merged config. */
+  /** Store a new password, persist the panel fields into the plugin config, and restart. */
   saveConfig(patch: Record<string, unknown>): Promise<PodConfigView>;
   /** `join` one peer now and remember it for later starts. */
   connect(peer: string): Promise<PodConfigView>;
   /** Leave the workgroup: tell known peers and forget them locally. */
   disconnect(): Promise<PodConfigView>;
-  /** Delete the panel override and the persisted orca node identity. */
+  /** Drop the workgroup, its stored password and the orca node identity (first-run wizard again). */
   reset(): Promise<PodConfigView>;
   /** Change notification; subscribes to both node events and tracker updates. */
   subscribe(listener: () => void): () => void;
@@ -247,7 +247,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
     const endpoints = current?.endpoints ?? [...config.endpoints];
     const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));
     return {
-      configured: handle.uiConfigured,
+      configured: handle.configured,
       workgroup_id: config.workgroup_id ?? "",
       node_id: self?.orca_node_id ?? null,
       display_name: self?.display_name ?? config.display_name ?? null,
@@ -256,7 +256,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       endpoints,
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
       bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
-      peers: [...config.peers],
+      peers: [...new Set([...config.peers, ...handle.rememberedPeers])],
       data_root: config.data_root ?? defaultDataRoot(),
       advanced: {
         task_timeout_s: config.task_timeout_s ?? null,
@@ -411,8 +411,8 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
         // the field to keep the current one.
         throw new Error("a workgroup password is required; a passwordless mesh is not supported");
       }
-      // Switching workgroups reuses the current password unless the panel sends a
-      // new one: the password is a local secret, not a claim tied to one group.
+      // The password goes to the DSH credential store and the other fields to the
+      // plugin config; switching workgroups carries the current password over.
       await handle.reconfigure(patch);
       return configView();
     },

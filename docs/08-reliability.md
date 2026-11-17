@@ -46,7 +46,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 ### 8.4 重复提交
 
-没有幂等键去重：同一条 `message/send` 提交两次就是两个 task。要避免重复，靠调用方（agent 不自动重试；tracker 只读不写）。`idempotency_key` 的设计见 [§11](11-open-questions.md#11-未决问题)“idempotency_key 与 trace_id”。
+没有幂等键去重：同一条 `message/send` 提交两次就是两个 task。要避免重复，靠调用方（agent 不自动重试；tracker 只读不写）。`idempotency_key` 的设计见 [§11](11-open-questions.md#11-未决问题)“idempotency_key 与跨节点追踪”。
 
 ### 8.5 超时与背压
 
@@ -68,7 +68,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 多跳发生时的约束：
 
-- **无深度上限**：`hop` 只是记账；允许链任意长，靠 `chain` 检测与超时收尾，不排队。目标 orca node 已在 `chain` 中 → `403 ancestor_call_forbidden`（`chain` 由发起方 CLI 拼装，[§5.1](05-tasks.md#51-任务标识与元数据)）。
+- **无深度上限**：`hop` 只是记账；允许链任意长，靠 `chain` 检测与超时收尾，不排队。目标 orca node 已在 `chain` 中、或就是 `root_origin` → `403 ancestor_call_forbidden`（`chain` 由派发方拼装，`root_origin` 由每个接收方写进任务并向下传，[§5.1](05-tasks.md#51-任务标识与元数据)）。
 - **单槽仍在**：每个 target 同一时间只跑 1 个任务；多余的请求在**建 task 之前**就 429，不创建进程——唤醒成本 = 一个 429 响应。
 - **兄弟互调不会僵死**：单槽下先占槽的一方还在跑自己的任务，另一方调它时直接 `429 orca_node_busy`——不会出现“两边都等着对方把活干完”。拿到 429 的一方把这个事实写进结论文本回报 A，由 A 协调（换顺序、拆任务，或回报用户）。TTL 只兜底极端情况，到期 `failed(timeout)`。
 - **重试**：服务端从不自动重试；模型重试必须退避 + 抖动。

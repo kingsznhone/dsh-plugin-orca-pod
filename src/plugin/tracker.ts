@@ -63,8 +63,13 @@ interface TrackedTask {
 
 /** Tracker handle returned to the plugin. */
 export interface Tracker {
-  /** Start watching a task dispatched by the given agent. */
-  track(agent: TrackerAgent, peer: string, taskId: string, options?: { record?: boolean }): void;
+  /**
+   * Start watching a task dispatched by the given agent. Idempotent: a task
+   * that is already watched keeps its state. Returns true when watching started.
+   * `record: false` marks a restore from the dispatch log, which skips tasks
+   * this process already gave up on.
+   */
+  track(agent: TrackerAgent, peer: string, taskId: string, options?: { record?: boolean }): boolean;
   /** Stop polling and drop pending notices. */
   stop(): void;
   /** Number of tasks still being watched (tests and diagnostics). */
@@ -75,6 +80,11 @@ export interface Tracker {
   subscribe(listener: () => void): () => void;
   /** Give the agent a fresh wake budget (the user just spoke to it). */
   resetWakes(agentId: string): void;
+  /**
+   * Drop every task tracked for one agent. Called when the agent's session is
+   * disposed (its own fiber's cleanup), so a closed session is not polled forever.
+   */
+  forget(agentId: string): void;
 }
 
 interface PendingTask {
@@ -192,12 +202,28 @@ export function createTracker(
   let coalesceTimer: NodeJS.Timeout | undefined;
   let stopped = false;
 
+  /** True while one poll round is running; at most one round runs at a time. */
+  let polling = false;
+  /** A round was requested while another was running: start it right after. */
+  let pollRequested = false;
+  /**
+   * Keys whose tracking was abandoned in this process (gone, rejected, or too
+   * many transient failures). Restoring from the dispatch log skips them, so an
+   * abandoned task is not picked up again and reported a second time.
+   */
+  const abandoned = new Set<string>();
+
   /**
    * Poll with a self-scheduling timer instead of `setInterval`: the next poll
    * starts only after the previous one finished, so a slow peer cannot stack
-   * overlapping rounds that deliver the same terminal state twice (§8.3).
+   * overlapping rounds that deliver the same terminal state twice (§8.3). A
+   * request that arrives mid-round is remembered and served when it ends.
    */
   function schedulePoll(delayMs = intervalMs): void {
+    if (polling) {
+      if (delayMs === 0) pollRequested = true;
+      return;
+    }
     if (pollTimer !== undefined) {
       clearTimeout(pollTimer);
       pollTimer = undefined;
@@ -205,7 +231,13 @@ export function createTracker(
     if (stopped || pending.size === 0) return;
     pollTimer = setTimeout(() => {
       pollTimer = undefined;
-      void poll().finally(() => schedulePoll());
+      polling = true;
+      void poll().finally(() => {
+        polling = false;
+        const again = pollRequested;
+        pollRequested = false;
+        schedulePoll(again ? 0 : intervalMs);
+      });
     }, delayMs);
     pollTimer.unref();
   }
@@ -220,6 +252,8 @@ export function createTracker(
       if (Date.now() < entry.nextAttemptAt) continue;
       try {
         const view = await node.getTask(entry.peer, entry.taskId);
+        // The entry may have been dropped (agent disposed) while the read ran.
+        if (pending.get(key) !== entry) continue;
         entry.view = view;
         entry.failures = 0;
         entry.nextAttemptAt = 0;
@@ -241,6 +275,7 @@ export function createTracker(
         // A vanished task (404) or a rejected read is final; a network timeout or
         // a 5xx is transient and must be retried instead of silently losing the
         // task — the agent was told not to poll (§8.3).
+        if (pending.get(key) !== entry) continue;
         failPoll(key, entry, error);
         changed = true;
       }
@@ -270,6 +305,7 @@ export function createTracker(
   /** Stop watching one task and tell the agent where to look next. */
   function endTracking(key: string, entry: PendingTask, reason: string): void {
     pending.delete(key);
+    abandoned.add(key);
     broker.withdraw(entry.peer, entry.taskId);
     logger.warn(`orca-pod: gave up tracking ${entry.taskId} on ${entry.peer}: ${reason}`);
     finished.push({ ...entry, kind: "interrupted", view: entry.view, reason });
@@ -330,8 +366,19 @@ export function createTracker(
 
   return {
     track(agent, peer, taskId, trackOptions = {}) {
-      if (stopped) return;
-      pending.set(`${peer}|${taskId}`, {
+      if (stopped) return false;
+      const key = `${peer}|${taskId}`;
+      const existing = pending.get(key);
+      if (existing !== undefined) {
+        // Already watched: keep its backoff and last view. A resumed session is
+        // a new agent object with the same id; deliver to the live one.
+        if (existing.agent.id === agent.id) existing.agent = agent;
+        return false;
+      }
+      // Restoring from the dispatch log must not revive a task this process gave up on.
+      if (trackOptions.record === false && abandoned.has(key)) return false;
+      abandoned.delete(key);
+      pending.set(key, {
         agent,
         peer,
         taskId,
@@ -344,6 +391,7 @@ export function createTracker(
       if (trackOptions.record !== false) getNode()?.annotateDispatch(taskId, agent.id);
       notify();
       schedulePoll(0);
+      return true;
     },
     stop() {
       stopped = true;
@@ -351,7 +399,9 @@ export function createTracker(
       if (coalesceTimer !== undefined) clearTimeout(coalesceTimer);
       pollTimer = undefined;
       coalesceTimer = undefined;
+      pollRequested = false;
       pending.clear();
+      abandoned.clear();
       finished.length = 0;
       listeners.clear();
     },
@@ -375,28 +425,49 @@ export function createTracker(
     resetWakes(agentId) {
       awake.delete(agentId);
     },
+    forget(agentId) {
+      let changed = false;
+      for (const [key, entry] of pending) {
+        if (entry.agent.id !== agentId) continue;
+        pending.delete(key);
+        broker.withdraw(entry.peer, entry.taskId);
+        changed = true;
+      }
+      for (let index = finished.length - 1; index >= 0; index -= 1) {
+        const entry = finished[index];
+        if (entry === undefined || entry.agent.id !== agentId) continue;
+        finished.splice(index, 1);
+        changed = true;
+      }
+      if (awake.delete(agentId)) changed = true;
+      if (changed) notify();
+    },
   };
 }
 
 /**
- * Resume background tracking after a host restart. The in-memory tracker is
- * empty, but the origin's dispatch log still remembers non-terminal tasks and
- * the DSH session that dispatched them; sessions the host no longer runs are
- * skipped (the task stays visible through `status` and the panel).
+ * Resume background tracking from the origin's dispatch log. After a host
+ * restart the in-memory tracker is empty, but the log still remembers
+ * non-terminal tasks and the DSH session that dispatched them; sessions the host
+ * does not run are skipped (the task stays visible through `status` and the
+ * panel). With `onlyAgentId`, only that session's dispatches are considered —
+ * used when one session is (re)created while the host runs. Safe to repeat:
+ * tasks already watched or abandoned in this process are left alone.
  */
 export function restoreTrackedDispatches(
   tracker: Tracker,
   dispatches: readonly DispatchEntry[],
   resolveAgent: (agentId: string) => TrackerAgent | undefined,
   logger: HostLogger,
+  onlyAgentId?: string,
 ): number {
   let restored = 0;
   for (const entry of dispatches) {
     if (entry.agent_id === undefined || isTerminal(entry.state)) continue;
+    if (onlyAgentId !== undefined && entry.agent_id !== onlyAgentId) continue;
     const agent = resolveAgent(entry.agent_id);
     if (agent === undefined) continue;
-    tracker.track(agent, entry.peer, entry.task_id, { record: false });
-    restored += 1;
+    if (tracker.track(agent, entry.peer, entry.task_id, { record: false })) restored += 1;
   }
   if (restored > 0) logger.info(`orca-pod: resumed tracking ${restored} dispatched task(s)`);
   return restored;

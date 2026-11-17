@@ -26,10 +26,10 @@
 
 规则：
 
-- `task_id` 由 target 生成（ULID 形状、26 字符、不可枚举）；origin 在派发日志里记 `(peer, task_id)`。
+- `task_id` 由 target 生成（ULID 形状：48 位毫秒时间戳 + 80 位随机，26 字符，按创建时间排序，不可枚举）；origin 在派发日志里记 `(peer, task_id)`。
 - **origin 是请求的签名者**（`origin_orca_node`），不由元数据声明。`context_id` 取 `message.contextId`，缺省等于 task id；目标 orca node 把 `(origin, context_id)` 映射到本地 ACP session，cwd 固定为 workgroup 根（[§6.10](06-execution.md#610-sessioncontext-与-workspace-的绑定)）。
 - `pod.hop`：任务已经跨了几跳，只作信息与排查，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。非负整数。
-- `pod.chain`：经手派发的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；每个用 CLI 派发子任务的节点把自己追加进去，target 若发现自己已在链中 → `403 ancestor_call_forbidden`。注意**根 origin 若是用插件工具派发的（不带 chain），它本身不在链里**，所以这条检查只拦住链上经手的节点，拦不住回调根 origin（见 [§11](11-open-questions.md#11-未决问题)“祖先禁调不覆盖根 origin”）。被挡住时，agent 应把问题写进结论文本（`BLOCKED: …`）交还 origin，而不是换条路再调回去。
+- `pod.chain`：经手派发的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；每个派发子任务的节点把自己追加进去。`pod.root_origin`：整棵委派树的发起节点；每个接收方都把它写进自己存下的任务，两条子任务路径（CLI `--local-task`、本地任务委派）原样带下去。target 若发现自己在 `chain` 中、或自己就是 `root_origin` → `403 ancestor_call_forbidden`。用插件工具派发的根任务不带 `chain`，所以“根 origin 不能被回调”必须靠 `root_origin` 判断，A → B → A 因此也会被挡住。被挡住时，agent 应把问题写进结论文本（`BLOCKED: …`）交还 origin，而不是换条路再调回去。仍然拦不住的是 agent 不带 `--local-task` 直接发一个新的根任务（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
 - `pod.root`：这条调用树的根 task id；`pod.root_origin`：根任务的 origin。`root_origin` 缺省取本任务的 origin，并写回 task 视图的 `metadata.pod`，grant 只认根 origin 的签名（[§7.11](07-security.md#711-grant)）。
 - **`hop`/`chain`/`root`/`root_origin` 由发起方的 CLI 在客户端拼装**：`orca-node send --local-task <本机 task>` 通过回环的 `GET /cluster/task` 读父任务视图，写成 `hop+1`、`chain + [本机 id]`、沿用 `root`/`root_origin`，并在没有显式 `--permission-mode` 时继承父任务的模式。target 只校验形状与环，不重算这些字段；这意味着节点上的 agent 能自己写它们（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`）；缺省按 `read-only`；本机 `permission_mode` 是上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。非法值 → `400 bad_request`。
@@ -67,8 +67,8 @@ tracker 的行为：
 - **瞬时失败**（超时、网络错误、5xx）：该任务按 1s 起翻倍、上限 30s 退避重试；连续 5 次失败后放弃跟踪，告诉 agent `tracking of task … was interrupted: …; the task may still be running — call orca_pod with method "status" to check it`。**不**把任务记成 failed，也不补发 `tasks/cancel`。
 - **确定性失败**（`404 task_not_found`、401/403）：立即放弃跟踪，同样告知 agent。
 - **终态**：照常合并成 notice。结论文本以 `BLOCKED` 开头的 completed 任务会被标注为“completed with a blocker report”（[§6.14](06-execution.md#614-acpexecutor)）。
-- **权限请求**：任务进入 `input-required` 且带 `permission_request` 时，tracker 把它交给 `ApprovalBroker`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）等 UI 作答，**不产生聊天 notice**，不唤醒 agent；任务继续被跟踪到终态。`blocked` 载荷不会被 tracker 单独提示，任务停在 `input-required`，要靠 `status` 或面板看到（见 [§11](11-open-questions.md#11-未决问题)“blocked 载荷没有提示”）。
-- **宿主重启**：派发时 tracker 把发起会话 id 写进派发日志；插件就绪后，对“非终态、且该会话此刻在宿主里存在”的任务恢复跟踪。其余任务不会被恢复，靠 `status` 或面板查看（见 [§11](11-open-questions.md#11-未决问题)“tracker 为后续恢复的 agent 恢复跟踪”）。
+- **权限请求**：任务进入 `input-required` 且带 `permission_request` 时，tracker 把它交给 `ApprovalBroker`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）等 UI 作答，**不产生聊天 notice**，不唤醒 agent；任务继续被跟踪到终态。`input-required` 只因权限请求出现；任务因其他原因无法继续时以 `BLOCKED:` 结论结束，按上一条作为终态通知 agent。
+- **宿主重启**：派发时 tracker 把发起会话 id 写进派发日志。插件就绪且 agent 注册表可用后，对“非终态、且该会话此刻在宿主里存在”的任务恢复跟踪；之后每有会话被创建或恢复（`agent/created`），只恢复**该会话自己**的派发。会话被销毁时，它的跟踪随会话一起撤销。重复恢复是幂等的：已在跟踪的任务保持原状（退避与最后视图不清零），本进程已放弃跟踪的任务（404、401/403、瞬时失败超限）不会被再次拉起。宿主里不存在的会话，其任务靠 `status` 或面板查看。
 
 #### 状态怎么回到会话
 
@@ -155,8 +155,8 @@ http://host.example/blobs/<sha256>?exp=...&sig=...
 
 规则：
 
-- `blob_id = sha256(bytes)`，内容寻址 → 天然去重；同内容重复上传返回 `200` 且不占新空间，首次返回 `201`。
-- 上传与下载都**流式**：客户端先算摘要再签名（签名覆盖 `X-Pod-Body-SHA256` 而不是 body 本身），服务端边收边算、写临时文件后 rename，内存里不攒整个文件；摘要与实际字节不符 → `400 blob_digest_mismatch`。`GET` 走流式响应。
+- `blob_id = sha256(bytes)`，内容寻址 → 天然去重；同内容重复上传返回 `200`、不占新空间，并把过期时间延长到“现在 + TTL”；首次返回 `201`。
+- 上传与下载都**流式**：客户端先算摘要再签名（签名覆盖 `X-Pod-Body-SHA256` 而不是 body 本身），服务端边收边算、写临时文件，内存里不攒整个文件；摘要与实际字节不符 → `400 blob_digest_mismatch`，字节直接丢弃，不以任何 id 保存。落盘顺序是“数据 rename 到位 → 写 sidecar（`<id>.json`）”，sidecar 就是提交标记：没有 sidecar 的数据文件不算 blob，GC 过了宽限期把它清掉；sidecar 在而数据丢了，同样不算 blob、由 GC 清理。`GET` 走流式响应。
 - 上限：单 blob 256 MiB（`413 blob_too_large`）；单个任务附带的 inputs 默认 32 个文件 / 512 MiB（`max_input_files`、`max_input_bytes` 可调）。
 - **存储配额**：`max_blob_store_bytes`（默认 5 GiB）限制 blob 存储总量（已落盘 + 正在上传的字节）；超出的上传 `507 quota_exceeded`。
 - 文件名只作提示（`name`），不参与寻址；存储路径由 blob_id 决定。上传时 `?name=` 必须是无路径分隔符、无 `..`、无盘符的纯文件名，否则 `400 bad_request`。下载响应不带文件名。

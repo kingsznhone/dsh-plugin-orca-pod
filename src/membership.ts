@@ -199,7 +199,11 @@ export function createMembership(options: CreateMembershipOptions): Membership {
         existing.origin = "explicit";
         return;
       }
-      if (isTombstoned(peer.orca_node_id)) return;
+      // An explicit upsert is the node itself, admitted by a verified join (or
+      // its answer to ours). Tombstones only keep stale *remote lists* from
+      // reviving a removed id; they must not lock out a node that rejoins on its
+      // own, or the gateway would answer 200 and then reject its every request.
+      tombstones.delete(peer.orca_node_id);
       records.set(peer.orca_node_id, createRecord(peer, "online", nowMs, "explicit"));
     },
     get(orcaNodeId: OrcaNodeId): PeerView | undefined {

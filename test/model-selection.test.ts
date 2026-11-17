@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/config.ts";
 import { validateModelOffers, validateModelSelection, type Settings } from "../src/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/models.ts";
-import type { HostContext } from "../src/plugin/dsh.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
 
 const LIVE: OrcaNode[] = [];
@@ -129,30 +128,23 @@ describe("model catalog", () => {
   });
 
   it("discovers the catalog from the DSH host services", async () => {
-    const ctx = {
-      get(name: string): unknown {
-        if (name === "llm") {
-          return {
-            listProviders: () => [
-              { id: "deepseek", name: "DeepSeek" },
-              { id: "broken", name: "Broken" },
-            ],
-            listModels: async (provider: string) => {
-              if (provider === "broken") throw new Error("no adapter");
-              return [
-                { id: "deepseek-flash", name: "Flash", description: "fast" },
-                { id: "deepseek-v4-pro", name: "Pro" },
-              ];
-            },
-          };
-        }
-        if (name === "agentDefaultModel") {
-          return { currentSelection: () => ({ provider: "deepseek", model: "deepseek-flash" }) };
-        }
-        return undefined;
+    const services = {
+      llm: {
+        listProviders: () => [
+          { id: "deepseek", name: "DeepSeek" },
+          { id: "broken", name: "Broken" },
+        ],
+        listModels: async (provider: string) => {
+          if (provider === "broken") throw new Error("no adapter");
+          return [
+            { id: "deepseek-flash", name: "Flash", description: "fast" },
+            { id: "deepseek-v4-pro", name: "Pro" },
+          ];
+        },
       },
-    } as unknown as HostContext;
-    const catalog = await discoverModelCatalog(ctx, { info() {}, warn() {}, error() {} });
+      agentDefaultModel: { currentSelection: () => ({ provider: "deepseek", model: "deepseek-flash" }) },
+    };
+    const catalog = await discoverModelCatalog(services, { info() {}, warn() {}, error() {} });
     expect(catalog.models.map((model) => model.model)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(catalog.models[0]?.description).toBe("fast");
     expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });

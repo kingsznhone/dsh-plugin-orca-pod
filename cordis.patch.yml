@@ -1,18 +1,20 @@
 # DeepSeek Harness bundle patch for orca-pod.
 #
-# The install root is this package: `dsh plugin --profile <name> add <path to
-# packages/orca-pod>` links it into the profile and appends the bundle to
-# `dsh.profile.bundles`. DSH resolves the row's `name` through the profile's
-# node_modules, so it must be the package name from package.json.
+# The install root is this package (the repository root): `dsh plugin --profile
+# <name> add <path to this directory>` links it into the profile and appends the
+# bundle to `dsh.profile.bundles`. DSH resolves the row's `name` through the
+# profile's node_modules, so it must be the package name from package.json.
 #
-# The package is self-contained: its only runtime dependency is fastify, and
-# all first-party modules live under `src/`.
+# The package is self-contained: its only runtime dependency is fastify, and all
+# first-party modules build from `src/` into `lib/`.
 #
-# No credentials are bundled. The first start waits for the panel wizard, which
-# writes a local override (`<data_root>/ui-config.json`) with the workgroup id,
-# password and listen address; until then the node does not listen at all
-# (§7.1). The default listen address is loopback, and the wizard asks which
-# interface should be exposed to peers.
+# No credentials are bundled, and this config must never carry
+# `workgroup_password`: the plugin rejects it. The first start waits for the
+# panel wizard, which stores the password in the DSH credential store and saves
+# the workgroup id and listen address into this profile entry through the config
+# editor; until then the node does not listen at all (§7.1). The default listen
+# address is loopback, and the wizard asks which interface should be exposed to
+# peers.
 - insert:
     - id: orca-pod
       name: "orca-pod"

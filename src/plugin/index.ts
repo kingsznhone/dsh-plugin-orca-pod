@@ -5,19 +5,25 @@
  * blocking the DSH host, registers the `orca_pod` tool, and stops the orca node when
  * the plugin fiber unloads. There are no module-level side effects: the orca node is
  * only created inside `apply`.
+ *
+ * Optional host services are declared with `ctx.inject`. Each callback runs in
+ * its own child scope and may run again when the service is replaced, so every
+ * registration made there is tied to that scope's `effect`, never to the plugin's.
  */
+
+import { isDeepStrictEqual } from "node:util";
 
 import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
 import type { Config as PodConfig } from "./config.ts";
-import type { AgentsService, HostContext, PermissionPresetsService, StandardSchemaV1 } from "./dsh.ts";
+import { defaultDataRoot } from "../config.ts";
+import type { AgentsService, HostContext, PermissionPresetsService, StandardSchemaV1, ToolAgent } from "./dsh.ts";
 import { createPodRuntime, stopPod } from "./lifecycle.ts";
-import { installSkill } from "./skill.ts";
+import type { PodStores } from "./lifecycle.ts";
+import { skillRegistration } from "./skill.ts";
 import { createPodTools } from "./tools.ts";
 import { createTracker, restoreTrackedDispatches } from "./tracker.ts";
-import { errorMessage } from "../errors.ts";
-import { service } from "./util.ts";
 import { registerPodWeb } from "./web.ts";
 
 /** Validated plugin configuration. */
@@ -26,8 +32,38 @@ export type Config = PodConfig;
 /** Standard Schema config consumed by Cordis before `apply` runs. */
 export const Config: StandardSchemaV1<Config> = createConfigSchema();
 
-/** Hard dependency on the DSH tool registry service. */
-export const inject: string[] = ["tools"];
+/**
+ * Hard dependencies: the tool registry, the credential store that holds the
+ * workgroup password, and the config editor the panel saves through. All three
+ * are part of the DSH base composition.
+ */
+export const inject: string[] = ["tools", "credentials", "configEditor"];
+
+/**
+ * The lifecycle's persistence on a DSH host (§7.3): the password in the
+ * credential store, settings in this plugin's profile entry. A config write goes
+ * through `configEditor.edit`, which validates it with `Config`, writes the
+ * profile patch and has the Loader restart this plugin with the new config.
+ */
+export function createHostStores(ctx: Pick<HostContext, "credentials" | "configEditor" | "fiber">): PodStores {
+  return {
+    async readSecret(ref) {
+      const hit = await ctx.credentials.resolve(ref);
+      return hit === undefined || hit.value.length === 0 ? undefined : hit.value;
+    },
+    writeSecret: (ref, value) => ctx.credentials.set(ref, value),
+    clearSecret: (ref) => ctx.credentials.unset(ref),
+    async writeConfig(change) {
+      const entry = ctx.fiber.entry;
+      if (entry === undefined)
+        throw new Error("orca-pod was not loaded from a profile entry; its config cannot be saved");
+      const current = structuredClone((entry.options.config ?? {}) as Record<string, unknown>);
+      if (isDeepStrictEqual(change(structuredClone(current)), current)) return false;
+      await ctx.configEditor.edit(entry, (raw) => change(raw));
+      return true;
+    },
+  };
+}
 
 /**
  * Compose the plugin: runtime, approval broker, tracker, tool, panel route.
@@ -37,17 +73,51 @@ export const inject: string[] = ["tools"];
  * running"), while `apply` returns immediately.
  */
 export function apply(ctx: HostContext, config: Config): void {
-  const handle = createPodRuntime(ctx, config);
+  // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
+  // baseUrl is the profile hint that keeps two profiles apart.
+  const defaultRoot = defaultDataRoot(process.env, ctx.baseUrl);
+  const handle = createPodRuntime(ctx, config, createHostStores(ctx), defaultRoot);
   const node = () => handle.runtime.orcaNode;
   const broker = createApprovalBroker(node);
   const tracker = createTracker(node, broker, ctx.logger);
 
-  // Tasks dispatched before a host restart resume tracking for sessions that still run.
-  void handle.ready.then(() => {
+  let agents: AgentsService | undefined;
+
+  /**
+   * Resume tracking from the dispatch log (§8.3). Without `agent`, every session
+   * the host already runs is considered (startup, or the agent registry
+   * appearing); with `agent`, only that session's own dispatches. Repeating it
+   * is harmless: watched or abandoned tasks are left alone.
+   */
+  const restore = (agent?: ToolAgent): void => {
     const orcaNode = node();
-    const agents = service<AgentsService>(ctx, "agents");
-    if (orcaNode !== null)
-      restoreTrackedDispatches(tracker, orcaNode.listDispatches(), (id) => agents?.get(id), ctx.logger);
+    if (orcaNode === null) return;
+    restoreTrackedDispatches(
+      tracker,
+      orcaNode.listDispatches(),
+      (id) => (agent !== undefined ? agent : agents?.get(id)),
+      ctx.logger,
+      agent?.id,
+    );
+  };
+
+  ctx.inject(["agents"], (scope) => {
+    agents = scope.agents;
+    void handle.ready.then(() => restore());
+    scope.effect(
+      () => () => {
+        if (agents === scope.agents) agents = undefined;
+      },
+      "orca-pod.agents",
+    );
+  });
+
+  // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
+  // the session when it is disposed, and a session created while the host runs
+  // (including one resumed after a restart) picks up its own dispatches.
+  ctx.on("agent/created", ({ agent }) => {
+    agent.ctx?.effect(() => () => tracker.forget(agent.id), "orca-pod.track");
+    void handle.ready.then(() => restore(agent));
   });
 
   // A new user message gives the agent a fresh budget of tracker wake-ups.
@@ -66,21 +136,38 @@ export function apply(ctx: HostContext, config: Config): void {
     "orca-pod.orca-node",
   );
 
-  for (const tool of createPodTools(handle, tracker, service<PermissionPresetsService>(ctx, "permissionPresets"))) {
-    ctx.tools.register(tool);
+  let presets: PermissionPresetsService | undefined;
+  ctx.inject(["permissionPresets"], (scope) => {
+    presets = scope.permissionPresets;
+    scope.effect(
+      () => () => {
+        if (presets === scope.permissionPresets) presets = undefined;
+      },
+      "orca-pod.permission-presets",
+    );
+  });
+
+  // The tool is only visible once the workgroup credentials exist: before that
+  // every call would fail with "not configured" and clutter the tool list.
+  const configured = (): boolean => Boolean(handle.config.workgroup_id) && Boolean(handle.config.workgroup_password);
+  for (const tool of createPodTools(handle, tracker, () => presets)) {
+    ctx.tools.register(tool, { when: configured });
   }
   registerPodWeb(ctx, createPodAdmin(handle, tracker, broker));
 
-  // ACP and CLI executors run in their own `dsh` subprocesses and cannot see
-  // this host's tools; they get ORCA_POD_CLI/ORCA_POD_DATA_ROOT in their
-  // environment instead. The skill bundle also ships in the package, so a
-  // user-root copy is optional (off by default) and install is idempotent.
+  // The skill ships inside the package and is registered in memory; no copy is
+  // written to a user skill root. ACP and CLI executors run in their own `dsh`
+  // subprocesses and cannot see this host's registry, so they get
+  // ORCA_POD_CLI/ORCA_POD_DATA_ROOT in their environment instead.
   if (config.skill_injection) {
-    void installSkill().then(
-      (installed) => {
-        if (installed.written) ctx.logger.info(`orca-pod: installed skill at ${installed.path}`);
-      },
-      (error) => ctx.logger.warn(`orca-pod: could not install skill: ${errorMessage(error)}`),
-    );
+    ctx.inject(["skills"], (scope) => {
+      scope.effect(() => scope.skills.register(skillRegistration()), "orca-pod.skill");
+    });
   }
+
+  // The bundle renders its own settings section, so DSH must not also generate
+  // an auto page from the Config schema.
+  ctx.inject(["settings"], (scope) => {
+    scope.effect(() => scope.settings.configure({ auto: false }, ctx.fiber), "orca-pod.settings-page");
+  });
 }

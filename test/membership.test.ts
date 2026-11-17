@@ -130,6 +130,24 @@ describe("membership watchdog", () => {
     expect(membership.peers.touch("BBBBBB")).toBe(false);
   });
 
+  it("lets a removed node back in through its own join, while stale lists stay blocked", () => {
+    const { membership } = setup();
+    membership.peers.upsert(peerView("BBBBBB"));
+    membership.remove("BBBBBB");
+    expect(membership.isTombstoned("BBBBBB")).toBe(true);
+
+    // The node leaves and re-joins within the tombstone window: the gateway
+    // verified its admission proof, so the record must exist afterwards.
+    membership.peers.upsert(peerView("BBBBBB"));
+    expect(membership.get("BBBBBB")?.state).toBe("online");
+    expect(membership.isTombstoned("BBBBBB")).toBe(false);
+    expect(membership.peers.touch("BBBBBB")).toBe(true);
+
+    membership.remove("BBBBBB");
+    membership.mergeRemote([peerView("BBBBBB")]);
+    expect(membership.get("BBBBBB")).toBeNull();
+  });
+
   it("offline peers back off probe attempts", () => {
     const { membership, advance } = setup();
     membership.mergeRemote([peerView("BBBBBB")]);

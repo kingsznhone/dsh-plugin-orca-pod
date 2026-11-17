@@ -147,7 +147,7 @@ describe("orca-node CLI", () => {
   it("returns 3 when the task needs permission", async () => {
     const script = JSON.stringify({
       echo: {
-        steps: [{ at_ms: 0, suspend: { kind: "blocked", reason: "need_input", question: "continue?" } }],
+        steps: [{ at_ms: 0, suspend: { kind: "permission", tool: "write_file", requested: { path: "a.txt" } } }],
         final: { state: "completed", text: "done" },
       },
     });

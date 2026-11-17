@@ -6,26 +6,31 @@
  * `join`s on a promise that never rejects. Failures are recorded on
  * `handle.runtime.error` and logged, so `apply` always returns quickly.
  *
- * The panel can reconfigure the orca node at runtime (`handle.reconfigure`): the
- * effective config is the bundle config with a small UI override file on top
- * (`<data_root>/ui-config.json`). The override never touches the profile patch
- * file and is written only from the loopback-gated panel route (§9.2).
+ * Where things live (§7.3, §9.2):
+ * - **settings** are the plugin config. The panel persists them through
+ *   `PodStores.writeConfig` — `ctx.configEditor` in DSH, which writes the profile
+ *   patch and has the Loader restart the plugin with the new config;
+ * - **the workgroup password** is a DSH credential (`ctx.credentials`) under
+ *   `passwordRefFor(config)`; the plugin config never holds it;
+ * - **state** — peers joined at runtime — is a file under `<data_root>`, because
+ *   remembering a peer must not restart the plugin.
  */
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../config.ts";
 import { identityPath } from "../identity.ts";
 import { isLoopbackEndpoint, normalizePeerUrl } from "../net.ts";
 import { createOrcaNode, createPersistentStorage } from "../orca_node.ts";
 import type { OrcaNode } from "../orca_node.ts";
-import { parseSettings, pickPanelFields } from "../settings.ts";
+import { parseSettings, passwordRefFor, pickPanelFields } from "../settings.ts";
 
 import type { Config } from "./config.ts";
 import type { HostContext, HostLogger } from "./dsh.ts";
 import { discoverModelCatalog } from "./models.ts";
-import type { ModelCatalog } from "./models.ts";
+import type { CatalogServices, ModelCatalog } from "./models.ts";
 import { errorMessage } from "../errors.ts";
 import { isRecord } from "../protocol.ts";
 
@@ -43,22 +48,54 @@ interface PodRuntime {
   error: Error | null;
 }
 
+/** A raw plugin config as stored in the profile: `null`/absent keys mean "default". */
+type RawConfig = Record<string, unknown>;
+
+/**
+ * Persistence the lifecycle needs from its host. In DSH these are the
+ * credential seam and the config editor (`createHostStores` in `index.ts`);
+ * without a host, `createMemoryStores` keeps both in memory.
+ */
+export interface PodStores {
+  /** The stored password behind a credential reference; undefined when absent or empty. */
+  readSecret(ref: string): Promise<string | undefined>;
+  writeSecret(ref: string, value: string): Promise<void>;
+  clearSecret(ref: string): Promise<void>;
+  /**
+   * Persist the next plugin config, derived from the stored raw one. Resolves to
+   * false when `change` changes nothing. On true the host applies the config the
+   * way it applies any config change: in DSH the Loader restarts the plugin (this
+   * handle is disposed before the promise settles), in memory the handle adopts
+   * it. Never call it from inside the lifecycle queue: a host restart waits for
+   * that queue to drain.
+   */
+  writeConfig(change: (raw: RawConfig) => RawConfig): Promise<boolean>;
+  /** In-memory stores only: the handle that receives config writes. */
+  attach?(handle: PodHandle): void;
+}
+
 /** Handle returned by `startPod`; cleanup and tools share it. */
 export interface PodHandle {
   runtime: PodRuntime;
-  /** Effective config (bundle config with any saved UI override applied). */
+  /** Effective config: the plugin config plus the resolved password (in memory only). */
   config: Config;
-  /** True once the panel completed setup (an override file exists). */
-  uiConfigured: boolean;
+  /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
+  configured: boolean;
+  /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
+  rememberedPeers: string[];
   /** Startup completion; resolves after success or failure, never rejects. */
   ready: Promise<void>;
-  /** Persist an override and restart the orca node with the merged config. */
+  /**
+   * Apply a panel patch: store a new password in the credential store, persist the
+   * panel fields into the plugin config (`null` clears a field to its default),
+   * and restart the node with the result.
+   */
   reconfigure(patch: Record<string, unknown>): Promise<void>;
-  /** `join` one peer now and remember it in the override. */
+  /** `join` one peer now and remember it in the peer state file. */
   addPeer(peer: string): Promise<void>;
-  /** Leave the workgroup: tell known peers and clear the persisted peer list. */
+  /** Leave the workgroup: tell known peers and forget every remembered and configured peer. */
   disconnect(): Promise<void>;
-  /** Delete the panel override and the persisted orca node identity (full reset). */
+  /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
   reset(): Promise<void>;
   /**
    * Stop accepting lifecycle writes: wait for the current operation, and make
@@ -66,13 +103,12 @@ export interface PodHandle {
    * reconfiguration cannot leak a listener after host shutdown (§9.2).
    */
   dispose(): Promise<void>;
+  /**
+   * Take a config the host persisted, as a plugin restart would: stop the node
+   * and start again from `config`. Only the in-memory stores call it.
+   */
+  adopt(config: Config): Promise<void>;
 }
-
-/**
- * What the panel saved: a patch over the bundle config holding only panel-editable
- * fields, where `null` clears a field back to its default, plus the setup marker.
- */
-type Override = Record<string, unknown>;
 
 function createRuntime(): PodRuntime {
   return { orcaNode: null, url: null, port: null, started_at: null, error: null };
@@ -85,33 +121,42 @@ function isMissingFile(error: unknown): boolean {
   );
 }
 
-/** Path of the panel-written override next to the persisted orca node config. */
-export function overridePath(dataRoot: string): string {
-  return join(dataRoot, "ui-config.json");
+/** Path of the runtime peer state next to the persisted orca node config. */
+export function peerStatePath(dataRoot: string): string {
+  return join(dataRoot, "peers.json");
 }
 
-/** Read the panel override; a missing or unreadable file means "not set up". */
-async function loadOverride(dataRoot: string, logger: HostLogger): Promise<Override> {
+/** Peers remembered from earlier runs; a missing or unreadable file means none. */
+async function loadRememberedPeers(dataRoot: string, logger: HostLogger): Promise<string[]> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(overridePath(dataRoot), "utf8"));
-    if (!isRecord(parsed)) return {};
-    return { ...pickPanelFields(parsed), setup_complete: parsed.setup_complete === true };
+    const parsed: unknown = JSON.parse(await readFile(peerStatePath(dataRoot), "utf8"));
+    const peers = isRecord(parsed) && Array.isArray(parsed.peers) ? parsed.peers : [];
+    return peers.filter((peer): peer is string => typeof peer === "string").map(normalizePeerUrl);
   } catch (error) {
-    if (!isMissingFile(error)) {
-      logger.warn(`orca-pod: ignoring unreadable panel config: ${errorMessage(error)}`);
-    }
-    return {};
+    if (!isMissingFile(error)) logger.warn(`orca-pod: ignoring unreadable peer state: ${errorMessage(error)}`);
+    return [];
   }
 }
 
-async function saveOverride(dataRoot: string, override: Override): Promise<void> {
+async function saveRememberedPeers(dataRoot: string, peers: string[]): Promise<void> {
   await mkdir(dataRoot, { recursive: true });
-  await writeFile(
-    overridePath(dataRoot),
-    `${JSON.stringify(override, null, 2)}
-`,
-    "utf8",
-  );
+  await writeFile(peerStatePath(dataRoot), `${JSON.stringify({ peers }, null, 2)}\n`, "utf8");
+}
+
+/** Apply panel fields to a raw plugin config: a value sets the key, `null` removes it. */
+function applyPanelFields(raw: RawConfig, fields: RawConfig): RawConfig {
+  const next: RawConfig = { ...raw };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
+
+/** The plugin config without the in-memory password: what may be persisted. */
+function withoutSecret(config: Config): RawConfig {
+  const { workgroup_password: _password, ...rest } = config;
+  return rest;
 }
 
 /**
@@ -123,12 +168,54 @@ function needsSetup(config: Config): boolean {
   return !config.workgroup_id || !config.workgroup_password;
 }
 
-/** The effective config: the panel override over the bundle config, parsed once. */
-function mergeOverride(base: Config, override: Override): Config {
-  return parseSettings({ ...base, ...override });
+/**
+ * Stores for a pod without a DSH host (tests, smoke runs): the raw config and
+ * the secrets live in memory, and a config write is handed to the attached
+ * handle the way the Loader would restart the plugin.
+ */
+export function createMemoryStores(raw: RawConfig = {}): PodStores & {
+  secrets: Map<string, string>;
+  raw(): RawConfig;
+  attach(handle: PodHandle): void;
+} {
+  let current: RawConfig = structuredClone(raw);
+  const secrets = new Map<string, string>();
+  let attached: PodHandle | null = null;
+  return {
+    secrets,
+    raw: () => structuredClone(current),
+    attach(handle) {
+      attached = handle;
+    },
+    async readSecret(ref) {
+      const value = secrets.get(ref);
+      return value === undefined || value.length === 0 ? undefined : value;
+    },
+    async writeSecret(ref, value) {
+      if (value.length === 0) throw new Error("an empty credential cannot be stored; remove it instead");
+      secrets.set(ref, value);
+    },
+    async clearSecret(ref) {
+      secrets.delete(ref);
+    },
+    async writeConfig(change) {
+      const next = change(structuredClone(current));
+      if (isDeepStrictEqual(next, current)) return false;
+      const parsed = parseSettings(next);
+      current = next;
+      await attached?.adopt(parsed);
+      return true;
+    },
+  };
 }
 
-async function startNode(config: Config, runtime: PodRuntime, logger: HostLogger, hooks: StartPodHooks): Promise<void> {
+async function startNode(
+  config: Config,
+  remembered: readonly string[],
+  runtime: PodRuntime,
+  logger: HostLogger,
+  hooks: StartPodHooks,
+): Promise<void> {
   const dataRoot = config.data_root ?? defaultDataRoot();
   // The plugin runs real DSH sessions by default. A loopback-only advertise list
   // is useless across machines, so it means "derive from the listen address".
@@ -173,7 +260,8 @@ async function startNode(config: Config, runtime: PodRuntime, logger: HostLogger
   }
 
   const self = normalizePeerUrl(info.url);
-  for (const peer of config.peers) {
+  // Startup peers from the config, then the ones joined at runtime.
+  for (const peer of new Set([...config.peers, ...remembered])) {
     if (peer === self) continue;
     try {
       const response = await orcaNode.join(peer);
@@ -214,16 +302,32 @@ interface StartPodHooks {
  * The returned `ready` promise resolves after startup (success or failure) and
  * never rejects; inspect `runtime.error` for the failure cause.
  */
-export function startPod(baseConfig: Config, logger: HostLogger, hooks: StartPodHooks = {}): PodHandle {
+export function startPod(
+  bundleConfig: Config,
+  logger: HostLogger,
+  stores: PodStores,
+  hooks: StartPodHooks = {},
+  defaultRoot?: string,
+): PodHandle {
   const runtime = createRuntime();
-  const dataRoot = baseConfig.data_root ?? defaultDataRoot();
+  // Resolve the data directory once: an explicit `data_root` wins, else the
+  // host-provided default (the DSH profile directory), else the process default.
+  // Every later read (peer state, node config, panel) then sees the same path.
+  const dataRoot = bundleConfig.data_root ?? defaultRoot ?? defaultDataRoot();
+  const rooted = (config: Config): Config => ({
+    ...config,
+    data_root: config.data_root ?? dataRoot,
+    workgroup_password: "",
+  });
+  /** The plugin config as the host gave it; the password is resolved separately. */
+  let pluginConfig = rooted(bundleConfig);
 
   let disposed = false;
   let queue: Promise<void> = Promise.resolve();
 
   /**
-   * Serialize panel writes (override file + node restart). A failed operation
-   * must not poison the lane: the caller still sees its rejection, but the next
+   * Serialize node restarts and state writes. A failed operation must not
+   * poison the lane: the caller still sees its rejection, but the next
    * operation runs against a clean queue.
    */
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -235,46 +339,83 @@ export function startPod(baseConfig: Config, logger: HostLogger, hooks: StartPod
     return run;
   }
 
-  /** Merge `patch` into the saved override, always marking the setup complete. */
-  async function saveOverridePatch(patch: Override): Promise<void> {
-    await saveOverride(dataRoot, { ...(await loadOverride(dataRoot, logger)), ...patch, setup_complete: true });
+  /** (Re)start from `pluginConfig`: resolve the password, then run the node if setup is complete. Queue only. */
+  async function boot(): Promise<void> {
+    await stopNode(runtime, logger);
+    runtime.error = null;
+    const ref = passwordRefFor(pluginConfig);
+    let password: string | undefined;
+    if (ref !== undefined) {
+      try {
+        password = await stores.readSecret(ref);
+      } catch (error) {
+        logger.warn(`orca-pod: could not read the workgroup password (${ref}): ${errorMessage(error)}`);
+      }
+    }
+    handle.config = { ...pluginConfig, workgroup_password: password ?? "" };
+    handle.configured = !needsSetup(handle.config);
+    if (disposed) return;
+    if (!handle.configured) {
+      // The panel shows its first-run wizard and calls `reconfigure` once the
+      // user has picked a workgroup, password and listen address.
+      logger.info("orca-pod: waiting for workgroup setup from the panel");
+      return;
+    }
+    try {
+      await startNode(handle.config, handle.rememberedPeers, runtime, logger, hooks);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      runtime.error = failure;
+      logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
+    }
   }
 
   const handle: PodHandle = {
     runtime,
-    config: baseConfig,
-    uiConfigured: false,
+    config: pluginConfig,
+    configured: false,
+    rememberedPeers: [],
     ready: Promise.resolve(),
-    reconfigure: (patch) =>
-      enqueue(async () => {
-        const next = { ...(await loadOverride(dataRoot, logger)), ...pickPanelFields(patch), setup_complete: true };
-        const merged = mergeOverride(baseConfig, next);
-        await saveOverride(dataRoot, next);
-        handle.uiConfigured = true;
-        handle.config = merged;
-        await stopNode(runtime, logger);
-        if (disposed) return;
-        if (needsSetup(merged)) {
-          runtime.error = null;
-          return;
-        }
-        try {
-          await startNode(merged, runtime, logger, hooks);
-        } catch (error) {
-          logger.error(`orca-pod: reconfigure failed: ${errorMessage(error)}`);
-        }
-      }),
+    async reconfigure(patch) {
+      const fields = pickPanelFields(patch);
+      const password = fields.workgroup_password;
+      delete fields.workgroup_password;
+      if (password !== undefined && password !== null && (typeof password !== "string" || password.length === 0)) {
+        throw new Error("a workgroup password must be a non-empty string");
+      }
+      // Validate the whole result first, so a bad patch changes nothing.
+      const preview = parseSettings(applyPanelFields(withoutSecret(handle.config), fields));
+      const ref = passwordRefFor(preview);
+      if (ref === undefined) throw new Error("a workgroup id is required");
+      // Switching workgroups keeps the current password unless a new one is
+      // given: the password is a local secret, not a claim tied to one group.
+      const carried =
+        ref !== passwordRefFor(handle.config) && handle.config.workgroup_password.length > 0
+          ? handle.config.workgroup_password
+          : undefined;
+      const secret = typeof password === "string" ? password : carried;
+      // The secret goes first: in DSH the config write restarts the plugin, and
+      // the new instance must already find the password.
+      if (secret !== undefined) await stores.writeSecret(ref, secret);
+      else if ((await stores.readSecret(ref)) === undefined) {
+        throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
+      }
+      // Outside the queue on purpose: a host restart waits for the queue to drain.
+      const changed = await stores.writeConfig((raw) => applyPanelFields(raw, fields));
+      // Nothing to persist (only the password changed, or the bundle already
+      // names the workgroup): no host restart follows, so restart in place.
+      if (!changed) await enqueue(boot);
+    },
     addPeer: (peer) =>
       enqueue(async () => {
         const orcaNode = runtime.orcaNode;
         if (orcaNode === null) throw new Error("orca node is not running");
         await orcaNode.join(peer);
-        const peers = handle.config.peers.includes(peer) ? handle.config.peers : [...handle.config.peers, peer];
-        handle.config = { ...handle.config, peers };
-        await saveOverridePatch({ peers });
+        if (!handle.rememberedPeers.includes(peer)) handle.rememberedPeers = [...handle.rememberedPeers, peer];
+        await saveRememberedPeers(dataRoot, handle.rememberedPeers);
       }),
-    disconnect: () =>
-      enqueue(async () => {
+    async disconnect() {
+      await enqueue(async () => {
         const orcaNode = runtime.orcaNode;
         if (orcaNode !== null) {
           try {
@@ -283,24 +424,38 @@ export function startPod(baseConfig: Config, logger: HostLogger, hooks: StartPod
             logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
           }
         }
-        handle.config = { ...handle.config, peers: [] };
-        await saveOverridePatch({ peers: [] });
-      }),
-    reset: () =>
-      enqueue(async () => {
+        handle.rememberedPeers = [];
+        await saveRememberedPeers(dataRoot, []);
+      });
+      // Startup peers named in the plugin config are forgotten too.
+      if (handle.config.peers.length > 0) await stores.writeConfig((raw) => applyPanelFields(raw, { peers: null }));
+    },
+    async reset() {
+      const ref = passwordRefFor(handle.config);
+      await enqueue(async () => {
         await stopNode(runtime, logger);
-        for (const path of [overridePath(dataRoot), configPath(dataRoot), identityPath(dataRoot)]) {
+        for (const path of [configPath(dataRoot), identityPath(dataRoot), peerStatePath(dataRoot)]) {
           try {
             await rm(path, { force: true });
           } catch (error) {
             logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
           }
         }
-        // Back to the first-run wizard: nothing restarts until setup completes,
-        // even if the bundle still carries a workgroup.
-        handle.uiConfigured = false;
-        handle.config = baseConfig;
+        handle.rememberedPeers = [];
         runtime.error = null;
+      });
+      if (ref !== undefined) await stores.clearSecret(ref);
+      const changed = await stores.writeConfig((raw) =>
+        applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
+      );
+      // Back to the first-run wizard: without a stored password nothing starts,
+      // even when an inherited config layer still names a workgroup.
+      if (!changed) await enqueue(boot);
+    },
+    adopt: (config) =>
+      enqueue(async () => {
+        pluginConfig = rooted(config);
+        await boot();
       }),
     dispose: async () => {
       disposed = true;
@@ -308,32 +463,11 @@ export function startPod(baseConfig: Config, logger: HostLogger, hooks: StartPod
     },
   };
 
-  handle.ready = (async () => {
-    try {
-      const stored = await loadOverride(dataRoot, logger);
-      if (stored.setup_complete === true) {
-        handle.config = mergeOverride(baseConfig, stored);
-        handle.uiConfigured = true;
-      }
-    } catch (error) {
-      logger.warn(`orca-pod: ignoring panel config: ${errorMessage(error)}`);
-    }
-    if (!handle.uiConfigured || needsSetup(handle.config)) {
-      // No completed panel setup yet: the panel shows its first-run wizard and
-      // calls `reconfigure` once the user has picked a workgroup, password and
-      // listen address. The bundle no longer carries credentials (§7.1).
-      logger.info("orca-pod: waiting for workgroup setup from the panel");
-      return;
-    }
-    try {
-      await startNode(handle.config, runtime, logger, hooks);
-    } catch (error) {
-      const failure = error instanceof Error ? error : new Error(String(error));
-      runtime.error = failure;
-      logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
-    }
-  })();
-
+  stores.attach?.(handle);
+  handle.ready = enqueue(async () => {
+    handle.rememberedPeers = await loadRememberedPeers(dataRoot, logger);
+    await boot();
+  });
   return handle;
 }
 
@@ -342,16 +476,51 @@ export function startPod(baseConfig: Config, logger: HostLogger, hooks: StartPod
  * only advertises it: the catalog is read once the node is up and installed on
  * the running node (and on every later panel restart, before its first join).
  */
-export function createPodRuntime(ctx: HostContext, config: Config): PodHandle {
+export function createPodRuntime(ctx: HostContext, config: Config, stores: PodStores, defaultRoot?: string): PodHandle {
   const catalog: ModelCatalog = { models: [], defaultModel: null };
+  /** Whatever `llm`/`agent-default-model` the host exposes; empty on CLI-only hosts. */
+  let services: CatalogServices = {};
   const advertise = (orcaNode: OrcaNode): void =>
     orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null);
-  const handle = startPod(config, ctx.logger, { onNodeStarted: advertise });
-  void handle.ready.then(async () => {
-    Object.assign(catalog, await discoverModelCatalog(ctx, ctx.logger));
-    if (handle.runtime.orcaNode !== null) advertise(handle.runtime.orcaNode);
+  /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
+  let generation = 0;
+  const refresh = async (): Promise<void> => {
+    const current = ++generation;
+    const next = await discoverModelCatalog(services, ctx.logger);
+    if (current !== generation) return;
+    Object.assign(catalog, next);
+    const orcaNode = handle.runtime.orcaNode;
+    if (orcaNode !== null) advertise(orcaNode);
     if (catalog.models.length > 0) ctx.logger.info(`orca-pod: advertising ${catalog.models.length} models`);
+  };
+  const handle = startPod(config, ctx.logger, stores, { onNodeStarted: advertise }, defaultRoot);
+  // The two catalog services are optional and independent: fence on each one
+  // separately, so a host that offers only one still advertises what it has.
+  // A scope's cleanup runs when its service goes away, and the catalog is
+  // rebuilt without it.
+  ctx.inject(["llm"], (scope) => {
+    services = { ...services, llm: scope.llm };
+    void refresh();
+    scope.effect(
+      () => () => {
+        services = { ...services, llm: undefined };
+        void refresh();
+      },
+      "orca-pod.catalog-llm",
+    );
   });
+  ctx.inject(["agentDefaultModel"], (scope) => {
+    services = { ...services, agentDefaultModel: scope.agentDefaultModel };
+    void refresh();
+    scope.effect(
+      () => () => {
+        services = { ...services, agentDefaultModel: undefined };
+        void refresh();
+      },
+      "orca-pod.catalog-default-model",
+    );
+  });
+  void handle.ready.then(refresh);
   return handle;
 }
 

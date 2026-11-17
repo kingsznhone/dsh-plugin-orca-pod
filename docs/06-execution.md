@@ -16,7 +16,7 @@ interface LocalExecutor {
 }
 
 type ExecutorEvent =
-  | { type: "suspend"; suspend: Suspension } // blocked（要决策）或 permission（要授权）
+  | { type: "suspend"; suspend: Suspension } // 只有 permission（要授权）；不能继续就以 BLOCKED 结论结束
   | { type: "artifact"; name: string; content: string }
   | { type: "completed"; text: string }
   | { type: "failed"; text: string; reason?: string };
@@ -56,10 +56,6 @@ type ExecuteInput = {
   "echo": {
     "steps": [
       {
-        "at_ms": 200,
-        "suspend": { "kind": "blocked", "reason": "need_decision", "question": "继续吗？", "options": ["yes", "no"] }
-      },
-      {
         "at_ms": 600,
         "suspend": { "kind": "permission", "tool": "write_file", "requested": { "permission_mode": "workspace-write" } }
       }
@@ -73,7 +69,7 @@ type ExecuteInput = {
 规则：
 
 - `steps` 最多 8 个；每个 `at_ms` 必须是非负整数、严格递增、且 ≤ 60000。`at_ms` 从任务开始计，**挂起等待的时间不计入**（恢复后从上次位置继续），断言不依赖机器速度。
-- `suspend.kind` 只有 `blocked` 与 `permission` 两种：`blocked` 需要 `reason`、`question`（可选 `options: string[]`），`permission` 需要 `tool` 与 `requested` 对象（可选 `relay`，用来演练子任务权限上交，[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；分别生成 [§4.8](04-transport.md#48-任务状态机) 的 `blocked` 和 `permission_request`。恢复需要 origin 发一条带 `message.taskId` 的 `message/send`，且 task 必须处于 `input-required`。
+- `suspend.kind` 只有 `permission`：需要 `tool` 与 `requested` 对象（可选 `relay`，用来演练子任务权限上交，[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），生成 [§4.8](04-transport.md#48-任务状态机) 的 `permission_request`。没有“向 origin 提问”的挂起：要演练阻塞，就用 `final: { state: "completed", text: "BLOCKED: …" }`。恢复需要 origin 发一条带 `message.taskId` 的 `message/send`，内容是签名 grant 或拒绝，且 task 必须处于 `input-required`；纯文本的恢复消息 → `400 bad_request`，任务不变。
 - `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB（按 UTF-8 字节），**原样返回**，不做模板替换，便于逐字节断言。
 - `final.text` 缺省为空串；`echo` 缺省（或 `null`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
 - `artifacts` ≤ 4 个、每个 `content` ≤ 4 KiB（UTF-8）；`name` 必须是非空纯文件名（不得含 `/`、`\`）。executor 真的写 blob 存储，`artifactId` = `sha256(content)` 的 hex（即 `blob_id`），`media_type` 固定为 `text/plain`。**artifact 事件先于终态事件产出**，因此 `completed`/`failed`/`hang` 都可能带 artifact。
@@ -263,10 +259,10 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 - `send --peer <host:port> --text - --local-task <本任务 id>` 派子任务（`--local-task` 要由 agent 显式带上：CLI 靠它读父任务、拼 `hop/chain/root`，并向本机登记 child-link，之后本节点每 1s 轮询子任务，遇到权限请求就把父任务挂成 `input-required` 上交，origin 一处决定；见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；
 - `wait`（退出码 0 完成 / 1 失败或取消 / 2 仍在跑 / 3 需要权限）、`escalate`（手动上交）、`publish <path>`（产出文件的直链）；
-- 对端离线且是不可绕过的阻塞时：**最多重试一次**；仍然连不上就把**自己的任务按 completed 结束**（不挂在 working），结论首行写 `BLOCKED: <peer> unreachable`，随后列出已完成的步骤、被阻步骤与对端恢复后的重跑命令，由 origin 决定何时重发。不能继续的子任务可以自行 failed，不要等它。
+- **阻塞只有一种表达**：任务不能暂停下来向 origin 提问，只有权限请求会等 origin。缺信息、需要只有 origin 能做的决定、必需的对端离线（先最多重试一次）时，都把**自己的任务按 completed 结束**（不挂在 working），结论首行写 `BLOCKED: <原因>`，随后列出已完成的步骤、被阻步骤，以及 origin 应补充什么或重跑什么，由 origin 决定下一步。tracker 会把它标成 “completed with a blocker report”。不能继续的子任务会带着自己的 `BLOCKED:` 结论结束，不要等它。
 - 永不自己批准自己的权限请求。
 
-CLI 读本机 `config.json`，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；它不是节点，没有独立身份、不监听端口。同一套用法也随包发布为标准 skill bundle（`skills/orca-node/`），可经 `skill_injection` 复制到 user 根（默认关）；技能与前言互为兜底。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，原样传给 `session/new`。
+CLI 读本机 `config.json`，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；它不是节点，没有独立身份、不监听端口。同一套用法也随包发布为标准 skill bundle（`skills/orca-node/`），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认关；不写用户 skill 目录）；技能与前言互为兜底。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，原样传给 `session/new`。
 
 **不做**：把 ACP 的进度透传到 A2A 流、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、同一 session 上的多个 in-flight prompt。
 

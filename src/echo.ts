@@ -46,20 +46,7 @@ function byteLength(text: string): number {
 
 function parseSuspend(raw: unknown, where: string): Suspension {
   need(isRecord(raw), `${where}: suspend must be an object`);
-  if (raw.kind === "blocked") {
-    ensureKeys(raw, ["kind", "reason", "question", "options"], where);
-    const { reason, question, options } = raw;
-    need(
-      typeof reason === "string" && typeof question === "string",
-      `${where}: blocked needs reason and question strings`,
-    );
-    need(
-      options === undefined || (Array.isArray(options) && options.every((option) => typeof option === "string")),
-      `${where}: options must be a string array`,
-    );
-    return { kind: "blocked", reason, question, ...(options ? { options: options as string[] } : {}) };
-  }
-  need(raw.kind === "permission", `${where}: suspend.kind must be "blocked" or "permission"`);
+  need(raw.kind === "permission", `${where}: suspend.kind must be "permission"`);
   ensureKeys(raw, ["kind", "tool", "requested", "relay"], where);
   const { tool, requested, relay } = raw;
   need(typeof tool === "string" && isRecord(requested), `${where}: permission needs tool and requested object`);

@@ -158,7 +158,9 @@ describe("approval broker", () => {
     const handle = {
       runtime: { orcaNode: null, port: 11811, error: null },
       config: parseSettings({ workgroup_id: "wg", workgroup_password: "pw" }),
-      uiConfigured: true,
+      configured: true,
+      rememberedPeers: [],
+      adopt: async () => {},
       ready: Promise.resolve(),
     } as unknown as PodHandle;
     const tracker = { list: () => [], subscribe: () => () => {} } as unknown as Tracker;

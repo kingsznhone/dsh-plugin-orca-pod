@@ -15,7 +15,7 @@ import { deriveChildGrant } from "./chain.ts";
 import type { BlobStore } from "./blobs.ts";
 import { checkGrant, type GrantLedger } from "./grants.ts";
 import { assertNever, errorMessage, PodError } from "./errors.ts";
-import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "./executor.ts";
+import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import type { NodeLogger } from "./mesh.ts";
 import {
   isTerminal,
@@ -165,21 +165,18 @@ export class TaskRecord {
     });
   }
 
-  /** The origin answers a parked task: a grant, a denial, or plain input. A bad answer changes nothing. */
+  /** The origin answers a parked task: a grant or a denial. A bad answer changes nothing. */
   resume(message: A2AMessage): void {
     const wait = this.wait;
-    if (wait === null) {
-      this.proceed(null, undefined, true);
-      return;
-    }
+    // A task only parks on a permission request, so this is a stale or foreign resume.
+    if (wait === null) throw new PodError("bad_request", "task is not waiting for a permission decision");
     const control = parseResume(message);
+    // A permission suspension ends only with a grant or an explicit denial (§7.11).
+    if (control === null) throw new PodError("bad_request", "resume of a permission request needs a grant or a denial");
     if (control.kind === "denied") {
       this.deny(control.reason, "failed", textMessage(`permission denied: ${control.reason}`), "permission_denied");
       return;
     }
-    // A permission suspension ends only with a grant or an explicit denial (§7.11).
-    if (control.kind !== "grant")
-      throw new PodError("bad_request", "resume of a permission request needs a grant or a denial");
     const failure = checkGrant(
       control.grant,
       {
@@ -346,7 +343,7 @@ export class TaskRecord {
       const event = step.value;
       switch (event.type) {
         case "suspend":
-          return this.suspend(event.suspend);
+          return this.requestPermission(event.suspend.tool, event.suspend.requested, event.suspend.relay ?? null, true);
         case "artifact":
           this.addArtifact(event.name, event.content);
           break;
@@ -368,16 +365,6 @@ export class TaskRecord {
     ];
     this.persist();
     this.host.onEvent(this.snapshot());
-  }
-
-  /** The executor stopped to wait for someone else: a free-form answer or a decision on a tool. */
-  private suspend(suspension: Suspension): void {
-    if (suspension.kind === "permission") {
-      this.requestPermission(suspension.tool, suspension.requested, suspension.relay ?? null, true);
-      return;
-    }
-    const { reason, question, options } = suspension;
-    this.park({ role: "agent", parts: [{ kind: "data", data: { blocked: { reason, question, options } } }] });
   }
 
   /** Ask the origin to decide on one tool (§7.11). A `child` is the task whose request this one passes on (§7.12). */

@@ -5,6 +5,7 @@ import {
   isOrcaNodeId,
   isWorkgroupId,
   membersDigest,
+  newTaskId,
   normalizeEndpoints,
   normalizeOrcaNodeId,
   runtimeDigest,
@@ -223,5 +224,30 @@ describe("normalizeEndpoints", () => {
     expect(normalizeEndpoints(["ftp://a:1"])).toBeNull();
     expect(normalizeEndpoints(["http://a:1", "nope"])).toBeNull();
     expect(normalizeEndpoints(Array.from({ length: 9 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
+  });
+});
+
+describe("newTaskId", () => {
+  it("encodes the millisecond timestamp in the leading ten characters, like a ULID", () => {
+    // Reference value from the ULID specification.
+    expect(newTaskId(1469918176385, new Uint8Array(10)).slice(0, 10)).toBe("01ARYZ6S41");
+    expect(newTaskId(0, new Uint8Array(10))).toBe("0".repeat(26));
+  });
+
+  it("keeps the random bytes in the trailing sixteen characters", () => {
+    const random = Uint8Array.from({ length: 10 }, () => 0xff);
+    expect(newTaskId(0, random)).toBe(`${"0".repeat(10)}${"Z".repeat(16)}`);
+  });
+
+  it("sorts ids by creation time", () => {
+    const times = [1_700_000_000_000, 1_700_000_000_001, 1_700_000_060_000, 1_800_000_000_000];
+    const ids = times.map((time) =>
+      newTaskId(
+        time,
+        Uint8Array.from({ length: 10 }, (_, index) => 255 - index),
+      ),
+    );
+    expect([...ids].sort()).toEqual(ids);
+    expect(ids.every((id) => id.length === 26)).toBe(true);
   });
 });

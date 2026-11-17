@@ -19,7 +19,7 @@ import { isDirectLoopbackRequest } from "../net.ts";
 import { isRecord } from "../protocol.ts";
 import { errorMessage } from "../errors.ts";
 
-/** Prefix the client polls; keep in sync with `client.js`. */
+/** Prefix the client polls; keep in sync with `client/store.ts`. */
 export const POD_API_PREFIX = "/orca-api";
 
 /** Largest JSON body accepted for one approval action. */
@@ -112,7 +112,19 @@ function stringField(body: Record<string, unknown>, key: string): string {
 const RECENT_LIMIT = 5;
 
 /** Panel state snapshot: everything the status page and the approval cards render in one poll. */
-function podState(admin: PodAdmin): Record<string, unknown> {
+/** What `GET /orca-api/state` returns: one poll carries everything the panel draws. */
+export interface PodState {
+  self: ReturnType<PodAdmin["self"]>;
+  config: ReturnType<PodAdmin["config"]>;
+  members: ReturnType<PodAdmin["members"]>;
+  mesh: { reachable: number };
+  approvals: ReturnType<PodAdmin["approvals"]>;
+  approval_count: number;
+  recent: ReturnType<PodAdmin["recent"]>;
+  workspace: ReturnType<PodAdmin["workspace"]>;
+}
+
+function podState(admin: PodAdmin): PodState {
   const members = admin.members();
   const approvals = admin.approvals();
   return {
@@ -234,7 +246,7 @@ function podApiRoute(admin: PodAdmin): WebServerRoute {
  */
 export function registerPodWeb(ctx: HostContext, admin: PodAdmin): void {
   const route = podApiRoute(admin);
-  ctx.inject(["webServer"], ({ webServer }) => {
-    ctx.effect(() => webServer.register(route), "orca-pod.panel-route");
+  ctx.inject(["webServer"], (scope) => {
+    scope.effect(() => scope.webServer.register(route), "orca-pod.panel-route");
   });
 }

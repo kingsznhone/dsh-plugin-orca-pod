@@ -66,6 +66,10 @@ describe("candidate endpoint filtering (§7.7)", () => {
   it("never picks a port that fetch refuses to dial", async () => {
     expect(isBlockedFetchPort(6000)).toBe(true);
     expect(isBlockedFetchPort(6667)).toBe(true);
+    // Later additions to the WHATWG list. Windows may hand out ports as low as
+    // 1024 when the dynamic range was moved, so these are reachable by port 0.
+    expect(isBlockedFetchPort(4190)).toBe(true);
+    expect(isBlockedFetchPort(6679)).toBe(true);
     expect(isBlockedFetchPort(11811)).toBe(false);
     const port = await pickFreePort();
     expect(port).toBeGreaterThan(0);

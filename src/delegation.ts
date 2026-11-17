@@ -46,15 +46,25 @@ type DelegationDeps = {
   emit: (event: PodEventInput) => void;
 };
 
+/** Per-call options of a task read or control call. */
+export type TaskCallOptions = {
+  /** Aborts the outbound request (for example when the caller's turn is cancelled). */
+  signal?: AbortSignal;
+};
+
 export type Delegation = {
   /**
    * Dispatch a task to a known member. A stranger is not joined implicitly: the
    * URL would receive the admission proof just because a tool call named it.
    * Add a member with `join` (the plugin's `connect`, the CLI's `serve --peer`) first.
    */
-  sendTask(peerUrl: string, input: SubmitTaskInput, options?: { parentTaskId?: string }): Promise<TaskView>;
-  getTask(peerUrl: string, taskId: string): Promise<TaskView>;
-  cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
+  sendTask(
+    peerUrl: string,
+    input: SubmitTaskInput,
+    options?: { parentTaskId?: string; signal?: AbortSignal },
+  ): Promise<TaskView>;
+  getTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
+  cancelTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
   /** Sign a grant for the suspended permission request and resume the task (§7.11). */
   approveTask(peerUrl: string, view: TaskView, options?: ApprovalOptions): Promise<TaskView>;
   denyTask(peerUrl: string, view: TaskView, reason?: string): Promise<TaskView>;
@@ -130,27 +140,46 @@ export function createDelegation(deps: DelegationDeps): Delegation {
     return { ...input, metadata: { ...input.metadata, pod } };
   }
 
-  async function sendTask(peerUrl: string, input: SubmitTaskInput, options: { parentTaskId?: string } = {}) {
+  async function sendTask(
+    peerUrl: string,
+    input: SubmitTaskInput,
+    options: { parentTaskId?: string; signal?: AbortSignal } = {},
+  ) {
     const peerId = client.known(peerUrl);
     const state = peerId === selfId ? "online" : (deps.membership.get(peerId)?.state ?? "gone");
     if (state !== "online") throw new PodError("peer_not_online", `peer ${peerId} is ${state}`);
     const body = options.parentTaskId === undefined ? input : withParentChain(input, options.parentTaskId);
-    const view = await client.rpc<TaskView>(peerUrl, "message/send", body);
+    const view = await client.rpc<TaskView>(
+      peerUrl,
+      "message/send",
+      body,
+      options.signal === undefined ? {} : { signal: options.signal },
+    );
     recordDispatch(peerUrl, view);
     return view;
   }
 
   /** One read or control call on a task; the answer refreshes the dispatch log. */
-  async function taskCall(peerUrl: string, method: string, params: unknown): Promise<TaskView> {
-    const view = await client.rpc<TaskView>(peerUrl, method, params);
+  async function taskCall(
+    peerUrl: string,
+    method: string,
+    params: unknown,
+    options: TaskCallOptions = {},
+  ): Promise<TaskView> {
+    const view = await client.rpc<TaskView>(
+      peerUrl,
+      method,
+      params,
+      options.signal === undefined ? {} : { signal: options.signal },
+    );
     refreshDispatch(view);
     return view;
   }
 
-  const getTask = (peerUrl: string, taskId: string): Promise<TaskView> =>
-    taskCall(peerUrl, "tasks/get", { id: taskId });
-  const cancelTask = (peerUrl: string, taskId: string): Promise<TaskView> =>
-    taskCall(peerUrl, "tasks/cancel", { id: taskId });
+  const getTask = (peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView> =>
+    taskCall(peerUrl, "tasks/get", { id: taskId }, options);
+  const cancelTask = (peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView> =>
+    taskCall(peerUrl, "tasks/cancel", { id: taskId }, options);
   const escalateTask = (peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView> =>
     taskCall(peerUrl, "tasks/escalate", { taskId, relay });
 

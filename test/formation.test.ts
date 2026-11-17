@@ -30,14 +30,16 @@ function newWorkgroupId(): string {
 }
 
 /**
- * Ten orca nodes make 90 heartbeat links; at FAST's 50ms interval a busy test
- * runner cannot keep every link inside a 150ms suspect window, so the scale
- * case gets proportionally slower timings.
+ * Ten orca nodes make 90 heartbeat links, all on this one event loop and 40x
+ * faster than production (10 nodes beat every 10s there, with a 5s timeout).
+ * FAST's 50ms cadence cannot hold on a busy runner, so the scale case gets
+ * slower, generous windows — including the per-heartbeat timeout, which would
+ * otherwise be derived as interval / 2 = 125ms and turn one slow response
+ * during setup into a failed test. The test asserts convergence, not latency.
  */
-// Ten nodes are 90 heartbeat links; under a loaded CI box timers slip, so the
-// windows are generous on purpose (the test asserts convergence, not latency).
 const TEN_NODE_TIMINGS: Partial<MembershipTimings> = {
   intervalMs: 250,
+  heartbeatTimeoutMs: 2000,
   suspectAfterMs: 3000,
   offlineAfterMs: 6000,
   recoverProbeMs: 800,

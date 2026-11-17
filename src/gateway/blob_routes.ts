@@ -38,8 +38,12 @@ export function blobRoutes(app: FastifyInstance, deps: GatewayDeps): void {
       const declared = request.headers["x-pod-body-sha256"] as string;
       const existed = deps.blobs.has(declared);
       const stream = (request.body as Readable | undefined) ?? Readable.from([]);
-      const record = await deps.blobs.putStream(stream, { name: request.query.name, maxBytes: MAX_BLOB_BYTES });
-      if (record.blob_id !== declared) throw new PodError("blob_digest_mismatch");
+      // The store checks the digest before committing: mismatched bytes are discarded.
+      const record = await deps.blobs.putStream(stream, {
+        name: request.query.name,
+        maxBytes: MAX_BLOB_BYTES,
+        sha256: declared,
+      });
       return reply.code(existed ? 200 : 201).send({
         blob_id: record.blob_id,
         size: record.size,

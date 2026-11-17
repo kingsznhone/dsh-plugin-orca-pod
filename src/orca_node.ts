@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { createFileBlobRegistry, createMemoryFileBlobStore, type FileBlobStore } from "./blob_files.ts";
 import { blobLinkSignature, NonceCache } from "./crypto.ts";
-import { createDelegation, type ApprovalOptions } from "./delegation.ts";
+import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "./delegation.ts";
 import { createMemoryDispatchStore, type DispatchEntry, type DispatchStore } from "./dispatches.ts";
 import { EchoExecutor } from "./echo.ts";
 import type { LocalExecutor } from "./executor.ts";
@@ -41,7 +41,7 @@ import { createTaskRunner } from "./tasks.ts";
 import { createWorkspaceManager } from "./workspace.ts";
 import { errorMessage } from "./errors.ts";
 
-export type { ApprovalOptions } from "./delegation.ts";
+export type { ApprovalOptions, TaskCallOptions } from "./delegation.ts";
 export type { NodeLogger } from "./mesh.ts";
 export type { FetchLike } from "./peer_client.ts";
 
@@ -140,9 +140,13 @@ export interface OrcaNode {
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
   /** Leave the workgroup: tell every known peer, then clear the local roster. */
   leave(): Promise<{ left: string[] }>;
-  sendTask(peerUrl: string, input: SubmitTaskInput, options?: { parentTaskId?: string }): Promise<TaskView>;
-  getTask(peerUrl: string, taskId: string): Promise<TaskView>;
-  cancelTask(peerUrl: string, taskId: string): Promise<TaskView>;
+  sendTask(
+    peerUrl: string,
+    input: SubmitTaskInput,
+    options?: { parentTaskId?: string; signal?: AbortSignal },
+  ): Promise<TaskView>;
+  getTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
+  cancelTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
   /** Approve a suspended permission request: sign a grant and resume the task (§7.11). */
   approveTask(peerUrl: string, view: TaskView, options?: ApprovalOptions): Promise<TaskView>;
   /** Deny a suspended permission request: the remote task fails with permission_denied. */

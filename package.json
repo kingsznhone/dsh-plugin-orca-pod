@@ -4,26 +4,46 @@
   "private": true,
   "description": "Orca pod: full-mesh agent node for DeepSeek Harness, self-contained as one package.",
   "type": "module",
-  "engines": { "node": ">=24" },
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=24",
+    "dsh": ">=0.2.2-rc.3 <0.3.0"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "orca",
+    "mesh",
+    "agent"
+  ],
+  "icon": "./icon.svg",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./testing": "./src/harness.ts",
-    "./client": "./client.js",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./testing": {
+      "types": "./lib/harness.d.ts",
+      "default": "./lib/harness.js"
+    },
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
-    "src",
-    "client.js",
+    "lib",
     "cordis.patch.yml",
+    "locale",
+    "icon.svg",
     "skills",
     "README.md"
   ],
   "bin": {
-    "orca-node": "./src/cli.ts",
-    "orca-pod": "./src/orca_pod.ts"
+    "orca-node": "./lib/cli.js",
+    "orca-pod": "./lib/orca_pod.js"
   },
   "dsh": {
     "bundle": {
@@ -35,9 +55,11 @@
     }
   },
   "scripts": {
-    "check": "biome check . && tsc --noEmit && vitest run",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-client.ts",
+    "prepare": "npm run build",
+    "check": "biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run",
     "format": "biome format --write .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p client",
     "test": "vitest run",
     "harness": "node --no-warnings scripts/harness_run.ts"
   },
@@ -47,6 +69,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.6.8",
     "@types/node": "^26.6.6",
+    "@types/react": "^18.3.31",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }

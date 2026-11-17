@@ -1,7 +1,7 @@
 /**
  * The one description of a node's settings: every field is declared once in
  * `FIELDS` with its parser, default and who may edit it. `config.json`, the
- * DSH plugin `Config`, the panel override and the install/CLI flags all go
+ * DSH plugin `Config`, the panel and the install/CLI flags all go
  * through `parseSettings`; nothing else validates a setting.
  */
 
@@ -42,8 +42,19 @@ export type AcpExecutorConfig = {
 export interface Settings {
   /** Unset until the panel wizard (or the CLI) picks one. */
   workgroup_id?: string;
-  /** Plaintext input only: it derives the workgroup key and is never persisted. Empty means "not configured yet". */
+  /**
+   * Plaintext input only (CLI, install, and the in-memory effective config of
+   * the plugin): it derives the workgroup key and is never persisted. Empty
+   * means "not configured yet". The plugin config refuses it: there the password
+   * lives in the DSH credential store under `workgroup_password_ref` (§7.3).
+   */
   workgroup_password: string;
+  /**
+   * Plugin only: name of the DSH credential reference holding the workgroup
+   * password. Unset means the name derived from the workgroup id
+   * (`passwordRefFor`), so two workgroups never share a stored password.
+   */
+  workgroup_password_ref?: string;
   /** Defaults to the shortened orca node id. */
   display_name?: string;
   /** Listen address; `127.0.0.1` keeps a fresh install local until an interface is chosen. */
@@ -56,7 +67,7 @@ export interface Settings {
   peers: string[];
   /** Directory of config, identity and stores; defaults to `defaultDataRoot()`. */
   data_root?: string;
-  /** Install a copy of the `orca-node` skill under `$DSH_HOME/skills` (plugin only). */
+  /** Register the bundled `orca-node` skill with the host's skills service (plugin only). */
   skill_injection: boolean;
   /** `acp` drives a real DSH ACP session; `echo` is the debugging script machine (§6.2). */
   executor?: ExecutorKind;
@@ -94,7 +105,7 @@ export interface Settings {
 }
 
 /** Settings the plugin keeps for itself; they never reach `config.json`. */
-type LocalKey = "workgroup_password" | "peers" | "skill_injection";
+type LocalKey = "workgroup_password" | "workgroup_password_ref" | "peers" | "skill_injection";
 
 /** The part of `Settings` that is persisted in `config.json`. */
 export type NodeSettings = Omit<Settings, LocalKey>;
@@ -194,6 +205,25 @@ function parseAcp(raw: unknown): AcpExecutorConfig {
   return acp;
 }
 
+/** A DSH credential reference is a POSIX shell identifier (it doubles as an environment variable name). */
+const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Credential reference of a workgroup's password: the explicit
+ * `workgroup_password_ref`, else `ORCA_POD_PASSWORD_<WORKGROUP>` with the id
+ * upper-cased and `-` turned into `_`. The DSH credential store is shared by
+ * every profile of one DSH home, so the name is per workgroup: profiles in the
+ * same workgroup share its password, profiles in different ones never collide.
+ * It is also the environment variable a headless host can export instead.
+ */
+export function passwordRefFor(
+  settings: Pick<Settings, "workgroup_id" | "workgroup_password_ref">,
+): string | undefined {
+  if (settings.workgroup_password_ref !== undefined) return settings.workgroup_password_ref;
+  if (settings.workgroup_id === undefined) return undefined;
+  return `ORCA_POD_PASSWORD_${settings.workgroup_id.toUpperCase().replaceAll("-", "_")}`;
+}
+
 /** The field table: the single place a setting's type, default and editability live. */
 const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> } = {
   workgroup_id: {
@@ -204,6 +234,13 @@ const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> 
     parse: (raw) => (typeof raw === "string" ? raw : fail("must be a string")),
     default: "",
     panel: true,
+    local: true,
+  },
+  workgroup_password_ref: {
+    parse: (raw) =>
+      typeof raw === "string" && CREDENTIAL_REF_PATTERN.test(raw)
+        ? raw
+        : fail("must be an environment-variable style name ([A-Za-z_][A-Za-z0-9_]*)"),
     local: true,
   },
   display_name: { parse: nonEmpty, panel: true },
@@ -268,7 +305,7 @@ export class ConfigValidationError extends Error {
 }
 
 /**
- * Parse untrusted settings (config.json, plugin config, panel override, flags).
+ * Parse untrusted settings (config.json, plugin config, panel patches, flags).
  * `undefined` and `null` both mean "unset": the default applies, so a panel
  * patch clears a field by sending `null`. Unknown keys are ignored.
  */

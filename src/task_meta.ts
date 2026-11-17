@@ -64,6 +64,13 @@ function parseInputs(raw: unknown): TaskInputRef[] {
  * §8.6). There is no hop limit — a workgroup is a handful of machines — so only
  * malformed metadata and a callback to an ancestor (`ancestor_call_forbidden`)
  * are rejected.
+ *
+ * The ancestors are the nodes in `pod.chain` plus the origin of the whole tree
+ * (`pod.root_origin`). The root origin has to be named separately: a root task
+ * dispatched with the plugin tool carries no chain, so the chain alone would
+ * let A → B → A through. Every receiving node stores `root_origin` on the task,
+ * and both child paths (the CLI with `--local-task`, a delegating local task)
+ * copy it, so it reaches every hop of the tree.
  */
 export function parsePodMetadata(
   metadata: Record<string, unknown> | undefined,
@@ -105,6 +112,12 @@ export function parsePodMetadata(
       `pod.chain already contains ${selfOrcaNodeId}; ancestors cannot be called back`,
     );
   }
+  if (root_origin === selfOrcaNodeId) {
+    throw new PodError(
+      "ancestor_call_forbidden",
+      `${selfOrcaNodeId} is the origin of this delegation tree; the root origin cannot be called back`,
+    );
+  }
   const echo = parseEchoScript(metadata?.echo);
   return {
     chain,
@@ -118,10 +131,10 @@ export function parsePodMetadata(
   };
 }
 
-/** What a resume message carries: a human decision, or plain input for the executor. */
-type ResumeControl = { kind: "grant"; grant: SignedGrant } | { kind: "denied"; reason: string } | { kind: "input" };
+/** The human decision a resume message carries; null when it carries none. */
+type ResumeControl = { kind: "grant"; grant: SignedGrant } | { kind: "denied"; reason: string };
 
-export function parseResume(message: A2AMessage): ResumeControl {
+export function parseResume(message: A2AMessage): ResumeControl | null {
   for (const part of message.parts) {
     if (part.kind !== "data") continue;
     const { grant, permission_denied, reason } = part.data;
@@ -129,5 +142,5 @@ export function parseResume(message: A2AMessage): ResumeControl {
       return { kind: "denied", reason: typeof reason === "string" ? reason : "denied by origin" };
     if (grant !== undefined) return { kind: "grant", grant: parseSignedGrant(grant) };
   }
-  return { kind: "input" };
+  return null;
 }

@@ -1,58 +1,41 @@
-import { mkdtemp, readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  installSkill,
-  resolveDshHome,
-  SKILL_SOURCE_DIR,
-  SKILL_SOURCE_URL,
-  skillBundle,
-  skillPath,
-} from "../src/plugin/skill.ts";
+import { parseSkillDocument, SKILL_ENTRY, SKILL_SOURCE_DIR, skillRegistration } from "../src/plugin/skill.ts";
 
 describe("orca-node skill bundle", () => {
   it("ships a standard skill bundle under skills/", () => {
-    const markdown = readFileSync(SKILL_SOURCE_URL, "utf8");
+    const markdown = readFileSync(SKILL_ENTRY, "utf8");
     expect(markdown.startsWith("---\n")).toBe(true);
     expect(markdown).toContain("name: orca-node");
-    expect(markdown).toContain("description: ");
-    expect(markdown).toContain("whenToUse: ");
-    expect(markdown).not.toContain("{{");
     expect(basename(SKILL_SOURCE_DIR)).toBe("orca-node");
     expect(readFileSync(join(SKILL_SOURCE_DIR, "references", "add-machine.md"), "utf8")).toContain(
       "npx orca-pod install",
     );
   });
 
-  it("reads SKILL.md plus references as the installable bundle", () => {
-    const files = skillBundle();
-    expect(files.map((file) => file.relative).sort()).toEqual(["SKILL.md", "references/add-machine.md"]);
-    for (const file of files) expect(file.content.length).toBeGreaterThan(0);
+  it("parses frontmatter and strips it from the body", () => {
+    const document = parseSkillDocument(readFileSync(SKILL_ENTRY, "utf8"));
+    expect(document.name).toBe("orca-node");
+    expect(document.description.length).toBeGreaterThan(0);
+    expect(document.whenToUse).toBeDefined();
+    expect(document.body.startsWith("#")).toBe(true);
+    expect(document.body).not.toContain("name: orca-node");
   });
 
-  it("installs the bundle under the DSH user home and is idempotent", async () => {
-    const home = await mkdtemp(join(tmpdir(), "orca-skill-"));
-    const first = await installSkill(home);
-    expect(first.written).toBe(true);
-    expect(first.path).toBe(skillPath(home));
-
-    for (const file of skillBundle()) {
-      const installed = join(dirname(first.path), file.relative);
-      expect(await readFile(installed, "utf8")).toBe(file.content);
-    }
-
-    const second = await installSkill(home);
-    expect(second.written).toBe(false);
+  it("registers the bundle as a runtime skill with its reference directory", () => {
+    const registration = skillRegistration();
+    expect(registration.name).toBe("orca-node");
+    expect(registration.source).toBe("runtime");
+    expect(registration.path).toBe(SKILL_ENTRY);
+    expect(registration.resourceBase).toEqual({ kind: "directory", path: SKILL_SOURCE_DIR });
+    expect(registration.content).not.toContain("whenToUse:");
   });
 
-  it("resolves DSH_HOME before the default home", () => {
-    const custom = join(tmpdir(), "orca-dsh-home");
-    expect(resolveDshHome({ DSH_HOME: custom })).toBe(resolve(custom));
-    expect(resolveDshHome({ DSH_HOME: "  " })).toContain(".dsh");
-    expect(resolveDshHome({})).toContain(".dsh");
+  it("rejects a document without frontmatter or a description", () => {
+    expect(() => parseSkillDocument("no frontmatter")).toThrow(/frontmatter fence/);
+    expect(() => parseSkillDocument("---\nname: x\n---\nbody")).toThrow(/description/);
   });
 });

@@ -4,21 +4,23 @@
 
 - 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
 - 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、内容寻址 blob 通道。
-- 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，所有自研模块都在 `src/`，安装时不需要本仓库的 `node_modules`。
+- 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，自研模块在 `src/`，随包发布的是编译后的 `lib/`（`npm run build`），安装时不需要本仓库的 `node_modules`。
 - 验收：`npm run check`（biome + tsc + vitest）。
 
 ## 布局
 
 ```text
 orca-pod/
-├── package.json          # 单包清单：dsh.bundle.patch -> cordis.patch.yml
+├── package.json          # 单包清单：dsh.bundle.patch -> cordis.patch.yml；exports -> lib/
 ├── cordis.patch.yml      # DSH 行：id orca-pod、name 'orca-pod'
-├── client.js             # DSH 客户端 bundle（面板：设置页、侧栏按钮、审批卡片）
+├── client/               # DSH 客户端（面板：设置页、侧栏按钮、审批卡片）的 TSX 源码，构建到 lib/client.js
+├── locale/               # Plugin Manager 显示元数据（en.json / zh.json）
+├── icon.svg              # 插件图标（随包发布）
 ├── biome.json            # lint + format
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
 ├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、sync-guest.ps1
 ├── skills/orca-node/     # 标准 skill bundle（随包发布）
-├── src/
+├── src/                  # TypeScript 源码（tsc 构建到 lib/）
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── orca_node.ts      # 组合根：createOrcaNode
 │   ├── protocol.ts       # 线上类型、id/digest、任务视图
@@ -49,12 +51,13 @@ orca-pod/
 │   ├── blob_files.ts     # publish 的本机文件映射
 │   ├── dispatches.ts     # origin 派发日志
 │   ├── events.ts         # 进程内事件总线
-│   ├── net.ts            # 候选端点筛查、端口、回环判定
+│   ├── net.ts            # 端点筛查、端口、回环判定
 │   ├── process.ts        # 子进程公共件
 │   ├── harness.ts        # 测试用进程内多 orca node
 │   ├── cli.ts            # `orca-node` CLI
 │   ├── orca_pod.ts       # `orca-pod` bin：install（systemd 安装）
 │   ├── install.ts        # install 计划与 unit 渲染
+│   ├── entry.ts          # 包内入口路径（src/cli.ts 或 lib/cli.js）
 │   └── plugin/           # DSH bundle：index / lifecycle / broker / tracker / tools / admin / web / models / skill / config / dsh / util
 └── test/                 # vitest 套件
 ```
@@ -62,6 +65,7 @@ orca-pod/
 ## 安装（本地 checkout）
 
 ```bash
+npm install          # 触发 prepare，产出 lib/（包入口在 lib/，checkout 里没有它就无法加载）
 dsh plugin --profile desktop add /absolute/path/to/orca-pod
 
 # verify the profile picked up the bundle and its patch row
@@ -95,16 +99,17 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 
 ## 配置
 
-所有设置只在 `src/settings.ts` 的字段表里声明一次；`config.json`、插件 `Config`、面板覆盖层、`install` 与 CLI 都走同一个解析器。常用字段：
+所有设置只在 `src/settings.ts` 的字段表里声明一次；`config.json`、插件 `Config`、面板、`install` 与 CLI 都走同一个解析器。插件模式下，设置就是 profile 里的插件配置（面板经 DSH `configEditor` 写回），密码在 DSH 凭据库，运行期记住的 peer 在 `<data_root>/peers.json`。常用字段：
 
 | 字段                   | 默认                                   | 含义                                                                                                  |
 | ---------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `workgroup_id`         | 未设置（向导填写）                     | 要加入的 workgroup，`[a-z0-9][a-z0-9-]{1,31}`                                                          |
-| `workgroup_password`   | `""`                                   | 共享密码，只用来派生准入密钥；不能为空。目前明文保存在面板覆盖层 `ui-config.json`（见 [§7.1](docs/07-security.md#71-workgroup-与密码)） |
+| `workgroup_password`   | `""`                                   | 共享密码，只用来派生准入密钥；不能为空。CLI/`install` 直接接收；**插件配置不接受**，插件从 DSH 凭据库读取（见 [§7.1](docs/07-security.md#71-workgroup-与密码)） |
+| `workgroup_password_ref` | `ORCA_POD_PASSWORD_<WORKGROUP>`      | 仅插件：存放密码的 DSH 凭据引用名（也是无头宿主可导出的环境变量名）                                    |
 | `display_name`         | 缩略的 orca node id                    | 显示名                                                                                                |
 | `bind_host` / `port`   | `127.0.0.1` / `11811`                  | 监听地址与端口（`port: 0` 自选）；`install` 默认写 `::`                                               |
 | `endpoints`            | `[]`（按监听地址推导）                 | 对外宣告的拨号地址，1–8 个，第一个是 primary                                                          |
-| `data_root`            | `$ORCA_POD_HOME` 或 `~/.orca-pod`      | `identity.json`、`config.json`、`tasks.db`、`blobs/`、工作区所在目录                                  |
+| `data_root`            | `$ORCA_POD_HOME`、`$DSH_PROFILE_DIR/orca-pod` 或 `$DSH_HOME/orca-pod` | `identity.json`、`config.json`、`tasks.db`、`blobs/`、工作区所在目录（插件内跟随当前 DSH profile；宿主不导出 `DSH_PROFILE_DIR` 时用 loader `baseUrl` 兜底。不读取、不迁移任何旧位置，如 `~/.orca-pod`）    |
 | `peers`                | `[]`                                   | 启动时 join 的 peer（仅插件）                                                                          |
 | `executor`             | 插件与 `install` 为 `acp`，库/CLI 未设置时 `echo` | 本机执行器（origin 不能指定）；`acp` 对象配 `command`/`profile`/`extra_args`/`mcp_servers`  |
 | `permission_mode`      | 未设置（无本机上限）                   | 本机权限上限；生效模式 = 它与 origin 继承值中较窄的                                                    |
@@ -117,7 +122,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 | `request_timeout_ms`   | `30000`                                | 单次出站调用的超时                                                                                    |
 | `allow_public_peers` / `allow_loopback_peers` | `false` / `true`  | 候选端点是否允许公网 / 回环地址                                                                        |
 | `models` / `default_model` / `default_reasoning_effort` | 空 | 节点自述的模型目录与默认值；插件从 DSH Host 采集，纯 CLI 节点可手填                                    |
-| `skill_injection`      | `false`                                | 把 skill bundle 复制到 `$DSH_HOME/skills/orca-node/`（仅插件）                                         |
+| `skill_injection`      | `false`                                | 把内置 skill 注册到 DSH Host 的 skills 服务（仅插件；不写用户 skill 目录）                               |
 
 `config.json` 首次启动生成（身份 + 派生密钥，0600），同一 `data_root` 下复用，因此 node id 跨重启保持不变；改密码 = 重建组。ACP/CLI 子会话从 executor 收到 `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT`。
 
@@ -152,12 +157,13 @@ orca-node log      [--json]                          # 本节点派发过的任�
 orca-node members  [--peer <url>] [--json]
 ```
 
-共用选项：`--config <path>` 或 `--data-root <path>`（默认 `~/.orca-pod`）。`wait` 退出码：0 完成 / 1 失败或取消 / 2 仍在跑 / 3 需要权限；`escalate`：0 已批准恢复 / 1 被拒绝 / 2 超时。`--local-task` 让节点监视子任务并在它要权限时把本任务挂起上交，由 origin 的人决定一次。CLI 读本机 `config.json`，用本 orca node 的身份签名；它不是节点，不监听端口，也不会替你 join 陌生地址（先 `serve --peer <url>`）。
+共用选项：`--config <path>` 或 `--data-root <path>`（默认 `$ORCA_POD_HOME`，否则 `$DSH_PROFILE_DIR/orca-pod`，否则 `$DSH_HOME/orca-pod`，再否则 `~/.dsh/orca-pod`；在 profile 之外的终端里运行时请用 `--data-root` 指向插件所在 profile 的目录）。`wait` 退出码：0 完成 / 1 失败或取消 / 2 仍在跑 / 3 需要权限；`escalate`：0 已批准恢复 / 1 被拒绝 / 2 超时。`--local-task` 让节点监视子任务并在它要权限时把本任务挂起上交，由 origin 的人决定一次。CLI 读本机 `config.json`，用本 orca node 的身份签名；它不是节点，不监听端口，也不会替你 join 陌生地址（先 `serve --peer <url>`）。
 
 ## 开发
 
 ```bash
-npm install
+npm install         # 同时触发 prepare -> npm run build，产出 lib/
+npm run build       # tsc -p tsconfig.build.json + 客户端 esbuild，产出 lib/（已进 .gitignore）
 npm run check       # biome check + tsc --noEmit + vitest run（唯一的验收入口）
 npm run format      # biome format --write
 npm run harness     # 两个真实 orca-node 进程的 smoke
@@ -165,6 +171,6 @@ npm run harness     # 两个真实 orca-node 进程的 smoke
 
 维护注意：
 
-- 包导出 TypeScript 源码（`"exports": "./src/index.ts"`），依赖 Node ≥24 的类型剥离；若 DSH 构建以保留符号链接的方式解析 linked bundle，则需要提供编译后的 JS 入口。
+- 包导出编译产物（`"exports"` 指向 `./lib/index.js` 与 `./lib/index.d.ts`），并导出 `./locale/*.json` 与 `./icon`；TypeScript 源码只用于开发与类型检查，`src/` 里的 .ts 导入由 `rewriteRelativeImportExtensions` 在构建时改写。
 - `src/` 的依赖方向靠 review 维持：`gateway/` 不 import 执行器或任务实现，只有 `orca_node.ts` 负责装配（[§9.1](docs/09-implementation.md#91-单包内的模块划分)）。
 - 抖动/超时类测试的窗口按心跳间隔的倍数给，不按绝对毫秒。

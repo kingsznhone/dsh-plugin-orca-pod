@@ -35,6 +35,7 @@ import {
   type PromptFn,
   type PromptQuestion,
 } from "./install.ts";
+import { CLI_PATH } from "./entry.ts";
 import { DEFAULT_PORT } from "./protocol.ts";
 import { parseSettings } from "./settings.ts";
 import { errorMessage } from "./errors.ts";
@@ -53,7 +54,8 @@ Options:
   -p, --password <secret>
                         Workgroup password
   --workgroup <id>      Workgroup id
-  --data-root <path>    Node data directory (default: ~/.orca-pod)
+  --data-root <path>    Node data directory (default: $ORCA_POD_HOME, else
+                        $DSH_PROFILE_DIR/orca-pod, else $DSH_HOME/orca-pod, else ~/.dsh/orca-pod)
   --bind-host <addr>    Listen address (default: ::, all interfaces)
   --port <number>       Listen port (default: ${DEFAULT_PORT})
   --endpoint <url>      Advertised endpoint; repeatable
@@ -206,7 +208,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   const dshBin = values["dsh-bin"];
   const environment = resolveEnvironment({
     ...(dshBin === undefined ? {} : { dshBin }),
-    packageEntry: fileURLToPath(new URL("./cli.ts", import.meta.url)),
+    packageEntry: CLI_PATH,
     ...deps.environment,
   });
   const plan = planInstall(options, environment);

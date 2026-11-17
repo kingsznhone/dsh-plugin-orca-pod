@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { deriveWorkgroupKey } from "./crypto.ts";
 import { isNodeId, loadOrCreateIdentity, shortenNodeId } from "./identity.ts";
 import { nodeSettings, parseSettings, type NodeSettings, type Settings } from "./settings.ts";
@@ -14,8 +15,43 @@ export type OrcaNodeConfig = NodeSettings & {
   key_base64: string;
 };
 
-export function defaultDataRoot(): string {
-  return process.env.ORCA_POD_HOME ?? join(homedir(), ".orca-pod");
+/**
+ * Default data directory: an explicit `ORCA_POD_HOME`, else this DSH profile's
+ * directory, else the DSH home (`$DSH_HOME`, default `~/.dsh`). One profile
+ * therefore owns one identity, port and task store, and two profiles never
+ * share them. There is no fallback to any earlier location.
+ *
+ * The host process does not always export `DSH_PROFILE_DIR` to its own plugins
+ * (only to the shells it spawns), so the plugin also passes the loader
+ * `baseUrl` — the profile directory for a profile-scoped host.
+ */
+export function defaultDataRoot(env: NodeJS.ProcessEnv = process.env, baseUrl?: string): string {
+  const explicit = nonEmpty(env.ORCA_POD_HOME);
+  if (explicit !== undefined) return resolve(explicit);
+  const profile = nonEmpty(env.DSH_PROFILE_DIR) ?? profileDirFrom(baseUrl);
+  if (profile !== undefined) return resolve(profile, "orca-pod");
+  return resolve(nonEmpty(env.DSH_HOME) ?? join(homedir(), ".dsh"), "orca-pod");
+}
+
+/** A trimmed environment value, or undefined when unset or blank. */
+function nonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+/** The profile directory behind a loader `baseUrl`, when it names one. */
+function profileDirFrom(baseUrl?: string): string | undefined {
+  if (baseUrl === undefined || baseUrl.length === 0) return undefined;
+  let path = baseUrl;
+  if (baseUrl.startsWith("file:")) {
+    try {
+      path = fileURLToPath(baseUrl);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!isAbsolute(path)) return undefined;
+  return /[\\/]profiles[\\/][^\\/]+$/.test(path) ? path : undefined;
 }
 
 export function configPath(dataRoot: string): string {

@@ -6,18 +6,25 @@ import { networkInterfaces } from "node:os";
 import { DEFAULT_PORT, isHttpEndpoint } from "./protocol.ts";
 
 /**
- * Candidate-endpoint filtering (§7.7). Endpoints an orca node learned from
- * another orca node's member list are untrusted input: dialing one must not
- * become a probe of the host's own services or the cloud metadata endpoint.
- * Explicit endpoints (config, CLI, a direct join) are not filtered here.
+ * Endpoint screening (§7.7).
+ *
+ * - Candidates (endpoints learned from another node's member list) are checked
+ *   against the configured policy before the heartbeat loop dials them:
+ *   private ranges yes, public only when allowed, loopback unless disabled.
+ * - Endpoints a node declares in its own join are checked with
+ *   `EXPLICIT_DIAL_POLICY` (public addresses are fine) before they are recorded.
+ * - Link-local (cloud metadata), multicast and unspecified addresses are never
+ *   accepted. Explicit endpoints (config, CLI, a direct join) are not filtered.
  */
-
-type CandidateDialPolicy = {
+export type DialPolicy = {
   /** Public addresses are off by default; private ranges are the normal case. */
   allowPublicPeers?: boolean;
-  /** Set false to reject loopback candidates; allowed by default for same-host meshes. */
+  /** Set false to reject loopback targets; allowed by default for same-host meshes. */
   allowLoopbackPeers?: boolean;
 };
+
+/** Policy for endpoints a node declares for itself: only the always-forbidden ranges are refused. */
+export const EXPLICIT_DIAL_POLICY: DialPolicy = { allowPublicPeers: true, allowLoopbackPeers: true };
 
 type AddressClass = "loopback" | "link-local" | "private" | "public" | "reserved";
 
@@ -44,8 +51,12 @@ function ipv6Class(address: string): AddressClass {
   return "public";
 }
 
-function addressAllowed(address: string, policy: CandidateDialPolicy): boolean {
-  const cls = isIPv4(address) ? ipv4Class(address) : ipv6Class(address);
+function addressClass(address: string): AddressClass {
+  return isIPv4(address) ? ipv4Class(address) : ipv6Class(address);
+}
+
+function addressAllowed(address: string, policy: DialPolicy): boolean {
+  const cls = addressClass(address);
   switch (cls) {
     case "loopback":
       return policy.allowLoopbackPeers !== false;
@@ -59,24 +70,41 @@ function addressAllowed(address: string, policy: CandidateDialPolicy): boolean {
   }
 }
 
-/** True when a candidate endpoint may be dialed under this policy (§7.7). */
-export async function candidateEndpointAllowed(endpoint: string, policy: CandidateDialPolicy = {}): Promise<boolean> {
+/**
+ * True when an endpoint may be dialed under this policy right now (§7.7). The
+ * answer can change with DNS, so callers keep it only briefly.
+ */
+export async function candidateEndpointAllowed(endpoint: string, policy: DialPolicy = {}): Promise<boolean> {
+  return (await screenEndpoint(endpoint, policy)) === "allowed";
+}
+
+/**
+ * Screen one endpoint: `refused` when the URL is unusable or a literal or
+ * resolved address is forbidden, `unresolved` when the name does not resolve
+ * from here right now, else `allowed`. A caller that only needs to keep known
+ * bad addresses out (a join) can accept `unresolved`.
+ */
+export async function screenEndpoint(
+  endpoint: string,
+  policy: DialPolicy = {},
+): Promise<"allowed" | "refused" | "unresolved"> {
   let url: URL;
   try {
     url = new URL(endpoint);
   } catch {
-    return false;
+    return "refused";
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "refused";
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (isIPv4(host) || isIPv6(host)) return addressAllowed(host, policy);
+  if (isIPv4(host) || isIPv6(host)) return addressAllowed(host, policy) ? "allowed" : "refused";
+  let addresses: { address: string }[];
   try {
-    const addresses = await lookup(host, { all: true, verbatim: true });
-    if (addresses.length === 0) return false;
-    return addresses.every((entry) => addressAllowed(entry.address, policy));
+    addresses = await lookup(host, { all: true, verbatim: true });
   } catch {
-    return false;
+    return "unresolved";
   }
+  if (addresses.length === 0) return "unresolved";
+  return addresses.every((entry) => addressAllowed(entry.address, policy)) ? "allowed" : "refused";
 }
 
 /**
@@ -87,8 +115,8 @@ export async function candidateEndpointAllowed(endpoint: string, policy: Candida
 const BLOCKED_FETCH_PORTS: ReadonlySet<number> = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110,
   111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
-  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000,
-  6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
 ]);
 
 /** True when `fetch` refuses to connect to this port. */

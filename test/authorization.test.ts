@@ -301,6 +301,68 @@ describe("workgroup membership gate (C1)", () => {
     expect(direct.rawPayload.equals(payload)).toBe(true);
   });
 
+  it("screens the endpoints a joining node declares", async () => {
+    const harness = createHarness();
+    const join = async (endpoints: string[], remoteAddress: string) => {
+      const stranger = generateNodeIdentity();
+      const ts = Date.now();
+      const nonce = randomBytes(16).toString("base64url");
+      const proof = admissionProof("join", harness.key, {
+        workgroupId: WORKGROUP,
+        orcaNodeId: stranger.orcaNodeId,
+        ts,
+        nonce,
+      });
+      const body = {
+        workgroup_id: WORKGROUP,
+        orca_node_id: stranger.orcaNodeId,
+        display_name: "stranger",
+        endpoints,
+        runtime: null,
+        max_task_ttl_s: 600,
+        default_model: null,
+        default_reasoning_effort: null,
+        ts,
+        nonce,
+        proof,
+      };
+      const response = await harness.app.inject({
+        method: "POST",
+        url: "/cluster/join",
+        payload: body,
+        remoteAddress,
+        headers: {
+          "content-type": "application/json",
+          authorization: strangerSign(harness, stranger, "POST", "/cluster/join", JSON.stringify(body)),
+        },
+      });
+      return { response, record: harness.peers.get(stranger.orcaNodeId) };
+    };
+
+    // Cloud metadata and other link-local targets are never accepted.
+    const metadata = await join(["http://169.254.169.254:80"], "10.0.0.5");
+    expect(metadata.response.statusCode).toBe(400);
+    expect(metadata.response.json()).toMatchObject({ code: "endpoint_refused" });
+    expect(metadata.record).toBeUndefined();
+
+    // A remote machine cannot be reached at our loopback address.
+    const remoteLoopback = await join(["http://127.0.0.1:22"], "10.0.0.5");
+    expect(remoteLoopback.response.statusCode).toBe(400);
+
+    // A same-host node joining over loopback may advertise loopback.
+    const local = await join(["http://127.0.0.1:11811"], "127.0.0.1");
+    expect(local.response.statusCode).toBe(200);
+    expect(local.record?.endpoints).toEqual(["http://127.0.0.1:11811"]);
+
+    // Mixed lists keep only what may be dialed; public addresses are fine for a joiner.
+    const mixed = await join(
+      ["http://169.254.169.254:80", "http://10.0.0.5:11811", "http://8.8.8.8:11811"],
+      "10.0.0.5",
+    );
+    expect(mixed.response.statusCode).toBe(200);
+    expect(mixed.record?.endpoints).toEqual(["http://10.0.0.5:11811", "http://8.8.8.8:11811"]);
+  });
+
   it("answers an unknown path with 404 before any signature check", async () => {
     const response = await createHarness().app.inject({ method: "GET", url: "/nope" });
     expect(response.statusCode).toBe(404);

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Orca pod">
+  <rect width="64" height="64" rx="14" fill="#0f172a" />
+  <path d="M32 11 49 32 32 53 15 32Z" fill="#f8fafc" />
+  <path d="M32 21 41 32 32 43 23 32Z" fill="#0ea5e9" />
+</svg>

@@ -223,6 +223,39 @@ describe("multi-hop enforcement", () => {
     expect(done.status.message?.parts).toContainEqual({ kind: "text", text: "hop ok" });
   });
 
+  it("rejects a task that names this node as the root origin of its tree", () => {
+    expect(() => parsePodMetadata({ pod: { chain: ["NODE-B"], root_origin: "NODE-A" } }, "NODE-A", "NODE-B")).toThrow(
+      expect.objectContaining({ code: "ancestor_call_forbidden" }),
+    );
+    // A root task to this node (no tree yet) and a tree started elsewhere are fine.
+    expect(parsePodMetadata(undefined, "NODE-A", "NODE-B").rootOrigin).toBe("NODE-B");
+    expect(parsePodMetadata({ pod: { chain: ["NODE-B"], root_origin: "NODE-C" } }, "NODE-A", "NODE-B").chain).toEqual([
+      "NODE-B",
+    ]);
+  });
+
+  it("stops A -> B -> A when A dispatched the root task without a chain", async () => {
+    const origin = await makeNode();
+    const worker = await makeNode();
+    await connectAll([origin, worker]);
+    // The plugin tool sends a root task: no `pod.chain`, no `root_origin`.
+    const root = await origin.sendTask(worker.endpoints[0]!, {
+      message: { role: "user", parts: [{ kind: "text", text: "root task" }] },
+      metadata: { echo: { final: { state: "completed", text: "done" } } },
+    });
+    await waitForState(origin, worker.endpoints[0]!, root.id, "completed");
+    // The worker delegates from inside that task back to the origin.
+    await expectCode(
+      () =>
+        worker.sendTask(
+          origin.endpoints[0]!,
+          { message: { role: "user", parts: [{ kind: "text", text: "call the origin back" }] } },
+          { parentTaskId: root.id },
+        ),
+      "ancestor_call_forbidden",
+    );
+  });
+
   it("rejects a callback into an ancestor chain", async () => {
     const sender = await makeNode();
     const target = await makeNode();

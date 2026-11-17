@@ -6,15 +6,17 @@
 import type { EchoScript } from "./echo.ts";
 import type { ModelSelection, PermissionMode, TaskRelay } from "./protocol.ts";
 
-/** Why a running task stops to wait for someone else. */
-export type Suspension =
-  | { kind: "blocked"; reason: string; question: string; options?: string[] }
-  /**
-   * `relay` names the child task whose permission request this one passes on:
-   * the task runner turns it into this node's own `permission_request` without
-   * a network call (§7.12).
-   */
-  | { kind: "permission"; tool: string; requested: Record<string, unknown>; relay?: TaskRelay };
+/**
+ * Why a running task stops to wait for someone else. The only reason is a
+ * permission decision from the origin (§7.11). An executor that cannot continue
+ * for any other reason finishes instead, with `BLOCKED: …` as the first line of
+ * its result (§6.14); there is no "ask the origin a question" suspension.
+ *
+ * `relay` names the child task whose permission request this one passes on: the
+ * task runner turns it into this node's own `permission_request` without a
+ * network call (§7.12).
+ */
+export type Suspension = { kind: "permission"; tool: string; requested: Record<string, unknown>; relay?: TaskRelay };
 
 export type ExecutorEvent =
   | { type: "suspend"; suspend: Suspension }

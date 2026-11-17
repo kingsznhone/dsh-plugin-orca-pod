@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -111,6 +111,66 @@ describe("fs blob store", () => {
     now += 1500;
     expect(store.gc()).toBe(2);
     expect(store.put(Buffer.from("0123456789")).size).toBe(10);
+  });
+
+  it("discards streamed bytes whose digest differs from the declared one", async () => {
+    const root = tempDir();
+    const store = createFsBlobStore(root);
+    const payload = Buffer.from("actual bytes");
+    await expect(
+      store.putStream(Readable.from([payload]), { sha256: sha256Hex(Buffer.from("declared bytes")) }),
+    ).rejects.toMatchObject({ code: "blob_digest_mismatch" });
+    expect(store.has(sha256Hex(payload))).toBe(false);
+    expect(readdirSync(root)).toEqual([]);
+    // The matching digest is accepted as usual.
+    const stored = await store.putStream(Readable.from([payload]), { sha256: sha256Hex(payload) });
+    expect(stored.blob_id).toBe(sha256Hex(payload));
+  });
+
+  it("extends the expiry when the same bytes are uploaded again", async () => {
+    let now = 1_000_000;
+    const root = tempDir();
+    const store = createFsBlobStore(root, { ttlMs: 1000, now: () => now });
+    const first = store.put(Buffer.from("again"));
+    now += 800;
+    const second = await store.putStream(Readable.from([Buffer.from("again")]));
+    expect(Date.parse(second.expires_at ?? "")).toBeGreaterThan(Date.parse(first.expires_at ?? ""));
+    now += 500;
+    // Past the first expiry, inside the refreshed one.
+    expect(store.gc()).toBe(0);
+    expect(store.has(first.blob_id)).toBe(true);
+    // A reopened store reads the refreshed sidecar.
+    expect(createFsBlobStore(root, { ttlMs: 1000, now: () => now }).stat(first.blob_id)?.expires_at).toBe(
+      second.expires_at,
+    );
+  });
+
+  it("does not treat data without a sidecar as a blob, completes it on re-upload, and collects it", () => {
+    let now = Date.now();
+    const root = tempDir();
+    const store = createFsBlobStore(root, { now: () => now });
+    const bytes = Buffer.from("crashed before the sidecar");
+    const blobId = sha256Hex(bytes);
+    const dataPath = join(root, blobId.slice(0, 2), blobId);
+    mkdirSync(join(root, blobId.slice(0, 2)), { recursive: true });
+    writeFileSync(dataPath, bytes);
+
+    expect(store.has(blobId)).toBe(false);
+    expect(store.get(blobId)).toBeUndefined();
+    expect(store.stat(blobId)).toBeUndefined();
+
+    // Within the grace period gc leaves it (an upload may be finishing it)...
+    expect(store.gc()).toBe(0);
+    expect(existsSync(dataPath)).toBe(true);
+    // ...and once it is stale, the orphan goes.
+    now += PART_GRACE_MS + 60_000;
+    store.gc();
+    expect(existsSync(dataPath)).toBe(false);
+
+    // The same bytes uploaded again are a complete blob.
+    writeFileSync(dataPath, bytes);
+    expect(store.put(bytes).blob_id).toBe(blobId);
+    expect(store.has(blobId)).toBe(true);
   });
 
   it("rejects path-like blob ids", () => {

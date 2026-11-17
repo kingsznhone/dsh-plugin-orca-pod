@@ -172,6 +172,8 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
       headers,
       body,
       duplex: "half",
+      // A redirect would carry a signed request to an address nobody vetted.
+      redirect: "manual",
       signal: call.signal === undefined ? deadline : AbortSignal.any([deadline, call.signal]),
     };
     const response = await options.fetch(url, init);

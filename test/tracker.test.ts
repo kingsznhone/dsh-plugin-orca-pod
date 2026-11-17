@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { TaskState, TaskView } from "../src/protocol.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { AgentNotice, HostLogger, ToolAgent } from "../src/plugin/dsh.ts";
-import { createTracker as createTrackerWith, taskNoticeLine } from "../src/plugin/tracker.ts";
+import type { DispatchEntry } from "../src/dispatches.ts";
+import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
 import type { TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
 
 class FakeAgent implements ToolAgent {
@@ -315,29 +316,6 @@ describe("createTracker", () => {
     tracker.stop();
   });
 
-  it("never runs two polls at once", async () => {
-    const agent = new FakeAgent();
-    let active = 0;
-    let max = 0;
-    const tracker = createTracker(
-      () => ({
-        async getTask(): Promise<TaskView> {
-          active += 1;
-          max = Math.max(max, active);
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          active -= 1;
-          return taskView("01TASK", "working");
-        },
-      }),
-      { intervalMs: 1, coalesceMs: 5 },
-    );
-    tracker.track(agent, "http://peer:11811", "01TASK");
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(max).toBe(1);
-    expect(tracker.size()).toBe(1);
-    tracker.stop();
-  });
-
   it("drops pending work on stop()", async () => {
     const agent = new FakeAgent();
     const views = new Map([["01TASK", taskView("01TASK", "completed")]]);
@@ -347,5 +325,88 @@ describe("createTracker", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(agent.followed).toHaveLength(0);
     expect(agent.injected).toHaveLength(0);
+  });
+});
+
+describe("tracking restore and poll rounds", () => {
+  const peer = "http://peer:11811";
+
+  function dispatch(taskId: string, agentId: string): DispatchEntry {
+    const now = new Date().toISOString();
+    return { task_id: taskId, peer, state: "unknown", agent_id: agentId, created_at: now, updated_at: now };
+  }
+
+  it("keeps an already watched task as it is when it is tracked again", async () => {
+    const agent = new FakeAgent();
+    const views = new Map([["01RUN", taskView("01RUN", "working")]]);
+    const tracker = createTracker(() => fakeNode(views), fast);
+    expect(tracker.track(agent, peer, "01RUN")).toBe(true);
+    await waitFor(() => tracker.list()[0]?.view !== null);
+    expect(tracker.track(agent, peer, "01RUN", { record: false })).toBe(false);
+    // The observed view survives the second call instead of being reset.
+    expect(tracker.list()[0]?.view?.status.state).toBe("working");
+    tracker.stop();
+  });
+
+  it("restores only the named session's dispatches", () => {
+    const tracker = createTracker(() => fakeNode(new Map()), { intervalMs: 60_000 });
+    const agentWith = (id: string): ToolAgent => ({ id, status: "idle", inject() {}, followup() {} });
+    const one = agentWith("agent-1");
+    const two = agentWith("agent-2");
+    const agents = new Map([
+      ["agent-1", one],
+      ["agent-2", two],
+    ]);
+    const log = [dispatch("01A", "agent-1"), dispatch("01B", "agent-2")];
+    expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger, "agent-2")).toBe(1);
+    expect(tracker.list().map((task) => task.taskId)).toEqual(["01B"]);
+    // Restoring everything afterwards only adds what is not watched yet.
+    expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger)).toBe(1);
+    tracker.stop();
+  });
+
+  it("does not revive a task it gave up on when the log is restored again", async () => {
+    const agent = new FakeAgent();
+    const node: Pick<TrackerNode, "getTask"> = {
+      getTask: async () => {
+        throw Object.assign(new Error("task not found"), { status: 404 });
+      },
+    };
+    const tracker = createTracker(() => node, fast);
+    const log = [dispatch("01GONE", agent.id)];
+    expect(restoreTrackedDispatches(tracker, log, () => agent, logger)).toBe(1);
+    await waitFor(() => agent.followed.length === 1);
+    expect(restoreTrackedDispatches(tracker, log, () => agent, logger)).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(agent.followed).toHaveLength(1);
+    // A fresh dispatch of the same id (an explicit track) is still accepted.
+    expect(tracker.track(agent, peer, "01GONE")).toBe(true);
+    tracker.stop();
+  });
+
+  it("never runs two poll rounds at once, even when tasks are added mid-round", async () => {
+    const agent = new FakeAgent();
+    let active = 0;
+    let peak = 0;
+    let reads = 0;
+    const node: Pick<TrackerNode, "getTask"> = {
+      async getTask(_peer, taskId) {
+        active += 1;
+        reads += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+        return taskView(taskId, "working");
+      },
+    };
+    const tracker = createTracker(() => node, { intervalMs: 1, coalesceMs: 10 });
+    tracker.track(agent, peer, "01A");
+    await waitFor(() => active === 1);
+    // Each of these used to start a parallel round while the first one ran.
+    tracker.track(agent, peer, "01B");
+    tracker.track(agent, peer, "01C");
+    await waitFor(() => reads >= 6);
+    expect(peak).toBe(1);
+    tracker.stop();
   });
 });

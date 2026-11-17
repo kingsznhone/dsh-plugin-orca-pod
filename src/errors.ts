@@ -28,6 +28,8 @@ export const POD_ERROR_STATUS = {
   input_blob_missing: 400,
   too_many_inputs: 400,
   inputs_too_large: 400,
+  /** A join whose declared endpoints are all forbidden by the screening policy (§7.7). */
+  endpoint_refused: 400,
   // Unknown resources.
   task_not_found: 404,
   blob_not_found: 404,

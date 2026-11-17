@@ -42,7 +42,8 @@ Usage:
 
 Common options:
   --config <path>       use a config file instead of <data-root>/config.json
-  --data-root <path>    directory holding config.json (default ~/.orca-pod)
+  --data-root <path>    directory holding config.json (default $ORCA_POD_HOME, else
+                        $DSH_PROFILE_DIR/orca-pod, else $DSH_HOME/orca-pod, else ~/.dsh/orca-pod)
 
 Exit codes (wait):
   0 completed    1 failed/canceled    2 still running    3 input-required

@@ -4,7 +4,6 @@ import type { OrcaNodeConfig } from "./config.ts";
 import { admissionProof } from "./crypto.ts";
 import { PodError } from "./errors.ts";
 import type { PodEventInput } from "./events.ts";
-import { candidateEndpointAllowed } from "./net.ts";
 import { heartbeatIntervalMsFor, type Membership } from "./membership.ts";
 import type { PeerClient } from "./peer_client.ts";
 import {
@@ -19,6 +18,7 @@ import {
   type RuntimeInfo,
   type SelfRecord,
 } from "./protocol.ts";
+import { candidateEndpointAllowed } from "./net.ts";
 
 /** Where the node reports what it refuses or drops; the entry point decides where that goes. */
 export type NodeLogger = { warn(message: string): void };
@@ -64,6 +64,9 @@ export type Workgroup = {
 function isAdmissionRejection(error: unknown): boolean {
   return error instanceof PodError && error.status === 401;
 }
+
+/** How long one candidate-endpoint screening verdict is reused (§7.7). */
+const VERDICT_TTL_MS = 60_000;
 
 export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
   const { config, membership, client, logger } = deps;
@@ -282,25 +285,32 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
 
   /** Last endpoint that worked per peer, tried first on the next round. */
   const preferredEndpoints = new Map<string, string>();
-  /** DNS lookups are not free, so each candidate endpoint is judged once per process. */
-  const verdicts = new Map<string, boolean>();
+  /**
+   * Screening verdicts per candidate endpoint, kept only briefly: a lookup per
+   * tick would be wasteful, but a verdict kept for the whole process would never
+   * notice that a name now points somewhere else.
+   */
+  const verdicts = new Map<string, { allowed: boolean; until: number }>();
+  /** Peers whose refused endpoint was already logged; one line per peer is enough. */
   const warned = new Set<string>();
 
-  /** An endpoint from someone else's list is screened before it is dialed (§7.7). */
+  /** An endpoint from another node's member list is screened before it is dialed (§7.7). */
   async function endpointAllowed(peer: PeerView, endpoint: string): Promise<boolean> {
-    let allowed = verdicts.get(endpoint);
-    if (allowed === undefined) {
-      allowed = await candidateEndpointAllowed(endpoint, {
+    const now = Date.now();
+    let verdict = verdicts.get(endpoint);
+    if (verdict === undefined || verdict.until <= now) {
+      const allowed = await candidateEndpointAllowed(endpoint, {
         allowPublicPeers: config.allow_public_peers,
         allowLoopbackPeers: config.allow_loopback_peers,
       });
-      verdicts.set(endpoint, allowed);
+      verdict = { allowed, until: now + VERDICT_TTL_MS };
+      verdicts.set(endpoint, verdict);
     }
-    if (!allowed && !warned.has(peer.orca_node_id)) {
+    if (!verdict.allowed && !warned.has(peer.orca_node_id)) {
       warned.add(peer.orca_node_id);
       logger.warn(`orca-pod: refusing candidate endpoint ${endpoint} from ${peer.orca_node_id} (§7.7)`);
     }
-    return allowed;
+    return verdict.allowed;
   }
 
   /** Dialable URLs of one peer: screened if it came from a remote list, last good first. */
