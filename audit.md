@@ -56,16 +56,16 @@
 
 ## 7. 尚未验证的事项
 
-- 没有在真实的 DSH 桌面或浏览器中运行。客户端只有构建冒烟测试（`test/client-bundle.test.ts`：在假壳里执行工厂、调用 `apply`），没有在 React 里实际渲染过。面板已改用 DSH 共享的 `dsh-client-ui-primitives` 组件与 CSS Modules（组件的 props 按 DSH 自己的调用写在 `client/dsh-ui.d.ts`，DSH 没有发布类型），需要在真实面板里点一遍所有视图：状态页、首启向导、设置（含高级设置与完全重置）、全部任务、任务详情、节点详情、审批停靠卡与后台弹窗，以及设置页里的那一页。
+- 没有在真实的 DSH 桌面或浏览器中运行。客户端只有构建冒烟测试（`test/client-bundle.test.ts`：在假壳里执行工厂、调用 `apply`），没有在 React 里实际渲染过。面板已改用 DSH 共享的 `dsh-client-ui-primitives` 组件与 CSS Modules（组件 props 直接用 npm 上该包发布的类型，`client/css-modules.d.ts` 只声明 `*.module.css`），需要在真实面板里点一遍所有视图：状态页、首启向导、设置（含高级设置与完全重置）、全部任务、任务详情、节点详情、审批停靠卡与后台弹窗，以及设置页里的那一页。
 - 宿主接口：`credentials`（`resolve`/`set`/`unset`）、`configEditor.edit(entry, change)`、`ctx.fiber.entry`、客户端 `locale.register`/`bind` 与 `__ModuleLoader__` 产物格式，都已对照本机 DSH 0.2.2-rc.3 安装包里的源码核对过，但没有实际跑通。尤其需要实测：面板保存配置 → `configEditor.edit` 写回 profile → Loader 重启插件 → 新实例从凭据库读到口令并启动，这条链路。
-- 其余仍只来自本地镜像类型（`src/plugin/dsh.ts`）、没有对照源码确认的：
+- 宿主类型不再有本地镜像：`src/plugin/dsh.ts` 已删除，全部改用 npm 上 `@deepseek-ai/cordis@4.1.0` 与 `@deepseek-ai/dsh-*@0.2.2-rc.3` 发布的 `.d.ts`（devDependency，`import type` 引入）。下面这些现在**有类型依据**，但仍未在运行时验证：
   - `ctx.inject` 回调拿到的子作用域是否带 `effect`，服务替换时是否先销毁再重跑（插件注册不叠加依赖这一点）；
   - `agent/created` 的载荷与 `agent.ctx`；
   - `tools.register(def, { when })` 与 `exec.signal`；
   - `skills.register` 的字段（`resourceBase`、`source: "runtime"`）；
   - `settings.configure({ auto: false }, ctx.fiber)`；
   - `ctx.baseUrl` 是否为 profile 目录；
-  - 服务名 `agentDefaultModel`；
+  - `ctx.sandboxPolicy.resolve({ session }).mode` 是否真的返回会话的 sandbox 模式（`dsh-base` 的 `cordis.patch.yml` 已确认 compose 了 `@deepseek-ai/dsh-sandbox-policy`，见第 243-246 行）；
   - `package.json` 的 `icon` 字段与 `locale/*.json` 的 `meta`。
 - DSH 是否向插件进程设置 `DSH_PROFILE_DIR`：仓库中没有依据，目前靠 `baseUrl` 兜底。
 - 一次 `ctx.slots.inject("shell.overlay", …)` 回调里注册两个 slot 条目，是否被 DSH 支持。

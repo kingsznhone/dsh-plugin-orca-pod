@@ -27,7 +27,7 @@ import type { OrcaNode } from "../node/orca-node.ts";
 import type { PanelPatch } from "../node/settings.ts";
 
 import type { Config } from "./config.ts";
-import type { HostLogger } from "./dsh.ts";
+import type { Logger } from "@deepseek-ai/cordis";
 import {
   type ConfigFields,
   loadRememberedPeers,
@@ -123,7 +123,7 @@ async function startNode(
   config: Config,
   remembered: readonly string[],
   runtime: PodRuntime,
-  logger: HostLogger,
+  logger: Logger,
   hooks: StartPodHooks,
 ): Promise<void> {
   const dataRoot = config.data_root ?? defaultDataRoot();
@@ -177,7 +177,7 @@ async function startListening(orcaNode: OrcaNode, runtime: PodRuntime): Promise<
 }
 
 /** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */
-async function joinPeers(orcaNode: OrcaNode, peers: Iterable<string>, self: string, logger: HostLogger): Promise<void> {
+async function joinPeers(orcaNode: OrcaNode, peers: Iterable<string>, self: string, logger: Logger): Promise<void> {
   for (const peer of peers) {
     if (peer === self) continue;
     try {
@@ -189,7 +189,7 @@ async function joinPeers(orcaNode: OrcaNode, peers: Iterable<string>, self: stri
   }
 }
 
-async function stopNode(runtime: PodRuntime, logger: HostLogger): Promise<void> {
+async function stopNode(runtime: PodRuntime, logger: Logger): Promise<void> {
   const orcaNode = runtime.orcaNode;
   runtime.orcaNode = null;
   runtime.url = null;
@@ -220,7 +220,7 @@ export interface StartPodHooks {
  */
 export function startPod(
   bundleConfig: Config,
-  logger: HostLogger,
+  logger: Logger,
   stores: PodStores,
   hooks: StartPodHooks = {},
   defaultRoot?: string,
@@ -395,7 +395,7 @@ export function startPod(
 }
 
 /** Stop the pod; safe to call after a failed startup and safe to await twice. */
-export async function stopPod(handle: PodHandle, logger: HostLogger): Promise<void> {
+export async function stopPod(handle: PodHandle, logger: Logger): Promise<void> {
   await handle.ready;
   // Let an in-flight reconfiguration finish (or skip its restart), so shutdown
   // cannot race a new listener into existence after the host disposed us.

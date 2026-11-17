@@ -19,16 +19,14 @@ import { describeIssue, parseSchema } from "../kernel/schema.ts";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 
-import type {
-  ContentBlock,
-  PermissionPresetsService,
-  RawJsonSchema,
-  ToolDefinition,
-  ToolExecution,
-  ToolRunContext,
-} from "./dsh.ts";
+import type { ContentBlock } from "@deepseek-ai/dsh-llm";
+import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
+import type { JsonSchemaNode, ToolDefinition, ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
+
+/** The sandbox-policy read `sessionSandboxMode` needs; the host service satisfies it. */
+export type SandboxReader = Pick<SandboxPolicyService, "resolve">;
 
 const ASYNC_NOTE =
   'Tasks run asynchronously on the remote orca node: method "send" returns as soon as the remote accepts the task, and method "status" observes the returned task_id.';
@@ -46,7 +44,7 @@ const METHODS_HELP =
  * members returns a roster), so the canonical output schema is the unconstrained
  * JSON form. The executor accepts an annotation-only schema for exactly this case.
  */
-const OUTPUT_SCHEMA: RawJsonSchema = { description: "JSON payload rendered as text." };
+const OUTPUT_SCHEMA: JsonSchemaNode = { description: "JSON payload rendered as text." };
 
 function renderJson(_args: unknown, value: unknown): ContentBlock[] {
   return [{ type: "text", text: JSON.stringify(value, null, 2) }];
@@ -144,19 +142,19 @@ function peerSummary(peer: PeerView): PeerSummary {
 }
 
 /**
- * The dispatching session's sandbox mode. DSH's permission presets project a
- * `SandboxMode` whose values match the orca node permission modes, so a task
- * inherits the session setting verbatim; without a service or session the
+ * The dispatching session's sandbox mode (`ctx.sandboxPolicy` resolves it, and
+ * its `SandboxMode` values match the orca node permission modes, so a task
+ * inherits the session setting verbatim). Without the service or a session the
  * target's own default (read-only) applies.
  */
 export function sessionSandboxMode(
-  presets: PermissionPresetsService | undefined,
+  policy: SandboxReader | undefined,
   exec: ToolExecution | undefined,
 ): PermissionMode | undefined {
   const session = exec?.agent?.session;
-  if (presets === undefined || session === undefined) return undefined;
-  const sandbox = presets.permissionState(session).sandbox;
-  return isPermissionMode(sandbox) ? sandbox : undefined;
+  if (policy === undefined || session === undefined) return undefined;
+  const mode = policy.resolve({ session }).mode;
+  return isPermissionMode(mode) ? mode : undefined;
 }
 
 async function runSend(
@@ -164,11 +162,11 @@ async function runSend(
   tracker: Tracker,
   args: z.output<typeof SendArgs>,
   exec: ToolRunContext | undefined,
-  presets: PermissionPresetsService | undefined,
+  policy: SandboxReader | undefined,
 ): Promise<SendResult> {
   const signal = exec?.signal;
   const peer = normalizePeerUrl(args.peer);
-  const permissionMode = args.permission_mode ?? sessionSandboxMode(presets, exec);
+  const permissionMode = args.permission_mode ?? sessionSandboxMode(policy, exec);
   const model = args.model === undefined ? undefined : (parseModelSpec(args.model, args.reasoning_effort) ?? undefined);
   if (args.model !== undefined && model === undefined) {
     throw new Error("model must be a provider/model string");
@@ -306,11 +304,11 @@ function runCall(
   tracker: Tracker,
   call: PodCall,
   exec: ToolRunContext | undefined,
-  presets: PermissionPresetsService | undefined,
+  policy: SandboxReader | undefined,
 ): Promise<SendResult | TaskStatusResult | MembersResult | ConnectResult> {
   switch (call.method) {
     case "send":
-      return runSend(handle, tracker, call.args, exec, presets);
+      return runSend(handle, tracker, call.args, exec, policy);
     case "status":
       return runStatus(handle, call.args, exec?.signal);
     case "cancel":
@@ -326,7 +324,7 @@ function runCall(
 export function createPodTools(
   handle: PodHandle,
   tracker: Tracker,
-  presets?: () => PermissionPresetsService | undefined,
+  policy?: () => SandboxReader | undefined,
 ): ToolDefinition[] {
   const tool: ToolDefinition = {
     name: "orca_pod",
@@ -380,7 +378,7 @@ export function createPodTools(
       const call = parseCall(args);
       try {
         throwIfAborted(exec?.signal);
-        return await withSignal(runCall(handle, tracker, call, exec, presets?.()), exec?.signal);
+        return await withSignal(runCall(handle, tracker, call, exec, policy?.()), exec?.signal);
       } catch (error) {
         throw describeError("orca_pod", error);
       }

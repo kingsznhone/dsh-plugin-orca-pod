@@ -9,7 +9,7 @@ import { permissionRequestOf, type TaskView } from "../src/protocol/task.ts";
 import type { PermissionMode } from "../src/protocol/permission.ts";
 import { createAcpExecutor } from "../src/execution/acp/executor.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
-import { connectAll } from "../src/node/harness.ts";
+import { connectAll } from "./support/harness.ts";
 import { parseEchoScript } from "../src/execution/echo.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { labelId, wg } from "./fixtures/ids.ts";

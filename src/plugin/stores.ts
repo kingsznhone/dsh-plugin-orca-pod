@@ -9,11 +9,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import type { Context, Logger } from "@deepseek-ai/cordis";
+import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
+import type { CredentialRef } from "@deepseek-ai/dsh-credentials";
+// `ctx.configEditor` is injected by this plugin; the service package owns the type.
+import type {} from "@deepseek-ai/dsh-config-editor";
+
 import { errorMessage } from "../kernel/errors.ts";
 import { isRecord } from "../kernel/schema.ts";
 import { parseSettings, type Settings } from "../node/settings.ts";
 import { normalizePeerUrl } from "../transport/net.ts";
-import type { HostContext, HostLogger } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 
 /** Settings as the profile stores them: every key optional, `null` or absent means "default". */
@@ -56,16 +61,16 @@ export interface PodStores {
  * through `configEditor.edit`, which validates it with `Config`, writes the
  * profile patch and has the Loader restart this plugin with the new config.
  */
-export function createHostStores(ctx: Pick<HostContext, "credentials" | "configEditor" | "fiber">): PodStores {
+export function createHostStores(ctx: Pick<Context, "credentials" | "configEditor" | "fiber">): PodStores {
   return {
     async readSecret(ref) {
-      const hit = await ctx.credentials.resolve(ref);
+      const hit = await ctx.credentials.resolve(ref as CredentialRef);
       return hit === undefined || hit.value.length === 0 ? undefined : hit.value;
     },
-    writeSecret: (ref, value) => ctx.credentials.set(ref, value),
-    clearSecret: (ref) => ctx.credentials.unset(ref),
+    writeSecret: (ref, value) => ctx.credentials.set(ref as CredentialRef, value),
+    clearSecret: (ref) => ctx.credentials.unset(ref as CredentialRef),
     async writeConfig(change) {
-      const entry = ctx.fiber.entry;
+      const entry: Entry | undefined = ctx.fiber.entry;
       if (entry === undefined)
         throw new Error("orca-pod was not loaded from a profile entry; its config cannot be saved");
       const current = structuredClone((entry.options.config ?? {}) as RawConfig);
@@ -130,7 +135,7 @@ export function peerStatePath(dataRoot: string): string {
 }
 
 /** Peers remembered from earlier runs; a missing or unreadable file means none. */
-export async function loadRememberedPeers(dataRoot: string, logger: HostLogger): Promise<string[]> {
+export async function loadRememberedPeers(dataRoot: string, logger: Logger): Promise<string[]> {
   try {
     const parsed: unknown = JSON.parse(await readFile(peerStatePath(dataRoot), "utf8"));
     const peers = isRecord(parsed) && Array.isArray(parsed.peers) ? parsed.peers : [];

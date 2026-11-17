@@ -14,6 +14,10 @@
  * host-side plugin cannot import `@deepseek-ai/dsh-llm`.
  */
 
+import type { Logger } from "@deepseek-ai/cordis";
+import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { ContextFormed, MessageId, UserMessage } from "@deepseek-ai/dsh-llm";
+
 import { randomUUID } from "node:crypto";
 
 import type { DispatchEntry } from "../storage/stores.ts";
@@ -21,11 +25,17 @@ import { isTerminal, permissionRequestOf } from "../protocol/task.ts";
 import type { PermissionRequest } from "../protocol/grant.ts";
 import type { TaskView } from "../protocol/task.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
-import type { AgentNotice, HostLogger, ToolAgent } from "./dsh.ts";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap {
+    /** Background-task notices this bundle adds to the dispatching session. */
+    "orca-pod": ContextFormed & { readonly kind: "orca-pod" };
+  }
+}
+
 /** The DSH Agent surface used to return a notice to the dispatching session. */
-export type TrackerAgent = ToolAgent;
+export type TrackerAgent = Pick<Agent, "id" | "status" | "inject" | "followup">;
 
 /** The orca-node calls the tracker needs. */
 export interface TrackerNode {
@@ -114,7 +124,6 @@ const DEFAULT_COALESCE_MS = 2000;
 const DEFAULT_MAX_CONSECUTIVE_WAKES = 3;
 const DEFAULT_MAX_TRANSIENT_FAILURES = 5;
 const MAX_RETRY_DELAY_MS = 30_000;
-const SUMMARY_MAX_CHARS = 120;
 
 /** Remote results are third-party text; keep the quoted body short and inert. */
 const UNTRUSTED_RESULT_MAX_CHARS = 800;
@@ -155,8 +164,11 @@ export function taskNoticeLine(view: TaskView, peer: string, node?: string): str
   return line;
 }
 
-function clampSummary(text: string): string {
-  return text.length <= SUMMARY_MAX_CHARS ? text : `${text.slice(0, SUMMARY_MAX_CHARS - 1)}…`;
+/** Match DSH's `CONTEXT_SUMMARY_MAX_CHARS` for a `notice` summary. */
+const NOTICE_SUMMARY_MAX_CHARS = 120;
+
+function boundNoticeSummary(text: string): string {
+  return text.length <= NOTICE_SUMMARY_MAX_CHARS ? text : `${text.slice(0, NOTICE_SUMMARY_MAX_CHARS - 1)}…`;
 }
 
 /**
@@ -177,7 +189,7 @@ function trackingInterruptedLine(taskId: string, peer: string, reason: string): 
 export function createTracker(
   getNode: () => TrackerNode | null,
   broker: ApprovalBroker,
-  logger: HostLogger,
+  logger: Logger,
   options: TrackerOptions = {},
 ): Tracker {
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -346,11 +358,14 @@ export function createTracker(
   function deliver(agent: TrackerAgent, lines: string[]): void {
     const text = lines.map((line) => `[orca-pod] ${line}`).join("\n");
     const summary = lines.length === 1 ? (lines[0] ?? "") : `${lines.length} background tasks need attention`;
-    const message: AgentNotice = {
-      id: randomUUID(),
+    // DSH folds a `notice` summary to 120 characters (`CONTEXT_SUMMARY_MAX_CHARS`
+    // in `@deepseek-ai/dsh-llm`); the bundle declares host packages as types only,
+    // so the same bound is applied here instead of importing the host runtime.
+    const message: UserMessage = {
+      id: randomUUID() as MessageId,
       role: "user",
       content: [{ type: "text", text }],
-      source: { kind: "orca-pod", form: "notice", summary: clampSummary(summary) },
+      source: { kind: "orca-pod", form: "notice", summary: boundNoticeSummary(summary) },
     };
     try {
       wake(agent, message);
@@ -360,7 +375,7 @@ export function createTracker(
   }
 
   /** Hand a notice to the agent: into its running turn, or as a follow-up that wakes it while the wake budget lasts. */
-  function wake(agent: TrackerAgent, message: AgentNotice): void {
+  function wake(agent: TrackerAgent, message: UserMessage): void {
     if (agent.status === "running") {
       agent.inject(message);
       awake.set(agent.id, 0);
@@ -471,7 +486,7 @@ export function restoreTrackedDispatches(
   tracker: Tracker,
   dispatches: readonly DispatchEntry[],
   resolveAgent: (agentId: string) => TrackerAgent | undefined,
-  logger: HostLogger,
+  logger: Logger,
   onlyAgentId?: string,
 ): number {
   let restored = 0;

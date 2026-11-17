@@ -119,7 +119,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | `execution/` 契约与 echo          | echo 脚本样本                                                     | 状态时序、`input-required`、resume                                                     |
 | `execution/acp/`                  | 假 ACP server（`test/fixtures/fake-acp.mjs`）                     | 完成文本、cwd、权限挂起→grant→继续、`session/cancel`、session 复用与 resume、崩溃后重建连接 |
 | `tasks/runner.ts`                 | 假 executor + 注入时钟                                            | 单槽、TTL、取消、重启恢复                                                              |
-| `node/harness.ts`                 | 多 orca node mesh + 可注入时钟/传输                               | 成员收敛、故障、任务往返                                                               |
+| `test/support/harness.ts`（测试专用） | 多 orca node mesh + 可注入时钟/传输                            | 成员收敛、故障、任务往返                                                               |
 | `cli/install.ts`                  | 临时目录 + 注入 `CommandRunner`                                   | systemd plan 与引号、`dsh --version` 检查、配置只生成一次且 0600、`--dry-run` 不执行   |
 | `plugin/`                         | 假 DSH host                                                       | 工具注册、tracker 投递与退避、broker、面板路由闸门、配置存放（`PodStores`）与生命周期               |
 
@@ -128,10 +128,10 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 `node/orca-node.ts` 的 `createOrcaNode({ config })` 返回 handle：`start()`/`stop()`、`self()`/`members()`/`membersDigest()`、`join`/`heartbeat`/`leave`、`sendTask`/`getTask`/`cancelTask`/`approveTask`/`denyTask`/`escalateTask`、`listDispatches`、`listTasks`、`subscribe`、`fetchBlob`、`nodeIdOf`、`workspacePaths`、`setModelCatalog`。
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
-- harness 的 `createMesh({ orcaNodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, approvalTimeoutS, fetch })` 返回 `{ orcaNodes, urls, stop() }`：启动后让每个 orca node join 第一个、用 `joinRoster` 按返回目录补 join，再对 bootstrap 发一轮心跳。手工拼节点的测试用 `connectAll` 互相 join（出站调用只到成员，陌生 URL 是 `unknown_peer`）。
+- harness 的 `createMesh({ orcaNodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, approvalTimeoutS, fetch })` 返回 `{ orcaNodes, urls, dataRoot, ownsDataRoot, stop() }`：启动后让每个 orca node join 第一个、用 `joinRoster` 按返回目录补 join，再对 bootstrap 发一轮心跳。它住在 `test/support/harness.ts`（不进 `lib/`、不是包导出），只是对本文件上面那些生产 API 的组装，不复制实现。手工拼节点的测试用 `connectAll` 互相 join（出站调用只到成员，陌生 URL 是 `unknown_peer`）。
 - 可注入时钟（`createOrcaNode({ clock })`）、可注入 transport（`createOrcaNode({ fetch })`，模拟丢包、延迟、单向阻断）、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。抖动场景的窗口按心跳间隔的倍数给，不按绝对毫秒。
 - 跨进程：`npm run harness`（`scripts/harness_run.ts`）起两个真实 `orca-node serve` 子进程（第二个用 `serve --peer <url1>` 在启动时 join），用 CLI 观察 members 收敛、派一个 Echo 任务并等到终态，最后清理临时数据根；退出码即结果。
-- `waitFor(probe, done, { timeoutMs, intervalMs, label })` 从 `src/node/harness.ts` 导出（包导出 `orca-pod/testing`），进程内与真实进程 smoke 共用；场景用 vitest 的普通 async 函数写，不引入第二套场景描述语言。
+- `waitFor(probe, done, { timeoutMs, intervalMs, label })` 与 `createMesh` 同在 `test/support/harness.ts`，进程内与真实进程 smoke 共用；场景用 vitest 的普通 async 函数写，不引入第二套场景描述语言。
 
 ```ts
 const mesh = await createMesh({ orcaNodes: 3, password: "test" });
@@ -159,10 +159,12 @@ package.json       "exports": { ".": { "types": "./lib/index.d.ts", "default": "
                    "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "immediately": true } }
 cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod', config: { port: 11811, peers: [] } }
 src/index.ts       export { Config, apply, inject } from './plugin/bundle.ts' + 库导出（createOrcaNode 等）；构建产物是 lib/index.js + .d.ts
-src/plugin/        bundle / lifecycle / stores / catalog / services / broker / tracker / tools / admin / web / panel-api / skill / config / dsh
+src/plugin/        bundle / lifecycle / stores / catalog / services / broker / tracker / tools / admin / web / panel-api / skill / config
 ```
 
-`src/plugin/` 各文件：`bundle.ts` 是 `apply` 与导出；`lifecycle.ts` 管 orca node 的启停与面板改配置（`startPod`/`stopPod`）；`stores.ts` 是设置、密码与 peer 状态的存放（`PodStores` 及其宿主与内存实现、`peers.json`）；`catalog.ts` 从 Host 采集模型目录并公布到运行中的节点；`broker.ts` 是审批注册表；`tracker.ts` 是后台跟踪与投递；`tools.ts` 是唯一的 `orca_pod` 工具；`services.ts` 跟踪宿主可选服务（`optionalService`）；`admin.ts` / `web.ts` 是面板数据面与同源路由，`panel-api.ts` 是路由的请求体 schema 与响应类型（客户端只做类型导入）；`skill.ts` 把随包的 skill bundle 解析成 `ctx.skills.register` 的注册对象；`config.ts` 是 Standard Schema 外壳（校验就是 `node/settings.ts` 的解析器）；`dsh.ts` 是最小 DSH 类型。
+`src/plugin/` 各文件：`bundle.ts` 是 `apply` 与导出；`lifecycle.ts` 管 orca node 的启停与面板改配置（`startPod`/`stopPod`）；`stores.ts` 是设置、密码与 peer 状态的存放（`PodStores` 及其宿主与内存实现、`peers.json`）；`catalog.ts` 从 Host 采集模型目录并公布到运行中的节点；`broker.ts` 是审批注册表；`tracker.ts` 是后台跟踪与投递；`tools.ts` 是唯一的 `orca_pod` 工具；`services.ts` 跟踪宿主可选服务（`optionalService`）；`admin.ts` / `web.ts` 是面板数据面与同源路由，`panel-api.ts` 是路由的请求体 schema 与响应类型（客户端只做类型导入）；`skill.ts` 把随包的 skill bundle 解析成 `ctx.skills.register` 的注册对象；`config.ts` 是 Standard Schema 外壳（校验就是 `node/settings.ts` 的解析器）。
+
+宿主类型全部来自真实包，没有任何本地镜像：`Context` 及 `ctx.tools`/`credentials`/`configEditor`/`webServer`/`agents`/`skills`/`settings`/`llm`/`agentDefaultModel`/`sandboxPolicy` 的增补由 `@deepseek-ai/cordis` 与各 `@deepseek-ai/dsh-*` 服务包自己声明，`import type` 它们即进入类型图；`ctx.settings`、`ctx.configEditor` 这类本插件自己 inject 的服务，在调用点补一行 `import type {} from "<服务包>"` 即可。这些包都是 devDependency（版本用 `^0.2.2-rc.3` 范围），运行时一个都不加载——构建产物里对 `@deepseek-ai/*` 的 `require` 只出现在 `lib/client.js` 的宿主平台模块（`dsh-client-ui-primitives`），那是宿主提供的运行时全局。
 
 `apply` 只做几件事，其余都靠注入：
 

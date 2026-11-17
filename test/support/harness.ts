@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { createOrcaNodeConfig } from "./config.ts";
-import { WorkgroupIdSchema } from "../protocol/peer.ts";
-import type { MembershipTimings } from "../membership/membership.ts";
-import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "./orca-node.ts";
+import { createOrcaNodeConfig } from "../../src/node/config.ts";
+import { WorkgroupIdSchema } from "../../src/protocol/peer.ts";
+import type { MembershipTimings } from "../../src/membership/membership.ts";
+import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "../../src/node/orca-node.ts";
 
 type MeshOptions = {
   orcaNodes?: number;

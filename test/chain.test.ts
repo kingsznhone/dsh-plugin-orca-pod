@@ -12,7 +12,7 @@ import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
 import { signGrant } from "../src/security/crypto.ts";
 import { generateNodeIdentity, loadIdentity } from "../src/security/identity.ts";
-import { connectAll } from "../src/node/harness.ts";
+import { connectAll } from "./support/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type PodTaskMetadata, type TaskState, type TaskView } from "../src/protocol/task.ts";
 import type { Grant, SignedGrant } from "../src/protocol/grant.ts";

@@ -172,7 +172,15 @@ describe("model catalog", () => {
       },
       agentDefaultModel: { currentSelection: () => ({ provider: "deepseek", model: "deepseek-flash" }) },
     };
-    const catalog = await discoverModelCatalog(services, { info() {}, warn() {}, error() {} });
+    const catalog = await discoverModelCatalog(
+      services as unknown as Parameters<typeof discoverModelCatalog>[0],
+      {
+        info() {},
+        warn() {},
+        error() {},
+        debug() {},
+      } as unknown as import("@deepseek-ai/cordis").Logger,
+    );
     expect(catalog.models.map((model) => model.model)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(catalog.models[0]?.description).toBe("fast");
     expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });

@@ -15,7 +15,7 @@ import { shortenNodeId } from "../src/security/identity.ts";
 import { normalizePeerUrl } from "../src/transport/net.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodAdmin } from "../src/plugin/admin.ts";
-import type { HostLogger } from "../src/plugin/dsh.ts";
+import type { Logger } from "@deepseek-ai/cordis";
 import { startPod, stopPod } from "../src/plugin/lifecycle.ts";
 import { createMemoryStores, peerStatePath } from "../src/plugin/stores.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
@@ -24,7 +24,7 @@ import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
 import { wg } from "./fixtures/ids.ts";
 
-const logger: HostLogger = { info: () => {}, warn: () => {}, error: () => {} };
+const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as Logger;
 const roots: string[] = [];
 const PASSWORD = "panel-password";
 /** Credential reference derived from the default test workgroup `wg-panel`. */

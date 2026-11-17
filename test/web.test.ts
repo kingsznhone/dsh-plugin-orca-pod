@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { PodAdmin, PodApproval, PodPeer, PodTaskRow } from "../src/plugin/admin.ts";
 import type { SelfRecord } from "../src/protocol/peer.ts";
 import type { TaskView } from "../src/protocol/task.ts";
-import type { HostLogger } from "../src/plugin/dsh.ts";
+import type { Logger } from "@deepseek-ai/cordis";
 import { isDirectLoopbackRequest } from "../src/transport/net.ts";
 import { createPodApiHandler, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
@@ -523,7 +523,7 @@ describe("panel HTTP bridge", () => {
       effect() {
         throw new Error("the panel route must be registered on the inject scope");
       },
-      logger: { info: () => {}, warn: () => {}, error: () => {} } as HostLogger,
+      logger: { info: () => {}, warn: () => {}, error: () => {} } as unknown as Logger,
       inject(
         _dependencies: string[],
         callback: (scope: { webServer: typeof webServer; effect(execute: () => () => void): undefined }) => void,

@@ -112,7 +112,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 | `members` | —                                                                          | `{self, members, members_digest}`                                |
 | `connect` | `peer`                                                                     | 把 peer join 进 mesh、记住它以便重启、返回刷新后的成员表         |
 
-没有 approve 方法：权限请求只在 UI（会话聊天卡、后台弹窗、面板）里由人批准。`peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`（端口默认 11811）；出站调用只到已加入的成员，陌生地址要先 `connect`。`send` 不给 `permission_mode` 时继承当前会话的权限模式（DSH 的 `permissionPresets`），显式传入则覆盖（[§7.10](docs/07-security.md#710-权限模式继承)）。
+没有 approve 方法：权限请求只在 UI（会话聊天卡、后台弹窗、面板）里由人批准。`peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`（端口默认 11811）；出站调用只到已加入的成员，陌生地址要先 `connect`。`send` 不给 `permission_mode` 时继承当前会话的权限模式（DSH 的 `sandboxPolicy` 服务），显式传入则覆盖（[§7.10](docs/07-security.md#710-权限模式继承)）。
 
 ## CLI
 

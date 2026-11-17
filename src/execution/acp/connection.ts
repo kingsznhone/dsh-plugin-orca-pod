@@ -6,7 +6,7 @@
  * session. A failure of any kind closes the connection and terminates the child.
  */
 
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import {
   PROTOCOL_VERSION,
@@ -23,7 +23,9 @@ import {
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
-import { isCmdShim, quoteForCmd, resolveCommand, terminateChild } from "../process.ts";
+import crossSpawn from "cross-spawn";
+
+import { terminateChild } from "../process.ts";
 
 const STDERR_TAIL = 4096;
 /** The handshake must not hang a task forever if the child is wedged. */
@@ -42,21 +44,16 @@ type ConnectionState = { status: "starting" } | { status: "ready" } | { status: 
 export type AcpSpawnSpec = { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 
 export function spawnAcpChild({ command, args, cwd, env }: AcpSpawnSpec): AcpChild {
-  const resolved = resolveCommand(command);
-  // A Windows `.cmd` shim cannot be spawned directly; go through cmd.exe deliberately.
-  const viaCmd = isCmdShim(resolved);
-  return spawn(
-    viaCmd ? (process.env.ComSpec ?? "cmd.exe") : resolved,
-    viaCmd ? ["/d", "/s", "/c", `"${[quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ")}"`] : args,
-    {
-      cwd,
-      env,
-      windowsHide: true,
-      windowsVerbatimArguments: viaCmd,
-      detached: process.platform !== "win32", // a process group, so the whole tree can be signalled
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+  // cross-spawn resolves Windows `.cmd` shims and quotes the command line for
+  // cmd.exe, so the same spec works on every platform.
+  const child = crossSpawn(command, args, {
+    cwd,
+    env,
+    windowsHide: true,
+    detached: process.platform !== "win32", // a process group, so the whole tree can be signalled
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  return child as AcpChild;
 }
 
 /**

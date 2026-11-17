@@ -155,7 +155,7 @@ sig = Ed25519(identity.private_key,
 
 origin 发起任务时携带会话的 permission mode（`metadata.pod.permission_mode`），target 按它执行：
 
-- **继承**：`orca_pod` 的 `send` 默认从 DSH 的 `permissionPresets` 服务读当前会话的 sandbox 模式（`SandboxMode` 与本报文的三档同名）；工具的 `permission_mode` 参数显式给出时**用显式值**（是否应只允许收窄见 [§11](11-open-questions.md#11-未决问题)“显式 permission_mode 的方向”）。CLI `orca-node send` 没有 DSH 会话，用 `--permission-mode` 显式传；带 `--local-task` 且没显式传时继承父任务的模式。
+- **继承**：`orca_pod` 的 `send` 默认从 DSH 的 `sandboxPolicy` 服务读当前会话的 sandbox 模式（`ctx.sandboxPolicy.resolve({ session }).mode`，其 `SandboxMode` 与本报文的三档同名）；工具的 `permission_mode` 参数显式给出时**用显式值**（是否应只允许收窄见 [§11](11-open-questions.md#11-未决问题)“显式 permission_mode 的方向”）。CLI `orca-node send` 没有 DSH 会话，用 `--permission-mode` 显式传；带 `--local-task` 且没显式传时继承父任务的模式。
 - **没继承到**（元数据没带 mode）：target 按 `read-only` 执行。
 - **本机上限**：`permission_mode` 设置（面板高级设置）是本机上限，生效模式 = 上限与继承值中较窄的一个；没配上限就用继承值。**只能降，不能升**。
 - **执行**：target 并不把模式传给 `dsh` 子进程；约束完全来自对 ACP `session/request_permission` 的应答规则（[§7.14](07-security.md#714-acp-request_permission-映射)）。

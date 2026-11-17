@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { buildAuthHeader, signGrant } from "../src/security/crypto.ts";
 import { loadIdentity, type NodeIdentity } from "../src/security/identity.ts";
-import { createMesh, type Mesh } from "../src/node/harness.ts";
+import { createMesh, type Mesh } from "./support/harness.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf } from "../src/protocol/task.ts";
 import type { A2AMessage, TaskState, TaskView } from "../src/protocol/task.ts";

@@ -3,8 +3,8 @@
  *
  * The plugin `Config` is the node `Settings`, and its Standard Schema (v1)
  * validator is the shared settings parser: Cordis only requires
- * `Config['~standard'].validate`, and this workspace does not resolve
- * `@deepseek-ai/*` runtime packages (Schemastery is one of them).
+ * `Config['~standard'].validate`, so the settings schema does not have to be a
+ * Schemastery object.
  *
  * One rule is added on top: the plugin config never carries the workgroup
  * password. It lives in the DSH credential store under `workgroup_password_ref`
@@ -16,7 +16,7 @@ import { safeParseSettings } from "../node/settings.ts";
 import type { Settings } from "../node/settings.ts";
 import { isRecord } from "../kernel/schema.ts";
 
-import type { StandardSchemaV1 } from "./dsh.ts";
+import type { StandardSchemaV1 } from "@standard-schema/spec";
 
 /** Validated configuration accepted by the ORCA pod bundle. */
 export type Config = Settings;
@@ -38,6 +38,6 @@ export function validatePluginConfig(input: unknown): ReturnType<typeof safePars
 }
 
 /** Create the Standard Schema validator Cordis consumes as the plugin `Config`. */
-export function createConfigSchema(): StandardSchemaV1<Config> {
+export function createConfigSchema(): StandardSchemaV1<unknown, Config> {
   return { "~standard": { version: 1, vendor: "orca-pod", validate: validatePluginConfig } };
 }

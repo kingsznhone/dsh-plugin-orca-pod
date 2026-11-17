@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { SkillRegistration } from "./dsh.ts";
+import type { SkillRegistration } from "@deepseek-ai/dsh-skill";
 
 /** Skill name; also its frontmatter name. */
 const SKILL_NAME = "orca-node";

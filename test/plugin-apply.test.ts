@@ -4,16 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type {
-  AgentCreated,
-  Cleanup,
-  HostContext,
-  HostServices,
-  InboxClaimed,
-  ToolDefinition,
-  ToolRegistrationOptions,
-  WebServerRoute,
-} from "../src/plugin/dsh.ts";
+import type { Context, Logger } from "@deepseek-ai/cordis";
+import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
+import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
+import type { ToolActivationContext, ToolDefinition, ToolRegistrationOptions } from "@deepseek-ai/dsh-tools";
 import type { Tracker } from "../src/plugin/tracker.ts";
 import { parseSettings, type Settings } from "../src/node/settings.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -43,21 +37,78 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
+type Cleanup = () => void;
+
+/** Event payloads the fake replays; the plugin only reads these fields. */
+interface FakeClaim {
+  agent: { id: string };
+  message: { source?: { kind?: string } };
+  turn: number;
+}
+
+interface FakeCreated {
+  agent: {
+    id: string;
+    status: "idle" | "running";
+    inject(message: unknown): void;
+    followup(message: unknown): void;
+    ctx: { effect(execute: () => Cleanup): unknown };
+  };
+}
+
 interface RegisteredTool {
   definition: ToolDefinition;
   options?: ToolRegistrationOptions;
 }
 
+/** The host services `apply` registers into; the fake implements only these. */
+interface FakeServices {
+  tools: { register(definition: ToolDefinition, options?: ToolRegistrationOptions): Cleanup | undefined };
+  webServer: { register(route: WebRoute): Cleanup };
+  agents: { get(id: string): undefined };
+  sandboxPolicy: { resolve(request: { session?: unknown }): Record<string, unknown> };
+  llm: { listProviders(): never[]; listModels(provider: string): Promise<never[]> };
+  agentDefaultModel: { currentSelection(): Record<string, unknown> };
+  skills: { register(skill: { name: string }): Cleanup };
+  settings: { configure(presentation: { auto?: boolean }): Cleanup };
+}
+
+/** The `Context` slice the plugin reads, with the fake's callbacks typed. */
+interface FakeCtx {
+  tools: FakeServices["tools"];
+  credentials: {
+    resolve(ref: string): Promise<{ value: string; source: string } | undefined>;
+    set(ref: string, value: string): Promise<void>;
+    unset(ref: string): Promise<void>;
+  };
+  configEditor: {
+    edit(
+      target: Entry,
+      change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>,
+    ): Promise<void>;
+  };
+  logger: LoggerService;
+  fiber: { effect(execute: () => Cleanup): unknown; entry: Entry };
+  effect(execute: () => Cleanup): Cleanup | undefined;
+  on(event: string, listener: (payload: never) => void): undefined;
+  inject(dependencies: readonly string[], callback: (scope: FakeCtx) => void): undefined;
+}
+
+const noopLogger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
+
+/** `ctx.logger` is itself callable; the scope logger it returns carries the level methods. */
+type LoggerService = Logger & ((name?: string) => Logger);
+
 function fakeHost() {
   const tools: RegisteredTool[] = [];
-  const routes: WebServerRoute[] = [];
+  const routes: WebRoute[] = [];
   const disposers: Cleanup[] = [];
-  const claims: Array<(payload: InboxClaimed) => void> = [];
-  const created: Array<(payload: AgentCreated) => void> = [];
+  const claims: Array<(payload: FakeClaim) => void> = [];
+  const created: Array<(payload: FakeCreated) => void> = [];
   const skills: string[] = [];
   const configured: Array<{ auto?: boolean }> = [];
 
-  const services: HostServices = {
+  const services: FakeServices = {
     tools: {
       register: (definition, options) => {
         tools.push({ definition, options });
@@ -71,7 +122,7 @@ function fakeHost() {
       },
     },
     agents: { get: () => undefined },
-    permissionPresets: { permissionState: () => ({}) },
+    sandboxPolicy: { resolve: () => ({ mode: "workspace-write" }) },
     llm: { listProviders: () => [], listModels: async () => [] },
     agentDefaultModel: { currentSelection: () => ({}) },
     skills: {
@@ -90,7 +141,7 @@ function fakeHost() {
 
   /** One live `inject` scope: the services it fenced on and its own effects. */
   interface Scope {
-    dependencies: readonly (keyof HostServices)[];
+    dependencies: readonly string[];
     run: () => void;
     cleanups: Cleanup[];
   }
@@ -100,7 +151,7 @@ function fakeHost() {
   const entry = { id: "orca-pod", options: { id: "orca-pod", config: {} as Record<string, unknown> } };
   const edits: Array<Record<string, unknown>> = [];
 
-  const ctx: HostContext = {
+  const ctx: FakeCtx = {
     tools: services.tools,
     credentials: {
       resolve: async (ref) => {
@@ -121,15 +172,15 @@ function fakeHost() {
         entry.options.config = next;
       },
     },
-    logger: { info() {}, warn() {}, error() {} },
-    fiber: { effect: () => undefined, entry },
+    logger: Object.assign(() => noopLogger, noopLogger) as unknown as LoggerService,
+    fiber: { effect: () => undefined, entry: entry as unknown as Entry },
     effect(execute) {
       disposers.push(execute());
       return undefined;
     },
     on(event, listener) {
-      if (event === "agent/created") created.push(listener as (payload: AgentCreated) => void);
-      else claims.push(listener as (payload: InboxClaimed) => void);
+      if (event === "agent/created") created.push(listener as unknown as (payload: FakeCreated) => void);
+      else claims.push(listener as unknown as (payload: FakeClaim) => void);
       return undefined;
     },
     inject(dependencies, callback) {
@@ -146,7 +197,7 @@ function fakeHost() {
   };
 
   /** Simulate Cordis replacing one service: dispose the dependent scopes, then re-run them. */
-  async function replace(name: keyof HostServices): Promise<void> {
+  async function replace(name: keyof FakeServices): Promise<void> {
     for (const scope of scopes) {
       if (!scope.dependencies.includes(name)) continue;
       for (const cleanup of scope.cleanups.splice(0)) await cleanup();
@@ -176,7 +227,7 @@ async function applied(overrides: Partial<Settings> = {}) {
   const root = await mkdtemp(join(tmpdir(), "orca-apply-"));
   roots.push(root);
   const host = fakeHost();
-  apply(host.ctx, parseSettings({ data_root: root, ...overrides }));
+  apply(host.ctx as unknown as Context, parseSettings({ data_root: root, ...overrides }));
   return host;
 }
 
@@ -199,7 +250,7 @@ describe("plugin apply", () => {
   it("hides the tool until the workgroup credentials exist", async () => {
     const host = await applied();
     const when = host.tools[0]?.options?.when;
-    expect(when?.({})).toBe(false);
+    expect(when?.({} as ToolActivationContext)).toBe(false);
     for (const dispose of host.disposers) await dispose();
   });
 
@@ -289,7 +340,7 @@ describe("plugin apply", () => {
 
   it("keeps the password in the credential store and settings in the profile entry", async () => {
     const host = fakeHost();
-    const stores = createHostStores(host.ctx);
+    const stores = createHostStores(host.ctx as unknown as Parameters<typeof createHostStores>[0]);
     await stores.writeSecret("ORCA_POD_PASSWORD_WG_A", "secret");
     expect(await stores.readSecret("ORCA_POD_PASSWORD_WG_A")).toBe("secret");
     await stores.clearSecret("ORCA_POD_PASSWORD_WG_A");
@@ -305,6 +356,8 @@ describe("plugin apply", () => {
   it("treats an empty resolved credential as absent", async () => {
     const host = fakeHost();
     host.secrets.set("REF", "");
-    expect(await createHostStores(host.ctx).readSecret("REF")).toBeUndefined();
+    expect(
+      await createHostStores(host.ctx as unknown as Parameters<typeof createHostStores>[0]).readSecret("REF"),
+    ).toBeUndefined();
   });
 });

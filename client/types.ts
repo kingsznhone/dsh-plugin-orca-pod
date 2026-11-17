@@ -3,9 +3,15 @@
  *
  * The data shapes are the host's own (`src/plugin/admin.ts`, `src/plugin/panel-api.ts`),
  * imported type-only so they are erased from the bundle: what the routes send
- * and what this client draws cannot drift apart. The DSH services are the
- * subset of `@deepseek-ai/dsh-client-locale` and the slot registry this bundle
- * uses; client plugins cannot import DSH packages at runtime.
+ * and what this client draws cannot drift apart.
+ *
+ * DSH publishes `@deepseek-ai/dsh-client-ui-primitives` types, so the primitives
+ * are taken from that package (devDependency, type-only). The browser-side
+ * plugin context has no published package: npm's `dsh-client-locale` is the
+ * host settings plugin (it exports `apply`/`Config`, not a locale service) and
+ * `dsh-client-ui-slots` exports the `SlotCore` ledger, whose jobs and API are
+ * the shell's internal ones. The two services below are therefore the smallest
+ * surface this panel calls, written from the shell's own call sites.
  */
 
 import type { ComponentType } from "react";

@@ -3,15 +3,17 @@ import { describe, expect, it } from "vitest";
 import { parseSettings } from "../src/node/settings.ts";
 import type { DispatchEntry } from "../src/storage/stores.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
-import type { HostLogger, PermissionPresetsService } from "../src/plugin/dsh.ts";
+import type { Logger } from "@deepseek-ai/cordis";
+import type { SessionId } from "@deepseek-ai/dsh-session";
+import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import type { TaskView } from "../src/protocol/task.ts";
-import { createPodTools, sessionSandboxMode } from "../src/plugin/tools.ts";
+import { createPodTools, sessionSandboxMode, type SandboxReader } from "../src/plugin/tools.ts";
 import type { TrackerAgent } from "../src/plugin/tracker.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
-const logger: HostLogger = { info() {}, warn() {}, error() {} };
+const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
 function createTracker(
   getNode: () => { getTask(peer: string, taskId: string): Promise<TaskView> } | null,
@@ -32,6 +34,12 @@ function tool(result: ReturnType<typeof createPodTools>) {
   const found = result.find((candidate) => candidate.name === "orca_pod");
   if (found === undefined) throw new Error("missing tool orca_pod");
   return found;
+}
+
+/** The host always supplies a run context; tests default it for argument-validation cases. */
+function run(tools: ReturnType<typeof createPodTools>, args: unknown, exec: Record<string, unknown> = {}) {
+  const { execute } = tool(tools);
+  return execute(args, exec as unknown as ToolRunContext);
 }
 
 describe("plugin config", () => {
@@ -100,7 +108,7 @@ describe("plugin config", () => {
     const ok = schema.validate({ workgroup_id: "wg-a", workgroup_password_ref: "MY_ORCA_PASSWORD" });
     expect("value" in ok).toBe(true);
     const bad = schema.validate({ workgroup_id: "Bad ID" });
-    expect("issues" in bad && bad.issues.length > 0).toBe(true);
+    expect("issues" in bad && (bad.issues?.length ?? 0) > 0).toBe(true);
   });
 
   it("declares the tool registry, credential store and config editor as hard dependencies", () => {
@@ -151,31 +159,31 @@ describe("orca_pod tool", () => {
   });
 
   it("requires a known method", async () => {
-    await expect(tool(tools).execute({})).rejects.toThrow(/method/);
-    await expect(tool(tools).execute({ method: "nope" })).rejects.toThrow(/method must be one of/);
+    await expect(run(tools, {})).rejects.toThrow(/method/);
+    await expect(run(tools, { method: "nope" })).rejects.toThrow(/method must be one of/);
   });
 
   it("validates each method's arguments before touching the orca node", async () => {
-    await expect(tool(tools).execute({ method: "send" })).rejects.toThrow(/peer/);
-    await expect(tool(tools).execute({ method: "send", peer: "http://127.0.0.1:1" })).rejects.toThrow(/text/);
-    await expect(tool(tools).execute({ method: "status", peer: "http://127.0.0.1:1" })).rejects.toThrow(/task_id/);
-    await expect(tool(tools).execute({ method: "cancel", peer: "http://127.0.0.1:1" })).rejects.toThrow(/task_id/);
-    await expect(tool(tools).execute({ method: "connect" })).rejects.toThrow(/peer/);
-    await expect(tool(tools).execute({ method: "connect", peer: "not a url" })).rejects.toThrow(/http/);
+    await expect(run(tools, { method: "send" })).rejects.toThrow(/peer/);
+    await expect(run(tools, { method: "send", peer: "http://127.0.0.1:1" })).rejects.toThrow(/text/);
+    await expect(run(tools, { method: "status", peer: "http://127.0.0.1:1" })).rejects.toThrow(/task_id/);
+    await expect(run(tools, { method: "cancel", peer: "http://127.0.0.1:1" })).rejects.toThrow(/task_id/);
+    await expect(run(tools, { method: "connect" })).rejects.toThrow(/peer/);
+    await expect(run(tools, { method: "connect", peer: "not a url" })).rejects.toThrow(/http/);
   });
 
   it("rejects a malformed model selector before touching the orca node", async () => {
-    await expect(
-      tool(tools).execute({ method: "send", peer: "http://127.0.0.1:1", text: "hi", model: "nope" }),
-    ).rejects.toThrow(/provider\/model/);
+    await expect(run(tools, { method: "send", peer: "http://127.0.0.1:1", text: "hi", model: "nope" })).rejects.toThrow(
+      /provider\/model/,
+    );
   });
 
   it("fails clearly when the orca node is not running", async () => {
-    await expect(tool(tools).execute({ method: "send", peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
+    await expect(run(tools, { method: "send", peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
       /orca node is not running/,
     );
-    await expect(tool(tools).execute({ method: "members" })).rejects.toThrow(/orca node is not running/);
-    await expect(tool(tools).execute({ method: "connect", peer: "127.0.0.1:11811" })).rejects.toThrow(
+    await expect(run(tools, { method: "members" })).rejects.toThrow(/orca node is not running/);
+    await expect(run(tools, { method: "connect", peer: "127.0.0.1:11811" })).rejects.toThrow(
       /orca node is not running/,
     );
   });
@@ -202,10 +210,8 @@ describe("orca_pod tool", () => {
       dispose: async () => {},
     } as unknown as PodHandle;
     const session = {};
-    const presets: PermissionPresetsService = {
-      permissionState: (target) => (target === session ? { sandbox: "workspace-write" } : {}),
-    };
-    const sendTools = createPodTools(handleForSend, tracker, () => presets);
+    const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxReader;
+    const sendTools = createPodTools(handleForSend, tracker, () => sandbox);
     const agent = {
       id: "session-1",
       status: "running" as const,
@@ -213,11 +219,12 @@ describe("orca_pod tool", () => {
       inject: () => {},
       followup: () => {},
     };
-    await tool(sendTools).execute({ method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
+    await run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
     const inherited = sent[0] as { metadata?: { pod?: Record<string, unknown> } };
     expect(inherited.metadata?.pod?.permission_mode).toBe("workspace-write");
 
-    await tool(sendTools).execute(
+    await run(
+      sendTools,
       { method: "send", peer: "http://127.0.0.1:11811", text: "hi", permission_mode: "read-only" },
       { agent },
     );
@@ -251,7 +258,8 @@ describe("orca_pod tool", () => {
     const sendTools = createPodTools(handleForSend, recorder as unknown as typeof tracker);
     const agent = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
     await expect(
-      tool(sendTools).execute(
+      run(
+        sendTools,
         { method: "send", peer: "http://127.0.0.1:11811", text: "hi" },
         { agent, signal: controller.signal },
       ),
@@ -277,15 +285,12 @@ describe("orca_pod tool", () => {
     } as unknown as PodHandle;
     const sendTools = createPodTools(handleForSend, tracker);
     await expect(
-      tool(sendTools).execute(
-        { method: "send", peer: "http://127.0.0.1:11811", text: "hi" },
-        { signal: AbortSignal.abort() },
-      ),
+      run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { signal: AbortSignal.abort() }),
     ).rejects.toThrow(/cancelled by the caller/);
     expect(sent).toBe(0);
   });
 
-  it("reads sandbox modes from the session's permission preset", () => {
+  it("reads sandbox modes from the session's sandbox policy", () => {
     const session = {};
     const agent = {
       id: "session-1",
@@ -294,14 +299,12 @@ describe("orca_pod tool", () => {
       inject: () => {},
       followup: () => {},
     };
-    const presets = {
-      permissionState: (target: unknown) =>
-        target === session ? { sandbox: "danger-full-access", approval: "never", preset: "auto" } : {},
-    };
-    expect(sessionSandboxMode(presets, { agent })).toBe("danger-full-access");
-    expect(sessionSandboxMode(undefined, { agent })).toBeUndefined();
-    expect(sessionSandboxMode(presets, undefined)).toBeUndefined();
-    expect(sessionSandboxMode({ permissionState: () => ({ sandbox: "custom" }) }, { agent })).toBeUndefined();
+    /** The policy service the host exposes as `ctx.sandboxPolicy`. */
+    const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxReader;
+    expect(sessionSandboxMode(policy, { agent } as unknown as ToolExecution)).toBe("danger-full-access");
+    expect(sessionSandboxMode(undefined, { agent } as unknown as ToolExecution)).toBeUndefined();
+    expect(sessionSandboxMode(policy, undefined)).toBeUndefined();
+    expect(sessionSandboxMode(policy, { agent: {} } as unknown as ToolExecution)).toBeUndefined();
   });
 
   it("joins a peer and returns the refreshed members", async () => {
@@ -326,7 +329,7 @@ describe("orca_pod tool", () => {
       dispose: async () => {},
     } as unknown as PodHandle;
     const connectTools = createPodTools(handleForConnect, tracker);
-    const result = await tool(connectTools).execute({ method: "connect", peer: "192.168.1.20" });
+    const result = await run(connectTools, { method: "connect", peer: "192.168.1.20" });
     expect(seen).toEqual(["http://192.168.1.20:11811"]);
     expect(result).toEqual({
       peer: "http://192.168.1.20:11811",
@@ -360,7 +363,7 @@ describe("tracker recovery (8.3)", () => {
 
   it("resumes only non-terminal dispatches with a live dispatching agent", async () => {
     const agent: TrackerAgent = {
-      id: "live-session",
+      id: "live-session" as SessionId,
       status: "idle",
       inject: () => {},
       followup: () => {},

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMesh } from "../src/node/harness.ts";
+import { createMesh } from "./support/harness.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 

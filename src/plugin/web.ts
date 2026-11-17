@@ -16,8 +16,10 @@ import { pipeline } from "node:stream/promises";
 
 import type { z } from "zod";
 
+import type { Context } from "@deepseek-ai/cordis";
+import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
+
 import type { PodAdmin } from "./admin.ts";
-import type { HostContext } from "./dsh.ts";
 import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads, type PodState } from "./panel-api.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
 import { isDirectLoopbackRequest } from "../transport/net.ts";
@@ -258,9 +260,9 @@ export function createPodApiHandler(
  * Registration is fenced behind `inject(['webServer'])`, so a host without a web
  * UI (ACP, CLI) leaves the plugin without a panel instead of failing startup.
  */
-export function registerPodWeb(ctx: HostContext, admin: PodAdmin): void {
+export function registerPodWeb(ctx: Context, admin: PodAdmin): void {
   const handler = createPodApiHandler(admin);
-  const route = { kind: "prefix", path: POD_API_PREFIX, handler } as const;
+  const route: WebRoute = { kind: "prefix", path: POD_API_PREFIX, handler };
   ctx.inject(["webServer"], (scope) => {
     scope.effect(() => scope.webServer.register(route), "orca-pod.panel-route");
   });

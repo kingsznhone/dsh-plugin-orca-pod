@@ -1,6 +1,6 @@
 /** Following the optional services a DSH host may or may not offer. */
 
-import type { HostContext, HostServices } from "./dsh.ts";
+import type { Context } from "@deepseek-ai/cordis";
 
 /** The current value of an optional host service. */
 export type OptionalService<T> = { current(): T | undefined };
@@ -12,15 +12,15 @@ export type OptionalService<T> = { current(): T | undefined };
  * value only if no newer scope installed a replacement first. `onChange` hears
  * about every change, including the clear.
  */
-export function optionalService<K extends keyof HostServices>(
-  ctx: Pick<HostContext, "inject">,
+export function optionalService<K extends keyof Context & string>(
+  ctx: Pick<Context, "inject">,
   key: K,
   label: string,
-  onChange?: (value: HostServices[K] | undefined) => void,
-): OptionalService<HostServices[K]> {
-  let value: HostServices[K] | undefined;
+  onChange?: (value: Context[K] | undefined) => void,
+): OptionalService<Context[K]> {
+  let value: Context[K] | undefined;
   ctx.inject([key], (scope) => {
-    const service = scope[key] as HostServices[K];
+    const service = scope[key];
     value = service;
     onChange?.(service);
     scope.effect(

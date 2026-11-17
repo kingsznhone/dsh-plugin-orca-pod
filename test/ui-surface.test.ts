@@ -18,18 +18,20 @@ import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { TaskView } from "../src/protocol/task.ts";
 import { isTerminal } from "../src/protocol/task.ts";
 import { shortenNodeId } from "../src/security/identity.ts";
-import { waitFor } from "../src/node/harness.ts";
+import { waitFor } from "./support/harness.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodTaskRow } from "../src/plugin/admin.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
+import type { Logger } from "@deepseek-ai/cordis";
+import type { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/protocol/peer.ts";
 
 const LEAF = fakeNodeId("orca-node-leaf");
 
-const logger = { info() {}, warn() {}, error() {} };
+const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
 const FAST: Partial<MembershipTimings> = {
   intervalMs: 50,
@@ -326,7 +328,11 @@ describe("UI data surface", () => {
     const offAdmin = admin.subscribe(() => {
       notified += 1;
     });
-    tracker.track({ id: "agent-1", status: "idle", inject() {}, followup() {} }, "http://127.0.0.1:1", suspended.id);
+    tracker.track(
+      { id: "agent-1" as SessionId, status: "idle", inject() {}, followup() {} },
+      "http://127.0.0.1:1",
+      suspended.id,
+    );
     const approvals = await waitFor(
       () => admin.approvals(),
       (list) => list.length === 1,

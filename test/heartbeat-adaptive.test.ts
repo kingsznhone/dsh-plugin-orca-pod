@@ -7,7 +7,7 @@ import {
   heartbeatIntervalMsFor,
 } from "../src/membership/membership.ts";
 import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
-import { createMesh, waitFor } from "../src/node/harness.ts";
+import { createMesh, waitFor } from "./support/harness.ts";
 import { labelId } from "./fixtures/ids.ts";
 
 async function eventually(probe: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {

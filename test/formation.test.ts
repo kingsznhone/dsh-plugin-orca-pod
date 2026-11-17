@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createMesh } from "../src/node/harness.ts";
+import { createMesh } from "./support/harness.ts";
 import { createOrcaNode, joinRoster } from "../src/node/orca-node.ts";
 import type { OrcaNodeConfig } from "../src/node/config.ts";
 import { generateNodeIdentity } from "../src/security/identity.ts";

@@ -3,23 +3,31 @@ import { describe, expect, it } from "vitest";
 import { PodError } from "../src/kernel/errors.ts";
 import type { TaskState, TaskView } from "../src/protocol/task.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
-import type { AgentNotice, HostLogger, ToolAgent } from "../src/plugin/dsh.ts";
+import type { Logger } from "@deepseek-ai/cordis";
+import type { SessionId } from "@deepseek-ai/dsh-session";
+import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { DispatchEntry } from "../src/storage/stores.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
-import type { TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
+import type { TrackerAgent, TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 
-class FakeAgent implements ToolAgent {
-  readonly id = "agent-1";
-  status: "idle" | "running" = "idle";
-  readonly injected: AgentNotice[] = [];
-  readonly followed: AgentNotice[] = [];
+/** First text block of a notice, for message assertions. */
+function noticeText(message: UserMessage): string {
+  const block = message.content[0];
+  return block?.type === "text" ? block.text : "";
+}
 
-  inject(message: AgentNotice): void {
+class FakeAgent {
+  readonly id = "agent-1" as SessionId;
+  status: "idle" | "running" = "idle";
+  readonly injected: UserMessage[] = [];
+  readonly followed: UserMessage[] = [];
+
+  inject(message: UserMessage): void {
     this.injected.push(message);
   }
 
-  followup(message: AgentNotice): void {
+  followup(message: UserMessage): void {
     this.followed.push(message);
   }
 }
@@ -80,7 +88,7 @@ function fakeNode(views: Map<string, TaskView>): TrackerNode {
   };
 }
 
-const logger: HostLogger = { info() {}, warn() {}, error() {} };
+const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 const broker = createApprovalBroker(() => null);
 
 function createTracker(getNode: () => Pick<TrackerNode, "getTask"> | null, options?: TrackerOptions) {
@@ -162,7 +170,7 @@ describe("createTracker", () => {
     expect(tracker.size()).toBe(1);
     await waitFor(() => agent.followed.length === 1);
     expect(agent.injected).toHaveLength(0);
-    expect(agent.followed[0]!.content[0].text).toContain("01TASK");
+    expect(noticeText(agent.followed[0]!)).toContain("01TASK");
     expect(agent.followed[0]!.source.kind).toBe("orca-pod");
     expect(tracker.size()).toBe(0);
     tracker.stop();
@@ -190,7 +198,7 @@ describe("createTracker", () => {
     tracker.track(agent, "http://peer:11811", "01B");
     await waitFor(() => agent.followed.length === 1);
     expect(agent.followed).toHaveLength(1);
-    expect(agent.followed[0]!.content[0].text.split("\n")).toHaveLength(2);
+    expect(noticeText(agent.followed[0]!).split("\n")).toHaveLength(2);
     tracker.stop();
   });
 
@@ -243,7 +251,7 @@ describe("createTracker", () => {
     views.set("01TASK", taskView("01TASK", "completed", "written"));
     await waitFor(() => agent.injected.length === 1);
     expect(broker.list()).toEqual([]);
-    expect(agent.injected[0]!.content[0].text).toContain("completed");
+    expect(noticeText(agent.injected[0]!)).toContain("completed");
     tracker.stop();
   });
 
@@ -296,7 +304,7 @@ describe("createTracker", () => {
     tracker.track(agent, "http://peer:11811", "01TASK");
     await waitFor(() => agent.followed.length === 1, 1500);
     expect(calls).toBeGreaterThan(1);
-    expect(agent.followed[0]!.content[0].text).toContain("completed");
+    expect(noticeText(agent.followed[0]!)).toContain("completed");
     tracker.stop();
   });
 
@@ -312,7 +320,7 @@ describe("createTracker", () => {
     );
     tracker.track(agent, "http://peer:11811", "01TASK");
     await waitFor(() => agent.followed.length === 1, 2000);
-    const text = agent.followed[0]!.content[0].text;
+    const text = noticeText(agent.followed[0]!);
     expect(text).toContain("interrupted");
     expect(text).toContain("01TASK");
     expect(tracker.size()).toBe(0);
@@ -353,7 +361,12 @@ describe("tracking restore and poll rounds", () => {
 
   it("restores only the named session's dispatches", () => {
     const tracker = createTracker(() => fakeNode(new Map()), { intervalMs: 60_000 });
-    const agentWith = (id: string): ToolAgent => ({ id, status: "idle", inject() {}, followup() {} });
+    const agentWith = (id: string): TrackerAgent => ({
+      id: id as SessionId,
+      status: "idle",
+      inject() {},
+      followup() {},
+    });
     const one = agentWith("agent-1");
     const two = agentWith("agent-2");
     const agents = new Map([

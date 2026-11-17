@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config.ts";
-import { waitFor } from "../src/node/harness.ts";
+import { waitFor } from "../test/support/harness.ts";
 import { isTerminal, type TaskView } from "../src/protocol/task.ts";
 import { type MembersResponse, WorkgroupIdSchema } from "../src/protocol/peer.ts";
 

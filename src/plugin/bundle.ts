@@ -11,12 +11,18 @@
  * registration made there is tied to that scope's `effect`, never to the plugin's.
  */
 
+import type { Context } from "@deepseek-ai/cordis";
+import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { SessionId } from "@deepseek-ai/dsh-session";
+import type { StandardSchemaV1 } from "@standard-schema/spec";
+// `ctx.settings` is this plugin's own injection; the service package owns the type.
+import type {} from "@deepseek-ai/dsh-settings";
+
 import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
 import type { Config as PodConfig } from "./config.ts";
 import { defaultDataRoot } from "../node/config.ts";
-import type { HostContext, StandardSchemaV1, ToolAgent } from "./dsh.ts";
 import { createModelCatalogFeed } from "./catalog.ts";
 import { startPod, stopPod } from "./lifecycle.ts";
 import { createHostStores } from "./stores.ts";
@@ -30,7 +36,7 @@ import { registerPodWeb } from "./web.ts";
 export type Config = PodConfig;
 
 /** Standard Schema config consumed by Cordis before `apply` runs. */
-export const Config: StandardSchemaV1<Config> = createConfigSchema();
+export const Config: StandardSchemaV1<unknown, Config> = createConfigSchema();
 
 /**
  * Hard dependencies: the tool registry, the credential store that holds the
@@ -46,16 +52,17 @@ export const inject: string[] = ["tools", "credentials", "configEditor"];
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  */
-export function apply(ctx: HostContext, config: Config): void {
+export function apply(ctx: Context, config: Config): void {
   // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
   // baseUrl is the profile hint that keeps two profiles apart.
+  const logger = ctx.logger("orca-pod");
   const defaultRoot = defaultDataRoot(process.env, ctx.baseUrl);
-  const catalog = createModelCatalogFeed(ctx);
-  const handle = startPod(config, ctx.logger, createHostStores(ctx), { onNodeStarted: catalog.advertise }, defaultRoot);
+  const catalog = createModelCatalogFeed(ctx, logger);
+  const handle = startPod(config, logger, createHostStores(ctx), { onNodeStarted: catalog.advertise }, defaultRoot);
   catalog.watch(handle);
   const node = () => handle.runtime.orcaNode;
   const broker = createApprovalBroker(node);
-  const tracker = createTracker(node, broker, ctx.logger);
+  const tracker = createTracker(node, broker, logger);
 
   /**
    * Resume tracking from the dispatch log (§8.3). Without `agent`, every session
@@ -63,14 +70,14 @@ export function apply(ctx: HostContext, config: Config): void {
    * appearing); with `agent`, only that session's own dispatches. Repeating it
    * is harmless: watched or abandoned tasks are left alone.
    */
-  const restore = (agent?: ToolAgent): void => {
+  const restore = (agent?: Agent): void => {
     const orcaNode = node();
     if (orcaNode === null) return;
     restoreTrackedDispatches(
       tracker,
       orcaNode.listDispatches(),
-      (id) => (agent !== undefined ? agent : agents.current()?.get(id)),
-      ctx.logger,
+      (id) => (agent !== undefined ? agent : agents.current()?.get(id as SessionId)),
+      logger,
       agent?.id,
     );
   };
@@ -83,7 +90,7 @@ export function apply(ctx: HostContext, config: Config): void {
   // the session when it is disposed, and a session created while the host runs
   // (including one resumed after a restart) picks up its own dispatches.
   ctx.on("agent/created", ({ agent }) => {
-    agent.ctx?.effect(() => () => tracker.forget(agent.id), "orca-pod.track");
+    agent.ctx.effect(() => () => tracker.forget(agent.id), "orca-pod.track");
     void handle.ready.then(() => restore(agent));
   });
 
@@ -98,16 +105,16 @@ export function apply(ctx: HostContext, config: Config): void {
     () => async () => {
       broker.clear();
       tracker.stop();
-      await stopPod(handle, ctx.logger);
+      await stopPod(handle, logger);
     },
     "orca-pod.orca-node",
   );
 
-  const presets = optionalService(ctx, "permissionPresets", "orca-pod.permission-presets");
+  const sandbox = optionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy");
 
   // The tool is only visible once the workgroup credentials exist: before that
   // every call would fail with "not configured" and clutter the tool list.
-  for (const tool of createPodTools(handle, tracker, presets.current)) {
+  for (const tool of createPodTools(handle, tracker, sandbox.current)) {
     ctx.tools.register(tool, { when: () => handle.configured });
   }
   registerPodWeb(ctx, createPodAdmin(handle, tracker, broker));

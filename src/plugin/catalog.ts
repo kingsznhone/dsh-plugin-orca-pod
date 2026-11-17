@@ -13,19 +13,22 @@
  * passes whatever appeared.
  */
 
+import type { Context, Logger } from "@deepseek-ai/cordis";
+import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
+import type { LlmModelInfo, LlmProviderInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
+
 import { isRecord } from "../kernel/schema.ts";
 import { errorMessage } from "../kernel/errors.ts";
 import type { ModelOffer, ModelSelection } from "../protocol/model.ts";
 import { MAX_MODEL_OFFERS, parseModelSelection } from "../protocol/model.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
-import type { AgentDefaultModelService, HostContext, HostLogger, LlmCatalogService } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import { optionalService } from "./services.ts";
 
 /** The host services the catalog reads; either may be absent. */
 export interface CatalogServices {
-  llm?: LlmCatalogService;
-  agentDefaultModel?: AgentDefaultModelService;
+  llm?: LlmRuntime;
+  agentDefaultModel?: AgentDefaultModelConfig;
 }
 
 export type ModelCatalog = {
@@ -47,19 +50,16 @@ function selectionOf(raw: unknown): ModelSelection | null {
   });
 }
 
-type LlmProvider = Awaited<ReturnType<LlmCatalogService["listProviders"]>>[number];
-type LlmModel = Awaited<ReturnType<LlmCatalogService["listModels"]>>[number];
-
-async function listProviders(llm: LlmCatalogService, logger: HostLogger): Promise<LlmProvider[]> {
+async function listProviders(llm: LlmRuntime, logger: Logger): Promise<LlmProviderInfo[]> {
   try {
-    return await Promise.resolve(llm.listProviders());
+    return llm.listProviders();
   } catch (error) {
     logger.warn(`orca-pod: could not list llm providers: ${errorMessage(error)}`);
     return [];
   }
 }
 
-async function listModels(llm: LlmCatalogService, provider: string, logger: HostLogger): Promise<LlmModel[]> {
+async function listModels(llm: LlmRuntime, provider: string, logger: Logger): Promise<LlmModelInfo[]> {
   try {
     return await llm.listModels(provider);
   } catch (error) {
@@ -69,7 +69,7 @@ async function listModels(llm: LlmCatalogService, provider: string, logger: Host
 }
 
 /** Every provider/model route the host's `llm` service offers, deduplicated and capped. */
-async function discoverOffers(llm: LlmCatalogService, logger: HostLogger): Promise<ModelOffer[]> {
+async function discoverOffers(llm: LlmRuntime, logger: Logger): Promise<ModelOffer[]> {
   const models: ModelOffer[] = [];
   const seen = new Set<string>();
   for (const entry of await listProviders(llm, logger)) {
@@ -93,10 +93,10 @@ async function discoverOffers(llm: LlmCatalogService, logger: HostLogger): Promi
 }
 
 /** What a fresh session starts with, when the host says. */
-function defaultSelection(service: AgentDefaultModelService | undefined, logger: HostLogger): ModelSelection | null {
+function defaultSelection(service: AgentDefaultModelConfig | undefined, logger: Logger): ModelSelection | null {
   try {
-    const raw = service?.currentSelection();
-    return raw === undefined ? null : selectionOf(raw);
+    const raw: unknown = service?.currentSelection();
+    return selectionOf(raw);
   } catch (error) {
     logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);
     return null;
@@ -107,7 +107,7 @@ function defaultSelection(service: AgentDefaultModelService | undefined, logger:
  * Read the catalog from the host. Failures per provider stay local: one broken
  * adapter must not hide the models that other providers report.
  */
-export async function discoverModelCatalog(services: CatalogServices, logger: HostLogger): Promise<ModelCatalog> {
+export async function discoverModelCatalog(services: CatalogServices, logger: Logger): Promise<ModelCatalog> {
   const models = services.llm === undefined ? [] : await discoverOffers(services.llm, logger);
   return { models, defaultModel: defaultSelection(services.agentDefaultModel, logger) };
 }
@@ -128,7 +128,7 @@ export interface ModelCatalogFeed {
  * catalog is read once the node is up and installed on the running node (and
  * on every later panel restart, before its first join).
  */
-export function createModelCatalogFeed(ctx: Pick<HostContext, "inject" | "logger">): ModelCatalogFeed {
+export function createModelCatalogFeed(ctx: Pick<Context, "inject">, logger: Logger): ModelCatalogFeed {
   const catalog: ModelCatalog = { models: [], defaultModel: null };
   /** Whatever `llm`/`agent-default-model` the host exposes; empty on CLI-only hosts. */
   let services: CatalogServices = {};
@@ -139,12 +139,12 @@ export function createModelCatalogFeed(ctx: Pick<HostContext, "inject" | "logger
   let generation = 0;
   const refresh = async (): Promise<void> => {
     const current = ++generation;
-    const next = await discoverModelCatalog(services, ctx.logger);
+    const next = await discoverModelCatalog(services, logger);
     if (current !== generation) return;
     Object.assign(catalog, next);
     const orcaNode = pod?.runtime.orcaNode ?? null;
     if (orcaNode !== null) advertise(orcaNode);
-    if (catalog.models.length > 0) ctx.logger.info(`orca-pod: advertising ${catalog.models.length} models`);
+    if (catalog.models.length > 0) logger.info(`orca-pod: advertising ${catalog.models.length} models`);
   };
   return {
     advertise,

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAcpExecutor } from "../src/execution/acp/executor.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import type { LocalExecutor } from "../src/execution/executor.ts";
-import { connectAll } from "../src/node/harness.ts";
+import { connectAll } from "./support/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/task.ts";
 import { wg } from "./fixtures/ids.ts";
