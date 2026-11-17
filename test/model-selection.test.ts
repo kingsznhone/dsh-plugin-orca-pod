@@ -56,9 +56,12 @@ describe("model catalog", () => {
     });
     expect(() => validateModelSelection({ provider: "p" })).toThrow();
     expect(() => validateModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toThrow();
-    expect(() => validateModelOffers([{ provider: "p", model: "m" }, { provider: "p", model: "" }])).toThrow(
-      /^1\.model /,
-    );
+    expect(() =>
+      validateModelOffers([
+        { provider: "p", model: "m" },
+        { provider: "p", model: "" },
+      ]),
+    ).toThrow(/^1\.model /);
   });
 
   it("drops unknown keys from a copy instead of rejecting them", () => {

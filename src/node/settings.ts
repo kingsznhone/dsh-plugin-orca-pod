@@ -1,43 +1,52 @@
 /**
  * The one description of a node's settings: every field is declared once in
- * `FIELDS` with its parser, default and who may edit it. `config.json`, the
+ * `FIELDS` with its schema, default and who may edit it. `config.json`, the
  * DSH plugin `Config`, the panel and the install/CLI flags all go
  * through `parseSettings`; nothing else validates a setting.
  */
 
+import Type, { type Static, type TSchema } from "typebox";
+
 import { normalizePeerUrl } from "../transport/net.ts";
 import {
   DEFAULT_PORT,
-  isPermissionMode,
-  isReasoningEffort,
-  isWorkgroupId,
+  ModelOffersSchema,
+  ModelSelectionSchema,
+  PermissionModeSchema,
+  ReasoningEffortSchema,
+  WorkgroupIdSchema,
   normalizeEndpoints,
-  validateModelOffers,
-  validateModelSelection,
   type ModelOffer,
   type ModelSelection,
   type PermissionMode,
 } from "../protocol/index.ts";
-import { isRecord } from "../kernel/index.ts";
+import { errorMessage, isRecord, parseSchema, type SchemaIssue } from "../kernel/index.ts";
 
-type ExecutorKind = "echo" | "acp";
+const NonEmpty = Type.String({ minLength: 1 });
+const PositiveNumber = Type.Number({ exclusiveMinimum: 0 });
+const PositiveInteger = Type.Integer({ minimum: 1 });
+
+const ExecutorKindSchema = Type.Enum(["echo", "acp"]);
+type ExecutorKind = Static<typeof ExecutorKindSchema>;
 
 /** One MCP server handed to the ACP session at session/new (§6.15). */
-export type AcpMcpServer = {
-  name: string;
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-};
+const AcpMcpServerSchema = Type.Object({
+  name: NonEmpty,
+  command: NonEmpty,
+  args: Type.Optional(Type.Array(Type.String())),
+  env: Type.Optional(Type.Record(Type.String(), Type.String())),
+});
+export type AcpMcpServer = Static<typeof AcpMcpServerSchema>;
 
 /** ACP executor options: the `dsh --profile acp` stdio server (§6.15). */
-export type AcpExecutorConfig = {
-  command?: string;
-  profile?: string;
-  extra_args?: string[];
+const AcpExecutorConfigSchema = Type.Object({
+  command: Type.Optional(NonEmpty),
+  profile: Type.Optional(NonEmpty),
+  extra_args: Type.Optional(Type.Array(Type.String())),
   /** MCP servers passed to session/new — how an ACP agent gets extra tools. */
-  mcp_servers?: AcpMcpServer[];
-};
+  mcp_servers: Type.Optional(Type.Array(AcpMcpServerSchema)),
+});
+export type AcpExecutorConfig = Static<typeof AcpExecutorConfigSchema>;
 
 /** Everything a node can be configured with, after parsing (defaults applied). */
 export interface Settings {
@@ -111,9 +120,11 @@ type LocalKey = "workgroup_password" | "workgroup_password_ref" | "peers" | "ski
 /** The part of `Settings` that is persisted in `config.json`. */
 export type NodeSettings = Omit<Settings, LocalKey>;
 
+type FieldResult<T> = { ok: true; value: T } | { ok: false; issue: SchemaIssue };
+
 type Field<T> = {
-  /** Validates one present value; throws a message that completes "<key> ...". */
-  parse: (raw: unknown) => T;
+  /** Validates one present value; issue paths are relative to the field. */
+  parse: (raw: unknown) => FieldResult<T>;
   /** Applied when the value is absent or `null`. */
   default?: T;
   /** The panel may set it. */
@@ -122,70 +133,49 @@ type Field<T> = {
   local?: true;
 };
 
+type FieldOptions<S extends TSchema, T> = {
+  /**
+   * Checks the schema cannot express (URLs) and the canonical form, run on a
+   * value that matched the schema; throws a message that completes "<key> ...".
+   */
+  normalize?: (value: Static<S>) => T;
+  default?: T;
+  panel?: true;
+  local?: true;
+};
+
+function field<S extends TSchema, T = Static<S>>(schema: S, options: FieldOptions<S, T> = {}): Field<T> {
+  const { normalize, ...meta } = options;
+  return {
+    ...meta,
+    parse: (raw) => {
+      const result = parseSchema(schema, raw);
+      if (!result.ok || normalize === undefined) return result as FieldResult<T>;
+      try {
+        return { ok: true, value: normalize(result.value) };
+      } catch (error) {
+        return { ok: false, issue: { path: [], message: errorMessage(error) } };
+      }
+    },
+  };
+}
+
 function fail(message: string): never {
   throw new Error(message);
 }
 
-const nonEmpty = (raw: unknown): string =>
-  typeof raw === "string" && raw.length > 0 ? raw : fail("must be a non-empty string");
-const flag = (raw: unknown): boolean => (typeof raw === "boolean" ? raw : fail("must be a boolean"));
-const positiveNumber = (raw: unknown): number =>
-  typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : fail("must be a positive number");
-const positiveInteger = (raw: unknown): number =>
-  typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : fail("must be a positive integer");
-
-function strings(raw: unknown, what: string): string[] {
-  return Array.isArray(raw) && raw.every((item) => typeof item === "string")
-    ? (raw as string[])
-    : fail(`${what} must be a string array`);
+/** Empty is allowed: the endpoints are then derived from the listen address (§3.2). */
+function normalizeEndpointList(value: string[]): string[] {
+  if (value.length === 0) return [];
+  return normalizeEndpoints(value) ?? fail("must be 1-8 http(s) URLs");
 }
 
-function parseEndpoints(raw: unknown): string[] {
-  if (Array.isArray(raw) && raw.length === 0) return [];
-  return normalizeEndpoints(raw) ?? fail("must be 1-8 http(s) URLs");
-}
-
-function parsePeers(raw: unknown): string[] {
-  if (!Array.isArray(raw)) fail("must be an array of peer addresses");
-  return [
-    ...new Set(
-      raw.map((peer) => normalizePeerUrl(typeof peer === "string" ? peer : fail("must be an array of peer addresses"))),
-    ),
-  ];
-}
-
-function parseAcp(raw: unknown): AcpExecutorConfig {
-  if (!isRecord(raw)) fail("must be an object");
-  const { command, profile, extra_args, mcp_servers } = raw;
-  const acp: AcpExecutorConfig = {};
-  if (command !== undefined) acp.command = nonEmpty(command);
-  if (profile !== undefined) acp.profile = nonEmpty(profile);
-  if (extra_args !== undefined) acp.extra_args = strings(extra_args, "extra_args");
-  if (mcp_servers !== undefined) {
-    if (!Array.isArray(mcp_servers)) fail("mcp_servers must be an array");
-    acp.mcp_servers = mcp_servers.map((item, index) => {
-      const at = `mcp_servers[${index}]`;
-      if (!isRecord(item)) fail(`${at} must be an object`);
-      const { name, command: serverCommand, args, env } = item;
-      if (typeof name !== "string" || name.length === 0) fail(`${at}.name must be a non-empty string`);
-      if (typeof serverCommand !== "string" || serverCommand.length === 0)
-        fail(`${at}.command must be a non-empty string`);
-      const server: AcpMcpServer = { name, command: serverCommand };
-      if (args !== undefined) server.args = strings(args, `${at}.args`);
-      if (env !== undefined) {
-        if (!isRecord(env) || Object.values(env).some((value) => typeof value !== "string")) {
-          fail(`${at}.env must be an object of strings`);
-        }
-        server.env = env as Record<string, string>;
-      }
-      return server;
-    });
-  }
-  return acp;
+function normalizePeers(value: string[]): string[] {
+  return [...new Set(value.map((peer) => normalizePeerUrl(peer)))];
 }
 
 /** A DSH credential reference is a POSIX shell identifier (it doubles as an environment variable name). */
-const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const CredentialRefSchema = Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" });
 
 /**
  * Credential reference of a workgroup's password: the explicit
@@ -205,61 +195,33 @@ export function passwordRefFor(
 
 /** The field table: the single place a setting's type, default and editability live. */
 const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> } = {
-  workgroup_id: {
-    parse: (raw) => (isWorkgroupId(raw) ? raw : fail("must match [a-z0-9][a-z0-9-]{1,31}")),
-    panel: true,
-  },
-  workgroup_password: {
-    parse: (raw) => (typeof raw === "string" ? raw : fail("must be a string")),
-    default: "",
-    panel: true,
-    local: true,
-  },
-  workgroup_password_ref: {
-    parse: (raw) =>
-      typeof raw === "string" && CREDENTIAL_REF_PATTERN.test(raw)
-        ? raw
-        : fail("must be an environment-variable style name ([A-Za-z_][A-Za-z0-9_]*)"),
-    local: true,
-  },
-  display_name: { parse: nonEmpty, panel: true },
-  bind_host: { parse: nonEmpty, default: "127.0.0.1", panel: true },
-  port: {
-    parse: (raw) =>
-      typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= 65535
-        ? raw
-        : fail("must be an integer between 0 and 65535"),
-    default: DEFAULT_PORT,
-    panel: true,
-  },
-  endpoints: { parse: parseEndpoints, default: [], panel: true },
-  peers: { parse: parsePeers, default: [], panel: true, local: true },
-  data_root: { parse: nonEmpty },
-  skill_injection: { parse: flag, default: false, local: true },
-  executor: { parse: (raw) => (raw === "echo" || raw === "acp" ? raw : fail('must be "echo" or "acp"')), panel: true },
-  acp: { parse: parseAcp },
-  permission_mode: {
-    parse: (raw) =>
-      isPermissionMode(raw) ? raw : fail('must be "read-only", "workspace-write", or "danger-full-access"'),
-    panel: true,
-  },
-  task_timeout_s: { parse: positiveNumber, panel: true },
-  approval_timeout_s: { parse: positiveNumber, panel: true },
-  result_max_bytes: { parse: positiveInteger, panel: true },
-  max_input_files: { parse: positiveInteger, panel: true },
-  max_input_bytes: { parse: positiveInteger, panel: true },
-  max_workspace_bytes: { parse: positiveInteger, default: 5 * 1024 ** 3, panel: true },
-  max_workspace_files: { parse: positiveInteger, default: 50_000, panel: true },
-  max_blob_store_bytes: { parse: positiveInteger, default: 5 * 1024 ** 3, panel: true },
-  request_timeout_ms: { parse: positiveNumber },
-  allow_public_peers: { parse: flag, panel: true },
-  allow_loopback_peers: { parse: flag, panel: true },
-  models: { parse: validateModelOffers },
-  default_model: { parse: validateModelSelection },
-  default_reasoning_effort: {
-    parse: (raw) => (isReasoningEffort(raw) ? raw : fail("must be a non-empty reasoning-effort string")),
-    panel: true,
-  },
+  workgroup_id: field(WorkgroupIdSchema, { panel: true }),
+  workgroup_password: field(Type.String(), { default: "", panel: true, local: true }),
+  workgroup_password_ref: field(CredentialRefSchema, { local: true }),
+  display_name: field(NonEmpty, { panel: true }),
+  bind_host: field(NonEmpty, { default: "127.0.0.1", panel: true }),
+  port: field(Type.Integer({ minimum: 0, maximum: 65535 }), { default: DEFAULT_PORT, panel: true }),
+  endpoints: field(Type.Array(Type.String()), { normalize: normalizeEndpointList, default: [], panel: true }),
+  peers: field(Type.Array(Type.String()), { normalize: normalizePeers, default: [], panel: true, local: true }),
+  data_root: field(NonEmpty),
+  skill_injection: field(Type.Boolean(), { default: false, local: true }),
+  executor: field(ExecutorKindSchema, { panel: true }),
+  acp: field(AcpExecutorConfigSchema),
+  permission_mode: field(PermissionModeSchema, { panel: true }),
+  task_timeout_s: field(PositiveNumber, { panel: true }),
+  approval_timeout_s: field(PositiveNumber, { panel: true }),
+  result_max_bytes: field(PositiveInteger, { panel: true }),
+  max_input_files: field(PositiveInteger, { panel: true }),
+  max_input_bytes: field(PositiveInteger, { panel: true }),
+  max_workspace_bytes: field(PositiveInteger, { default: 5 * 1024 ** 3, panel: true }),
+  max_workspace_files: field(PositiveInteger, { default: 50_000, panel: true }),
+  max_blob_store_bytes: field(PositiveInteger, { default: 5 * 1024 ** 3, panel: true }),
+  request_timeout_ms: field(PositiveNumber),
+  allow_public_peers: field(Type.Boolean(), { panel: true }),
+  allow_loopback_peers: field(Type.Boolean(), { panel: true }),
+  models: field(ModelOffersSchema),
+  default_model: field(ModelSelectionSchema),
+  default_reasoning_effort: field(ReasoningEffortSchema, { panel: true }),
 };
 
 const FIELD_MAP: Record<string, Field<unknown>> = FIELDS;
@@ -298,11 +260,9 @@ export function safeParseSettings(input: unknown): { value: Settings } | { issue
       if (field.default !== undefined) value[key] = structuredClone(field.default);
       continue;
     }
-    try {
-      value[key] = field.parse(raw);
-    } catch (error) {
-      issues.push({ path: [key], message: (error as Error).message });
-    }
+    const result = field.parse(raw);
+    if (result.ok) value[key] = result.value;
+    else issues.push({ path: [key, ...result.issue.path], message: result.issue.message });
   }
   return issues.length > 0 ? { issues } : { value: value as unknown as Settings };
 }
