@@ -3,7 +3,29 @@
 import React, { type ReactNode } from "react";
 import { t } from "./i18n.ts";
 import { store } from "./store.ts";
-import { BUTTON, CARD, CLOSE_BUTTON, FACT, FIELD, H2, HINT, LABEL, MUTED, OVERLAY, SECTION, ageOf } from "./styles.ts";
+import type { ModelOffer, ModelSelection, PodArtifact } from "./types.ts";
+import {
+  BUTTON,
+  CARD,
+  CLOSE_BUTTON,
+  FACT,
+  FIELD,
+  H2,
+  HINT,
+  LABEL,
+  LINK,
+  MUTED,
+  OVERLAY,
+  SECTION,
+  ageOf,
+} from "./styles.ts";
+
+/** `provider/model`: how a model route is written everywhere in the panel. */
+export const modelId = (model: ModelSelection | ModelOffer): string => `${model.provider}/${model.model}`;
+
+/** A model route with its reasoning effort, when it carries one. */
+export const modelText = (model: ModelSelection): string =>
+  `${modelId(model)}${model.reasoning_effort ? ` · ${model.reasoning_effort}` : ""}`;
 
 export const Button = ({ style = BUTTON, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
   <button type={"button"} style={style} {...props} />
@@ -118,4 +140,19 @@ export function Updated() {
     return () => window.clearInterval(id);
   }, []);
   return <div style={{ ...HINT, marginTop: 22 }}>{t("updated") + ageOf(store.polledAt()) + t("updatedSuffix")}</div>;
+}
+
+/** Links to a task's artifacts; one this node cannot sign for is shown as plain text. */
+export function ArtifactLinks({ artifacts, block }: { artifacts: PodArtifact[]; block?: boolean }) {
+  return artifacts.map((link) =>
+    link.url ? (
+      <a key={link.blob_id} href={link.url} target={"_blank"} rel={"noreferrer"} style={LINK}>
+        {link.name}
+      </a>
+    ) : (
+      <span key={link.blob_id} style={{ ...MUTED, marginRight: 10, ...(block ? { display: "inline-block" } : {}) }}>
+        {link.name}
+      </span>
+    ),
+  );
 }

@@ -13,10 +13,21 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import type { z } from "zod";
+
 import type { PodAdmin } from "./admin.ts";
-import type { HostContext, WebServerRoute } from "./dsh.ts";
-import { isDirectLoopbackRequest } from "../transport/index.ts";
-import { isRecord, errorMessage } from "../kernel/index.ts";
+import type { HostContext } from "./dsh.ts";
+import {
+  ConnectBodySchema,
+  DenyBodySchema,
+  PeerTaskBodySchema,
+  type PodState,
+  type PodTasksResponse,
+} from "./panel-api.ts";
+import { PanelPatchSchema } from "../node/settings.ts";
+import { isDirectLoopbackRequest } from "../transport/net.ts";
+import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
+import { errorMessage } from "../kernel/errors.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 export const POD_API_PREFIX = "/orca-api";
@@ -59,12 +70,8 @@ function isSameOriginPanelRequest(request: IncomingMessage): boolean {
   const host = headerOf(request, "host");
   if (host === undefined || !LOCAL_HOSTS.has(hostNameOf(host))) return false;
   const origin = headerOf(request, "origin");
-  if (origin !== undefined) {
-    try {
-      if (new URL(origin).host !== host.trim().toLowerCase()) return false;
-    } catch {
-      return false;
-    }
+  if (origin !== undefined && (!URL.canParse(origin) || new URL(origin).host !== host.trim().toLowerCase())) {
+    return false;
   }
   const site = headerOf(request, "sec-fetch-site");
   if (site !== undefined && site !== "same-origin") return false;
@@ -101,27 +108,8 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   return parsed;
 }
 
-function stringField(body: Record<string, unknown>, key: string): string {
-  const value = body[key];
-  if (typeof value !== "string" || value.length === 0) throw new Error(`${key} must be a non-empty string`);
-  return value;
-}
-
 /** Rows of the status page's recent-tasks table. */
 const RECENT_LIMIT = 5;
-
-/** Panel state snapshot: everything the status page and the approval cards render in one poll. */
-/** What `GET /orca-api/state` returns: one poll carries everything the panel draws. */
-export interface PodState {
-  self: ReturnType<PodAdmin["self"]>;
-  config: ReturnType<PodAdmin["config"]>;
-  members: ReturnType<PodAdmin["members"]>;
-  mesh: { reachable: number };
-  approvals: ReturnType<PodAdmin["approvals"]>;
-  approval_count: number;
-  recent: ReturnType<PodAdmin["recent"]>;
-  workspace: ReturnType<PodAdmin["workspace"]>;
-}
 
 function podState(admin: PodAdmin): PodState {
   const members = admin.members();
@@ -138,102 +126,102 @@ function podState(admin: PodAdmin): PodState {
   };
 }
 
+/** An answer: the status it goes out with, and its JSON body. */
+type Reply = { status: number; body: unknown };
+
+const ok = (body: unknown): Reply => ({ status: 200, body });
+const NOT_FOUND: Reply = { status: 404, body: { error: "not_found" } };
+
+/** The first gate a request fails, as the answer to send; null when it may proceed. */
+function rejection(request: IncomingMessage): Reply | null {
+  if (!isDirectLoopbackRequest(request)) return { status: 403, body: { error: "local_only" } };
+  if (!isSameOriginPanelRequest(request)) return { status: 403, body: { error: "cross_origin" } };
+  if (request.method !== "GET" && !hasJsonContentType(request))
+    return { status: 403, body: { error: "json_required" } };
+  return null;
+}
+
+async function handleGet(admin: PodAdmin, url: URL): Promise<Reply> {
+  switch (url.pathname.slice(POD_API_PREFIX.length)) {
+    case "/state":
+      return ok(podState(admin));
+    case "/task": {
+      const peer = url.searchParams.get("peer");
+      const taskId = url.searchParams.get("task");
+      if (peer === null || taskId === null) return { status: 400, body: { error: "peer and task are required" } };
+      return ok(await admin.task(peer, taskId));
+    }
+    // Every task this node knows about, for the panel's "all tasks" view.
+    case "/tasks": {
+      const rawLimit = Number(url.searchParams.get("limit") ?? "500");
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
+      const response: PodTasksResponse = { recent: admin.recent(limit) };
+      return ok(response);
+    }
+    default:
+      return NOT_FOUND;
+  }
+}
+
+/** One POST action: the schema its JSON body must satisfy (`null`: it reads none) and what it does with it. */
+type PostAction = { body: z.ZodType | null; run(admin: PodAdmin, body: unknown): Promise<unknown> };
+
+/** An action that takes a body; `handlePost` parses it with the same schema before `run` sees it. */
+function withBody<S extends z.ZodType>(
+  body: S,
+  run: (admin: PodAdmin, parsed: z.output<S>) => Promise<unknown>,
+): PostAction {
+  return { body, run: (admin, parsed) => run(admin, parsed as z.output<S>) };
+}
+
+const POST_ACTIONS: Record<string, PostAction> = {
+  // The panel sends typed values (`null` clears a field); the settings
+  // parser behind `saveConfig` checks the merged result.
+  config: withBody(PanelPatchSchema, (admin, patch) => admin.saveConfig(patch)),
+  connect: withBody(ConnectBodySchema, (admin, { peer }) => admin.connect(peer)),
+  disconnect: { body: null, run: (admin) => admin.disconnect() },
+  reset: { body: null, run: (admin) => admin.reset() },
+  approve: withBody(PeerTaskBodySchema, async (admin, { peer, task_id }) => ({
+    task: await admin.approve(peer, task_id),
+  })),
+  deny: withBody(DenyBodySchema, async (admin, { peer, task_id, reason }) => ({
+    task: await admin.deny(peer, task_id, reason),
+  })),
+  cancel: withBody(PeerTaskBodySchema, async (admin, { peer, task_id }) => ({
+    task: await admin.cancel(peer, task_id),
+  })),
+};
+
+async function handlePost(admin: PodAdmin, request: IncomingMessage, url: URL): Promise<Reply> {
+  const name = url.pathname.slice(POD_API_PREFIX.length + 1);
+  const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
+  if (action === undefined) return NOT_FOUND;
+  if (action.body === null) return ok(await action.run(admin, undefined));
+  const parsed = parseSchema(action.body, await readJsonBody(request));
+  if (!parsed.ok) throw new Error(describeIssue(parsed.issue));
+  return ok(await action.run(admin, parsed.value));
+}
+
 /** Route handler for `/orca-api`; exported for tests. */
 export function createPodApiHandler(
   admin: PodAdmin,
 ): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   return async (request, response) => {
-    if (!isDirectLoopbackRequest(request)) {
-      sendJson(response, 403, { error: "local_only" });
-      return;
-    }
-    if (!isSameOriginPanelRequest(request)) {
-      sendJson(response, 403, { error: "cross_origin" });
-      return;
-    }
-    if (request.method !== "GET" && !hasJsonContentType(request)) {
-      sendJson(response, 403, { error: "json_required" });
+    const refused = rejection(request);
+    if (refused !== null) {
+      sendJson(response, refused.status, refused.body);
       return;
     }
     const url = new URL(request.url ?? POD_API_PREFIX, "http://localhost");
-    const path = url.pathname;
+    let reply: Reply;
     try {
-      if (request.method === "GET" && path === `${POD_API_PREFIX}/state`) {
-        sendJson(response, 200, podState(admin));
-        return;
-      }
-      if (request.method === "GET" && path === `${POD_API_PREFIX}/task`) {
-        const peer = url.searchParams.get("peer");
-        const taskId = url.searchParams.get("task");
-        if (peer === null || taskId === null) {
-          sendJson(response, 400, { error: "peer and task are required" });
-          return;
-        }
-        sendJson(response, 200, await admin.task(peer, taskId));
-        return;
-      }
-      // Every task this node knows about, for the panel's "all tasks" view.
-      if (request.method === "GET" && path === `${POD_API_PREFIX}/tasks`) {
-        const rawLimit = Number(url.searchParams.get("limit") ?? "500");
-        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
-        sendJson(response, 200, { recent: admin.recent(limit) });
-        return;
-      }
-      if (request.method === "POST") {
-        const action = path.slice(POD_API_PREFIX.length + 1);
-        if (action === "config") {
-          // The panel sends typed values (`null` clears a field); the settings
-          // parser behind `saveConfig` is the only validation.
-          sendJson(response, 200, await admin.saveConfig(await readJsonBody(request)));
-          return;
-        }
-        if (action === "connect") {
-          const body = await readJsonBody(request);
-          sendJson(response, 200, await admin.connect(stringField(body, "peer")));
-          return;
-        }
-        if (action === "disconnect") {
-          sendJson(response, 200, await admin.disconnect());
-          return;
-        }
-        if (action === "reset") {
-          sendJson(response, 200, await admin.reset());
-          return;
-        }
-        if (action !== "approve" && action !== "deny" && action !== "cancel") {
-          sendJson(response, 404, { error: "not_found" });
-          return;
-        }
-        const body = await readJsonBody(request);
-        const peer = stringField(body, "peer");
-        const taskId = stringField(body, "task_id");
-        if (action === "approve") {
-          sendJson(response, 200, { task: await admin.approve(peer, taskId) });
-          return;
-        }
-        if (action === "deny") {
-          const reason = typeof body.reason === "string" ? body.reason : undefined;
-          sendJson(response, 200, { task: await admin.deny(peer, taskId, reason) });
-          return;
-        }
-        sendJson(response, 200, { task: await admin.cancel(peer, taskId) });
-        return;
-      }
-      sendJson(response, 404, { error: "not_found" });
+      if (request.method === "GET") reply = await handleGet(admin, url);
+      else if (request.method === "POST") reply = await handlePost(admin, request, url);
+      else reply = NOT_FOUND;
     } catch (error) {
-      const message = errorMessage(error);
-      sendJson(response, 400, { error: message });
+      reply = { status: 400, body: { error: errorMessage(error) } };
     }
-  };
-}
-
-/** The single prefix route registered with the DSH web server. */
-function podApiRoute(admin: PodAdmin): WebServerRoute {
-  const handler = createPodApiHandler(admin);
-  return {
-    kind: "prefix",
-    path: POD_API_PREFIX,
-    handler: (request, response) => handler(request, response),
+    sendJson(response, reply.status, reply.body);
   };
 }
 
@@ -244,7 +232,8 @@ function podApiRoute(admin: PodAdmin): WebServerRoute {
  * UI (ACP, CLI) leaves the plugin without a panel instead of failing startup.
  */
 export function registerPodWeb(ctx: HostContext, admin: PodAdmin): void {
-  const route = podApiRoute(admin);
+  const handler = createPodApiHandler(admin);
+  const route = { kind: "prefix", path: POD_API_PREFIX, handler } as const;
   ctx.inject(["webServer"], (scope) => {
     scope.effect(() => scope.webServer.register(route), "orca-pod.panel-route");
   });

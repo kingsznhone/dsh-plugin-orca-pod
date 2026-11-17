@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 
-import { buildAuthHeader } from "../security/index.ts";
-import { isPodErrorCode, PodError } from "../kernel/index.ts";
-import type { NodeIdentity } from "../security/index.ts";
-import type { PeerView } from "../protocol/index.ts";
+import type { z } from "zod";
+
+import { buildAuthHeader } from "../security/crypto.ts";
+import { describeIssue, parseSchema } from "../kernel/schema.ts";
+import { isPodErrorCode, PodError } from "../kernel/errors.ts";
+import type { NodeIdentity } from "../security/identity.ts";
+import { BODY_SHA256_HEADER } from "../protocol/constants.ts";
+import { ErrorReplySchema, RpcResultSchema, type ErrorReply } from "../protocol/a2a.ts";
+import type { CallOptions, HttpMethod, PeerClient } from "../protocol/client.ts";
+import type { PeerView } from "../protocol/peer.ts";
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
@@ -22,51 +28,20 @@ type PeerClientOptions = {
   roster: () => readonly PeerView[];
 };
 
-type CallOptions = {
-  /** Aborts the call; the deadline still applies. */
-  signal?: AbortSignal;
-  /** Replaces the client's default deadline (heartbeats are shorter, uploads longer). */
-  timeoutMs?: number;
-  /**
-   * Receiver id the signature is bound to (§7.1). Left out, it is the member
-   * behind the URL and an unknown URL fails; naming it is for callers that
-   * already know which node they are dialing (`""` for a first join).
-   */
-  target?: string;
-};
-
-export type PeerClient = {
-  /** Node id behind a URL: this node, a URL it dialed, or a member that advertises it. */
-  idOf(endpoint: string): string | undefined;
-  /** `idOf`, or an `unknown_peer` error: only an explicit join may reach a stranger. */
-  known(endpoint: string): string;
-  /** Remember that `endpoint` was answered by `nodeId` (a URL it does not advertise). */
-  learn(endpoint: string, nodeId: string): void;
-  forget(nodeId: string): void;
-  /** Signed JSON request; resolves with the parsed 2xx body. */
-  call<T>(endpoint: string, method: "GET" | "POST", path: string, payload?: unknown, options?: CallOptions): Promise<T>;
-  /** Signed JSON-RPC call to `/a2a`; resolves with `result`. */
-  rpc<T>(endpoint: string, method: string, params: unknown, options?: CallOptions): Promise<T>;
-  /** Signed raw upload whose sha256 the caller computed first, so the body streams (§5.6). */
-  upload<T>(
-    endpoint: string,
-    path: string,
-    body: ReadableStream<Uint8Array>,
-    sha256: string,
-    options?: CallOptions,
-  ): Promise<T>;
+/** What one signed request is made of; `body` is JSON text, or a stream with the `sha256` the caller computed. */
+type SignedRequest = {
+  /** Names the call in error messages. */
+  label: string;
+  endpoint: string;
+  path: string;
+  method: HttpMethod;
+  body: string | ReadableStream<Uint8Array> | undefined;
+  sha256?: string;
 };
 
 type Reply = { status: number; ok: boolean; contentType: string; text: string };
 
 const trimSlash = (url: string): string => url.replace(/\/+$/, "");
-
-/** Body of a failed reply: the gateway's `{code, message}`, or the same inside a JSON-RPC `error.data`. */
-type ErrorBody = {
-  code?: unknown;
-  message?: unknown;
-  error?: { message?: unknown; data?: { code?: unknown; message?: unknown } };
-};
 
 /**
  * Read at most `MAX_RESPONSE_BYTES`: the stream is cancelled as soon as the cap
@@ -105,7 +80,7 @@ function parseJson(label: string, reply: Reply): unknown {
 }
 
 /** One error for both wire shapes: a peer's code if we know it, else `peer_error`. */
-function remoteError(label: string, reply: Reply, body: ErrorBody | undefined): PodError {
+function remoteError(label: string, reply: Reply, body: ErrorReply | undefined): PodError {
   const data = body?.error?.data ?? body;
   const code = data?.code ?? body?.error?.message;
   const detail = typeof data?.message === "string" && data.message !== code ? ` (${data.message})` : "";
@@ -138,17 +113,9 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
     }
     return id;
   }
-
   /** Sign, send within the deadline, and read the capped body; interpreting it is the caller's job. */
-  async function send(
-    label: string,
-    endpoint: string,
-    path: string,
-    method: "GET" | "POST",
-    body: string | ReadableStream<Uint8Array> | undefined,
-    sha256: string | undefined,
-    call: CallOptions,
-  ): Promise<Reply> {
+  async function send(request: SignedRequest, call: CallOptions): Promise<Reply> {
+    const { label, endpoint, path, method, body, sha256 } = request;
     const target = call.target ?? known(endpoint);
     const url = new URL(path, endpoint);
     const headers: Record<string, string> = {
@@ -164,7 +131,7 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
     if (typeof body === "string") headers["content-type"] = "application/json";
     if (sha256 !== undefined) {
       headers["content-type"] = "application/octet-stream";
-      headers["x-pod-body-sha256"] = sha256;
+      headers[BODY_SHA256_HEADER] = sha256;
     }
     const deadline = AbortSignal.timeout(call.timeoutMs ?? options.timeoutMs);
     const init: RequestInit & { duplex: "half" } = {
@@ -187,16 +154,22 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
 
   /** A 2xx body parsed as JSON, or the typed error of a failed reply. */
   function unwrap(label: string, reply: Reply): unknown {
-    if (!reply.ok) {
-      let body: ErrorBody | undefined;
-      try {
-        body = JSON.parse(reply.text) as ErrorBody;
-      } catch {
-        // A non-JSON error page keeps the generic code.
-      }
-      throw remoteError(label, reply, body);
+    if (reply.ok) return parseJson(label, reply);
+    let body: ErrorReply | undefined;
+    try {
+      const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.text));
+      body = parsed.success ? parsed.data : undefined;
+    } catch {
+      // A non-JSON error page keeps the generic code.
     }
-    return parseJson(label, reply);
+    throw remoteError(label, reply, body);
+  }
+
+  /** The 2xx body checked against what the caller expects: a peer cannot hand us a shape we did not ask for. */
+  function expectReply<S extends z.ZodType>(label: string, reply: Reply, schema: S, json: unknown): z.output<S> {
+    const parsed = parseSchema(schema, json);
+    if (parsed.ok) return parsed.value;
+    throw new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(parsed.issue)}`, 502);
   }
 
   return {
@@ -207,28 +180,25 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
       for (const [endpoint, id] of dialed) if (id === nodeId) dialed.delete(endpoint);
     },
 
-    async call<T>(endpoint: string, method: "GET" | "POST", path: string, payload?: unknown, call: CallOptions = {}) {
+    async call(endpoint, { method, path, payload, reply: schema }, call = {}) {
       const body = payload === undefined ? undefined : JSON.stringify(payload);
-      return unwrap(path, await send(path, endpoint, path, method, body, undefined, call)) as T;
+      const reply = await send({ label: path, endpoint, path, method, body }, call);
+      return expectReply(path, reply, schema, unwrap(path, reply));
     },
 
-    async rpc<T>(endpoint: string, method: string, params: unknown, call: CallOptions = {}) {
+    async rpc(endpoint, method, params, call = {}) {
       const body = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
-      const reply = await send(method, endpoint, "/a2a", "POST", body, undefined, call);
-      const envelope = unwrap(method, reply) as ErrorBody & { result: T };
+      const reply = await send({ label: method, endpoint, path: "/a2a", method: "POST", body }, call);
+      const json = unwrap(method, reply);
       // A peer may also answer 200 with an error envelope.
-      if (envelope.error !== undefined) throw remoteError(method, reply, envelope);
-      return envelope.result;
+      const envelope = ErrorReplySchema.safeParse(json);
+      if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, reply, envelope.data);
+      return expectReply(method, reply, RpcResultSchema, json).result;
     },
 
-    async upload<T>(
-      endpoint: string,
-      path: string,
-      body: ReadableStream<Uint8Array>,
-      sha256: string,
-      call: CallOptions = {},
-    ) {
-      return unwrap(path, await send(path, endpoint, path, "POST", body, sha256, call)) as T;
+    async upload(endpoint, { path, body, sha256, reply: schema }, call = {}) {
+      const reply = await send({ label: path, endpoint, path, method: "POST", body, sha256 }, call);
+      return expectReply(path, reply, schema, unwrap(path, reply));
     },
   };
 }

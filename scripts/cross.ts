@@ -7,6 +7,7 @@ import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from ".
 import { loadIdentity } from "../src/security/identity.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { createPeerClient } from "../src/transport/peer-client.ts";
+import { BlobLinkResponseSchema, BlobUploadResponseSchema } from "../src/protocol/a2a.ts";
 import { DEFAULT_PORT } from "../src/protocol/constants.ts";
 
 const SERVE = {
@@ -180,20 +181,21 @@ async function blob(args: Values<typeof BLOB>): Promise<void> {
   const content = args.file ? await readFile(args.file) : Buffer.from(args.text ?? "hello blob\n", "utf8");
   const name = args.name ?? "blob.txt";
 
-  const stored = await client.upload<{ blob_id: string; size: number; name: string | null }>(
+  const stored = await client.upload(
     peer,
-    `/blobs?name=${encodeURIComponent(name)}`,
-    new Blob([content]).stream(),
-    bodySha256(content),
+    {
+      path: `/blobs?name=${encodeURIComponent(name)}`,
+      body: new Blob([content]).stream(),
+      sha256: bodySha256(content),
+      reply: BlobUploadResponseSchema,
+    },
     target,
   );
   console.log(`upload blob_id=${stored.blob_id} size=${stored.size} name=${stored.name}`);
 
-  const link = await client.call<{ url: string; expires_at: number }>(
+  const link = await client.call(
     peer,
-    "POST",
-    `/blobs/${stored.blob_id}/link`,
-    undefined,
+    { method: "POST", path: `/blobs/${stored.blob_id}/link`, reply: BlobLinkResponseSchema },
     target,
   );
   const viaLink = await fetch(link.url);

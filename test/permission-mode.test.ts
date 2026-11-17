@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { createAcpExecutor } from "../src/execution/acp/executor.ts";
-import { childPodMetadata } from "../src/delegation/chain.ts";
+import { childPodMetadata } from "../src/tasks/delegation.ts";
 import { parseEchoScript } from "../src/execution/echo.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";

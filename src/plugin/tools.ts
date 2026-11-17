@@ -7,11 +7,17 @@
  * and callers poll `status` for the result.
  */
 
-import { normalizePeerUrl } from "../transport/index.ts";
-import { DEFAULT_PORT, isPermissionMode, isTerminal, parseModelSpec } from "../protocol/index.ts";
-import { errorMessage, isRecord, PodError } from "../kernel/index.ts";
-import type { PeerView, PermissionMode, SubmitTaskInput } from "../protocol/index.ts";
-import type { OrcaNode } from "../node/index.ts";
+import { z } from "zod";
+
+import { normalizePeerUrl } from "../transport/net.ts";
+import { DEFAULT_PORT } from "../protocol/constants.ts";
+import { PermissionModeSchema, isPermissionMode, type PermissionMode } from "../protocol/permission.ts";
+import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../protocol/task.ts";
+import { parseModelSpec } from "../protocol/model.ts";
+import type { PeerView } from "../protocol/peer.ts";
+import { describeIssue, parseSchema } from "../kernel/schema.ts";
+import { errorMessage, PodError } from "../kernel/errors.ts";
+import type { OrcaNode } from "../node/orca-node.ts";
 
 import type {
   ContentBlock,
@@ -23,9 +29,6 @@ import type {
 } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
-
-const METHOD_NAMES = ["send", "status", "cancel", "members", "connect"] as const;
-type PodMethod = (typeof METHOD_NAMES)[number];
 
 const ASYNC_NOTE =
   'Tasks run asynchronously on the remote orca node: method "send" returns as soon as the remote accepts the task, and method "status" observes the returned task_id.';
@@ -49,33 +52,70 @@ function renderJson(_args: unknown, value: unknown): ContentBlock[] {
   return [{ type: "text", text: JSON.stringify(value, null, 2) }];
 }
 
-function asRecord(args: unknown): Record<string, unknown> {
-  if (!isRecord(args)) throw new Error("tool arguments must be an object");
-  return args;
+// ---- what a call carries ----
+
+const Text = z.string("must be a non-empty string").trim().min(1, "must be a non-empty string");
+
+const PeerArgs = z.object({ peer: Text });
+const TaskArgs = PeerArgs.extend({ task_id: Text });
+const SendArgs = PeerArgs.extend({
+  text: Text,
+  echo: z.record(z.string(), z.unknown(), "must be an object holding a deterministic echo script").optional(),
+  permission_mode: PermissionModeSchema.optional(),
+  model: z.string("must be a provider/model string").optional(),
+  // A value that is not text means "no effort"; a blank one is refused.
+  reasoning_effort: z.preprocess((value) => (typeof value === "string" ? value : undefined), Text.optional()),
+});
+
+const METHOD_NAMES = ["send", "status", "cancel", "members", "connect"] as const;
+
+/** `method` is checked first, so its error names the choices. */
+const MethodSchema = z.object({
+  method: z.enum(METHOD_NAMES, `must be one of ${METHOD_NAMES.map((name) => `"${name}"`).join(", ")}`),
+});
+
+/** One call of the tool: its method and the arguments that method takes. */
+type PodCall =
+  | { method: "send"; args: z.output<typeof SendArgs> }
+  | { method: "status" | "cancel"; args: z.output<typeof TaskArgs> }
+  | { method: "connect"; args: z.output<typeof PeerArgs> }
+  | { method: "members" };
+
+function parseArgs<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
+  const parsed = parseSchema(schema, raw);
+  if (!parsed.ok) throw new Error(describeIssue(parsed.issue));
+  return parsed.value;
 }
 
-function requiredString(args: Record<string, unknown>, key: string): string {
-  const value = args[key];
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${key} must be a non-empty string`);
+function parseCall(raw: unknown): PodCall {
+  const { method } = parseArgs(MethodSchema, raw);
+  switch (method) {
+    case "send":
+      return { method, args: parseArgs(SendArgs, raw) };
+    case "status":
+    case "cancel":
+      return { method, args: parseArgs(TaskArgs, raw) };
+    case "connect":
+      return { method, args: parseArgs(PeerArgs, raw) };
+    case "members":
+      return { method };
   }
-  return value.trim();
 }
 
-function methodOf(args: Record<string, unknown>): PodMethod {
-  const value = requiredString(args, "method");
-  if (!(METHOD_NAMES as readonly string[]).includes(value)) {
-    throw new Error(`method must be one of ${METHOD_NAMES.map((name) => `"${name}"`).join(", ")}`);
-  }
-  return value as PodMethod;
-}
+// ---- what a call answers ----
 
-function optionalEchoScript(args: Record<string, unknown>): Record<string, unknown> | undefined {
-  const value = args.echo;
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("echo must be an object holding a deterministic echo script");
-  return value;
-}
+/** A node as `members` and `connect` list it. */
+type PeerSummary = Pick<
+  PeerView,
+  "orca_node_id" | "display_name" | "endpoints" | "state" | "busy" | "runtime" | "last_recv_at" | "max_task_ttl_s"
+>;
+
+type SendResult = { task_id: string; state: TaskState; peer: string };
+type TaskStatusResult = TaskView & { terminal: boolean };
+type ConnectResult = { peer: string; members: PeerSummary[]; members_digest: string };
+type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
+
+const taskStatus = (view: TaskView): TaskStatusResult => ({ ...view, terminal: isTerminal(view.status.state) });
 
 /** Wait for startup, then fail the tool call when the orca node is not usable. */
 async function requireNode(handle: PodHandle): Promise<OrcaNode> {
@@ -90,7 +130,7 @@ async function requireNode(handle: PodHandle): Promise<OrcaNode> {
   return orcaNode;
 }
 
-function peerSummary(peer: PeerView): Record<string, unknown> {
+function peerSummary(peer: PeerView): PeerSummary {
   return {
     orca_node_id: peer.orca_node_id,
     display_name: peer.display_name,
@@ -122,40 +162,26 @@ export function sessionSandboxMode(
 async function runSend(
   handle: PodHandle,
   tracker: Tracker,
-  args: Record<string, unknown>,
+  args: z.output<typeof SendArgs>,
   exec: ToolRunContext | undefined,
   presets: PermissionPresetsService | undefined,
-): Promise<unknown> {
+): Promise<SendResult> {
   const signal = exec?.signal;
-  const peer = normalizePeerUrl(requiredString(args, "peer"));
-  const text = requiredString(args, "text");
-  const echo = optionalEchoScript(args);
-  const explicitMode = args.permission_mode;
-  if (explicitMode !== undefined && !isPermissionMode(explicitMode)) {
-    throw new Error("permission_mode must be read-only, workspace-write or danger-full-access");
-  }
-  const permissionMode = explicitMode ?? sessionSandboxMode(presets, exec);
-  const rawModel = args.model;
-  if (rawModel !== undefined && typeof rawModel !== "string") {
-    throw new Error("model must be a provider/model string");
-  }
-  const reasoningEffort = typeof args.reasoning_effort === "string" ? args.reasoning_effort : undefined;
-  if (reasoningEffort !== undefined && reasoningEffort.trim().length === 0) {
-    throw new Error("reasoning_effort must be a non-empty string");
-  }
-  const model = rawModel === undefined ? undefined : (parseModelSpec(rawModel, reasoningEffort) ?? undefined);
-  if (rawModel !== undefined && model === undefined) {
+  const peer = normalizePeerUrl(args.peer);
+  const permissionMode = args.permission_mode ?? sessionSandboxMode(presets, exec);
+  const model = args.model === undefined ? undefined : (parseModelSpec(args.model, args.reasoning_effort) ?? undefined);
+  if (args.model !== undefined && model === undefined) {
     throw new Error("model must be a provider/model string");
   }
   const orcaNode = await requireNode(handle);
   const input: SubmitTaskInput = {
-    message: { role: "user", parts: [{ kind: "text", text }] },
+    message: { role: "user", parts: [{ kind: "text", text: args.text }] },
     metadata: {
-      echo,
+      echo: args.echo,
       pod: {
         permission_mode: permissionMode,
         model,
-        reasoning_effort: model === undefined ? reasoningEffort : undefined,
+        reasoning_effort: model === undefined ? args.reasoning_effort : undefined,
       },
     },
   };
@@ -174,34 +200,43 @@ async function runSend(
   return { task_id: view.id, state: view.status.state, peer };
 }
 
-async function runStatus(handle: PodHandle, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-  const peer = normalizePeerUrl(requiredString(args, "peer"));
-  const taskId = requiredString(args, "task_id");
+async function runStatus(
+  handle: PodHandle,
+  args: z.output<typeof TaskArgs>,
+  signal?: AbortSignal,
+): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle);
-  const view = await orcaNode.getTask(peer, taskId, signal === undefined ? {} : { signal });
-  return { ...view, terminal: isTerminal(view.status.state) };
+  return taskStatus(
+    await orcaNode.getTask(normalizePeerUrl(args.peer), args.task_id, signal === undefined ? {} : { signal }),
+  );
 }
 
-async function runCancel(handle: PodHandle, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-  const peer = normalizePeerUrl(requiredString(args, "peer"));
-  const taskId = requiredString(args, "task_id");
+async function runCancel(
+  handle: PodHandle,
+  args: z.output<typeof TaskArgs>,
+  signal?: AbortSignal,
+): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle);
-  const view = await orcaNode.cancelTask(peer, taskId, signal === undefined ? {} : { signal });
-  return { ...view, terminal: isTerminal(view.status.state) };
+  return taskStatus(
+    await orcaNode.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal === undefined ? {} : { signal }),
+  );
 }
 
-async function runMembers(handle: PodHandle): Promise<unknown> {
+async function runMembers(handle: PodHandle): Promise<MembersResult> {
   const orcaNode = await requireNode(handle);
-  const self = orcaNode.self();
   return {
-    self: peerSummary(self),
+    self: peerSummary(orcaNode.self()),
     members: orcaNode.members().map(peerSummary),
     members_digest: orcaNode.membersDigest(),
   };
 }
 
-async function runConnect(handle: PodHandle, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-  const peer = normalizePeerUrl(requiredString(args, "peer"));
+async function runConnect(
+  handle: PodHandle,
+  args: z.output<typeof PeerArgs>,
+  signal?: AbortSignal,
+): Promise<ConnectResult> {
+  const peer = normalizePeerUrl(args.peer);
   await requireNode(handle);
   // Joining persists the peer; do not start it for a turn that is already gone.
   throwIfAborted(signal);
@@ -265,26 +300,25 @@ export function describeError(operation: string, error: unknown): Error {
   return new Error(`${operation}: ${errorMessage(error)}`);
 }
 
-/** Dispatch one `orca_pod` method against the running node. */
-function runMethod(
+/** Dispatch one `orca_pod` call against the running node. */
+function runCall(
   handle: PodHandle,
   tracker: Tracker,
-  method: PodMethod,
-  args: Record<string, unknown>,
+  call: PodCall,
   exec: ToolRunContext | undefined,
   presets: PermissionPresetsService | undefined,
-): Promise<unknown> {
-  switch (method) {
+): Promise<SendResult | TaskStatusResult | MembersResult | ConnectResult> {
+  switch (call.method) {
     case "send":
-      return runSend(handle, tracker, args, exec, presets);
+      return runSend(handle, tracker, call.args, exec, presets);
     case "status":
-      return runStatus(handle, args, exec?.signal);
+      return runStatus(handle, call.args, exec?.signal);
     case "cancel":
-      return runCancel(handle, args, exec?.signal);
+      return runCancel(handle, call.args, exec?.signal);
     case "members":
       return runMembers(handle);
     case "connect":
-      return runConnect(handle, args, exec?.signal);
+      return runConnect(handle, call.args, exec?.signal);
   }
 }
 
@@ -324,7 +358,7 @@ export function createPodTools(
         },
         permission_mode: {
           type: "string",
-          enum: ["read-only", "workspace-write", "danger-full-access"],
+          enum: [...PermissionModeSchema.options],
           description:
             "send: explicit permission mode; when omitted the dispatching session's sandbox mode is inherited. The target caps it by its own policy and never runs above it.",
         },
@@ -343,11 +377,10 @@ export function createPodTools(
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     async execute(args, exec: ToolRunContext | undefined) {
-      const record = asRecord(args);
-      const method = methodOf(record);
+      const call = parseCall(args);
       try {
         throwIfAborted(exec?.signal);
-        return await withSignal(runMethod(handle, tracker, method, record, exec, presets?.()), exec?.signal);
+        return await withSignal(runCall(handle, tracker, call, exec, presets?.()), exec?.signal);
       } catch (error) {
         throw describeError("orca_pod", error);
       }

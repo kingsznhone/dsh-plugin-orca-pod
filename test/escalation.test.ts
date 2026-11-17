@@ -10,6 +10,7 @@ import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config
 import { connectAll } from "../src/node/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/task.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
 
 const WORKGROUP = "orca-escalate";
 const PASSWORD = "escalate-secret";
@@ -147,11 +148,11 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
     const parked = await b.escalateTask(b.endpoints[0]!, parentId, {
       peer: c.endpoints[0]!,
       task_id: childId,
-      request: { ...childRequest!, upstream: ["deepnode"] },
+      request: { ...childRequest!, upstream: [fakeNodeId("deepnode")] },
     });
     const upstream = permissionRequestOf(parked);
     expect(upstream?.requested_by).toBe(b.orcaNodeId);
-    expect(upstream?.upstream).toEqual(["deepnode", c.orcaNodeId]);
+    expect(upstream?.upstream).toEqual([fakeNodeId("deepnode"), c.orcaNodeId]);
   });
 
   it("propagates a denial down to the child", async () => {

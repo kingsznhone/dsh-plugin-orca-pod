@@ -1,7 +1,7 @@
 /**
  * Types the panel shares with the host half and with DSH.
  *
- * The data shapes are the host's own (`src/plugin/admin.ts`, `src/plugin/web.ts`),
+ * The data shapes are the host's own (`src/plugin/admin.ts`, `src/plugin/panel-api.ts`),
  * imported type-only so they are erased from the bundle: what the routes send
  * and what this client draws cannot drift apart. The DSH services are the
  * subset of `@deepseek-ai/dsh-client-locale` and the slot registry this bundle
@@ -21,7 +21,8 @@ export type {
   PodTaskRow,
   WorkspaceView,
 } from "../src/plugin/admin.ts";
-export type { PodState } from "../src/plugin/web.ts";
+export type { PodActions, PodState, PodTasksResponse } from "../src/plugin/panel-api.ts";
+export type { PanelPatch } from "../src/node/settings.ts";
 export type { ModelOffer, ModelSelection } from "../src/protocol/model.ts";
 export type { PeerView, RuntimeInfo } from "../src/protocol/peer.ts";
 export type { PermissionMode } from "../src/protocol/permission.ts";

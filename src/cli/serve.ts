@@ -2,16 +2,10 @@
 
 import process from "node:process";
 
-import {
-  createOrcaNode,
-  createPersistentStorage,
-  endpointWriteback,
-  joinRoster,
-  loadConfig,
-  parseSettings,
-  saveConfig,
-} from "../node/index.ts";
-import { normalizePeerUrl } from "../transport/index.ts";
+import { createOrcaNode, createPersistentStorage, joinRoster } from "../node/orca-node.ts";
+import { endpointWriteback, loadConfig, saveConfig } from "../node/config.ts";
+import { parseSettings } from "../node/settings.ts";
+import { normalizePeerUrl } from "../transport/net.ts";
 import { required, type CommandArgs, type OptionName } from "./shared.ts";
 
 export const options: readonly OptionName[] = ["config", "peer", "bind", "port"];

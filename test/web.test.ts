@@ -411,7 +411,8 @@ describe("panel HTTP bridge", () => {
     });
     expect(saved.status).toBe(200);
     expect(admin.calls).toEqual([
-      'saveConfig:{"task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"max_workspace_bytes":2147483648,"max_workspace_files":1000,"max_blob_store_bytes":1073741824,"allow_public_peers":true,"allow_loopback_peers":false,"permission_mode":"workspace-write","default_reasoning_effort":"max","executor":"echo"}',
+      // Keys come out in the settings table's order, not the body's.
+      'saveConfig:{"executor":"echo","permission_mode":"workspace-write","task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"max_workspace_bytes":2147483648,"max_workspace_files":1000,"max_blob_store_bytes":1073741824,"allow_public_peers":true,"allow_loopback_peers":false,"default_reasoning_effort":"max"}',
     ]);
 
     // Clearing a control sends null, so the override (and the persisted config
@@ -429,7 +430,7 @@ describe("panel HTTP bridge", () => {
     });
     expect(cleared.status).toBe(200);
     expect(admin.calls[1]).toBe(
-      'saveConfig:{"task_timeout_s":null,"allow_public_peers":null,"permission_mode":null,"default_reasoning_effort":null,"executor":null}',
+      'saveConfig:{"executor":null,"permission_mode":null,"task_timeout_s":null,"allow_public_peers":null,"default_reasoning_effort":null}',
     );
   });
 

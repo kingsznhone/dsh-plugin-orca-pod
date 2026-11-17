@@ -18,25 +18,18 @@
 
 import { rm } from "node:fs/promises";
 
-import {
-  configPath,
-  createOrcaNodeConfig,
-  defaultDataRoot,
-  saveConfig,
-  createOrcaNode,
-  createPersistentStorage,
-  parseSettings,
-  passwordRefFor,
-  pickPanelFields,
-} from "../node/index.ts";
-import { identityPath } from "../security/index.ts";
-import { isLoopbackEndpoint, normalizePeerUrl } from "../transport/index.ts";
-import type { OrcaNode } from "../node/index.ts";
+import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
+import { createOrcaNode, createPersistentStorage } from "../node/orca-node.ts";
+import { parseSettings, passwordRefFor } from "../node/settings.ts";
+import { identityPath } from "../security/identity.ts";
+import { isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
+import type { OrcaNode } from "../node/orca-node.ts";
+import type { PanelPatch } from "../node/settings.ts";
 
 import type { Config } from "./config.ts";
 import type { HostLogger } from "./dsh.ts";
 import { loadRememberedPeers, peerStatePath, saveRememberedPeers, type PodStores, type RawConfig } from "./stores.ts";
-import { errorMessage } from "../kernel/index.ts";
+import { errorMessage } from "../kernel/errors.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
 interface PodRuntime {
@@ -68,7 +61,7 @@ export interface PodHandle {
    * panel fields into the plugin config (`null` clears a field to its default),
    * and restart the node with the result.
    */
-  reconfigure(patch: Record<string, unknown>): Promise<void>;
+  reconfigure(patch: PanelPatch): Promise<void>;
   /** `join` one peer now and remember it in the peer state file. */
   addPeer(peer: string): Promise<void>;
   /** Leave the workgroup: tell known peers and forget every remembered and configured peer. */
@@ -88,8 +81,9 @@ export interface PodHandle {
   adopt(config: Config): Promise<void>;
 }
 
-function createRuntime(): PodRuntime {
-  return { orcaNode: null, url: null, port: null, started_at: null, error: null };
+/** Anything thrown, as an `Error`. */
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 /** Apply panel fields to a raw plugin config: a value sets the key, `null` removes it. */
@@ -137,20 +131,7 @@ async function startNode(
   const orcaNode = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig), logger });
   runtime.orcaNode = orcaNode;
 
-  let info: { url: string; port: number };
-  try {
-    info = await orcaNode.start();
-  } catch (error) {
-    runtime.error = error instanceof Error ? error : new Error(String(error));
-    runtime.orcaNode = null;
-    try {
-      await orcaNode.stop();
-    } catch {
-      // The node never finished starting; nothing useful to report here.
-    }
-    throw runtime.error;
-  }
-
+  const info = await startListening(orcaNode, runtime);
   runtime.url = info.url;
   runtime.port = info.port;
   runtime.started_at = new Date().toISOString();
@@ -167,15 +148,34 @@ async function startNode(
     logger.warn(`orca-pod: onNodeStarted hook failed: ${errorMessage(error)}`);
   }
 
-  const self = normalizePeerUrl(info.url);
   // Startup peers from the config, then the ones joined at runtime.
-  for (const peer of new Set([...config.peers, ...remembered])) {
+  await joinPeers(orcaNode, new Set([...config.peers, ...remembered]), normalizePeerUrl(info.url), logger);
+}
+
+/** Start listening; a node that cannot is stopped and dropped from the runtime, and the failure is kept. */
+async function startListening(orcaNode: OrcaNode, runtime: PodRuntime): Promise<{ url: string; port: number }> {
+  try {
+    return await orcaNode.start();
+  } catch (error) {
+    runtime.error = toError(error);
+    runtime.orcaNode = null;
+    try {
+      await orcaNode.stop();
+    } catch {
+      // The node never finished starting; nothing useful to report here.
+    }
+    throw runtime.error;
+  }
+}
+
+/** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */
+async function joinPeers(orcaNode: OrcaNode, peers: Iterable<string>, self: string, logger: HostLogger): Promise<void> {
+  for (const peer of peers) {
     if (peer === self) continue;
     try {
       const response = await orcaNode.join(peer);
       logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`);
     } catch (error) {
-      // A peer that is down at boot must not take the local orca node down.
       logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`);
     }
   }
@@ -217,7 +217,7 @@ export function startPod(
   hooks: StartPodHooks = {},
   defaultRoot?: string,
 ): PodHandle {
-  const runtime = createRuntime();
+  const runtime: PodRuntime = { orcaNode: null, url: null, port: null, started_at: null, error: null };
   // Resolve the data directory once: an explicit `data_root` wins, else the
   // host-provided default (the DSH profile directory), else the process default.
   // Every later read (peer state, node config, panel) then sees the same path.
@@ -247,19 +247,20 @@ export function startPod(
     return run;
   }
 
+  /** Remove a file; one that cannot be removed is reported, not fatal. */
+  async function removeQuietly(path: string): Promise<void> {
+    try {
+      await rm(path, { force: true });
+    } catch (error) {
+      logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
+    }
+  }
+
   /** (Re)start from `pluginConfig`: resolve the password, then run the node if setup is complete. Queue only. */
   async function boot(): Promise<void> {
     await stopNode(runtime, logger);
     runtime.error = null;
-    const ref = passwordRefFor(pluginConfig);
-    let password: string | undefined;
-    if (ref !== undefined) {
-      try {
-        password = await stores.readSecret(ref);
-      } catch (error) {
-        logger.warn(`orca-pod: could not read the workgroup password (${ref}): ${errorMessage(error)}`);
-      }
-    }
+    const password = await readPassword(pluginConfig);
     handle.config = { ...pluginConfig, workgroup_password: password ?? "" };
     handle.configured = !needsSetup(handle.config);
     if (disposed) return;
@@ -272,9 +273,20 @@ export function startPod(
     try {
       await startNode(handle.config, handle.rememberedPeers, runtime, logger, hooks);
     } catch (error) {
-      const failure = error instanceof Error ? error : new Error(String(error));
-      runtime.error = failure;
-      logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
+      runtime.error = toError(error);
+      logger.error(`orca-pod: orca node failed to start: ${errorMessage(runtime.error)}`);
+    }
+  }
+
+  /** The stored workgroup password, or undefined when there is none or the store cannot be read. */
+  async function readPassword(config: Config): Promise<string | undefined> {
+    const ref = passwordRefFor(config);
+    if (ref === undefined) return undefined;
+    try {
+      return await stores.readSecret(ref);
+    } catch (error) {
+      logger.warn(`orca-pod: could not read the workgroup password (${ref}): ${errorMessage(error)}`);
+      return undefined;
     }
   }
 
@@ -285,11 +297,10 @@ export function startPod(
     rememberedPeers: [],
     ready: Promise.resolve(),
     async reconfigure(patch) {
-      const fields = pickPanelFields(patch);
-      const password = fields.workgroup_password;
-      delete fields.workgroup_password;
-      if (password !== undefined && password !== null && (typeof password !== "string" || password.length === 0)) {
-        throw new Error("a workgroup password must be a non-empty string");
+      const { workgroup_password: password, ...fields } = patch;
+      // Omit the field to keep the current password; a passwordless mesh is not supported.
+      if (typeof password === "string" && password.trim().length === 0) {
+        throw new Error("a workgroup password is required; a passwordless mesh is not supported");
       }
       // Validate the whole result first, so a bad patch changes nothing.
       const preview = parseSettings(applyPanelFields(withoutSecret(handle.config), fields));
@@ -343,11 +354,7 @@ export function startPod(
       await enqueue(async () => {
         await stopNode(runtime, logger);
         for (const path of [configPath(dataRoot), identityPath(dataRoot), peerStatePath(dataRoot)]) {
-          try {
-            await rm(path, { force: true });
-          } catch (error) {
-            logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
-          }
+          await removeQuietly(path);
         }
         handle.rememberedPeers = [];
         runtime.error = null;

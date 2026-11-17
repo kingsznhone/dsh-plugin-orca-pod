@@ -3,7 +3,7 @@
 
 import process from "node:process";
 
-import { errorMessage } from "../kernel/index.ts";
+import { errorMessage } from "../kernel/errors.ts";
 import * as escalate from "./escalate.ts";
 import * as log from "./log.ts";
 import * as members from "./members.ts";

@@ -3,13 +3,32 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-import type { ModelOffer, ModelSelection, ReasoningEffort } from "./model.ts";
+import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "./model.ts";
 
+/**
+ * An orca node id is the base64url-encoded raw Ed25519 public key (§7.1), so a
+ * valid id is self-certifying: whoever signs with the matching private key owns
+ * the id, and no shared workgroup secret can stand in for it. 43 characters
+ * always decode to exactly 32 bytes.
+ */
+export const OrcaNodeIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)");
 export type OrcaNodeId = string;
 
-type WorkgroupId = string;
+export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
+  return OrcaNodeIdSchema.safeParse(value).success;
+}
 
-export type PeerState = "unknown" | "online" | "suspect" | "offline";
+export const WorkgroupIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}");
+export type WorkgroupId = string;
+
+export function isWorkgroupId(value: unknown): value is WorkgroupId {
+  return WorkgroupIdSchema.safeParse(value).success;
+}
+
+export const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
+export type PeerState = z.infer<typeof PeerStateSchema>;
 
 /** Host facts a node advertises at join (§3.3); `runtime_digest` covers them. */
 export const RuntimeInfoSchema = z.object({
@@ -25,81 +44,53 @@ export type RuntimeInfo = z.infer<typeof RuntimeInfoSchema>;
 /** The task holding a node's single slot (§6.9). */
 export const BusyStateSchema = z.object({
   task_id: z.string(),
-  origin_orca_node: z.string(),
+  origin_orca_node: OrcaNodeIdSchema,
   since: z.string(),
 });
 export type BusyState = z.infer<typeof BusyStateSchema>;
 
-export type PeerView = {
-  orca_node_id: OrcaNodeId;
-  display_name: string;
+export const PeerViewSchema = z.object({
+  orca_node_id: OrcaNodeIdSchema,
+  display_name: z.string(),
   /** Base URLs peers may dial, best first; one entry is the common case (§3.2). */
-  endpoints: string[];
-  runtime: RuntimeInfo | null;
-  runtime_digest: string;
-  state: PeerState;
-  busy: BusyState | null;
-  last_recv_at: string | null;
+  endpoints: z.array(z.string()),
+  runtime: RuntimeInfoSchema.nullable(),
+  runtime_digest: z.string(),
+  state: PeerStateSchema,
+  busy: BusyStateSchema.nullable(),
+  last_recv_at: z.string().nullable(),
   /** Per-task time budget this orca node enforces; origins size tasks to it (§6.9). */
-  max_task_ttl_s?: number;
+  max_task_ttl_s: z.number().positive().optional(),
   /** Model routes this orca node can switch an ACP session to (§6.15). */
-  models?: ModelOffer[];
+  models: ModelOffersSchema.optional(),
   /** The model an ACP session uses when a task does not name one (§6.15). */
-  default_model?: ModelSelection | null;
+  default_model: ModelSelectionSchema.nullable().optional(),
   /** Reasoning effort an ACP session uses when a task does not name one (§6.15). */
-  default_reasoning_effort?: ReasoningEffort | null;
-};
+  default_reasoning_effort: ReasoningEffortSchema.nullable().optional(),
+});
+export type PeerView = z.infer<typeof PeerViewSchema>;
 
-export type SelfRecord = PeerView & {
-  workgroup_id: WorkgroupId;
-};
+export const SelfRecordSchema = PeerViewSchema.extend({ workgroup_id: WorkgroupIdSchema });
+export type SelfRecord = z.infer<typeof SelfRecordSchema>;
 
-export type JoinResponse = {
-  self: SelfRecord;
-  members: PeerView[];
-  members_digest: string;
-};
+export const JoinResponseSchema = z.object({
+  self: SelfRecordSchema,
+  members: z.array(PeerViewSchema),
+  members_digest: z.string(),
+});
+export type JoinResponse = z.infer<typeof JoinResponseSchema>;
 
-export type HeartbeatResponse = {
-  from: OrcaNodeId;
-  busy: BusyState | null;
-  members_digest: string;
+export const HeartbeatResponseSchema = z.object({
+  from: OrcaNodeIdSchema,
+  busy: BusyStateSchema.nullable(),
+  members_digest: z.string(),
   /** 仅当请求摘要与本地不一致时返回；只是候选端点，不声明在线。 */
-  members: PeerView[] | null;
-};
+  members: z.array(PeerViewSchema).nullable(),
+});
+export type HeartbeatResponse = z.infer<typeof HeartbeatResponseSchema>;
 
-export type MembersResponse = {
-  members_digest: string;
-  members: PeerView[];
-};
-
-/**
- * An orca node id is the base64url-encoded raw Ed25519 public key (§7.1), so a
- * valid id is self-certifying: whoever signs with the matching private key owns
- * the id, and no shared workgroup secret can stand in for it.
- */
-export function normalizeOrcaNodeId(raw: string): OrcaNodeId | null {
-  const value = raw.trim();
-  return isOrcaNodeId(value) ? value : null;
-}
-
-/**
- * base64url of a raw 32-byte Ed25519 public key: 43 chars, which always decode
- * to exactly 32 bytes (258 bits, the last two are padding).
- */
-export const OrcaNodeIdSchema = z
-  .string()
-  .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)");
-
-export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
-  return OrcaNodeIdSchema.safeParse(value).success;
-}
-
-export const WorkgroupIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}");
-
-export function isWorkgroupId(value: unknown): value is WorkgroupId {
-  return WorkgroupIdSchema.safeParse(value).success;
-}
+export const MembersResponseSchema = z.object({ members_digest: z.string(), members: z.array(PeerViewSchema) });
+export type MembersResponse = z.infer<typeof MembersResponseSchema>;
 
 export function runtimeDigest(runtime: RuntimeInfo | null): string {
   if (!runtime) return "none";

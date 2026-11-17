@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { PodError } from "../src/kernel/errors.ts";
 import type { TaskState, TaskView } from "../src/protocol/task.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { AgentNotice, HostLogger, ToolAgent } from "../src/plugin/dsh.ts";
-import type { DispatchEntry } from "../src/storage/index.ts";
+import type { DispatchEntry } from "../src/storage/stores.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
 import type { TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
 
 class FakeAgent implements ToolAgent {
   readonly id = "agent-1";
@@ -54,8 +56,8 @@ function permissionView(id: string, requestId: string): TaskView {
                 task_id: id,
                 tool: "write_file",
                 requested: { path: "note.txt" },
-                requested_by: "TARGET1",
-                via: ["ORIGIN"],
+                requested_by: fakeNodeId("TARGET1"),
+                via: [fakeNodeId("ORIGIN")],
                 expires_at: new Date(Date.now() + 60_000).toISOString(),
               },
             },
@@ -369,7 +371,7 @@ describe("tracking restore and poll rounds", () => {
     const agent = new FakeAgent();
     const node: Pick<TrackerNode, "getTask"> = {
       getTask: async () => {
-        throw Object.assign(new Error("task not found"), { status: 404 });
+        throw new PodError("task_not_found", "task not found");
       },
     };
     const tracker = createTracker(() => node, fast);

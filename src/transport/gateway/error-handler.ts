@@ -1,7 +1,7 @@
 import type { FastifyError, FastifyInstance } from "fastify";
 
-import { PodError, POD_ERROR_STATUS } from "../../kernel/index.ts";
-import type { GatewayDeps } from "./index.ts";
+import { PodError, POD_ERROR_STATUS } from "../../kernel/errors.ts";
+import type { GatewayDeps } from "./gateway.ts";
 
 const BUSY_RETRY_AFTER_S = 30;
 

@@ -15,7 +15,7 @@ import {
   type OrcaNodeConfig,
 } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
-import { sha256Hex } from "../src/storage/blob-common.ts";
+import { bodySha256 } from "../src/security/crypto.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 
@@ -107,7 +107,7 @@ describe("orca-node CLI", () => {
     ]);
     expect(sent.code).toBe(0);
     expect(sent.stdout).toContain("uploaded payload.bin (16 bytes)");
-    const sha = sha256Hex(content);
+    const sha = bodySha256(content);
     expect(existsSync(join(root, "blobs", sha.slice(0, 2), sha))).toBe(true);
   });
 
@@ -296,7 +296,7 @@ describe("orca-node CLI", () => {
     const published = await runCli(["--data-root", root, "publish", filePath, "--json"]);
     expect(published.code, published.stderr).toBe(0);
     const body = JSON.parse(published.stdout) as { blob_id: string; size: number; url: string };
-    expect(body.blob_id).toBe(sha256Hex(content));
+    expect(body.blob_id).toBe(bodySha256(content));
     expect(body.size).toBe(content.length);
 
     const response = await fetch(body.url);

@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import type { PodEvent } from "../src/kernel/events.ts";
+import type { PodEvent } from "../src/protocol/events.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { TaskView } from "../src/protocol/task.ts";
 import { isTerminal } from "../src/protocol/task.ts";
@@ -24,6 +24,9 @@ import type { PodTaskRow } from "../src/plugin/admin.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
+
+const LEAF = fakeNodeId("orca-node-leaf");
 
 const logger = { info() {}, warn() {}, error() {} };
 
@@ -310,9 +313,9 @@ describe("UI data surface", () => {
                   request_id: "req-1",
                   task_id: "task-pending",
                   tool: "write_file",
-                  requested: "write a file",
-                  requested_by: "orca-node-leaf",
-                  via: ["orca-node-leaf"],
+                  requested: { tool_call_id: "call-1" },
+                  requested_by: LEAF,
+                  via: [LEAF],
                 },
               },
             },
@@ -342,7 +345,7 @@ describe("UI data surface", () => {
         task_id: suspended.id,
         tool: "write_file",
         agent_id: "agent-1",
-        from: shortenNodeId("orca-node-leaf"),
+        from: shortenNodeId(LEAF),
       },
     ]);
     expect(approvals[0]!.chain.map((entry) => entry.self)).toEqual([true, false]);

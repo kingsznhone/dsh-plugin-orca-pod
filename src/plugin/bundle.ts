@@ -15,11 +15,12 @@ import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
 import type { Config as PodConfig } from "./config.ts";
-import { defaultDataRoot } from "../node/index.ts";
-import type { AgentsService, HostContext, PermissionPresetsService, StandardSchemaV1, ToolAgent } from "./dsh.ts";
+import { defaultDataRoot } from "../node/config.ts";
+import type { HostContext, StandardSchemaV1, ToolAgent } from "./dsh.ts";
 import { createModelCatalogFeed } from "./catalog.ts";
 import { startPod, stopPod } from "./lifecycle.ts";
 import { createHostStores } from "./stores.ts";
+import { optionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
 import { createPodTools } from "./tools.ts";
 import { createTracker, restoreTrackedDispatches } from "./tracker.ts";
@@ -56,8 +57,6 @@ export function apply(ctx: HostContext, config: Config): void {
   const broker = createApprovalBroker(node);
   const tracker = createTracker(node, broker, ctx.logger);
 
-  let agents: AgentsService | undefined;
-
   /**
    * Resume tracking from the dispatch log (§8.3). Without `agent`, every session
    * the host already runs is considered (startup, or the agent registry
@@ -70,21 +69,14 @@ export function apply(ctx: HostContext, config: Config): void {
     restoreTrackedDispatches(
       tracker,
       orcaNode.listDispatches(),
-      (id) => (agent !== undefined ? agent : agents?.get(id)),
+      (id) => (agent !== undefined ? agent : agents.current()?.get(id)),
       ctx.logger,
       agent?.id,
     );
   };
 
-  ctx.inject(["agents"], (scope) => {
-    agents = scope.agents;
-    void handle.ready.then(() => restore());
-    scope.effect(
-      () => () => {
-        if (agents === scope.agents) agents = undefined;
-      },
-      "orca-pod.agents",
-    );
+  const agents = optionalService(ctx, "agents", "orca-pod.agents", (service) => {
+    if (service !== undefined) void handle.ready.then(() => restore());
   });
 
   // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
@@ -111,22 +103,12 @@ export function apply(ctx: HostContext, config: Config): void {
     "orca-pod.orca-node",
   );
 
-  let presets: PermissionPresetsService | undefined;
-  ctx.inject(["permissionPresets"], (scope) => {
-    presets = scope.permissionPresets;
-    scope.effect(
-      () => () => {
-        if (presets === scope.permissionPresets) presets = undefined;
-      },
-      "orca-pod.permission-presets",
-    );
-  });
+  const presets = optionalService(ctx, "permissionPresets", "orca-pod.permission-presets");
 
   // The tool is only visible once the workgroup credentials exist: before that
   // every call would fail with "not configured" and clutter the tool list.
-  const configured = (): boolean => Boolean(handle.config.workgroup_id) && Boolean(handle.config.workgroup_password);
-  for (const tool of createPodTools(handle, tracker, () => presets)) {
-    ctx.tools.register(tool, { when: configured });
+  for (const tool of createPodTools(handle, tracker, presets.current)) {
+    ctx.tools.register(tool, { when: () => handle.configured });
   }
   registerPodWeb(ctx, createPodAdmin(handle, tracker, broker));
 

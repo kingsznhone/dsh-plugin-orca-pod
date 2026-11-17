@@ -1,11 +1,25 @@
 /** A2A task surface (§4.7, §4.8, §5.1). */
 
-import type { PermissionRequest } from "./grant.ts";
-import type { ModelSelection, ReasoningEffort } from "./model.ts";
-import type { PermissionMode } from "./permission.ts";
-import type { BusyState, OrcaNodeId } from "./peer.ts";
+import { type PRNG, ulid } from "ulid";
+import { z } from "zod";
 
-export type TaskState = "submitted" | "working" | "input-required" | "completed" | "failed" | "canceled";
+import { PermissionRequestSchema, type PermissionRequest, type ResumeControl, type TaskRelay } from "./grant.ts";
+import { ModelSelectionSchema, ReasoningEffortSchema } from "./model.ts";
+import { PermissionModeSchema } from "./permission.ts";
+import { OrcaNodeIdSchema, type BusyState, type OrcaNodeId } from "./peer.ts";
+
+/**
+ * Task id: a ULID (48-bit millisecond timestamp + 80 random bits, Crockford base32).
+ * Time-ordered, 26 chars, unguessable enough to act as a capability handle (§5.5).
+ * The `ulid` package draws the random part from `crypto.getRandomValues`; `prng`
+ * exists only so tests can pin it.
+ */
+export function newTaskId(now: number = Date.now(), prng?: PRNG): string {
+  return ulid(now, prng);
+}
+
+export const TaskStateSchema = z.enum(["submitted", "working", "input-required", "completed", "failed", "canceled"]);
+export type TaskState = z.infer<typeof TaskStateSchema>;
 
 /** States in which a task can no longer change; the one definition every reader uses. */
 const TERMINAL_STATES: ReadonlySet<string> = new Set<TaskState>(["completed", "failed", "canceled"]);
@@ -14,7 +28,7 @@ export function isTerminal(state: string): boolean {
   return TERMINAL_STATES.has(state);
 }
 
-type MessagePart =
+export type MessagePart =
   | { kind: "text"; text: string }
   | { kind: "data"; data: Record<string, unknown> }
   | { kind: "file"; file: { name: string; mimeType?: string; bytes?: string } };
@@ -28,65 +42,111 @@ export type A2AMessage = {
   contextId?: string;
 };
 
-/** Suspended payload lives in `status.message`; it is task state, not a push (§4.7). */
-type TaskStatus = {
-  state: TaskState;
-  timestamp: string;
-  message?: A2AMessage;
-  reason?: string;
-};
+/**
+ * Only the outline of a message is checked on the wire: loose objects keep the
+ * fields the gateway does not look at. The task runner validates the parts, so
+ * its error says which part is wrong; the schema is typed as the message the
+ * runner then works with.
+ */
+export const A2AMessageSchema = z.looseObject({
+  parts: z.array(z.unknown()),
+  taskId: z.string().optional(),
+}) as unknown as z.ZodType<A2AMessage, A2AMessage>;
 
-type TaskArtifact = {
-  artifactId: string;
-  name: string;
-  mediaType?: string;
-  bytes: number;
-};
+/** A message of plain text from this node's side (task results and failure texts). */
+export function textMessage(text: string): A2AMessage {
+  return { role: "agent", parts: [{ kind: "text", text }] };
+}
 
-export type TaskView = {
-  kind: "task";
-  id: string;
-  contextId: string;
-  status: TaskStatus;
-  artifacts?: TaskArtifact[];
-  metadata?: Record<string, unknown>;
-};
+/** The text of a message: its text parts, joined. */
+export function messageText(message: A2AMessage): string {
+  return message.parts
+    .map((part) => (part.kind === "text" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
 
-export type PodTaskMetadata = {
-  hop?: number;
-  chain?: string[];
-  root?: string;
-  /** Origin of the whole delegation tree; propagated unchanged by child tasks (§7.11). */
-  root_origin?: string;
-  /** Origin session mode; the target never runs above it (§7.10). */
-  permission_mode?: PermissionMode;
-  /** Model route the target's ACP executor should select for this task (§6.15). */
-  model?: ModelSelection;
-  /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
-  reasoning_effort?: ReasoningEffort;
-  idempotency_key?: string;
-  task_ttl_s?: number;
-  grant_id?: string;
-  /** Blobs the target materializes under `inputs/<task_id>/` before the run (§6.7). */
-  inputs?: TaskInputRef[];
-};
+/** A control message answering a suspended task: one data part, addressed by task id. */
+export function controlMessage(taskId: string, control: ResumeControl, messageId: string): A2AMessage {
+  return { role: "user", parts: [{ kind: "data", data: { ...control } }], taskId, messageId };
+}
 
 /** A task input is a content-addressed blob the target saves under a plain file name (§6.7). */
-export type TaskInputRef = { blob_id: string; name: string };
+export const TaskInputRefSchema = z.object({
+  blob_id: z.string(),
+  name: z.string(),
+});
+export type TaskInputRef = z.infer<typeof TaskInputRefSchema>;
+
+const NOT_NEGATIVE_INT = "must be a non-negative integer";
+
+/**
+ * The `pod` block of a task's metadata (§5.1). Unknown keys are kept: another
+ * node may be newer. Task lifetime and input refs are narrowed further where
+ * the task is accepted (`tasks/meta.ts`).
+ */
+export const PodTaskMetadataSchema = z.looseObject({
+  hop: z.number(NOT_NEGATIVE_INT).int(NOT_NEGATIVE_INT).min(0, NOT_NEGATIVE_INT).optional(),
+  chain: z.array(OrcaNodeIdSchema, "must be an array of orca node ids").optional(),
+  root: z.string("must be a task id").optional(),
+  /** Origin of the whole delegation tree; propagated unchanged by child tasks (§7.11). */
+  root_origin: OrcaNodeIdSchema.optional(),
+  /** Origin session mode; the target never runs above it (§7.10). */
+  permission_mode: PermissionModeSchema.optional(),
+  /** Model route the target's ACP executor should select for this task (§6.15). */
+  model: ModelSelectionSchema.optional(),
+  /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
+  reasoning_effort: ReasoningEffortSchema.optional(),
+  idempotency_key: z.string().optional(),
+  task_ttl_s: z.number("must be a positive number").finite().positive("must be a positive number").optional(),
+  grant_id: z.string().optional(),
+  /** Blobs the target materializes under `inputs/<task_id>/` before the run (§6.7). */
+  inputs: z.array(TaskInputRefSchema).optional(),
+});
+export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;
+
+/** Task metadata on the wire: the `pod` block, an echo script, and whatever else a caller attaches. */
+export type TaskMetadata = { pod?: PodTaskMetadata; echo?: unknown } & Record<string, unknown>;
+export const TaskMetadataSchema = z.record(z.string(), z.unknown()) as unknown as z.ZodType<TaskMetadata, TaskMetadata>;
+
+const TaskStatusSchema = z.object({
+  state: TaskStateSchema,
+  timestamp: z.string(),
+  /** Suspended payload lives in `status.message`; it is task state, not a push (§4.7). */
+  message: A2AMessageSchema.optional(),
+  reason: z.string().optional(),
+});
+
+const TaskArtifactSchema = z.object({
+  artifactId: z.string(),
+  name: z.string(),
+  mediaType: z.string().optional(),
+  bytes: z.number(),
+});
+
+export const TaskViewSchema = z.object({
+  kind: z.literal("task"),
+  id: z.string(),
+  contextId: z.string(),
+  status: TaskStatusSchema,
+  artifacts: z.array(TaskArtifactSchema).optional(),
+  metadata: TaskMetadataSchema.optional(),
+});
+export type TaskView = z.infer<typeof TaskViewSchema>;
 
 /** Read the permission request a suspended task carries, if any (§7.11). */
 export function permissionRequestOf(view: TaskView): PermissionRequest | null {
   for (const part of view.status.message?.parts ?? []) {
     if (part.kind !== "data") continue;
-    const request = (part.data as { permission_request?: unknown }).permission_request;
-    if (typeof request === "object" && request !== null) return request as PermissionRequest;
+    const request = PermissionRequestSchema.safeParse(part.data.permission_request);
+    if (request.success) return request.data;
   }
   return null;
 }
 
 export type SubmitTaskInput = {
   message: A2AMessage;
-  metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
+  metadata?: TaskMetadata;
 };
 
 /** Implemented by `tasks/runner.ts` (wired with an executor in `node/`), consumed by the gateway. */
@@ -101,7 +161,7 @@ export interface TaskRunner {
    * `input-required` with an upstream request; an approval derives a child
    * grant from the parent grant and resumes the child.
    */
-  escalate(taskId: string, relay: unknown, callerOrcaNode?: OrcaNodeId): TaskView;
+  escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: OrcaNodeId): TaskView;
   cancel(taskId: string): TaskView;
   /** Origin of a known task, used by the gateway to authorize cancellation (§5.3). */
   originOf(taskId: string): OrcaNodeId | null;

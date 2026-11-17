@@ -6,15 +6,15 @@
  */
 
 /** DSH host bundle entry points (consumed by `cordis.patch.yml`). */
-export { Config, apply, inject } from "./plugin/index.ts";
-export type { Config as PodConfig } from "./plugin/index.ts";
+export { Config, apply, inject } from "./plugin/bundle.ts";
+export type { Config as PodConfig } from "./plugin/bundle.ts";
 
 /** Embeddable node API. */
-export { createOrcaNodeConfig } from "./node/index.ts";
-export type { OrcaNodeConfig } from "./node/index.ts";
-export { PodError } from "./kernel/index.ts";
-export type { PodErrorCode } from "./kernel/index.ts";
-export { createOrcaNode, createPersistentStorage } from "./node/index.ts";
+export { createOrcaNodeConfig } from "./node/config.ts";
+export type { OrcaNodeConfig } from "./node/config.ts";
+export { PodError } from "./kernel/errors.ts";
+export type { PodErrorCode } from "./kernel/errors.ts";
+export { createOrcaNode, createPersistentStorage } from "./node/orca-node.ts";
 export type {
   ApprovalOptions,
   CreateNodeOptions,
@@ -22,6 +22,6 @@ export type {
   NodeLogger,
   OrcaNode,
   OrcaNodeStorage,
-} from "./node/index.ts";
-export { ConfigValidationError, parseSettings, safeParseSettings } from "./node/index.ts";
-export type { Settings, SettingsIssue } from "./node/index.ts";
+} from "./node/orca-node.ts";
+export { ConfigValidationError, parseSettings, safeParseSettings } from "./node/settings.ts";
+export type { Settings, SettingsIssue } from "./node/settings.ts";

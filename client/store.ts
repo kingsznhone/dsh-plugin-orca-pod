@@ -2,7 +2,7 @@
 
 import React from "react";
 import { POLL_MS } from "./constants.ts";
-import type { LocaleService, PodState } from "./types.ts";
+import type { LocaleService, PodActions, PodState } from "./types.ts";
 
 /** What every slot component reads. */
 export interface Snapshot {
@@ -65,7 +65,7 @@ export function createStore() {
     }
   }
   /** POST one action and refresh; resolves false (error kept in `actionError`) when the host refused. */
-  async function act(path: string, body?: unknown): Promise<boolean> {
+  async function act<K extends keyof PodActions>(path: K, body: PodActions[K]): Promise<boolean> {
     set({ busy: true, actionError: null });
     try {
       await api(path, body);

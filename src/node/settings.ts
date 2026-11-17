@@ -8,45 +8,26 @@
 import { z } from "zod";
 
 import { normalizePeerUrl } from "../transport/net.ts";
+import { DEFAULT_PORT } from "../protocol/constants.ts";
 import {
-  DEFAULT_PORT,
   ModelOffersSchema,
   ModelSelectionSchema,
-  PermissionModeSchema,
   ReasoningEffortSchema,
-  WorkgroupIdSchema,
-  normalizeEndpoints,
   type ModelOffer,
   type ModelSelection,
-  type PermissionMode,
-} from "../protocol/index.ts";
-import { errorMessage, isRecord, parseSchema } from "../kernel/index.ts";
+} from "../protocol/model.ts";
+import { PermissionModeSchema, type PermissionMode } from "../protocol/permission.ts";
+import { WorkgroupIdSchema, normalizeEndpoints } from "../protocol/peer.ts";
+import { errorMessage } from "../kernel/errors.ts";
+import { isRecord, parseSchema } from "../kernel/schema.ts";
+import { AcpExecutorConfigSchema, type AcpExecutorConfig } from "../execution/acp/config.ts";
 
 const NonEmpty = z.string().min(1);
 const PositiveNumber = z.number().positive();
 const PositiveInteger = z.number().int().min(1);
 
 const ExecutorKindSchema = z.enum(["echo", "acp"]);
-type ExecutorKind = z.infer<typeof ExecutorKindSchema>;
-
-/** One MCP server handed to the ACP session at session/new (§6.15). */
-const AcpMcpServerSchema = z.object({
-  name: NonEmpty,
-  command: NonEmpty,
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-});
-export type AcpMcpServer = z.infer<typeof AcpMcpServerSchema>;
-
-/** ACP executor options: the `dsh --profile acp` stdio server (§6.15). */
-const AcpExecutorConfigSchema = z.object({
-  command: NonEmpty.optional(),
-  profile: NonEmpty.optional(),
-  extra_args: z.array(z.string()).optional(),
-  /** MCP servers passed to session/new — how an ACP agent gets extra tools. */
-  mcp_servers: z.array(AcpMcpServerSchema).optional(),
-});
-export type AcpExecutorConfig = z.infer<typeof AcpExecutorConfigSchema>;
+export type ExecutorKind = z.infer<typeof ExecutorKindSchema>;
 
 /** Everything a node can be configured with, after parsing (defaults applied). */
 export interface Settings {
@@ -131,8 +112,11 @@ type Field<T> = {
   local?: true;
 };
 
-function field<T>(schema: z.ZodType<T>, meta: Omit<Field<T>, "schema"> = {}): Field<T> {
-  return { schema, ...meta };
+function field<T, const M extends Omit<Field<T>, "schema"> = Record<never, never>>(
+  schema: z.ZodType<T>,
+  meta?: M,
+): Field<T> & M {
+  return { schema, ...meta } as Field<T> & M;
 }
 
 /** Advertised endpoints; empty is allowed, they are then derived from the listen address (§3.2). */
@@ -176,7 +160,7 @@ export function passwordRefFor(
 }
 
 /** The field table: the single place a setting's type, default and editability live. */
-const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> } = {
+const FIELDS = {
   workgroup_id: field(WorkgroupIdSchema, { panel: true }),
   workgroup_password: field(z.string(), { default: "", panel: true, local: true }),
   workgroup_password_ref: field(CredentialRefSchema, { local: true }),
@@ -204,10 +188,29 @@ const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> 
   models: field(ModelOffersSchema),
   default_model: field(ModelSelectionSchema),
   default_reasoning_effort: field(ReasoningEffortSchema, { panel: true }),
-};
+} satisfies { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> };
 
 const FIELD_MAP: Record<string, Field<unknown>> = FIELDS;
 const FIELD_LIST = Object.entries(FIELD_MAP);
+
+/** The settings the panel may edit: the fields marked `panel` in the table. */
+type PanelKey = {
+  [K in keyof typeof FIELDS]: (typeof FIELDS)[K] extends { panel: true } ? K : never;
+}[keyof typeof FIELDS];
+
+/** A panel edit: a value sets the setting, `null` clears it back to its default. */
+export type PanelPatch = { [K in PanelKey]?: Settings[K] | null };
+
+/**
+ * Checks a panel edit field by field against the same schemas `parseSettings`
+ * uses; keys the panel may not edit are dropped. The merged result is checked
+ * again as a whole by `parseSettings`, where fields can depend on each other.
+ */
+export const PanelPatchSchema = z.object(
+  Object.fromEntries(
+    FIELD_LIST.filter(([, meta]) => meta.panel === true).map(([key, meta]) => [key, meta.schema.nullable().optional()]),
+  ),
+) as unknown as z.ZodType<PanelPatch>;
 
 export interface SettingsIssue {
   path: string[];
@@ -253,11 +256,6 @@ export function parseSettings(input: unknown): Settings {
   const result = safeParseSettings(input);
   if ("issues" in result) throw new ConfigValidationError(result.issues);
   return result.value;
-}
-
-/** Keep only the keys the panel may edit (`null` values kept: they clear a field). */
-export function pickPanelFields(input: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(input).filter(([key]) => FIELD_MAP[key]?.panel === true));
 }
 
 /** Drop the plugin-only settings, leaving what `config.json` holds. */

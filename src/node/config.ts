@@ -2,15 +2,19 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveWorkgroupKey, loadOrCreateIdentity, shortenNodeId } from "../security/index.ts";
-import { isOrcaNodeId } from "../protocol/index.ts";
+import { z } from "zod";
+
+import { deriveWorkgroupKey } from "../security/crypto.ts";
+import { loadOrCreateIdentity, shortenNodeId } from "../security/identity.ts";
+import { describeIssue, parseSchema } from "../kernel/schema.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId } from "../protocol/peer.ts";
 import { nodeSettings, parseSettings, type NodeSettings, type Settings } from "./settings.ts";
 
 /** What `config.json` holds: the node settings plus the identity and the derived workgroup key. */
 export type OrcaNodeConfig = NodeSettings & {
-  orca_node_id: string;
+  orca_node_id: OrcaNodeId;
   display_name: string;
-  workgroup_id: string;
+  workgroup_id: WorkgroupId;
   data_root: string;
   key_base64: string;
 };
@@ -42,16 +46,18 @@ function nonEmpty(value: string | undefined): string | undefined {
 /** The profile directory behind a loader `baseUrl`, when it names one. */
 function profileDirFrom(baseUrl?: string): string | undefined {
   if (baseUrl === undefined || baseUrl.length === 0) return undefined;
-  let path = baseUrl;
-  if (baseUrl.startsWith("file:")) {
-    try {
-      path = fileURLToPath(baseUrl);
-    } catch {
-      return undefined;
-    }
-  }
-  if (!isAbsolute(path)) return undefined;
+  const path = baseUrl.startsWith("file:") ? filePathOf(baseUrl) : baseUrl;
+  if (path === undefined || !isAbsolute(path)) return undefined;
   return /[\\/]profiles[\\/][^\\/]+$/.test(path) ? path : undefined;
+}
+
+/** The path a `file:` URL names, or undefined when it is not a valid one. */
+function filePathOf(url: string): string | undefined {
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return undefined;
+  }
 }
 
 export function configPath(dataRoot: string): string {
@@ -98,16 +104,19 @@ export async function loadConfig(path: string): Promise<OrcaNodeConfig> {
   return validateConfig(JSON.parse(await readFile(path, "utf8")));
 }
 
+/** The two fields only a persisted config has besides the settings: who the node is and its workgroup key. */
+const PersistedIdentitySchema = z.object({ orca_node_id: OrcaNodeIdSchema, key_base64: z.string() });
+
 /** Read a persisted config: the same field parser as every other source, plus the identity and key. */
 export function validateConfig(value: unknown): OrcaNodeConfig {
   const settings = parseSettings(value);
-  const { orca_node_id, key_base64 } = value as Record<string, unknown>;
-  if (!isOrcaNodeId(orca_node_id)) throw new Error("config.orca_node_id must be an Ed25519 public key");
-  if (typeof key_base64 !== "string") throw new Error("config.key_base64 must be a string");
-  for (const key of ["workgroup_id", "display_name", "data_root"] as const) {
-    if (settings[key] === undefined) throw new Error(`config.${key} is required`);
-  }
-  return { ...nodeSettings(settings), orca_node_id, key_base64 } as OrcaNodeConfig;
+  const identity = parseSchema(PersistedIdentitySchema, value);
+  if (!identity.ok) throw new Error(`config.${describeIssue(identity.issue)}`);
+  const { workgroup_id, display_name, data_root } = settings;
+  if (workgroup_id === undefined) throw new Error("config.workgroup_id is required");
+  if (display_name === undefined) throw new Error("config.display_name is required");
+  if (data_root === undefined) throw new Error("config.data_root is required");
+  return { ...nodeSettings(settings), workgroup_id, display_name, data_root, ...identity.value };
 }
 
 /** Write atomically; the file holds the workgroup key, so it is owner-only from the start. */

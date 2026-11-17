@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Readable } from "node:stream";
 
 import { PART_GRACE_MS, createFsBlobStore } from "../src/storage/fs.ts";
-import { sha256Hex } from "../src/storage/blob-common.ts";
+import { bodySha256 } from "../src/security/crypto.ts";
 
 const dirs: string[] = [];
 
@@ -27,7 +27,7 @@ describe("fs blob store", () => {
     const bytes = Buffer.from("hello blob\n");
     const blob = store.put(bytes, { name: "hello.txt", media_type: "text/plain" });
 
-    expect(blob.blob_id).toBe(sha256Hex(bytes));
+    expect(blob.blob_id).toBe(bodySha256(bytes));
     expect(blob.size).toBe(bytes.length);
     expect(store.has(blob.blob_id)).toBe(true);
     expect(store.get(blob.blob_id)?.bytes.equals(bytes)).toBe(true);
@@ -118,13 +118,13 @@ describe("fs blob store", () => {
     const store = createFsBlobStore(root);
     const payload = Buffer.from("actual bytes");
     await expect(
-      store.putStream(Readable.from([payload]), { sha256: sha256Hex(Buffer.from("declared bytes")) }),
+      store.putStream(Readable.from([payload]), { sha256: bodySha256(Buffer.from("declared bytes")) }),
     ).rejects.toMatchObject({ code: "blob_digest_mismatch" });
-    expect(store.has(sha256Hex(payload))).toBe(false);
+    expect(store.has(bodySha256(payload))).toBe(false);
     expect(readdirSync(root)).toEqual([]);
     // The matching digest is accepted as usual.
-    const stored = await store.putStream(Readable.from([payload]), { sha256: sha256Hex(payload) });
-    expect(stored.blob_id).toBe(sha256Hex(payload));
+    const stored = await store.putStream(Readable.from([payload]), { sha256: bodySha256(payload) });
+    expect(stored.blob_id).toBe(bodySha256(payload));
   });
 
   it("extends the expiry when the same bytes are uploaded again", async () => {
@@ -150,7 +150,7 @@ describe("fs blob store", () => {
     const root = tempDir();
     const store = createFsBlobStore(root, { now: () => now });
     const bytes = Buffer.from("crashed before the sidecar");
-    const blobId = sha256Hex(bytes);
+    const blobId = bodySha256(bytes);
     const dataPath = join(root, blobId.slice(0, 2), blobId);
     mkdirSync(join(root, blobId.slice(0, 2)), { recursive: true });
     writeFileSync(dataPath, bytes);

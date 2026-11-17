@@ -19,7 +19,7 @@ import type { HostLogger } from "../src/plugin/dsh.ts";
 import { startPod, stopPod } from "../src/plugin/lifecycle.ts";
 import { createMemoryStores, peerStatePath } from "../src/plugin/stores.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import { parseSettings } from "../src/node/settings.ts";
+import { PanelPatchSchema, parseSettings } from "../src/node/settings.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
 
@@ -150,15 +150,14 @@ describe("panel configuration lifecycle", () => {
     }
   });
 
-  it("ignores non-panel keys, rejects mistyped values and lets null clear a configured value", async () => {
+  it("applies a parsed panel patch and lets null clear a configured value", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started({ ...bundle(root), task_timeout_s: 90 });
     try {
-      await handle.reconfigure({ data_root: "/elsewhere", display_name: "kept" });
+      // The panel route parses the body first: keys the panel may not edit never reach the handle.
+      await handle.reconfigure(PanelPatchSchema.parse({ data_root: "/elsewhere", display_name: "kept" }));
       expect(handle.config.data_root).toBe(root);
       expect(handle.config.task_timeout_s).toBe(90);
-
-      await expect(handle.reconfigure({ port: "11812" })).rejects.toThrow(/port/);
       expect(handle.config.display_name).toBe("kept");
 
       await handle.reconfigure({ task_timeout_s: null });

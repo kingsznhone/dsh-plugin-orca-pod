@@ -4,17 +4,51 @@
  * binding when the child still knows it.
  */
 
+import { randomUUID } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { RequestError, type McpServer } from "@agentclientprotocol/sdk";
+import { z } from "zod";
 
 import type { ExecuteInput } from "../executor.ts";
-import type { NodeLogger } from "../../membership/index.ts";
-import { readSessions, writeSessions } from "./session-store.ts";
-import { errorMessage } from "../../kernel/index.ts";
-import type { AcpMcpServer } from "../../node/index.ts";
+import { describeIssue, parseSchema } from "../../kernel/schema.ts";
+import { errorMessage } from "../../kernel/errors.ts";
+import type { NodeLogger } from "../../kernel/events.ts";
+import type { AcpMcpServer } from "./config.ts";
 import { AcpConnection, HANDSHAKE_TIMEOUT_MS, spawnAcpChild, type AcpSpawnSpec } from "./connection.ts";
 
 /** JSON-RPC code ACP agents use for a session they do not know. */
 const RESOURCE_NOT_FOUND = -32002;
+
+/**
+ * Executor session bindings persisted under `<data_root>/state/<workgroup>/sessions.json`
+ * (the task's `podDir`): session key → ACP session id.
+ */
+const SessionBindingsSchema = z.record(z.string(), z.string());
+type SessionBindings = z.infer<typeof SessionBindingsSchema>;
+
+/** Missing file means no bindings yet; a corrupt one throws instead of being overwritten by the next write. */
+async function readSessions(podDir: string): Promise<SessionBindings> {
+  const path = join(podDir, "sessions.json");
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const parsed = parseSchema(SessionBindingsSchema, JSON.parse(text));
+  if (!parsed.ok) throw new Error(`${path} is not a map of session ids: ${describeIssue(parsed.issue)}`);
+  return parsed.value;
+}
+
+async function writeSessions(podDir: string, sessions: SessionBindings): Promise<void> {
+  const path = join(podDir, "sessions.json");
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(sessions, null, 2)}\n`, "utf8");
+  await rename(tmp, path);
+}
 
 type AcpSessionsOptions = {
   spawn: Omit<AcpSpawnSpec, "cwd">;

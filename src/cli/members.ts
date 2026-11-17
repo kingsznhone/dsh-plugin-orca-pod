@@ -2,8 +2,8 @@
 
 import process from "node:process";
 
-import type { MembersResponse } from "../protocol/index.ts";
-import { normalizePeerUrl } from "../transport/index.ts";
+import { MembersResponseSchema } from "../protocol/peer.ts";
+import { normalizePeerUrl } from "../transport/net.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,
@@ -18,7 +18,8 @@ export const options: readonly OptionName[] = [...COMMON_OPTIONS, "peer", "json"
 export async function run({ flags }: CommandArgs): Promise<number> {
   const config = await loadNodeConfig(flags);
   const peer = flags.peer === undefined ? localEndpoint(config) : normalizePeerUrl(flags.peer);
-  const response = await (await peerClient(config, peer)).call<MembersResponse>(peer, "GET", "/cluster/members");
+  const client = await peerClient(config, peer);
+  const response = await client.call(peer, { method: "GET", path: "/cluster/members", reply: MembersResponseSchema });
   if (flags.json === true) {
     process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
     return 0;

@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 
-import type { BlobStore, TaskStore } from "../storage/index.ts";
-import { errorMessage, PodError, newTaskId } from "../kernel/index.ts";
-import type { LocalExecutor } from "../execution/index.ts";
-import { createGrantLedger, parseTaskRelay } from "../security/index.ts";
-import type { NodeLogger } from "../membership/index.ts";
+import type { BlobStore, TaskStore } from "../storage/stores.ts";
+import { errorMessage, PodError } from "../kernel/errors.ts";
+import type { NodeLogger } from "../kernel/events.ts";
+import type { LocalExecutor } from "../execution/executor.ts";
+import { createGrantLedger } from "../security/grants.ts";
 import {
+  controlMessage,
   isTerminal,
+  messageText,
+  newTaskId,
   type A2AMessage,
-  type BusyState,
-  type PermissionMode,
   type TaskRunner,
   type TaskView,
-} from "../protocol/index.ts";
-import { messageText, TaskRecord, type RecordHost } from "./record.ts";
+} from "../protocol/task.ts";
+import type { BusyState } from "../protocol/peer.ts";
+import type { PermissionMode } from "../protocol/permission.ts";
+import type { TaskRelay } from "../protocol/grant.ts";
+import { TaskRecord, type RecordHost } from "./record.ts";
 import { checkInputs, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_INPUT_FILES } from "./inputs.ts";
 import { parsePodMetadata } from "./meta.ts";
 import { measureWorkspace, type Workspace, type WorkspaceUsage } from "./workspace.ts";
@@ -86,13 +90,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     ledger: createGrantLedger(),
     permissionMode: deps.permissionMode,
     permissionTtlS: deps.permissionTtlS,
-    sendControl: (child, data) =>
-      deps.sendTaskMessage(child.peer, {
-        role: "user",
-        parts: [{ kind: "data", data }],
-        taskId: child.task_id,
-        messageId: randomUUID(),
-      }),
+    sendControl: (child, control) =>
+      deps.sendTaskMessage(child.peer, controlMessage(child.task_id, control, randomUUID())),
     claim: (taskId) => {
       slot = taskId;
     },
@@ -186,13 +185,13 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return record.snapshot();
   }
 
-  function escalate(taskId: string, relay: unknown, callerOrcaNode?: string): TaskView {
+  function escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: string): TaskView {
     if (callerOrcaNode !== undefined && callerOrcaNode !== deps.selfOrcaNodeId) {
       throw new PodError("bad_request", "escalate is a local control invoked by this orca node");
     }
     const record = live.get(taskId);
     if (record === undefined) throw new PodError("task_not_found", `unknown task ${taskId}`);
-    record.escalate(parseTaskRelay(relay));
+    record.escalate(relay);
     return record.snapshot();
   }
 

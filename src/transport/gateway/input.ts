@@ -1,6 +1,7 @@
 import type { z } from "zod";
 
-import { PodError, describeIssue, parseSchema } from "../../kernel/index.ts";
+import { PodError } from "../../kernel/errors.ts";
+import { describeIssue, parseSchema } from "../../kernel/schema.ts";
 
 /**
  * Validate one part of a request inside its handler. Routes register no

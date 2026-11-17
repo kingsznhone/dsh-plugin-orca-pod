@@ -22,18 +22,17 @@ orca-pod/
 ├── skills/orca-node/     # 标准 skill bundle（随包发布）
 ├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按限界上下文分目录，依赖只能向下
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
-│   ├── kernel/           # errors（PodError + 错误码表）、ids（任务 id）、guards、events（事件总线）、entry（包内入口路径）
-│   ├── protocol/         # 线上协议：peer / task / grant / model / permission / constants
+│   ├── kernel/           # errors（PodError + 错误码表）、schema（isRecord、parseSchema）、events（事件总线与 NodeLogger）、entry（包内入口路径）
+│   ├── protocol/         # 线上协议（zod schema）：peer / cluster / a2a / task / grant / model / permission / client（PeerClient 契约）/ dispatch / events / constants
 │   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce、直链）、grants（grant 校验与转发）
 │   ├── storage/          # index（全部存储接口）；实现 memory / fs（blob，含配额与 GC）/ file-registry（publish）/ sqlite
 │   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
-│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、inputs（任务书与输入）、workspace
-│   ├── execution/        # executor 契约、echo、process（子进程公共件）、acp/（connection / session / session-store / permissions / executor）
-│   ├── delegation/       # 发起侧派发、审批、上交、child-link；chain（子任务元数据）；dispatch-log（派发日志语义）
+│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、inputs（任务书与输入）、workspace、delegation（发起侧派发、审批、上交、child-link；childPodMetadata；派发日志语义）
+│   ├── execution/        # executor 契约、echo、process（子进程公共件）、acp/（config / connection / session / permissions / executor）
 │   ├── transport/        # peer-client（唯一的出站客户端）、net（地址归一化、回环、端口）、gateway/（入站 HTTP 路由）
 │   ├── node/             # orca-node（组合根 createOrcaNode）、config（config.json）、settings（字段表）、harness（测试用多节点）
 │   ├── cli/              # main（orca-node 分派）+ 每个子命令一个文件、shared；orca-pod（install bin）、install
-│   └── plugin/           # DSH bundle：index / lifecycle / stores / catalog / broker / tracker / tools / admin / web / skill / config / dsh
+│   └── plugin/           # DSH bundle：bundle / lifecycle / stores / catalog / services / broker / tracker / tools / admin / web / panel-api / skill / config / dsh
 └── test/                 # vitest 套件
 ```
 
@@ -147,5 +146,5 @@ npm run harness     # 两个真实 orca-node 进程的 smoke
 维护注意：
 
 - 包导出编译产物（`"exports"` 指向 `./lib/index.js` 与 `./lib/index.d.ts`），并导出 `./locale/*.json` 与 `./icon`；TypeScript 源码只用于开发与类型检查，`src/` 里的 .ts 导入由 `rewriteRelativeImportExtensions` 在构建时改写。
-- `src/` 的依赖方向由 `test/architecture.test.ts` 固化：运行期 import 无环、只能向下、跨上下文只经对方 `index.ts`，存储实现只由装配点（`node/`、`plugin/`、`cli/`）引用（[§9.1](docs/09-implementation.md#91-单包内的模块划分)）。
+- `src/` 的依赖方向由 `test/architecture.test.ts` 固化：运行期 import 无环、只能向下，存储实现只由装配点（`node/`、`plugin/`、`cli/`）引用（[§9.1](docs/09-implementation.md#91-单包内的模块划分)）。
 - 抖动/超时类测试的窗口按心跳间隔的倍数给，不按绝对毫秒。

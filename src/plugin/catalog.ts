@@ -13,12 +13,14 @@
  * passes whatever appeared.
  */
 
-import { isRecord, errorMessage } from "../kernel/index.ts";
-import type { ModelOffer, ModelSelection } from "../protocol/index.ts";
-import { MAX_MODEL_OFFERS } from "../protocol/index.ts";
-import type { OrcaNode } from "../node/index.ts";
+import { isRecord } from "../kernel/schema.ts";
+import { errorMessage } from "../kernel/errors.ts";
+import type { ModelOffer, ModelSelection } from "../protocol/model.ts";
+import { MAX_MODEL_OFFERS, parseModelSelection } from "../protocol/model.ts";
+import type { OrcaNode } from "../node/orca-node.ts";
 import type { AgentDefaultModelService, HostContext, HostLogger, LlmCatalogService } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
+import { optionalService } from "./services.ts";
 
 /** The host services the catalog reads; either may be absent. */
 export interface CatalogServices {
@@ -35,12 +37,70 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+/** The host reports its default route in either casing; blank parts count as absent. */
 function selectionOf(raw: unknown): ModelSelection | null {
   if (!isRecord(raw)) return null;
-  const provider = nonEmpty(raw.provider);
-  const model = nonEmpty(raw.model);
-  if (provider === undefined || model === undefined) return null;
-  return { provider, model, reasoning_effort: nonEmpty(raw.reasoning_effort ?? raw.reasoningEffort) };
+  return parseModelSelection({
+    provider: nonEmpty(raw.provider),
+    model: nonEmpty(raw.model),
+    reasoning_effort: nonEmpty(raw.reasoning_effort ?? raw.reasoningEffort),
+  });
+}
+
+type LlmProvider = Awaited<ReturnType<LlmCatalogService["listProviders"]>>[number];
+type LlmModel = Awaited<ReturnType<LlmCatalogService["listModels"]>>[number];
+
+async function listProviders(llm: LlmCatalogService, logger: HostLogger): Promise<LlmProvider[]> {
+  try {
+    return await Promise.resolve(llm.listProviders());
+  } catch (error) {
+    logger.warn(`orca-pod: could not list llm providers: ${errorMessage(error)}`);
+    return [];
+  }
+}
+
+async function listModels(llm: LlmCatalogService, provider: string, logger: HostLogger): Promise<LlmModel[]> {
+  try {
+    return await llm.listModels(provider);
+  } catch (error) {
+    logger.warn(`orca-pod: could not list models for ${provider}: ${errorMessage(error)}`);
+    return [];
+  }
+}
+
+/** Every provider/model route the host's `llm` service offers, deduplicated and capped. */
+async function discoverOffers(llm: LlmCatalogService, logger: HostLogger): Promise<ModelOffer[]> {
+  const models: ModelOffer[] = [];
+  const seen = new Set<string>();
+  for (const entry of await listProviders(llm, logger)) {
+    if (models.length >= MAX_MODEL_OFFERS) break;
+    const provider = nonEmpty(entry.id);
+    if (provider === undefined) continue;
+    for (const entryModel of await listModels(llm, provider, logger)) {
+      if (models.length >= MAX_MODEL_OFFERS) break;
+      const model = nonEmpty(entryModel.id);
+      if (model === undefined || seen.has(`${provider}/${model}`)) continue;
+      seen.add(`${provider}/${model}`);
+      models.push({
+        provider,
+        model,
+        name: nonEmpty(entryModel.name),
+        description: nonEmpty(entryModel.description),
+      });
+    }
+  }
+  return models;
+}
+
+/** What a fresh session starts with, when the host says. */
+function defaultSelection(service: AgentDefaultModelService | undefined, logger: HostLogger): ModelSelection | null {
+  try {
+    const raw = service?.currentSelection();
+    return raw === undefined ? null : selectionOf(raw);
+  } catch (error) {
+    logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);
+    return null;
+  }
 }
 
 /**
@@ -48,54 +108,8 @@ function selectionOf(raw: unknown): ModelSelection | null {
  * adapter must not hide the models that other providers report.
  */
 export async function discoverModelCatalog(services: CatalogServices, logger: HostLogger): Promise<ModelCatalog> {
-  const models: ModelOffer[] = [];
-  const seen = new Set<string>();
-
-  const llm = services.llm;
-  if (llm !== undefined) {
-    let providers: Awaited<ReturnType<LlmCatalogService["listProviders"]>> = [];
-    try {
-      providers = await Promise.resolve(llm.listProviders());
-    } catch (error) {
-      logger.warn(`orca-pod: could not list llm providers: ${errorMessage(error)}`);
-    }
-    for (const entry of providers) {
-      const provider = nonEmpty(entry.id);
-      if (provider === undefined) continue;
-      let available: Awaited<ReturnType<LlmCatalogService["listModels"]>> = [];
-      try {
-        available = await llm.listModels(provider);
-      } catch (error) {
-        logger.warn(`orca-pod: could not list models for ${provider}: ${errorMessage(error)}`);
-        continue;
-      }
-      for (const entryModel of available) {
-        const model = nonEmpty(entryModel.id);
-        if (model === undefined) continue;
-        const key = `${provider}/${model}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        models.push({
-          provider,
-          model,
-          name: nonEmpty(entryModel.name),
-          description: nonEmpty(entryModel.description),
-        });
-        if (models.length >= MAX_MODEL_OFFERS) break;
-      }
-      if (models.length >= MAX_MODEL_OFFERS) break;
-    }
-  }
-
-  let defaultModel: ModelSelection | null = null;
-  try {
-    const raw = services.agentDefaultModel?.currentSelection();
-    if (raw !== undefined) defaultModel = selectionOf(raw);
-  } catch (error) {
-    logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);
-  }
-
-  return { models, defaultModel };
+  const models = services.llm === undefined ? [] : await discoverOffers(services.llm, logger);
+  return { models, defaultModel: defaultSelection(services.agentDefaultModel, logger) };
 }
 
 /** Feeds the host's model catalog to whichever node the pod runs. */
@@ -136,31 +150,16 @@ export function createModelCatalogFeed(ctx: Pick<HostContext, "inject" | "logger
     advertise,
     watch(handle) {
       pod = handle;
-      // The two catalog services are optional and independent: fence on each one
-      // separately, so a host that offers only one still advertises what it has.
-      // A scope's cleanup runs when its service goes away, and the catalog is
-      // rebuilt without it.
-      ctx.inject(["llm"], (scope) => {
-        services = { ...services, llm: scope.llm };
+      // The two catalog services are optional and independent: follow each one
+      // separately, so a host that offers only one still advertises what it has;
+      // the catalog is rebuilt when either appears, is replaced or goes away.
+      optionalService(ctx, "llm", "orca-pod.catalog-llm", (llm) => {
+        services = { ...services, llm };
         void refresh();
-        scope.effect(
-          () => () => {
-            services = { ...services, llm: undefined };
-            void refresh();
-          },
-          "orca-pod.catalog-llm",
-        );
       });
-      ctx.inject(["agentDefaultModel"], (scope) => {
-        services = { ...services, agentDefaultModel: scope.agentDefaultModel };
+      optionalService(ctx, "agentDefaultModel", "orca-pod.catalog-default-model", (agentDefaultModel) => {
+        services = { ...services, agentDefaultModel };
         void refresh();
-        scope.effect(
-          () => () => {
-            services = { ...services, agentDefaultModel: undefined };
-            void refresh();
-          },
-          "orca-pod.catalog-default-model",
-        );
       });
       void handle.ready.then(refresh);
     },

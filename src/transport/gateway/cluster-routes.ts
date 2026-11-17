@@ -1,12 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import type { AckSchema } from "../../protocol/a2a.ts";
 import {
-  BusyStateSchema,
-  ModelOffersSchema,
-  ModelSelectionSchema,
-  ReasoningEffortSchema,
-  RuntimeInfoSchema,
+  HeartbeatRequestSchema,
+  JoinRequestSchema,
+  type Admission,
+  type AdmissionKind,
+  type SelfDescription,
+} from "../../protocol/cluster.ts";
+import {
   membersDigest,
   normalizeEndpoints,
   runtimeDigest,
@@ -15,53 +18,15 @@ import {
   type MembersResponse,
   type PeerView,
   type SelfRecord,
-} from "../../protocol/index.ts";
-import { DEFAULT_CLOCK_SKEW_MS, verifyAdmissionProof, type AdmissionKind } from "../../security/index.ts";
-import { PodError } from "../../kernel/index.ts";
-import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../../membership/index.ts";
+} from "../../protocol/peer.ts";
+import { DEFAULT_CLOCK_SKEW_MS, verifyAdmission } from "../../security/crypto.ts";
+import { PodError } from "../../kernel/errors.ts";
+import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../../membership/screening.ts";
 import { isDirectLoopbackRequest } from "../net.ts";
-import type { GatewayDeps } from "./index.ts";
+import type { GatewayDeps } from "./gateway.ts";
 import { parseInput } from "./input.ts";
 
 const NonEmpty = z.string().min(1);
-
-/** Fields every admission (join, heartbeat) carries (§7.1). */
-const admission = {
-  workgroup_id: z.string(),
-  orca_node_id: z.string(),
-  ts: z.number().int(),
-  nonce: z.string(),
-  proof: z.string(),
-};
-
-/**
- * A node's description of itself (§2.5, §3.3). Join carries it at the top
- * level, a heartbeat as `self`; both are covered by the sender's request
- * signature, so only the node itself can state it. The latest one replaces
- * what this node recorded before.
- */
-const selfDescription = {
-  display_name: z.string(),
-  endpoints: z.array(z.string()),
-  runtime: RuntimeInfoSchema.nullable().optional(),
-  max_task_ttl_s: z.number().positive().optional(),
-  models: ModelOffersSchema.optional(),
-  default_model: ModelSelectionSchema.nullable().optional(),
-  default_reasoning_effort: ReasoningEffortSchema.nullable().optional(),
-};
-const SelfDescription = z.object(selfDescription);
-type SelfDescription = z.infer<typeof SelfDescription>;
-
-const JoinBody = z.object({ ...admission, ...selfDescription });
-type AdmissionBody = Pick<z.infer<typeof JoinBody>, keyof typeof admission>;
-
-const HeartbeatBody = z.object({
-  ...admission,
-  digest: z.string().optional(),
-  busy: BusyStateSchema.nullable().optional(),
-  /** Optional so a node that predates it still heartbeats; current nodes always send it. */
-  self: SelfDescription.optional(),
-});
 
 /** The recorded profile of a peer: what it described, with endpoints screened (§7.7). */
 type Profile = Pick<
@@ -79,6 +44,8 @@ type Profile = Pick<
 /** How long a heartbeat may reuse the screening verdict for an unchanged endpoint list. */
 const SCREENING_TTL_MS = 60_000;
 
+const ack: z.infer<typeof AckSchema> = { ok: true };
+
 const ChildLinkBody = z.object({ parent_task_id: NonEmpty, peer: NonEmpty, child_task_id: NonEmpty });
 
 const TaskQuery = z.object({ task: NonEmpty });
@@ -89,7 +56,7 @@ const TaskQuery = z.object({ task: NonEmpty });
  * Heartbeats repeat it so a node whose password changed drops out within a few
  * ticks.
  */
-function admit(deps: GatewayDeps, kind: AdmissionKind, caller: string, body: AdmissionBody): void {
+function admit(deps: GatewayDeps, kind: AdmissionKind, caller: string, body: Admission): void {
   if (body.workgroup_id !== deps.orcaNode.workgroup_id) {
     throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
   }
@@ -99,8 +66,7 @@ function admit(deps: GatewayDeps, kind: AdmissionKind, caller: string, body: Adm
   if (Math.abs(Date.now() - body.ts) > DEFAULT_CLOCK_SKEW_MS) {
     throw new PodError("clock_skew", "admission proof timestamp outside the skew window");
   }
-  const fields = { workgroupId: body.workgroup_id, orcaNodeId: caller, ts: body.ts, nonce: body.nonce };
-  if (!verifyAdmissionProof(kind, deps.workgroupKey, fields, body.proof)) {
+  if (!verifyAdmission(kind, deps.workgroupKey, body)) {
     throw new PodError("bad_proof", "workgroup admission proof does not verify");
   }
   if (!deps.nonceCache.remember(`${kind}:${caller}:${body.nonce}`)) {
@@ -153,9 +119,10 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
     if (declared === null) throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
     const key = `${isDirectLoopbackRequest(request)}|${declared.join(",")}`;
     const previous = screened.get(caller);
-    const fresh = previous !== undefined && previous.key === key && Date.now() - previous.atMs < SCREENING_TTL_MS;
-    const endpoints = reuseScreening && fresh ? previous.allowed : await dialableEndpoints(declared, request);
-    if (!(reuseScreening && fresh)) screened.set(caller, { key, allowed: endpoints, atMs: Date.now() });
+    const reusable =
+      reuseScreening && previous !== undefined && previous.key === key && Date.now() - previous.atMs < SCREENING_TTL_MS;
+    const endpoints = reusable ? previous.allowed : await dialableEndpoints(declared, request);
+    if (!reusable) screened.set(caller, { key, allowed: endpoints, atMs: Date.now() });
     const runtime = described.runtime ?? null;
     return {
       display_name: described.display_name,
@@ -187,7 +154,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   });
 
   app.post("/cluster/join", { config: { access: "join" } }, async (request) => {
-    const body = parseInput(JoinBody, request.body, "body");
+    const body = parseInput(JoinRequestSchema, request.body, "body");
     admit(deps, "join", request.auth.orcaNodeId, body);
     deps.peers.upsert({
       orca_node_id: body.orca_node_id,
@@ -202,7 +169,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   });
 
   app.post("/cluster/heartbeat", { config: { access: "member" } }, async (request) => {
-    const body = parseInput(HeartbeatBody, request.body, "body");
+    const body = parseInput(HeartbeatRequestSchema, request.body, "body");
     const caller = request.auth.orcaNodeId;
     admit(deps, "heartbeat", caller, body);
     if (caller !== deps.orcaNode.orca_node_id && !deps.peers.touch(caller)) {
@@ -234,7 +201,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
 
   app.post("/cluster/leave", { config: { access: "member" } }, async (request) => {
     deps.peers.remove(request.auth.orcaNodeId);
-    return { ok: true };
+    return ack;
   });
 
   // Local control: tell this node that one of its local tasks delegated
@@ -247,7 +214,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
       child_task_id: childTaskId,
     } = parseInput(ChildLinkBody, request.body, "body");
     deps.orcaNode.linkChildTask(parentTaskId, peer, childTaskId);
-    return { ok: true };
+    return ack;
   });
 
   // Local control: read one of this node's task views so the CLI can inherit

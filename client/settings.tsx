@@ -6,26 +6,15 @@ import { t } from "./i18n.ts";
 import { Button, Field } from "./primitives.tsx";
 import { store, useStore } from "./store.ts";
 import { BORDER, DANGER, HINT, INPUT, MONO_FONT, MUTED, PRIMARY } from "./styles.ts";
-import type { PodAdvancedConfig, PodConfigView } from "./types.ts";
+import type { PanelPatch, PodActions, PodAdvancedConfig, PodConfigView } from "./types.ts";
 
-/** Advanced settings edited as numbers. */
-type LimitKey =
-  | "task_timeout_s"
-  | "approval_timeout_s"
-  | "result_max_bytes"
-  | "max_input_files"
-  | "max_input_bytes"
-  | "max_workspace_bytes"
-  | "max_workspace_files"
-  | "max_blob_store_bytes";
+/** Advanced settings edited as numbers: the ones the host reports as a number. */
+type LimitKey = {
+  [K in keyof PodAdvancedConfig]: PodAdvancedConfig[K] extends number | null ? K : never;
+}[keyof PodAdvancedConfig];
 
-/** Advanced settings edited as a choice. */
-type SelectKey =
-  | "permission_mode"
-  | "allow_public_peers"
-  | "allow_loopback_peers"
-  | "default_reasoning_effort"
-  | "executor";
+/** Advanced settings edited as a choice: the rest. */
+type SelectKey = Exclude<keyof PodAdvancedConfig, LimitKey>;
 
 interface Limit {
   key: LimitKey;
@@ -111,43 +100,65 @@ export function initialForm(config: PodConfigView, wizard: boolean): FormState {
   return form;
 }
 
+type LimitValues = Partial<Record<LimitKey, number | null>>;
+
+/** The numeric limits as the host takes them (blank clears); `{ error }` names the first one that is not a valid number. */
+function limitValues(
+  form: FormState,
+  config: PodConfigView,
+): { values: LimitValues; error?: undefined } | { error: string; values?: undefined } {
+  const values: LimitValues = {};
+  for (const { key, label, integer, unit } of LIMITS) {
+    const text = form[key].trim();
+    const value = Number(text);
+    if (text === "") {
+      values[key] = null;
+    } else if (!Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
+      return { error: `${t(label)} ${t("cfgAdvancedInvalid")}` };
+    } else if (unit === undefined) {
+      values[key] = value;
+    } else {
+      /* An untouched field keeps its exact byte count instead of the rounded display. */
+      const original = config.advanced[key];
+      values[key] = text === unitText(original, unit) ? original : Math.round(value * unit);
+    }
+  }
+  return { values };
+}
+
+/** The choices as the host takes them: allow/deny become booleans, blank clears. */
+function choiceValues(form: FormState): Partial<Record<SelectKey, string | boolean | null>> {
+  const values: Partial<Record<SelectKey, string | boolean | null>> = {};
+  for (const [key] of selectFields()) {
+    values[key] = BOOLEANS.includes(key) ? (form[key] === "" ? null : form[key] === "allow") : form[key] || null;
+  }
+  return values;
+}
+
 /** Form text to the patch the host validates; `null` clears a field. Returns `{ error }` for input it cannot convert. */
 export function buildPatch(
   form: FormState,
   config: PodConfigView,
   wizard: boolean,
-): { patch: Record<string, unknown>; error?: undefined } | { error: string; patch?: undefined } {
+): { patch: PanelPatch; error?: undefined } | { error: string; patch?: undefined } {
   const port = Number(form.port);
   if (form.port.trim() === "" || !Number.isInteger(port) || port < 0 || port > 65535)
     return { error: `${t("cfgListenPort")} ${t("cfgPortInvalid")}` };
   if (form.password.length === 0 && (wizard || !config.password_set)) return { error: t("cfgPasswordRequired") };
   const addresses = form.endpoints.map((row) => row.trim()).filter(Boolean);
-  const patch: Record<string, unknown> = {
+  const limits = limitValues(form, config);
+  if (limits.error !== undefined) return { error: limits.error };
+  // The choices are free text here (`allow`/`deny`, a mode name); the host checks them against the settings schemas.
+  const patch = {
     workgroup_id: form.workgroup_id.trim().toLowerCase(),
     display_name: form.display_name.trim() || null,
     bind_host: form.bind_host,
     port,
     endpoints: addresses.length > 0 ? addresses : null,
-  };
-  if (form.password.length > 0) patch.workgroup_password = form.password;
-  for (const { key, label, integer, unit } of LIMITS) {
-    const text = form[key].trim();
-    const value = Number(text);
-    if (text === "") {
-      patch[key] = null;
-    } else if (!Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
-      return { error: `${t(label)} ${t("cfgAdvancedInvalid")}` };
-    } else if (unit === undefined) {
-      patch[key] = value;
-    } else {
-      /* An untouched field keeps its exact byte count instead of the rounded display. */
-      const original = config.advanced[key];
-      patch[key] = text === unitText(original, unit) ? original : Math.round(value * unit);
-    }
-  }
-  for (const [key] of selectFields()) {
-    patch[key] = BOOLEANS.includes(key) ? (form[key] === "" ? null : form[key] === "allow") : form[key] || null;
-  }
+    ...(form.password.length > 0 ? { workgroup_password: form.password } : {}),
+    ...limits.values,
+    ...choiceValues(form),
+  } as PanelPatch;
   return { patch };
 }
 
@@ -282,7 +293,7 @@ export function ConfigForm({
     setForm((previous) => ({ ...previous, [key]: value }));
   const bind: Bind = (key) => ({ value: form[key], onChange: (event) => set(key, event.target.value) });
   /** Run one action; leave the form when the host accepted it. */
-  async function run(path: string, body: unknown) {
+  async function run<K extends keyof PodActions>(path: K, body: PodActions[K]) {
     setError(null);
     if (await store.act(path, body)) onDone();
   }

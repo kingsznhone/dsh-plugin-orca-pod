@@ -5,9 +5,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { childPodMetadata } from "../src/delegation/chain.ts";
+import { childPodMetadata } from "../src/tasks/delegation.ts";
 import { deriveChildGrant, grantCovers } from "../src/security/grants.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
 import { signGrant } from "../src/security/crypto.ts";
 import { generateNodeIdentity, loadIdentity } from "../src/security/identity.ts";
@@ -15,6 +16,11 @@ import { connectAll } from "../src/node/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type PodTaskMetadata, type TaskState, type TaskView } from "../src/protocol/task.ts";
 import type { Grant, SignedGrant } from "../src/protocol/grant.ts";
+
+const NODE_A = fakeNodeId("A");
+const NODE_B = fakeNodeId("B");
+const NODE_C = fakeNodeId("C");
+const NODE_R = fakeNodeId("R");
 
 const WORKGROUP = "orca-chain";
 const PASSWORD = "chain-secret";
@@ -88,36 +94,40 @@ function podMetadata(hop: number, chain: string[], root = "t_root"): Record<stri
 describe("chain metadata", () => {
   it("child metadata increments the hop and appends this orca node", () => {
     expect(
-      childPodMetadata({ hop: 0, chain: ["A"], root: "t_root", permission_mode: "workspace-write" }, "t_parent", "B"),
-    ).toEqual({ hop: 1, chain: ["A", "B"], root: "t_root", permission_mode: "workspace-write" });
-    expect(childPodMetadata(undefined, "t_parent", "B")).toEqual({
+      childPodMetadata(
+        { hop: 0, chain: [NODE_A], root: "t_root", permission_mode: "workspace-write" },
+        "t_parent",
+        NODE_B,
+      ),
+    ).toEqual({ hop: 1, chain: [NODE_A, NODE_B], root: "t_root", permission_mode: "workspace-write" });
+    expect(childPodMetadata(undefined, "t_parent", NODE_B)).toEqual({
       hop: 1,
-      chain: ["B"],
+      chain: [NODE_B],
       root: "t_parent",
     });
   });
 
   it("accepts any hop depth but rejects callbacks to an ancestor", () => {
-    expect(() => parsePodMetadata(podMetadata(1, ["A", "B"]), "B", "A")).toThrowError(/ancestors/);
-    expect(parsePodMetadata(podMetadata(2, ["A", "B"]), "C", "A")).toMatchObject({
-      chain: ["A", "B"],
-      rootOrigin: "A",
+    expect(() => parsePodMetadata(podMetadata(1, [NODE_A, NODE_B]), NODE_B, NODE_A)).toThrowError(/ancestors/);
+    expect(parsePodMetadata(podMetadata(2, [NODE_A, NODE_B]), NODE_C, NODE_A)).toMatchObject({
+      chain: [NODE_A, NODE_B],
+      rootOrigin: NODE_A,
     });
-    expect(parsePodMetadata(undefined, "C", "A")).toMatchObject({
+    expect(parsePodMetadata(undefined, NODE_C, NODE_A)).toMatchObject({
       chain: [],
-      rootOrigin: "A",
+      rootOrigin: NODE_A,
       permissionMode: "read-only",
       inputs: [],
     });
-    expect(parsePodMetadata({ pod: { root_origin: "R" } }, "C", "A").rootOrigin).toBe("R");
+    expect(parsePodMetadata({ pod: { root_origin: NODE_R } }, NODE_C, NODE_A).rootOrigin).toBe(NODE_R);
   });
 
   it("rejects malformed hop and chain values", () => {
-    expect(() => parsePodMetadata({ pod: { hop: -1 } }, "B", "A")).toThrowError(/non-negative integer/);
-    expect(() => parsePodMetadata({ pod: { hop: 0.5 } }, "B", "A")).toThrowError(/non-negative integer/);
-    expect(() => parsePodMetadata({ pod: { chain: "A" } }, "B", "A")).toThrowError(/array/);
-    expect(() => parsePodMetadata({ pod: { task_ttl_s: -1 } }, "B", "A")).toThrowError(/task_ttl_s/);
-    expect(() => parsePodMetadata({ echo: { nope: 1 } }, "B", "A")).toThrowError(/unknown field/);
+    expect(() => parsePodMetadata({ pod: { hop: -1 } }, NODE_B, NODE_A)).toThrowError(/non-negative integer/);
+    expect(() => parsePodMetadata({ pod: { hop: 0.5 } }, NODE_B, NODE_A)).toThrowError(/non-negative integer/);
+    expect(() => parsePodMetadata({ pod: { chain: NODE_A } }, NODE_B, NODE_A)).toThrowError(/array/);
+    expect(() => parsePodMetadata({ pod: { task_ttl_s: -1 } }, NODE_B, NODE_A)).toThrowError(/task_ttl_s/);
+    expect(() => parsePodMetadata({ echo: { nope: 1 } }, NODE_B, NODE_A)).toThrowError(/Unrecognized key/);
   });
 });
 
@@ -131,7 +141,7 @@ describe("child grants", () => {
       workgroup_id: WORKGROUP,
       origin_orca_node: origin.orcaNodeId,
       task_id: "t_parent",
-      target_orca_node: "B",
+      target_orca_node: NODE_B,
       tool: "write_file",
       mode: "allow_once",
       chain: [origin.orcaNodeId],
@@ -151,15 +161,15 @@ describe("child grants", () => {
         task_id: "t_child",
         tool: "write_file",
         requested: { path: "note.txt" },
-        requested_by: "C",
-        via: ["A", "B"],
+        requested_by: NODE_C,
+        via: [NODE_A, NODE_B],
         expires_at: new Date(Date.now() + 30_000).toISOString(),
       },
-      selfOrcaNodeId: "B",
+      selfOrcaNodeId: NODE_B,
     });
     expect(child).toEqual(parent);
     expect(child.chain).toEqual([origin.orcaNodeId]);
-    expect(child.target_orca_node).toBe("B");
+    expect(child.target_orca_node).toBe(NODE_B);
     expect(child.tool).toBe("write_file");
   });
 
@@ -174,11 +184,11 @@ describe("child grants", () => {
           task_id: "t_child",
           tool: "run_command",
           requested: {},
-          requested_by: "C",
-          via: ["A", "B"],
+          requested_by: NODE_C,
+          via: [NODE_A, NODE_B],
           expires_at: new Date(Date.now() + 30_000).toISOString(),
         },
-        selfOrcaNodeId: "B",
+        selfOrcaNodeId: NODE_B,
       }),
     ).toThrowError(/escalation_required|not "run_command"/);
   });
@@ -195,11 +205,11 @@ describe("child grants", () => {
           task_id: "t_child",
           tool: "run_command",
           requested: {},
-          requested_by: "C",
-          via: ["A", "B"],
+          requested_by: NODE_C,
+          via: [NODE_A, NODE_B],
           expires_at: new Date(Date.now() + 30_000).toISOString(),
         },
-        selfOrcaNodeId: "B",
+        selfOrcaNodeId: NODE_B,
       }),
     ).toThrowError(/signature/);
   });
@@ -219,14 +229,12 @@ describe("multi-hop enforcement", () => {
   });
 
   it("rejects a task that names this node as the root origin of its tree", () => {
-    expect(() => parsePodMetadata({ pod: { chain: ["NODE-B"], root_origin: "NODE-A" } }, "NODE-A", "NODE-B")).toThrow(
+    expect(() => parsePodMetadata({ pod: { chain: [NODE_B], root_origin: NODE_A } }, NODE_A, NODE_B)).toThrow(
       expect.objectContaining({ code: "ancestor_call_forbidden" }),
     );
     // A root task to this node (no tree yet) and a tree started elsewhere are fine.
-    expect(parsePodMetadata(undefined, "NODE-A", "NODE-B").rootOrigin).toBe("NODE-B");
-    expect(parsePodMetadata({ pod: { chain: ["NODE-B"], root_origin: "NODE-C" } }, "NODE-A", "NODE-B").chain).toEqual([
-      "NODE-B",
-    ]);
+    expect(parsePodMetadata(undefined, NODE_A, NODE_B).rootOrigin).toBe(NODE_B);
+    expect(parsePodMetadata({ pod: { chain: [NODE_B], root_origin: NODE_C } }, NODE_A, NODE_B).chain).toEqual([NODE_B]);
   });
 
   it("stops A -> B -> A when A dispatched the root task without a chain", async () => {
@@ -259,7 +267,7 @@ describe("multi-hop enforcement", () => {
       () =>
         sender.sendTask(target.endpoints[0]!, {
           message: { role: "user", parts: [{ kind: "text", text: "callback" }] },
-          metadata: podMetadata(1, ["A", target.orcaNodeId]),
+          metadata: podMetadata(1, [NODE_A, target.orcaNodeId]),
         }),
       "ancestor_call_forbidden",
     );
@@ -277,7 +285,7 @@ describe("chained approval", () => {
     const view = await delegator.sendTask(worker.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
       metadata: {
-        ...podMetadata(1, ["A", delegator.orcaNodeId]),
+        ...podMetadata(1, [NODE_A, delegator.orcaNodeId]),
         echo: permissionEcho,
       },
     });
@@ -285,7 +293,7 @@ describe("chained approval", () => {
     const request = permissionRequestOf(suspended);
     expect(request?.tool).toBe("write_file");
     expect(request?.requested_by).toBe(worker.orcaNodeId);
-    expect(request?.via).toEqual(["A", delegator.orcaNodeId]);
+    expect(request?.via).toEqual([NODE_A, delegator.orcaNodeId]);
 
     const now = Date.now();
     const pendingRequest = permissionRequestOf(suspended);
@@ -319,7 +327,7 @@ describe("chained approval", () => {
     const view = await delegator.sendTask(worker.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
       metadata: {
-        ...podMetadata(1, ["A", delegator.orcaNodeId]),
+        ...podMetadata(1, [NODE_A, delegator.orcaNodeId]),
         echo: permissionEcho,
       },
     });

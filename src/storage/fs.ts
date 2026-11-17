@@ -17,9 +17,10 @@ import { copyFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 
-import { PodError } from "../kernel/index.ts";
-import { digestMismatch, laterExpiry, sha256Hex, tooLarge } from "./blob-common.ts";
-import { DEFAULT_BLOB_TTL_MS, type BlobRecord, type BlobStore, type StoredBlob } from "./index.ts";
+import { PodError } from "../kernel/errors.ts";
+import { bodySha256 } from "../security/crypto.ts";
+import { blobMeta, digestMismatch, laterExpiry, tooLarge } from "./blob-common.ts";
+import { DEFAULT_BLOB_TTL_MS, type BlobMeta, type BlobRecord, type BlobStore, type StoredBlob } from "./stores.ts";
 
 type FsBlobStoreOptions = {
   ttlMs?: number | null;
@@ -32,8 +33,6 @@ const BLOB_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 /** A `.part` file nobody has written to for this long belongs to a crashed upload. */
 export const PART_GRACE_MS = 10 * 60 * 1000;
-
-type Meta = { size: number; name: string | null; media_type: string | null; expires_at: string | null };
 
 /**
  * Disk blob store: content-addressed files under `<root>/<aa>/<sha256>`, with a
@@ -55,22 +54,22 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
   const pathFor = (blobId: string): string => join(root, blobId.slice(0, 2), blobId);
   const metaFor = (blobId: string): string => `${pathFor(blobId)}.json`;
 
-  function readMeta(blobId: string): Meta | undefined {
+  function readMeta(blobId: string): BlobMeta | undefined {
     try {
-      return JSON.parse(readFileSync(metaFor(blobId), "utf8")) as Meta;
+      return JSON.parse(readFileSync(metaFor(blobId), "utf8")) as BlobMeta;
     } catch {
       return undefined;
     }
   }
 
   /** The sidecar of a complete blob: both files present. */
-  function committedMeta(blobId: string): Meta | undefined {
+  function committedMeta(blobId: string): BlobMeta | undefined {
     if (!BLOB_ID_PATTERN.test(blobId)) return undefined;
     const meta = readMeta(blobId);
     return meta !== undefined && existsSync(pathFor(blobId)) ? meta : undefined;
   }
 
-  function* sidecars(): Generator<{ blobId: string; meta: Meta }> {
+  function* sidecars(): Generator<{ blobId: string; meta: BlobMeta }> {
     for (const prefix of readdirSync(root, { withFileTypes: true })) {
       if (!prefix.isDirectory()) continue;
       for (const entry of readdirSync(join(root, prefix.name))) {
@@ -91,7 +90,7 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
 
   const expiry = (): string | null => (ttlMs === null ? null : new Date(now() + ttlMs).toISOString());
 
-  function writeMeta(blobId: string, meta: Meta): void {
+  function writeMeta(blobId: string, meta: BlobMeta): void {
     const metaTemp = `${metaFor(blobId)}.${randomBytes(6).toString("hex")}.part`;
     writeFileSync(metaTemp, JSON.stringify(meta));
     renameSync(metaTemp, metaFor(blobId));
@@ -101,7 +100,7 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
    * The bytes are already stored: count this as a new upload and extend the
    * expiry, so a re-upload made just before a task cannot expire under it.
    */
-  function refresh(blobId: string, meta: Meta): Meta {
+  function refresh(blobId: string, meta: BlobMeta): BlobMeta {
     const expires_at = laterExpiry(meta.expires_at, expiry());
     if (expires_at === meta.expires_at) return meta;
     const next = { ...meta, expires_at };
@@ -110,7 +109,7 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
   }
 
   /** Place finished bytes (a temp file) and write the sidecar that commits them. */
-  function commit(blobId: string, temp: string, meta: Meta): void {
+  function commit(blobId: string, temp: string, meta: BlobMeta): void {
     // A sidecar left without its data was already counted at startup.
     const stale = readMeta(blobId);
     if (stale !== undefined) used -= stale.size;
@@ -131,10 +130,47 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
     return meta && { blob_id: blobId, ...meta };
   }
 
+  /** Leftovers of crashed writes: temp files, and data files whose sidecar was never written. */
+  function isLeftover(file: string, name: string): boolean {
+    return name.endsWith(".part") || (BLOB_ID_PATTERN.test(name) && !existsSync(`${file}.json`));
+  }
+
+  /** Remove the leftovers that nobody has touched for the grace period. */
+  function sweepPartFiles(at: number): void {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const path = join(root, entry.name);
+      // Orphans of a crashed upload: `.upload-*.part` in the root.
+      if (entry.isFile() && entry.name.endsWith(".part")) dropStale(path, at);
+      if (!entry.isDirectory()) continue;
+      for (const name of readdirSync(path)) {
+        const file = join(path, name);
+        if (isLeftover(file, name)) dropStale(file, at);
+      }
+    }
+  }
+
+  /** Drop expired blobs and sidecars whose data vanished; recount what is kept. Returns the blobs removed. */
+  function sweepBlobs(at: number): number {
+    let removed = 0;
+    let kept = 0;
+    for (const { blobId, meta } of sidecars()) {
+      const missing = !existsSync(pathFor(blobId));
+      if (missing || (meta.expires_at !== null && Date.parse(meta.expires_at) <= at)) {
+        rmSync(pathFor(blobId), { force: true });
+        rmSync(metaFor(blobId), { force: true });
+        if (!missing) removed += 1;
+      } else {
+        kept += meta.size;
+      }
+    }
+    used = kept;
+    return removed;
+  }
+
   return {
     put(bytes, putOptions): StoredBlob {
       const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-      const blobId = sha256Hex(buffer);
+      const blobId = bodySha256(buffer);
       const existing = committedMeta(blobId);
       if (existing) return { blob_id: blobId, ...refresh(blobId, existing), bytes: buffer };
       if (used + inflight + buffer.length > quota) throw quotaExceeded();
@@ -142,12 +178,7 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
       mkdirSync(dirname(final), { recursive: true });
       const temp = `${final}.${randomBytes(6).toString("hex")}.part`;
       writeFileSync(temp, buffer);
-      const meta: Meta = {
-        size: buffer.length,
-        name: putOptions?.name ?? null,
-        media_type: putOptions?.media_type ?? null,
-        expires_at: expiry(),
-      };
+      const meta = blobMeta(buffer.length, putOptions, expiry());
       commit(blobId, temp, meta);
       return { blob_id: blobId, ...meta, bytes: buffer };
     },
@@ -196,12 +227,7 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
         rmSync(temp, { force: true });
         return { blob_id: blobId, ...refresh(blobId, existing) };
       }
-      const meta: Meta = {
-        size,
-        name: putOptions?.name ?? null,
-        media_type: putOptions?.media_type ?? null,
-        expires_at: expiry(),
-      };
+      const meta = blobMeta(size, putOptions, expiry());
       commit(blobId, temp, meta);
       return { blob_id: blobId, ...meta };
     },
@@ -218,32 +244,8 @@ export function createFsBlobStore(root: string, options: FsBlobStoreOptions = {}
     },
     gc() {
       const at = now();
-      let removed = 0;
-      let kept = 0;
-      for (const entry of readdirSync(root, { withFileTypes: true })) {
-        const path = join(root, entry.name);
-        // Orphans of a crashed upload: `.upload-*.part` in the root.
-        if (entry.isFile() && entry.name.endsWith(".part")) dropStale(path, at);
-        if (!entry.isDirectory()) continue;
-        for (const name of readdirSync(path)) {
-          const file = join(path, name);
-          // Temp files of a crashed write, and data files whose sidecar was never written.
-          if (name.endsWith(".part")) dropStale(file, at);
-          else if (BLOB_ID_PATTERN.test(name) && !existsSync(`${file}.json`)) dropStale(file, at);
-        }
-      }
-      for (const { blobId, meta } of sidecars()) {
-        const missing = !existsSync(pathFor(blobId));
-        if (missing || (meta.expires_at !== null && Date.parse(meta.expires_at) <= at)) {
-          rmSync(pathFor(blobId), { force: true });
-          rmSync(metaFor(blobId), { force: true });
-          if (!missing) removed += 1;
-        } else {
-          kept += meta.size;
-        }
-      }
-      used = kept;
-      return removed;
+      sweepPartFiles(at);
+      return sweepBlobs(at);
     },
   };
 }

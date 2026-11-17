@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
-import type { DispatchEntry } from "../src/storage/index.ts";
+import type { DispatchEntry } from "../src/storage/stores.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { HostLogger, PermissionPresetsService } from "../src/plugin/dsh.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
@@ -9,7 +9,7 @@ import type { TaskView } from "../src/protocol/task.ts";
 import { createPodTools, sessionSandboxMode } from "../src/plugin/tools.ts";
 import type { TrackerAgent } from "../src/plugin/tracker.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";
-import * as plugin from "../src/plugin/index.ts";
+import * as plugin from "../src/plugin/bundle.ts";
 
 const logger: HostLogger = { info() {}, warn() {}, error() {} };
 

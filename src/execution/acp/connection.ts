@@ -66,10 +66,22 @@ export function spawnAcpChild({ command, args, cwd, env }: AcpSpawnSpec): AcpChi
  * pending requests learn the exit code and the stderr tail.
  */
 function childOutput(child: AcpChild, reason: () => Error): ReadableStream<Uint8Array> {
+  // The reader can cancel the stream first (the SDK does when the connection closes);
+  // a chunk that arrives afterwards has no consumer and must not throw into the child's event loop.
+  let open = true;
   return new ReadableStream({
     start(controller) {
-      child.stdout.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-      child.on("close", () => controller.error(reason()));
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (open) controller.enqueue(new Uint8Array(chunk));
+      });
+      child.on("close", () => {
+        if (!open) return;
+        open = false;
+        controller.error(reason());
+      });
+    },
+    cancel() {
+      open = false;
     },
   });
 }

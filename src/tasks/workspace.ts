@@ -11,7 +11,7 @@ import { join } from "node:path";
  * the workspace: the agent may write anywhere under cwd. It lives under
  * `<data_root>/state/<workgroup_id>/` instead (§6.7).
  */
-export type Workspace = {
+export type WorkspacePaths = {
   /** Agent cwd and the only write root for the group. */
   root: string;
   /** Cross-session notes; writable, never leaves this orcaNode. */
@@ -20,6 +20,9 @@ export type Workspace = {
   inputs: string;
   /** Gateway-owned state outside the agent's reach. */
   state: string;
+};
+
+export type Workspace = WorkspacePaths & {
   /** Materialization directory for one task's inputs; gateway-owned. */
   inputDir(taskId: string): string;
 };

@@ -2,11 +2,10 @@
 
 import React, { type ReactNode } from "react";
 import { t } from "./i18n.ts";
-import type { PodTaskMetadata } from "../src/protocol/task.ts";
-import type { PodTaskDetail, PodTaskRow } from "./types.ts";
-import { Button, Fact, Modal, Row, Table, stop } from "./primitives.tsx";
+import type { PodTaskDetail, PodTasksResponse, PodTaskRow } from "./types.ts";
+import { ArtifactLinks, Button, Fact, Modal, Row, Table, modelText, stop } from "./primitives.tsx";
 import { store, useApi, useStore } from "./store.ts";
-import { CELL, DANGER, ERROR, H2, LINK, MONO_FONT, MUTED, age, short, stateLabel } from "./styles.ts";
+import { CELL, DANGER, ERROR, H2, MONO_FONT, MUTED, age, short, stateLabel } from "./styles.ts";
 
 /** Recent or all tasks: rows arrive merged, sorted and labelled by the host. */
 export function TaskTable({
@@ -44,17 +43,7 @@ export function TaskTable({
           {showArtifacts ? (
             // biome-ignore lint/a11y/useKeyWithClickEvents: only keeps a link click from also opening the row.
             <td style={CELL} onClick={(event) => event.stopPropagation()}>
-              {row.artifacts.map((link) =>
-                link.url ? (
-                  <a key={link.blob_id} href={link.url} target={"_blank"} rel={"noreferrer"} style={LINK}>
-                    {link.name}
-                  </a>
-                ) : (
-                  <span key={link.blob_id} style={{ ...MUTED, marginRight: 10 }}>
-                    {link.name}
-                  </span>
-                ),
-              )}
+              <ArtifactLinks artifacts={row.artifacts} />
             </td>
           ) : null}
           <td style={CELL}>
@@ -72,66 +61,31 @@ export function TaskTable({
     </Table>
   );
 }
-/** Task detail: one `/task` call returns the task, its dispatch record, artifacts and inputs. */
-export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: string; onClose: () => void }) {
-  const { data, error } = useApi<PodTaskDetail>(
-    `task?peer=${encodeURIComponent(peer)}&task=${encodeURIComponent(taskId)}`,
-  );
-  let body: ReactNode = <div style={MUTED}>{t("tasksLoading")}</div>;
-  if (error !== null) body = <div style={ERROR}>{t("dtLoadFailed") + error}</div>;
-  if (data !== null) {
-    const { task, origin, dispatch, artifacts, inputs } = data;
-    const pod = (task.metadata?.pod ?? {}) as PodTaskMetadata;
-    const message = (task.status.message?.parts ?? [])
-      .map((part) => (part.kind === "text" ? part.text : ""))
-      .filter(Boolean)
-      .join("\n");
-    body = [
-      <Fact key={"state"} label={t("colState")}>
-        {stateLabel(task.status.state)}
-      </Fact>,
-      <Fact key={"origin"} label={t("dtOrigin")}>
-        {origin}
-      </Fact>,
-      <Fact key={"context"} label={t("dtContext")}>
-        {task.contextId}
-      </Fact>,
-      <Fact key={"updated"} label={t("dtUpdated")}>
-        {task.status.timestamp}
-      </Fact>,
-      task.status.reason ? (
-        <Fact key={"reason"} label={t("dtReason")}>
-          {task.status.reason}
-        </Fact>
-      ) : null,
-      pod.model ? (
-        <Fact key={"model"} label={t("dtModel")}>
-          {pod.model.provider +
-            "/" +
-            pod.model.model +
-            (pod.model.reasoning_effort ? ` · ${pod.model.reasoning_effort}` : "")}
-        </Fact>
-      ) : null,
-      pod.hop === undefined ? null : (
-        <Fact
-          key={"hop"}
-          label={t("dtTimeline")}
-        >{`hop ${pod.hop}${pod.root ? ` · root ${short(pod.root)}` : ""}`}</Fact>
-      ),
-      message ? (
-        <Fact key={"message"} label={t("dtMessage")}>
-          {message}
-        </Fact>
-      ) : null,
-      <div key={"dispatch-title"} style={{ ...H2, marginTop: 16 }}>
-        {t("dtDispatch")}
-      </div>,
-      dispatch === null ? (
-        <div key={"dispatch"} style={MUTED}>
-          {t("dtDispatchNone")}
-        </div>
+/** What the detail dialog shows once the task is loaded. */
+function TaskFacts({ data }: { data: PodTaskDetail }) {
+  const { task, origin, dispatch, artifacts, inputs } = data;
+  const pod = task.metadata?.pod ?? {};
+  const message = (task.status.message?.parts ?? [])
+    .map((part) => (part.kind === "text" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <>
+      <Fact label={t("colState")}>{stateLabel(task.status.state)}</Fact>
+      <Fact label={t("dtOrigin")}>{origin}</Fact>
+      <Fact label={t("dtContext")}>{task.contextId}</Fact>
+      <Fact label={t("dtUpdated")}>{task.status.timestamp}</Fact>
+      {task.status.reason ? <Fact label={t("dtReason")}>{task.status.reason}</Fact> : null}
+      {pod.model ? <Fact label={t("dtModel")}>{modelText(pod.model)}</Fact> : null}
+      {pod.hop === undefined ? null : (
+        <Fact label={t("dtTimeline")}>{`hop ${pod.hop}${pod.root ? ` · root ${short(pod.root)}` : ""}`}</Fact>
+      )}
+      {message ? <Fact label={t("dtMessage")}>{message}</Fact> : null}
+      <div style={{ ...H2, marginTop: 16 }}>{t("dtDispatch")}</div>
+      {dispatch === null ? (
+        <div style={MUTED}>{t("dtDispatchNone")}</div>
       ) : (
-        <React.Fragment key={"dispatch"}>
+        <>
           <Fact label={t("dtPeer")}>{dispatch.peer}</Fact>
           <Fact label={t("colState")}>{stateLabel(dispatch.state)}</Fact>
           <Fact label={t("dtCreated")}>{dispatch.created_at}</Fact>
@@ -140,32 +94,18 @@ export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: st
             <Fact label={t("dtTimeline")}>{short(dispatch.parent_local_task_id)}</Fact>
           ) : null}
           {dispatch.last_error ? <Fact label={t("dtLastError")}>{dispatch.last_error}</Fact> : null}
-        </React.Fragment>
-      ),
-      <div key={"artifacts-title"} style={{ ...H2, marginTop: 16 }}>
-        {t("dtArtifacts")}
-      </div>,
-      <div key={"artifacts"} style={{ marginTop: 6 }}>
+        </>
+      )}
+      <div style={{ ...H2, marginTop: 16 }}>{t("dtArtifacts")}</div>
+      <div style={{ marginTop: 6 }}>
         {artifacts.length === 0 ? (
           <span style={MUTED}>{t("dtArtifactsNone")}</span>
         ) : (
-          artifacts.map((link) =>
-            link.url ? (
-              <a key={link.blob_id} href={link.url} target={"_blank"} rel={"noreferrer"} style={LINK}>
-                {link.name}
-              </a>
-            ) : (
-              <span key={link.blob_id} style={{ ...MUTED, display: "inline-block", marginRight: 10 }}>
-                {link.name}
-              </span>
-            ),
-          )
+          <ArtifactLinks artifacts={artifacts} block={true} />
         )}
-      </div>,
-      <div key={"inputs-title"} style={{ ...H2, marginTop: 16 }}>
-        {t("dtInputs")}
-      </div>,
-      <div key={"inputs"} style={{ marginTop: 6 }}>
+      </div>
+      <div style={{ ...H2, marginTop: 16 }}>{t("dtInputs")}</div>
+      <div style={{ marginTop: 6 }}>
         {inputs.length === 0 ? (
           <span style={MUTED}>{t("dtInputsNone")}</span>
         ) : (
@@ -175,32 +115,52 @@ export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: st
             </span>
           ))
         )}
-      </div>,
-    ];
-  }
+      </div>
+    </>
+  );
+}
+
+/** A view fetched from the host: loading text, the failure, or what `render` makes of the data. */
+function Loaded<T>({
+  result,
+  render,
+}: {
+  result: { data: T | null; error: string | null };
+  render: (data: T) => ReactNode;
+}) {
+  if (result.error !== null) return <div style={ERROR}>{t("dtLoadFailed") + result.error}</div>;
+  if (result.data === null) return <div style={MUTED}>{t("tasksLoading")}</div>;
+  return render(result.data);
+}
+
+/** Task detail: one `/task` call returns the task, its dispatch record, artifacts and inputs. */
+export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: string; onClose: () => void }) {
+  const result = useApi<PodTaskDetail>(`task?peer=${encodeURIComponent(peer)}&task=${encodeURIComponent(taskId)}`);
   return (
     <Modal label={t("dtTitle")} width={"min(680px, calc(100vw - 40px))"} onClose={onClose}>
       <div style={{ ...H2, marginBottom: 6 }}>{t("dtTitle")}</div>
       <div style={{ ...MUTED, fontFamily: MONO_FONT, wordBreak: "break-all", marginBottom: 8 }}>{taskId}</div>
-      {body}
+      <Loaded result={result} render={(data) => <TaskFacts data={data} />} />
     </Modal>
   );
 }
+
 export function AllTasks({ onOpen, onClose }: { onOpen: (row: PodTaskRow) => void; onClose: () => void }) {
   const { busy } = useStore();
   const [version, setVersion] = React.useState(0);
-  const { data, error } = useApi<{ recent: PodTaskRow[] }>("tasks?limit=500", version);
+  const result = useApi<PodTasksResponse>("tasks?limit=500", version);
   async function cancel(row: PodTaskRow) {
     if (await store.act("cancel", { peer: row.peer, task_id: row.id })) setVersion(version + 1);
   }
-  let body: ReactNode = <div style={MUTED}>{t("tasksLoading")}</div>;
-  if (error !== null) body = <div style={ERROR}>{t("dtLoadFailed") + error}</div>;
-  if (data !== null)
-    body = <TaskTable rows={data.recent} showArtifacts={true} busy={busy} onOpen={onOpen} onCancel={cancel} />;
   return (
     <Modal label={t("allTasks")} width={"min(1040px, calc(100vw - 40px))"} onClose={onClose}>
       <div style={{ ...H2, marginBottom: 10 }}>{t("allTasks")}</div>
-      {body}
+      <Loaded
+        result={result}
+        render={({ recent }) => (
+          <TaskTable rows={recent} showArtifacts={true} busy={busy} onOpen={onOpen} onCancel={cancel} />
+        )}
+      />
     </Modal>
   );
 }

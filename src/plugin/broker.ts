@@ -10,8 +10,9 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { OrcaNode } from "../node/index.ts";
-import type { PermissionRequest, TaskView } from "../protocol/index.ts";
+import type { OrcaNode } from "../node/orca-node.ts";
+import type { PermissionRequest } from "../protocol/grant.ts";
+import type { TaskView } from "../protocol/task.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
 interface ApprovalPrompt {
@@ -55,7 +56,8 @@ interface Parked {
   view: TaskView;
 }
 
-const keyOf = (peer: string, taskId: string): string => `${peer}|${taskId}`;
+/** The key a task is known by on this side: where it runs and its id there. Stable across polls. */
+export const taskKey = (peer: string, taskId: string): string => `${peer}|${taskId}`;
 
 export function createApprovalBroker(getNode: () => BrokerNode | null): ApprovalBroker {
   const parked = new Map<string, Parked>();
@@ -73,7 +75,7 @@ export function createApprovalBroker(getNode: () => BrokerNode | null): Approval
   ): Promise<TaskView> {
     const node = getNode();
     if (node === null) throw new Error("orca node is not running");
-    const key = keyOf(peer, taskId);
+    const key = taskKey(peer, taskId);
     const entry = parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");
     const resumed = await act(node, entry.view);
@@ -87,7 +89,7 @@ export function createApprovalBroker(getNode: () => BrokerNode | null): Approval
 
   return {
     park({ peer, view, request, agentId }) {
-      const key = keyOf(peer, view.id);
+      const key = taskKey(peer, view.id);
       if (parked.get(key)?.prompt.request_id === request.request_id) return;
       const prompt: ApprovalPrompt = {
         id: randomUUID(),
@@ -108,7 +110,7 @@ export function createApprovalBroker(getNode: () => BrokerNode | null): Approval
     deny: (peer, taskId, reason = "denied from the UI") =>
       decide(peer, taskId, (node, view) => node.denyTask(peer, view, reason)),
     withdraw(peer, taskId) {
-      if (parked.delete(keyOf(peer, taskId))) notify();
+      if (parked.delete(taskKey(peer, taskId))) notify();
     },
     clear() {
       if (parked.size === 0) return;

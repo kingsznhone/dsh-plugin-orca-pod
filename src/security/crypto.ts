@@ -1,9 +1,11 @@
-import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
-import { isOrcaNodeId } from "../protocol/index.ts";
+import { isOrcaNodeId } from "../protocol/peer.ts";
+import type { Admission, AdmissionKind } from "../protocol/cluster.ts";
 import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
-import { PodError } from "../kernel/index.ts";
-import type { Grant, OrcaNodeId, SignedGrant } from "../protocol/index.ts";
+import { PodError } from "../kernel/errors.ts";
+import type { Grant, SignedGrant } from "../protocol/grant.ts";
+import type { OrcaNodeId } from "../protocol/peer.ts";
 
 const AUTH_SCHEME = "Pod";
 /**
@@ -12,7 +14,7 @@ const AUTH_SCHEME = "Pod";
  * be replayed against another node or with different query parameters.
  */
 const REQUEST_DOMAIN = "orca-pod/request";
-const ADMISSION_DOMAIN = { join: "orca-pod/join", heartbeat: "orca-pod/heartbeat" } as const;
+const ADMISSION_DOMAIN: Record<AdmissionKind, string> = { join: "orca-pod/join", heartbeat: "orca-pod/heartbeat" };
 const GRANT_DOMAIN = "orca-pod/grant";
 const BLOB_LINK_DOMAIN = "orca-pod/blob-link";
 const KEY_DERIVATION_SALT = "orca-pod";
@@ -205,13 +207,9 @@ export type VerifiedAuth = {
 };
 
 export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
+  if (!options.header) throw new PodError("missing_auth", "missing Authorization header");
   const parsed = parseAuthHeader(options.header);
-  if (!parsed) {
-    throw new PodError(
-      options.header ? "malformed_auth" : "missing_auth",
-      options.header ? "malformed Authorization header" : "missing Authorization header",
-    );
-  }
+  if (!parsed) throw new PodError("malformed_auth", "malformed Authorization header");
   if (!isOrcaNodeId(parsed.orcaNodeId)) {
     throw new PodError("malformed_auth", "orca_node_id in the Authorization header is not an Ed25519 public key");
   }
@@ -253,8 +251,6 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
 // Admission proof (§7.1): the workgroup password gates *joining* the mesh.
 // ---------------------------------------------------------------------------
 
-export type AdmissionKind = keyof typeof ADMISSION_DOMAIN;
-
 type AdmissionFields = {
   workgroupId: string;
   orcaNodeId: string;
@@ -284,6 +280,24 @@ export function verifyAdmissionProof(
   const expected = Buffer.from(admissionProof(kind, key, fields), "base64url");
   const actual = Buffer.from(proof, "base64url");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+/** A fresh admission for `kind`: this node's ids, now, a new nonce and the proof over them. */
+export function createAdmission(
+  kind: AdmissionKind,
+  key: Buffer,
+  ids: { workgroupId: string; orcaNodeId: string },
+): Admission {
+  const ts = Date.now();
+  const nonce = randomUUID();
+  const proof = admissionProof(kind, key, { ...ids, ts, nonce });
+  return { workgroup_id: ids.workgroupId, orca_node_id: ids.orcaNodeId, ts, nonce, proof };
+}
+
+/** True when the proof in a received admission was made with `key` over exactly its own fields. */
+export function verifyAdmission(kind: AdmissionKind, key: Buffer, admission: Admission): boolean {
+  const { workgroup_id: workgroupId, orca_node_id: orcaNodeId, ts, nonce, proof } = admission;
+  return verifyAdmissionProof(kind, key, { workgroupId, orcaNodeId, ts, nonce }, proof);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +345,11 @@ export function verifyGrant(originOrcaNodeId: string, grant: SignedGrant): boole
  */
 export function blobLinkSignature(identity: NodeIdentity, blobId: string, exp: string): string {
   return signWithIdentity(identity, `${BLOB_LINK_DOMAIN}|${blobId}|${exp}`);
+}
+
+/** The capability URL of a blob on the node at `endpoint`; `exp` is epoch seconds, as text (§5.6). */
+export function signedBlobUrl(identity: NodeIdentity, endpoint: string, blobId: string, exp: string): string {
+  return `${endpoint.replace(/\/+$/, "")}/blobs/${blobId}?exp=${exp}&sig=${blobLinkSignature(identity, blobId, exp)}`;
 }
 
 export function verifyBlobLinkSignature(orcaNodeId: string, blobId: string, exp: string, sig: string): boolean {

@@ -3,10 +3,12 @@
 import process from "node:process";
 import { parseArgs } from "node:util";
 
-import { configPath, defaultDataRoot, loadConfig, type OrcaNodeConfig } from "../node/index.ts";
-import type { MembersResponse, PeerView, TaskView } from "../protocol/index.ts";
-import { loadIdentity, type NodeIdentity } from "../security/index.ts";
-import { createPeerClient, type PeerClient } from "../transport/index.ts";
+import { configPath, defaultDataRoot, loadConfig, type OrcaNodeConfig } from "../node/config.ts";
+import { MembersResponseSchema, type PeerView } from "../protocol/peer.ts";
+import type { PeerClient } from "../protocol/client.ts";
+import type { TaskView } from "../protocol/task.ts";
+import { loadIdentity, type NodeIdentity } from "../security/identity.ts";
+import { createPeerClient } from "../transport/peer-client.ts";
 
 export const OPTIONS = {
   config: { type: "string" },
@@ -106,7 +108,12 @@ export async function peerClient(config: OrcaNodeConfig, peer: string): Promise<
     roster: () => roster,
   });
   if (client.idOf(peer) === undefined) {
-    roster = (await client.call<MembersResponse>(localEndpoint(config), "GET", "/cluster/members")).members;
+    const members = await client.call(localEndpoint(config), {
+      method: "GET",
+      path: "/cluster/members",
+      reply: MembersResponseSchema,
+    });
+    roster = members.members;
     if (client.idOf(peer) === undefined) {
       throw new Error(`${peer} is not a member known to this node; join it first (orca-node serve --peer ${peer})`);
     }
@@ -123,5 +130,3 @@ function statusLine(view: TaskView): string {
 export function printView(view: TaskView, flags: Flags): void {
   process.stdout.write(`${flags.json === true ? JSON.stringify(view, null, 2) : statusLine(view)}\n`);
 }
-
-export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

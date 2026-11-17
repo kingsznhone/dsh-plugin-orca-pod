@@ -4,19 +4,16 @@
  * code uses; nothing downstream re-reads the raw metadata.
  */
 
-import { parseEchoScript, type EchoScript } from "../execution/index.ts";
-import { PodError, isRecord } from "../kernel/index.ts";
-import {
-  isPermissionMode,
-  isReasoningEffort,
-  parseModelSelection,
-  type A2AMessage,
-  type ModelSelection,
-  type PermissionMode,
-  type SignedGrant,
-  type TaskInputRef,
-} from "../protocol/index.ts";
-import { parseSignedGrant } from "../security/index.ts";
+import { z } from "zod";
+
+import { parseEchoScript, type EchoScript } from "../execution/echo.ts";
+import { PodError } from "../kernel/errors.ts";
+import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
+import { PodTaskMetadataSchema, type A2AMessage, type TaskInputRef } from "../protocol/task.ts";
+import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { PermissionMode } from "../protocol/permission.ts";
+import type { SignedGrant } from "../protocol/grant.ts";
+import { parseSignedGrant } from "../security/grants.ts";
 
 export type TaskMeta = {
   /** Orca nodes this task was delegated through, origin first. */
@@ -27,35 +24,29 @@ export type TaskMeta = {
   permissionMode: PermissionMode;
   model: ModelSelection | undefined;
   /** The `reasoning_effort` field, else the effort pinned in `model` (§6.15). */
-  effort: string | undefined;
+  effort: ReasoningEffort | undefined;
   /** Origin's requested lifetime in seconds; the local cap still applies. */
   taskTtlS: number | undefined;
   inputs: TaskInputRef[];
   echo: EchoScript;
 };
 
-const INPUT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const BLOB_ID_PATTERN = /^[0-9a-f]{64}$/;
+/** What this node accepts as an input: a sha256 blob id under a plain file name (§6.7). */
+const AcceptedInputSchema = z.object({
+  blob_id: z.string().regex(/^[0-9a-f]{64}$/, "must be a sha256 blob id"),
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "is not a safe file name"),
+});
 
-function need(ok: boolean, message: string): asserts ok {
-  if (!ok) throw new PodError("bad_request", message);
-}
+/** The wire `pod` block, with the one field this node narrows further. */
+const AcceptedPodSchema = PodTaskMetadataSchema.extend({ inputs: z.array(AcceptedInputSchema).optional() });
 
-function parseInputs(raw: unknown): TaskInputRef[] {
-  need(Array.isArray(raw), "pod.inputs must be an array");
+function parseInputs(inputs: readonly TaskInputRef[]): TaskInputRef[] {
   const seen = new Set<string>();
-  return raw.map((item: unknown) => {
-    need(isRecord(item), "pod.inputs entries must be objects");
-    const { blob_id: blobId, name } = item;
-    need(typeof blobId === "string" && BLOB_ID_PATTERN.test(blobId), "pod.inputs[].blob_id must be a sha256 blob id");
-    need(
-      typeof name === "string" && INPUT_NAME_PATTERN.test(name),
-      `pod.inputs[].name "${String(name)}" is not a safe file name`,
-    );
+  for (const { name } of inputs) {
     if (seen.has(name)) throw new PodError("duplicate_input_name", `input name ${name} appears twice`);
     seen.add(name);
-    return { blob_id: blobId, name };
-  });
+  }
+  return [...inputs];
 }
 
 /**
@@ -72,37 +63,16 @@ function parseInputs(raw: unknown): TaskInputRef[] {
  * copy it, so it reaches every hop of the tree.
  */
 export function parsePodMetadata(
+  /** Untrusted: it is whatever the caller sent, so it is typed as nothing more than an object. */
   metadata: Record<string, unknown> | undefined,
   selfOrcaNodeId: string,
   originOrcaNode: string,
 ): TaskMeta {
-  const pod = metadata?.pod ?? {};
-  need(isRecord(pod), "metadata.pod must be an object");
-  const { hop, chain = [], root, root_origin, permission_mode, model, reasoning_effort, task_ttl_s, inputs } = pod;
-  need(
-    hop === undefined || (typeof hop === "number" && Number.isInteger(hop) && hop >= 0),
-    "pod.hop must be a non-negative integer",
-  );
-  need(
-    Array.isArray(chain) && chain.every((entry) => typeof entry === "string"),
-    "pod.chain must be an array of orca node ids",
-  );
-  need(root === undefined || typeof root === "string", "pod.root must be a task id");
-  need(root_origin === undefined || typeof root_origin === "string", "pod.root_origin must be an orca node id");
-  need(
-    permission_mode === undefined || isPermissionMode(permission_mode),
-    "pod.permission_mode must be one of read-only, workspace-write, danger-full-access",
-  );
-  const selection = model === undefined ? undefined : parseModelSelection(model);
-  need(selection !== null, "pod.model must name a provider, model and optional reasoning_effort");
-  need(
-    reasoning_effort === undefined || isReasoningEffort(reasoning_effort),
-    "pod.reasoning_effort must be a non-empty string",
-  );
-  need(
-    task_ttl_s === undefined || (typeof task_ttl_s === "number" && Number.isFinite(task_ttl_s) && task_ttl_s > 0),
-    "pod.task_ttl_s must be a positive number",
-  );
+  const raw = metadata?.pod ?? {};
+  if (!isRecord(raw)) throw new PodError("bad_request", "metadata.pod must be an object");
+  const parsed = parseSchema(AcceptedPodSchema, raw);
+  if (!parsed.ok) throw new PodError("bad_request", `pod.${describeIssue(parsed.issue)}`);
+  const { chain = [], root_origin, permission_mode, model, reasoning_effort, task_ttl_s, inputs } = parsed.value;
   if (chain.includes(selfOrcaNodeId)) {
     throw new PodError(
       "ancestor_call_forbidden",
@@ -115,23 +85,22 @@ export function parsePodMetadata(
       `${selfOrcaNodeId} is the origin of this delegation tree; the root origin cannot be called back`,
     );
   }
-  const echo = parseEchoScript(metadata?.echo);
   return {
     chain,
     rootOrigin: root_origin ?? originOrcaNode,
     permissionMode: permission_mode ?? "read-only",
-    model: selection,
-    effort: reasoning_effort ?? selection?.reasoning_effort,
+    model,
+    effort: reasoning_effort ?? model?.reasoning_effort,
     taskTtlS: task_ttl_s,
     inputs: inputs === undefined ? [] : parseInputs(inputs),
-    echo,
+    echo: parseEchoScript(metadata?.echo),
   };
 }
 
 /** The human decision a resume message carries; null when it carries none. */
-type ResumeControl = { kind: "grant"; grant: SignedGrant } | { kind: "denied"; reason: string };
+export type ParsedResume = { kind: "grant"; grant: SignedGrant } | { kind: "denied"; reason: string };
 
-export function parseResume(message: A2AMessage): ResumeControl | null {
+export function parseResume(message: A2AMessage): ParsedResume | null {
   for (const part of message.parts) {
     if (part.kind !== "data") continue;
     const { grant, permission_denied, reason } = part.data;

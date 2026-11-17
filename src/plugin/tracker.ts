@@ -16,18 +16,16 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { DispatchEntry } from "../storage/index.ts";
-import { isTerminal, permissionRequestOf } from "../protocol/index.ts";
-import type { PermissionRequest, TaskView } from "../protocol/index.ts";
-import type { ApprovalBroker } from "./broker.ts";
+import type { DispatchEntry } from "../storage/stores.ts";
+import { isTerminal, permissionRequestOf } from "../protocol/task.ts";
+import type { PermissionRequest } from "../protocol/grant.ts";
+import type { TaskView } from "../protocol/task.ts";
+import { taskKey, type ApprovalBroker } from "./broker.ts";
 import type { AgentNotice, HostLogger, ToolAgent } from "./dsh.ts";
-import { errorMessage } from "../kernel/index.ts";
+import { errorMessage, PodError } from "../kernel/errors.ts";
 
 /** The DSH Agent surface used to return a notice to the dispatching session. */
 export type TrackerAgent = ToolAgent;
-
-/** User-role message shape accepted by the DSH inbox. */
-type TrackerMessage = AgentNotice;
 
 /** The orca-node calls the tracker needs. */
 export interface TrackerNode {
@@ -250,43 +248,49 @@ export function createTracker(
       // Exponential backoff after transient failures; the timer keeps running so
       // other entries are still polled on schedule.
       if (Date.now() < entry.nextAttemptAt) continue;
-      try {
-        const view = await node.getTask(entry.peer, entry.taskId);
-        // The entry may have been dropped (agent disposed) while the read ran.
-        if (pending.get(key) !== entry) continue;
-        entry.view = view;
-        entry.failures = 0;
-        entry.nextAttemptAt = 0;
-        changed = true;
-        const request = permissionRequestOf(view);
-        if (request !== null) {
-          // The UI answers a suspended request; the task stays tracked until it
-          // finishes. Parking is idempotent per request id.
-          broker.park({ peer: entry.peer, view, request, agentId: entry.agent.id });
-          continue;
-        }
-        // Not suspended: any earlier prompt was answered elsewhere or the task settled.
-        broker.withdraw(entry.peer, entry.taskId);
-        if (!isTerminal(view.status.state)) continue;
-        pending.delete(key);
-        finished.push({ ...entry, kind: "terminal", view });
-        scheduleFlush();
-      } catch (error) {
-        // A vanished task (404) or a rejected read is final; a network timeout or
-        // a 5xx is transient and must be retried instead of silently losing the
-        // task — the agent was told not to poll (§8.3).
-        if (pending.get(key) !== entry) continue;
-        failPoll(key, entry, error);
-        changed = true;
-      }
+      if (await pollEntry(node, key, entry)) changed = true;
     }
     if (changed) notify();
   }
 
+  /** Read one tracked task and act on what it says. True when something a listener renders changed. */
+  async function pollEntry(node: TrackerNode, key: string, entry: PendingTask): Promise<boolean> {
+    try {
+      const view = await node.getTask(entry.peer, entry.taskId);
+      // The entry may have been dropped (agent disposed) while the read ran.
+      if (pending.get(key) !== entry) return false;
+      entry.view = view;
+      entry.failures = 0;
+      entry.nextAttemptAt = 0;
+      const request = permissionRequestOf(view);
+      if (request !== null) {
+        // The UI answers a suspended request; the task stays tracked until it
+        // finishes. Parking is idempotent per request id.
+        broker.park({ peer: entry.peer, view, request, agentId: entry.agent.id });
+        return true;
+      }
+      // Not suspended: any earlier prompt was answered elsewhere or the task settled.
+      broker.withdraw(entry.peer, entry.taskId);
+      if (isTerminal(view.status.state)) {
+        pending.delete(key);
+        finished.push({ ...entry, kind: "terminal", view });
+        scheduleFlush();
+      }
+      return true;
+    } catch (error) {
+      // A vanished task (404) or a rejected read is final; a network timeout or
+      // a 5xx is transient and must be retried instead of silently losing the
+      // task — the agent was told not to poll (§8.3).
+      if (pending.get(key) !== entry) return false;
+      failPoll(key, entry, error);
+      return true;
+    }
+  }
+
   /** Retry a transient failure with backoff; give up (with a notice) after N. */
   function failPoll(key: string, entry: PendingTask, error: unknown): void {
-    const status = (error as { status?: number }).status;
-    const code = (error as { code?: string }).code;
+    const status = error instanceof PodError ? error.status : undefined;
+    const code = error instanceof PodError ? error.code : undefined;
     const gone = status === 404 || code === "task_not_found";
     const unauthorized = status === 401 || status === 403;
     if (gone || unauthorized) {
@@ -338,36 +342,41 @@ export function createTracker(
   function deliver(agent: TrackerAgent, lines: string[]): void {
     const text = lines.map((line) => `[orca-pod] ${line}`).join("\n");
     const summary = lines.length === 1 ? (lines[0] ?? "") : `${lines.length} background tasks need attention`;
-    const message: TrackerMessage = {
+    const message: AgentNotice = {
       id: randomUUID(),
       role: "user",
       content: [{ type: "text", text }],
       source: { kind: "orca-pod", form: "notice", summary: clampSummary(summary) },
     };
     try {
-      if (agent.status === "running") {
-        agent.inject(message);
-        awake.set(agent.id, 0);
-        return;
-      }
-      const count = awake.get(agent.id) ?? 0;
-      if (count >= maxConsecutiveWakes) {
-        // Budget exhausted: leave the notice unread in the inbox instead of
-        // waking the agent again. The user's next message resets the budget.
-        agent.inject(message);
-        return;
-      }
-      agent.followup(message);
-      awake.set(agent.id, count + 1);
+      wake(agent, message);
     } catch (error) {
       logger.warn(`orca-pod: failed to notify agent ${agent.id}: ${errorMessage(error)}`);
     }
   }
 
+  /** Hand a notice to the agent: into its running turn, or as a follow-up that wakes it while the wake budget lasts. */
+  function wake(agent: TrackerAgent, message: AgentNotice): void {
+    if (agent.status === "running") {
+      agent.inject(message);
+      awake.set(agent.id, 0);
+      return;
+    }
+    const count = awake.get(agent.id) ?? 0;
+    if (count >= maxConsecutiveWakes) {
+      // Budget exhausted: leave the notice unread in the inbox instead of
+      // waking the agent again. The user's next message resets the budget.
+      agent.inject(message);
+      return;
+    }
+    agent.followup(message);
+    awake.set(agent.id, count + 1);
+  }
+
   return {
     track(agent, peer, taskId, trackOptions = {}) {
       if (stopped) return false;
-      const key = `${peer}|${taskId}`;
+      const key = taskKey(peer, taskId);
       const existing = pending.get(key);
       if (existing !== undefined) {
         // Already watched: keep its backoff and last view. A resumed session is

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath, createOrcaNodeConfig, loadConfig, saveConfig } from "../src/node/config.ts";
-import { ConfigValidationError, nodeSettings, parseSettings, pickPanelFields } from "../src/node/settings.ts";
+import { ConfigValidationError, PanelPatchSchema, nodeSettings, parseSettings } from "../src/node/settings.ts";
 
 const roots: string[] = [];
 
@@ -57,9 +57,9 @@ describe("settings parser", () => {
     expect(() => parseSettings({ peers: ["not a url"] })).toThrow(/peers/);
   });
 
-  it("keeps panel-editable keys only, nulls included", () => {
+  it("keeps panel-editable keys only, nulls included, and checks their values", () => {
     expect(
-      pickPanelFields({
+      PanelPatchSchema.parse({
         display_name: "x",
         task_timeout_s: null,
         data_root: "/etc",
@@ -68,6 +68,7 @@ describe("settings parser", () => {
         other: 1,
       }),
     ).toEqual({ display_name: "x", task_timeout_s: null });
+    expect(PanelPatchSchema.safeParse({ port: "11812" }).success).toBe(false);
   });
 
   it("drops the plugin-only settings from the persisted shape", () => {

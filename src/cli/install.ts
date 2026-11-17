@@ -17,16 +17,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import {
-  configPath,
-  createOrcaNodeConfig,
-  defaultDataRoot,
-  saveConfig,
-  parseSettings,
-  type Settings,
-} from "../node/index.ts";
-import { bindChoices } from "../transport/index.ts";
-import { errorMessage } from "../kernel/index.ts";
+import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
+import { parseSettings, type Settings } from "../node/settings.ts";
+import { bindChoices } from "../transport/net.ts";
+import { errorMessage } from "../kernel/errors.ts";
 
 /** A service listens on all interfaces unless told otherwise (the plugin defaults to loopback). */
 export const INSTALL_BIND_HOST = "::";
@@ -54,7 +48,7 @@ export interface InstallEnvironment {
   dshBin: string;
 }
 
-interface InstallPlan {
+export interface InstallPlan {
   system: boolean;
   serviceName: string;
   unitPath: string;
@@ -78,9 +72,23 @@ interface CommandResult {
 
 export type CommandRunner = (command: string, args: string[]) => CommandResult;
 
+/** The setting each install question fills in. */
+const ANSWER_FIELD = {
+  workgroup: "workgroup_id",
+  password: "workgroup_password",
+  "bind-host": "bind_host",
+  port: "port",
+} as const;
+
+/** The answers an install can ask for, named by the flag that supplies them. */
+export type AnswerOption = keyof typeof ANSWER_FIELD;
+
+/** Tells whether a file exists; replaceable so tests need no disk. */
+type PathExists = (path: string) => boolean;
+
 /** One question an interactive install can ask for a value it cannot infer. */
 export interface PromptQuestion {
-  option: "workgroup" | "password" | "bind-host" | "port";
+  option: AnswerOption;
   message: string;
   default?: string;
   secret?: boolean;
@@ -188,11 +196,11 @@ function runCommand(command: string, args: string[]): CommandResult {
   };
 }
 
+/** What looking for `dsh` found: its version, or why it could not be run. */
+export type DshCheck = { ok: true; version: string } | { ok: false; message: string };
+
 /** Check that `dsh` exists and print its version; tasks need it at runtime. */
-export function checkDsh(
-  dshBin: string,
-  run: CommandRunner = runCommand,
-): { ok: boolean; version?: string; message?: string } {
+export function checkDsh(dshBin: string, run: CommandRunner = runCommand): DshCheck {
   try {
     const result = run(dshBin, ["--version"]);
     if (!result.ok)
@@ -204,15 +212,11 @@ export function checkDsh(
 }
 
 interface ConfigDeps {
-  exists?: (path: string) => boolean;
+  exists?: PathExists;
 }
 
 /** True when the install would write a fresh node config (or overwrite one). */
-export function needsNodeConfig(
-  plan: InstallPlan,
-  options: InstallOptions,
-  exists: (path: string) => boolean = existsSync,
-): boolean {
+export function needsNodeConfig(plan: InstallPlan, options: InstallOptions, exists: PathExists = existsSync): boolean {
   return options.force || !exists(plan.configPath);
 }
 
@@ -224,7 +228,7 @@ export function needsNodeConfig(
 export function installQuestions(
   plan: InstallPlan,
   options: InstallOptions,
-  exists: (path: string) => boolean = existsSync,
+  exists: PathExists = existsSync,
 ): PromptQuestion[] {
   if (!needsNodeConfig(plan, options, exists)) return [];
   const questions: PromptQuestion[] = [];
@@ -252,19 +256,12 @@ export function optionalInstallQuestions(options: InstallOptions): PromptQuestio
   ];
 }
 
-const ANSWER_FIELD = {
-  workgroup: "workgroup_id",
-  password: "workgroup_password",
-  "bind-host": "bind_host",
-  port: "port",
-} as const;
-
 /** Fill the answers from the interactive prompts into a fresh options object. */
 export async function promptForInstall(
   plan: InstallPlan,
   options: InstallOptions,
   prompt: PromptFn,
-  exists: (path: string) => boolean = existsSync,
+  exists: PathExists = existsSync,
 ): Promise<InstallOptions> {
   const answers: Record<string, unknown> = {};
   const questions = [...installQuestions(plan, options, exists), ...optionalInstallQuestions(options)];

@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-import { describeIssue, parseSchema } from "../kernel/index.ts";
+import { parseSchema } from "../kernel/schema.ts";
 
 export const MAX_MODEL_OFFERS = 128;
 
@@ -24,14 +24,6 @@ export type ModelOffer = z.infer<typeof ModelOfferSchema>;
 /** The catalog a node advertises, at most `MAX_MODEL_OFFERS` routes. */
 export const ModelOffersSchema = z.array(ModelOfferSchema).max(MAX_MODEL_OFFERS);
 
-/** A provider/model route, optionally pinned to one reasoning effort. */
-export const ModelSelectionSchema = z.object({
-  provider: NonEmptyString,
-  model: NonEmptyString,
-  reasoning_effort: NonEmptyString.optional(),
-});
-export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
-
 /**
  * One reasoning-effort value a provider offers (`off`, `low`, `high`, `max`
  * today; treated as an opaque string so a provider can add values). It must
@@ -39,6 +31,30 @@ export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
  */
 export const ReasoningEffortSchema = z.string().regex(/\S/, "must not be blank");
 export type ReasoningEffort = string;
+
+/** A provider/model route, optionally pinned to one reasoning effort. */
+export const ModelSelectionSchema = z.object({
+  provider: NonEmptyString,
+  model: NonEmptyString,
+  reasoning_effort: ReasoningEffortSchema.optional(),
+});
+export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
+
+/** What a node uses when a task names no model: the route and, separately, the reasoning effort (§6.15). */
+export type ModelDefaults = { model: ModelSelection | null; reasoningEffort: ReasoningEffort | null };
+
+/** "model p/m and reasoning effort "e"": how an executor names what a task asked for in its failure text. */
+export function describeModelRequest(
+  model: ModelSelection | undefined,
+  reasoningEffort: ReasoningEffort | undefined,
+): string {
+  return [
+    model === undefined ? "" : `model ${model.provider}/${model.model}`,
+    reasoningEffort === undefined ? "" : `reasoning effort "${reasoningEffort}"`,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+}
 
 /** Parse a `provider/model` spec, optionally with a reasoning effort (§6.15). */
 export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSelection | null {
@@ -68,20 +84,4 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 export function parseModelSelection(raw: unknown): ModelSelection | null {
   const result = parseSchema(ModelSelectionSchema, raw);
   return result.ok ? result.value : null;
-}
-
-/** Validate the advertised model catalog (§6.15); throws "<path> <reason>". */
-export function validateModelOffers(raw: unknown): ModelOffer[] {
-  const result = parseSchema(ModelOffersSchema, raw);
-  if (!result.ok) throw new Error(describeIssue(result.issue));
-  return result.value;
-}
-
-/** Validate one provider/model route, optionally pinned to a reasoning effort. */
-export function validateModelSelection(raw: unknown): ModelSelection {
-  return parseModelSelection(raw) ?? fail("must name a provider, model and optional reasoning_effort");
-}
-
-function fail(message: string): never {
-  throw new Error(message);
 }

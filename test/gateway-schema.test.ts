@@ -9,7 +9,7 @@ import { NonceCache, admissionProof, buildAuthHeader } from "../src/security/cry
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
 import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage/memory.ts";
-import { createGateway } from "../src/transport/gateway/index.ts";
+import { createGateway } from "../src/transport/gateway/gateway.ts";
 
 const WORKGROUP = "orca-schema";
 

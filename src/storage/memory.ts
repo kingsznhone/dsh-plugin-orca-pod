@@ -3,7 +3,8 @@
 import { writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 
-import { digestMismatch, laterExpiry, recordOf, sha256Hex, tooLarge } from "./blob-common.ts";
+import { bodySha256 } from "../security/crypto.ts";
+import { blobMeta, digestMismatch, laterExpiry, recordOf, tooLarge } from "./blob-common.ts";
 import type {
   BlobRecord,
   BlobRead,
@@ -15,7 +16,7 @@ import type {
   PersistedTask,
   StoredBlob,
   TaskStore,
-} from "./index.ts";
+} from "./stores.ts";
 
 function cloneTask(task: PersistedTask): PersistedTask {
   return structuredClone(task);
@@ -46,20 +47,13 @@ export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
   const store: BlobStore = {
     put(bytes, options): StoredBlob {
       const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-      const blobId = sha256Hex(buffer);
+      const blobId = bodySha256(buffer);
       const existing = blobs.get(blobId);
       if (existing) {
         existing.expires_at = laterExpiry(existing.expires_at, expiry());
         return { ...existing };
       }
-      const blob: StoredBlob = {
-        blob_id: blobId,
-        size: buffer.length,
-        name: options?.name ?? null,
-        media_type: options?.media_type ?? null,
-        expires_at: expiry(),
-        bytes: buffer,
-      };
+      const blob: StoredBlob = { blob_id: blobId, ...blobMeta(buffer.length, options, expiry()), bytes: buffer };
       blobs.set(blobId, blob);
       return { ...blob };
     },
@@ -75,7 +69,7 @@ export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
         chunks.push(buffer);
       }
       const bytes = Buffer.concat(chunks);
-      const actual = sha256Hex(bytes);
+      const actual = bodySha256(bytes);
       if (options?.sha256 !== undefined && options.sha256 !== actual) throw digestMismatch(options.sha256, actual);
       return recordOf(store.put(bytes, options));
     },
@@ -130,7 +124,7 @@ export function createMemoryFileBlobStore(): FileBlobStore {
 
 export function createMemoryDispatchStore(): DispatchStore {
   const entries = new Map<string, DispatchEntry>();
-  const store: DispatchStore = {
+  return {
     save(entry) {
       entries.set(entry.task_id, entry);
     },
@@ -141,5 +135,4 @@ export function createMemoryDispatchStore(): DispatchStore {
     },
     close() {},
   };
-  return store;
 }

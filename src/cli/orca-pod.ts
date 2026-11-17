@@ -32,12 +32,14 @@ import {
   resolveEnvironment,
   type InstallEnvironment,
   type InstallOptions,
+  type InstallPlan,
   type PromptFn,
   type PromptQuestion,
 } from "./install.ts";
-import { CLI_PATH, errorMessage } from "../kernel/index.ts";
-import { DEFAULT_PORT } from "../protocol/index.ts";
-import { parseSettings } from "../node/index.ts";
+import { CLI_PATH } from "../kernel/entry.ts";
+import { errorMessage } from "../kernel/errors.ts";
+import { DEFAULT_PORT } from "../protocol/constants.ts";
+import { parseSettings } from "../node/settings.ts";
 
 const USAGE = `Usage: orca-pod install [options]
 
@@ -162,14 +164,19 @@ function defaultPrompt(): PromptFn {
 }
 
 function missingAnswerFlags(questions: readonly PromptQuestion[]): string {
-  const flags: string[] = [];
-  for (const question of questions) {
-    if (question.option === "workgroup") flags.push("--workgroup");
-    else if (question.option === "password") flags.push("--password");
-    else if (question.option === "bind-host") flags.push("--bind-host");
-    else if (question.option === "port") flags.push("--port");
-  }
-  return flags.join(", ");
+  return questions.map((question) => `--${question.option}`).join(", ");
+}
+
+/** The summary of what an install is about to do. */
+function printPlan(write: (text: string) => void, answers: InstallOptions, plan: InstallPlan): void {
+  const { bind_host: listenHost, port: listenPort } = answers.node;
+  write("orca-pod install");
+  write(`  workgroup: ${answers.node.workgroup_id ?? "(existing config)"}`);
+  write(`  data root: ${plan.dataRoot}`);
+  write(`  listen:    ${listenHost.includes(":") ? `[${listenHost}]` : listenHost}:${listenPort}`);
+  write(`  service:   ${plan.serviceName} at ${plan.unitPath}`);
+  if (plan.envFiles.length > 0) write(`  env files: ${plan.envFiles.join(", ")}`);
+  if (plan.environment.length > 0) write(`  env:       ${plan.environment.join(" ")}`);
 }
 
 export async function main(argv: string[] = process.argv.slice(2), deps: MainDeps = {}): Promise<number> {
@@ -219,30 +226,18 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   if (questions.length > 0) {
     if (!interactive || !canPrompt) {
       writeError(`install needs answers for a new node config: ${missingAnswerFlags(questions)}.`);
-      if (!interactive) {
-        writeError(
-          "Pass them as flags (for example --workgroup lab --password 'secret'); running bare `orca-pod install` would ask interactively.",
-        );
-      } else {
-        writeError(
-          "The interactive setup needs a terminal; pass the answers as flags (for example --workgroup lab --password 'secret').",
-        );
-      }
+      writeError(
+        interactive
+          ? "The interactive setup needs a terminal; pass the answers as flags (for example --workgroup lab --password 'secret')."
+          : "Pass them as flags (for example --workgroup lab --password 'secret'); running bare `orca-pod install` would ask interactively.",
+      );
       return 1;
     }
     answers = await promptForInstall(plan, answers, deps.prompt ?? defaultPrompt());
   }
 
   const resolvedPlan = planInstall(answers, environment);
-  write("orca-pod install");
-  write(`  workgroup: ${answers.node.workgroup_id ?? "(existing config)"}`);
-  write(`  data root: ${resolvedPlan.dataRoot}`);
-  const { bind_host: listenHost, port: listenPort } = answers.node;
-  const listen = `${listenHost.includes(":") ? `[${listenHost}]` : listenHost}:${listenPort}`;
-  write(`  listen:    ${listen}`);
-  write(`  service:   ${resolvedPlan.serviceName} at ${resolvedPlan.unitPath}`);
-  if (resolvedPlan.envFiles.length > 0) write(`  env files: ${resolvedPlan.envFiles.join(", ")}`);
-  if (resolvedPlan.environment.length > 0) write(`  env:       ${resolvedPlan.environment.join(" ")}`);
+  printPlan(write, answers, resolvedPlan);
 
   if (values["dry-run"] === true) {
     write("");
@@ -255,22 +250,21 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   if (values["skip-dsh-check"] !== true) {
     const checked = checkDsh(environment.dshBin);
     if (!checked.ok) {
-      writeError(`dsh was not found: ${checked.message ?? "unknown error"}`);
+      writeError(`dsh was not found: ${checked.message}`);
       writeError("Install DeepSeek Harness first, or pass --dsh-bin <path>; --skip-dsh-check overrides this check.");
       return 1;
     }
-    write(`dsh:       ${checked.version ?? "found"}`);
+    write(`dsh:       ${checked.version || "found"}`);
   }
 
   const result = await installService(resolvedPlan, answers);
   write(`orca-pod: wrote ${resolvedPlan.unitPath}`);
   if (result.configCreated) write(`orca-pod: created ${resolvedPlan.configPath}`);
-  for (const command of result.commands) {
-    if (!command.ok) {
-      writeError(`command failed: ${command.stderr.trim() || command.stdout.trim()}`);
-      writeError("Fix the error, then run the commands from the plan manually.");
-      return 1;
-    }
+  const failed = result.commands.find((command) => !command.ok);
+  if (failed !== undefined) {
+    writeError(`command failed: ${failed.stderr.trim() || failed.stdout.trim()}`);
+    writeError("Fix the error, then run the commands from the plan manually.");
+    return 1;
   }
   if (answers.noStart) {
     write("orca-pod: unit written; start it with:");

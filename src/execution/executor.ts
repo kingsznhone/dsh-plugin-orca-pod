@@ -4,7 +4,9 @@
  */
 
 import type { EchoScript } from "./echo.ts";
-import type { ModelSelection, PermissionMode, TaskRelay } from "../protocol/index.ts";
+import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { PermissionMode } from "../protocol/permission.ts";
+import type { RequestedAccess, TaskRelay } from "../protocol/grant.ts";
 
 /**
  * Why a running task stops to wait for someone else. The only reason is a
@@ -16,7 +18,7 @@ import type { ModelSelection, PermissionMode, TaskRelay } from "../protocol/inde
  * task runner turns it into this node's own `permission_request` without a
  * network call (§7.12).
  */
-export type Suspension = { kind: "permission"; tool: string; requested: Record<string, unknown>; relay?: TaskRelay };
+export type Suspension = { kind: "permission"; tool: string; requested: RequestedAccess; relay?: TaskRelay };
 
 export type ExecutorEvent =
   | { type: "suspend"; suspend: Suspension }
@@ -42,7 +44,7 @@ export type ExecuteInput = {
   /** Model route the origin asks for; an executor that cannot select one fails the task (§6.15). */
   model: ModelSelection | undefined;
   /** Reasoning effort for that route, same rule. */
-  reasoningEffort: string | undefined;
+  reasoningEffort: ReasoningEffort | undefined;
   /** The task's echo script (§6.3); only the echo executor reads it. */
   echo: EchoScript;
 };

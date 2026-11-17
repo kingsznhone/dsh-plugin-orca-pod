@@ -20,19 +20,18 @@ orca-pod/
   test/               vitest，按模块一份 *.test.ts；test/fixtures/fake-acp.mjs 是假 ACP server
 ```
 
-`src/` 按限界上下文分目录，每个目录只通过自己的 `index.ts` 对外暴露接口与工厂（`index.ts` 只列被其他上下文用到的导出）；同一上下文内的文件互相直接 import。
+`src/` 按限界上下文分目录，目录内没有聚合导出文件（不设 `index.ts`）：谁用到什么，就直接 import 定义它的文件，所以上下文内部移动代码时，调用方跟着改。
 
 | 上下文        | 文件                                                                                                     | 职责                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `kernel/`     | `errors` / `ids` / `guards` / `events` / `entry`                                                         | `PodError` 与错误码 → HTTP 状态表（唯一一张）；任务 id；`isRecord`；进程内事件总线（task / members / dispatch）；包内入口路径（按当前模块扩展名解析 `cli/main.ts`/`cli/main.js`，`ORCA_POD_CLI` 与 `ExecStart` 都用它） |
-| `protocol/`   | `peer` / `task` / `grant` / `model` / `permission` / `constants`                                         | 线上类型与校验：成员目录与 digest、orca node id 格式、任务视图与 `TaskRunner` 接口、权限请求与 grant、模型路由（含目录上限与校验）、权限模式、默认端口 |
-| `security/`   | `identity` / `crypto` / `grants`                                                                         | Ed25519 身份；请求签名、准入证明、nonce、grant 与直链签名、scrypt 派生；grant 解析、校验与向子任务转发（`deriveChildGrant`） |
-| `storage/`    | `index`；实现 `memory` / `fs` / `file-registry` / `sqlite`（+ `blob-common`）                            | `index` 声明全部存储接口（task、blob、publish 映射、派发日志）；内存实现；内容寻址 fs blob store（配额与 GC）；`publish` 的文件哈希与登记；`node:sqlite` 实现（tasks / dispatches / file_blobs） |
+| `kernel/`     | `errors` / `schema` / `events` / `entry`                                                                | `PodError` 与错误码 → HTTP 状态表（唯一一张）；`isRecord` 与 `parseSchema`（不可信输入的唯一入口）；与载荷无关的进程内事件总线与 `NodeLogger`；包内入口路径（按当前模块扩展名解析 `cli/main.ts`/`cli/main.js`，`ORCA_POD_CLI` 与 `ExecStart` 都用它） |
+| `protocol/`   | `peer` / `cluster` / `a2a` / `task` / `grant` / `model` / `permission` / `client` / `dispatch` / `events` / `constants` | 线上形状全部是 zod schema，类型用 `z.infer`：成员目录与 digest、orca node id 格式；join / 心跳请求体（`cluster`）；A2A 方法参数与错误体（`a2a`）；任务视图与元数据、`TaskRunner` 接口；权限请求、grant、relay；模型路由；权限模式；出站客户端契约 `PeerClient`（`client`）；派发日志条目与进程内事件载荷；默认端口与 `BODY_SHA256_HEADER` |
+| `security/`   | `identity` / `crypto` / `grants`                                                                         | Ed25519 身份；请求签名、准入证明（`createAdmission` / `verifyAdmission`）、nonce、grant 与直链签名（`signedBlobUrl`）、scrypt 派生；grant 解析、校验与向子任务转发（`deriveChildGrant`） |
+| `storage/`    | `stores`；实现 `memory` / `fs` / `file-registry` / `sqlite`（+ `blob-common`）                          | `stores` 声明全部存储接口（task、blob、publish 映射、派发日志）；内存实现；内容寻址 fs blob store（配额与 GC）；`publish` 的文件哈希与登记；`node:sqlite` 实现（tasks / dispatches / file_blobs） |
 | `membership/` | `membership` / `mesh` / `screening`                                                                      | 成员记录与看门狗；join、心跳循环、leave、自述记录与模型目录；端点筛查（候选拨号前、入站 join 登记前）与地址分类 |
-| `tasks/`      | `runner` / `record` / `meta` / `inputs` / `workspace`                                                    | 单槽运行器与查找；一个任务的状态机与计时器；元数据一次性解析；任务书（可信前言在前、远端文本在最后的不可信块）与输入物化；工作区与配额测量 |
-| `execution/`  | `executor` / `echo` / `process` / `acp/`                                                                 | 执行器契约；Echo；子进程公共件（Windows shim、杀进程树）；ACP（`connection` 按 sessionId 路由、`session` 绑定、`session-store` 即 `sessions.json`、`permissions` 自动应答、`executor`） |
-| `delegation/` | `delegation` / `chain` / `dispatch-log`                                                                  | 发起侧：`sendTask`/`getTask`/`cancelTask`/审批/上交、child-link 轮询；子任务继承的元数据；派发日志语义（重启后在途条目记为 `unknown`） |
-| `transport/`  | `peer-client` / `net` / `gateway/`                                                                       | **唯一的出站客户端**（签名、超时、响应上限；陌生 URL 抛 `unknown_peer`，不隐式 join）；地址归一化、回环判定、端口；入站 HTTP：`index`（装配、body 解析）、`auth`（`access` 声明与唯一的 preValidation 钩子）、`error-handler`（唯一的错误出口）、`cluster-routes`、`a2a-routes`、`blob-routes` |
+| `tasks/`      | `runner` / `record` / `meta` / `inputs` / `workspace` / `delegation`                                    | 单槽运行器与查找；一个任务的状态机与计时器；元数据一次性解析；任务书（可信前言在前、远端文本在最后的不可信块）与输入物化；工作区与配额测量；发起侧（`delegation`）：`sendTask`/`getTask`/`cancelTask`/审批/上交、child-link 轮询、`childPodMetadata`（与 `meta` 解析的是同一块 `pod` 元数据）、派发日志语义（`markInFlightUnknown`，重启后在途条目记为 `unknown`） |
+| `execution/`  | `executor` / `echo` / `process` / `acp/`                                                                 | 执行器契约；Echo；子进程公共件（Windows shim、杀进程树）；ACP（`config` 配置类型、`connection` 按 sessionId 路由、`session` 绑定与 `sessions.json`、`permissions` 自动应答、`executor`） |
+| `transport/`  | `peer-client` / `net` / `gateway/`                                                                       | **唯一的出站客户端**（签名、超时、响应上限；陌生 URL 抛 `unknown_peer`，不隐式 join）；地址归一化、回环判定、端口；入站 HTTP：`gateway`（装配、body 解析）、`auth`（`access` 声明与唯一的 preValidation 钩子）、`error-handler`（唯一的错误出口）、`cluster-routes`、`a2a-routes`、`blob-routes` |
 | `node/`       | `orca-node` / `config` / `settings` / `harness`                                                          | **组合根**：一个进程 = 一个 orca node，只装配；**唯一的设置字段表与解析器**（`config.json`、插件 `Config`、面板覆盖、install、CLI 都走它）；`config.json` 读写（身份 + 派生密钥，0600）；测试用进程内多 orca node |
 | `cli/`        | `main` + 每个子命令一个文件（`serve`/`send`/`status`/`wait`/`escalate`/`publish`/`log`/`members`）、`shared`；`orca-pod` / `install` | `orca-node` CLI（`main` 只做参数分派）；`orca-pod install`；install 计划与 systemd unit 渲染 |
 | `plugin/`     | 见 §9.5                                                                                                  | DSH bundle                                                                                   |
@@ -40,15 +39,14 @@ orca-pod/
 模块依赖单向向下，由 `test/architecture.test.ts` 固化（解析 `src/` 的运行期 import，`import type` 不计）：
 
 ```text
-kernel ← protocol ← security ← storage(接口) ← { membership, tasks, execution, delegation } ← transport ← node ← { plugin, cli }
+kernel ← protocol ← security ← storage(接口) ← { membership, tasks, execution } ← transport ← node ← { plugin, cli }
 ```
 
 - 运行期 import 图无环；
-- 只允许指向更低一层；同层（membership、tasks、execution、delegation）之间可以互相使用，但只经对方 `index.ts`；
-- 跨上下文 import 必须指向对方的 `index.ts`，装配点 `node/`、`plugin/`、`cli/` 除外；
-- `storage/` 的实现（`index.ts` 以外的文件）只由装配点 import，业务层只认接口。
+- 只允许指向更低一层；同层（membership、tasks、execution）之间可以互相使用，无环由测试保证；
+- `storage/` 的实现（`stores.ts` 以外的文件）只由装配点 import，业务层只认 `stores.ts` 里的接口。
 
-`transport/gateway` 通过构造参数拿到 `TaskRunner`、`PeerStore` 等接口实例，而不是 import 执行器或任务实现——这是“gateway 能单独测”的前提。`node/orca-node.ts` 是装配 orca node 的库根，与 Node.js 运行时无关；命名里带 orca 就是为了让 import 和 grep 一眼分清。`index.ts` 是聚合导出，引入它就会加载整个上下文：装配点为了不造出环，可以直接 import 别的上下文内部的文件（例如 `node/settings.ts` 直接用 `transport/net.ts`，避开会加载 gateway 的 `transport/index.ts`）。
+`transport/gateway` 通过构造参数拿到 `TaskRunner`、`PeerStore` 等接口实例，而不是 import 执行器或任务实现——这是“gateway 能单独测”的前提。`node/orca-node.ts` 是装配 orca node 的库根，与 Node.js 运行时无关；命名里带 orca 就是为了让 import 和 grep 一眼分清。没有聚合导出，引入一个文件只会加载它自己依赖的部分（例如 `node/settings.ts` 只用 `transport/net.ts`，不会连带加载 gateway）。
 
 HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理都用它现成的，不手写 http server。路由不向 Fastify 注册 schema：处理器先用 `transport/gateway/input.ts` 的 `parseInput` 按 zod schema 解析自己的输入（失败即 `400 bad_request`，信息带出错路径，如 `body.models.0.provider`），解析结果才是处理器用的值。**每条路由必须声明 `config.access`**（`public|join|member|link|local`），缺了启动即失败；验签与授权只在一个钩子里做；错误只从一个错误处理器出去。
 
@@ -59,7 +57,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | 入口                      | 位置                         | 内容                                                                                 |
 | ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
 | `listTasks(limit?)`       | `node/orca-node.ts`          | 本机任务（inbound），内存记录在前，持久 store 回填历史                               |
-| `subscribe(listener)`     | `node/orca-node.ts` → `kernel/events.ts` | `task`（每次状态/权限变化）、`members`（名单、state、busy、endpoints、模型目录变化，按签名去重）、`dispatch`（origin 侧派发落库） |
+| `subscribe(listener)`     | `node/orca-node.ts` → `protocol/events.ts` | `task`（每次状态/权限变化）、`members`（名单、state、busy、endpoints、模型目录变化，按签名去重）、`dispatch`（origin 侧派发落库） |
 | `blobLink(blobId, ttlS?)` | `node/orca-node.ts`          | 签名直链（`?exp&sig`），默认 300 秒，面板直接 `<a href>` 下载产物                    |
 | `workspacePaths()`        | `node/orca-node.ts`          | workgroup 根、`notes/`、`inputs/`、`state/` 路径                                     |
 
@@ -91,7 +89,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 
 #### 9.2.2 客户端 bundle（`client/` → `lib/client.js`）
 
-源码在 `client/`，按职责分模块（`i18n`、`styles`、`store`、`primitives`、`approvals`、`tasks`、`members`、`settings`、`panel`，入口 `index.tsx`），用 React 18 的 TSX 编写、`strict` 类型检查（`tsc -p client`）。面板读到的数据类型直接从宿主一半导入（`src/plugin/admin.ts`、`src/plugin/web.ts`，仅类型、构建时擦除），路由返回什么与面板画什么不会走样。`npm run build` 用 esbuild（`scripts/build-client.ts`）把它打成 CommonJS，React 留作外部依赖，外面套上 `window.__ModuleLoader__.load({id:"orca-pod", factory: require => …})`——与 DSH 自带客户端插件的产物同一形状；工厂的 `require` 只解析壳的平台模块表（`react`、`react/jsx-runtime`）。导出 `{inject:["slots","locale"], apply}`；`apply` 注册五个 Slot：
+源码在 `client/`，按职责分模块（`i18n`、`styles`、`store`、`primitives`、`approvals`、`tasks`、`members`、`settings`、`panel`，入口 `index.tsx`），用 React 18 的 TSX 编写、`strict` 类型检查（`tsc -p client`）。面板读到的数据类型直接从宿主一半导入（`src/plugin/admin.ts`、`src/plugin/panel-api.ts`，仅类型、构建时擦除），路由返回什么与面板画什么不会走样。`npm run build` 用 esbuild（`scripts/build-client.ts`）把它打成 CommonJS，React 留作外部依赖，外面套上 `window.__ModuleLoader__.load({id:"orca-pod", factory: require => …})`——与 DSH 自带客户端插件的产物同一形状；工厂的 `require` 只解析壳的平台模块表（`react`、`react/jsx-runtime`）。导出 `{inject:["slots","locale"], apply}`；`apply` 注册五个 Slot：
 
 | Slot                      | id                        | 作用                                                                                          |
 | ------------------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
@@ -113,7 +111,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | --------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `protocol/` / `node/settings.ts`  | 固定 JSON 样本                                                    | schema 通过/拒绝、错误信息指向具体字段                                                 |
 | `security/crypto.ts`              | 冻结的签名样本                                                    | 换密钥/时间/body/查询串/接收方 id 任一字节即变；重启前签发的请求被 `stale_request` 拒绝 |
-| `security/grants.ts` / `delegation/chain.ts` | 纯函数 + 多 orca node 真实 HTTP                                   | 祖先禁调、grant 校验/转发/过期/重放/工具不符                                           |
+| `security/grants.ts` / `tasks/delegation.ts`（`childPodMetadata`） | 纯函数 + 多 orca node 真实 HTTP                                   | 祖先禁调、grant 校验/转发/过期/重放/工具不符                                           |
 | `storage/`                        | 一套 contract test，跑内存、fs 与 sqlite                          | 实现行为一致；过期/GC/去重/配额；关闭重开仍在                                          |
 | `tasks/workspace.ts`              | 临时目录                                                          | 目录一次创建、`inputDir` 拒绝路径穿越、用量测量                                        |
 | `transport/gateway/`              | 进程内真实 HTTP，假 executor、注入时钟                            | 路由、401/403/429/507、签名与成员闸门                                                  |
@@ -159,11 +157,11 @@ DSH 加载一个 bundle 靠包清单里的 `dsh.bundle.patch` 行，不是 `main
 package.json       "exports": { ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" }, "./client": "./lib/client.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg", … }
                    "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "immediately": true } }
 cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod', config: { port: 11811, peers: [] } }
-src/index.ts       export { Config, apply, inject } from './plugin/index.ts' + 库导出（createOrcaNode 等）；构建产物是 lib/index.js + .d.ts
-src/plugin/        index / lifecycle / stores / catalog / broker / tracker / tools / admin / web / skill / config / dsh
+src/index.ts       export { Config, apply, inject } from './plugin/bundle.ts' + 库导出（createOrcaNode 等）；构建产物是 lib/index.js + .d.ts
+src/plugin/        bundle / lifecycle / stores / catalog / services / broker / tracker / tools / admin / web / panel-api / skill / config / dsh
 ```
 
-`src/plugin/` 各文件：`index.ts` 是 `apply` 与导出；`lifecycle.ts` 管 orca node 的启停与面板改配置（`startPod`/`stopPod`）；`stores.ts` 是设置、密码与 peer 状态的存放（`PodStores` 及其宿主与内存实现、`peers.json`）；`catalog.ts` 从 Host 采集模型目录并公布到运行中的节点；`broker.ts` 是审批注册表；`tracker.ts` 是后台跟踪与投递；`tools.ts` 是唯一的 `orca_pod` 工具；`admin.ts` / `web.ts` 是面板数据面与同源路由；`skill.ts` 把随包的 skill bundle 解析成 `ctx.skills.register` 的注册对象；`config.ts` 是 Standard Schema 外壳（校验就是 `node/settings.ts` 的解析器）；`dsh.ts` 是最小 DSH 类型。
+`src/plugin/` 各文件：`bundle.ts` 是 `apply` 与导出；`lifecycle.ts` 管 orca node 的启停与面板改配置（`startPod`/`stopPod`）；`stores.ts` 是设置、密码与 peer 状态的存放（`PodStores` 及其宿主与内存实现、`peers.json`）；`catalog.ts` 从 Host 采集模型目录并公布到运行中的节点；`broker.ts` 是审批注册表；`tracker.ts` 是后台跟踪与投递；`tools.ts` 是唯一的 `orca_pod` 工具；`services.ts` 跟踪宿主可选服务（`optionalService`）；`admin.ts` / `web.ts` 是面板数据面与同源路由，`panel-api.ts` 是路由的请求体 schema 与响应类型（客户端只做类型导入）；`skill.ts` 把随包的 skill bundle 解析成 `ctx.skills.register` 的注册对象；`config.ts` 是 Standard Schema 外壳（校验就是 `node/settings.ts` 的解析器）；`dsh.ts` 是最小 DSH 类型。
 
 `apply` 只做几件事，其余都靠注入：
 
@@ -228,7 +226,7 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 | 依赖                                  | 类别 | 理由                                                                                                |
 | ------------------------------------- | ---- | --------------------------------------------------------------------------------------------------- |
 | `fastify`                             | 运行时 | 路由、body 解析与限额、错误处理；不手写 http server                                                   |
-| `ulid`                                | 运行时 | 任务 id（`kernel/ids.ts`）：规范实现、零依赖，随机部分取自 `crypto.getRandomValues`                 |
+| `ulid`                                | 运行时 | 任务 id（`protocol/task.ts` 的 `newTaskId`）：规范实现、零依赖，随机部分取自 `crypto.getRandomValues`                 |
 | `@agentclientprotocol/sdk`            | 运行时 | ACP v1 客户端：`execution/acp/connection.ts` 不再手写 JSON-RPC；类型化的请求、响应与处理器（`McpServer` 等形状由它约束）。子进程的派生与生命周期仍归本项目 |
 | `zod`                                 | 运行时 | 唯一的 schema 写法：协议线上形状、网关输入、设置字段表都用它声明，类型由 `z.infer` 推导，规范化（endpoints、peer 地址）写成 `.transform`。不可信输入经 `kernel/schema.ts` 的 `parseSchema`：`z.object` 丢弃未描述的键并返回新值，报第一处问题及其路径；只看外形的地方（A2A 的 message、metadata）用 `z.looseObject` 保留其余字段。`@agentclientprotocol/sdk` 也依赖它（必需 peer），所以它本来就在运行期里。不调用 `z.config()`：全局配置会波及 SDK |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |

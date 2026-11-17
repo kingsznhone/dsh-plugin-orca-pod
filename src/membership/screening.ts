@@ -74,16 +74,16 @@ export async function candidateEndpointAllowed(endpoint: string, policy: DialPol
   return (await screenEndpoint(endpoint, policy)) === "allowed";
 }
 
+/** What screening an endpoint concluded: it may be dialed, must not be, or its name does not resolve from here. */
+export type ScreenVerdict = "allowed" | "refused" | "unresolved";
+
 /**
  * Screen one endpoint: `refused` when the URL is unusable or a literal or
  * resolved address is forbidden, `unresolved` when the name does not resolve
  * from here right now, else `allowed`. A caller that only needs to keep known
  * bad addresses out (a join) can accept `unresolved`.
  */
-export async function screenEndpoint(
-  endpoint: string,
-  policy: DialPolicy = {},
-): Promise<"allowed" | "refused" | "unresolved"> {
+export async function screenEndpoint(endpoint: string, policy: DialPolicy = {}): Promise<ScreenVerdict> {
   let url: URL;
   try {
     url = new URL(endpoint);

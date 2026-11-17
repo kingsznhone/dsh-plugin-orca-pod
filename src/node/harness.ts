@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { createOrcaNodeConfig } from "./config.ts";
-import type { MembershipTimings } from "../membership/index.ts";
+import type { MembershipTimings } from "../membership/membership.ts";
 import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "./orca-node.ts";
 
 type MeshOptions = {
@@ -120,6 +121,6 @@ export async function waitFor<T>(
     if (Date.now() >= deadline) {
       throw new Error(`timed out after ${timeoutMs}ms waiting for ${options.label ?? "condition"}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await sleep(intervalMs);
   }
 }

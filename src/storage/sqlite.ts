@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { FileBlob, FileBlobStore, DispatchEntry, DispatchStore, PersistedTask, TaskStore } from "./index.ts";
+import type { FileBlob, FileBlobStore, DispatchEntry, DispatchStore, PersistedTask, TaskStore } from "./stores.ts";
 
 /**
  * One SQLite file holds all node state (§5.5): WAL mode, one process writing.
@@ -106,12 +106,8 @@ export function createSqliteFileBlobStore(path: string): FileBlobStore {
       if (!handle.closed()) upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
     },
     get(blobId: string): FileBlob | undefined {
-      const row = handle.closed()
-        ? undefined
-        : (selectOne.get(blobId) as
-            | { blob_id: string; path: string; size: number; expires_at: string | null }
-            | undefined);
-      return row && { blob_id: row.blob_id, path: row.path, size: Number(row.size), expires_at: row.expires_at };
+      const row = handle.closed() ? undefined : (selectOne.get(blobId) as FileBlob | undefined);
+      return row && { ...row, size: Number(row.size) };
     },
     close: handle.close,
   };
@@ -130,12 +126,11 @@ export function createSqliteDispatchStore(path: string): DispatchStore {
     (entry) => entry.task_id,
     (entry) => entry.updated_at,
   );
-  const store: DispatchStore = {
+  return {
     save: table.save,
     get: table.get,
     list: table.list,
     remove: table.remove,
     close: handle.close,
   };
-  return store;
 }

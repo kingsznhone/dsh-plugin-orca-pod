@@ -2,7 +2,9 @@ import { createPublicKey, generateKeyPairSync, sign as edSign, verify as edVerif
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isOrcaNodeId } from "../protocol/index.ts";
+import { z } from "zod";
+
+import { OrcaNodeIdSchema, isOrcaNodeId, type OrcaNodeId } from "../protocol/peer.ts";
 
 /**
  * Per-node identity (§7.1): an Ed25519 keypair created at first start. The
@@ -11,17 +13,26 @@ import { isOrcaNodeId } from "../protocol/index.ts";
  */
 export type NodeIdentity = {
   /** base64url of the raw 32-byte Ed25519 public key. */
-  orcaNodeId: string;
-  /** base64url of the raw public key; same as `orcaNodeId`, kept for clarity. */
-  publicKey: string;
+  orcaNodeId: OrcaNodeId;
   /** PKCS#8 PEM of the private half. Stored only in `<data_root>/identity.json`. */
   privateKeyPem: string;
 };
 
+/**
+ * What `<data_root>/identity.json` holds. Only the private key is read back:
+ * the id is derived from it, so a hand-edited id cannot disagree with the key.
+ */
+const IdentityFileSchema = z.object({
+  orca_node_id: OrcaNodeIdSchema,
+  private_key_pem: z.string().min(1),
+  created_at: z.string(),
+});
+type IdentityFile = z.infer<typeof IdentityFileSchema>;
+
 const RAW_KEY_BYTES = 32;
 
 /** Short label for UI/logs: first 6 and last 4 characters. */
-export function shortenNodeId(orcaNodeId: string): string {
+export function shortenNodeId(orcaNodeId: OrcaNodeId): string {
   if (orcaNodeId.length <= 12) return orcaNodeId;
   return `${orcaNodeId.slice(0, 6)}…${orcaNodeId.slice(-4)}`;
 }
@@ -35,21 +46,21 @@ function rawPublicKeyBase64(publicKey: KeyObject): string {
 function identityFromPrivateKeyPem(privateKeyPem: string): NodeIdentity {
   const publicKey = createPublicKey({ key: privateKeyPem, format: "pem" });
   const orcaNodeId = rawPublicKeyBase64(publicKey);
-  return { orcaNodeId, publicKey: orcaNodeId, privateKeyPem };
+  return { orcaNodeId, privateKeyPem };
 }
 
 export function generateNodeIdentity(): NodeIdentity {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
   const orcaNodeId = rawPublicKeyBase64(publicKey);
-  return { orcaNodeId, publicKey: orcaNodeId, privateKeyPem };
+  return { orcaNodeId, privateKeyPem };
 }
 
 export function signWithIdentity(identity: NodeIdentity, message: string | Uint8Array): string {
   return edSign(null, Buffer.from(message), identity.privateKeyPem).toString("base64url");
 }
 
-export function verifyWithNodeId(orcaNodeId: string, message: string | Uint8Array, signature: string): boolean {
+export function verifyWithNodeId(orcaNodeId: OrcaNodeId, message: string | Uint8Array, signature: string): boolean {
   if (!isOrcaNodeId(orcaNodeId)) return false;
   try {
     const publicKey = createPublicKey({
@@ -75,12 +86,8 @@ export function loadIdentity(dataRoot: string): NodeIdentity | null {
   const path = identityPath(dataRoot);
   if (!existsSync(path)) return null;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const record = parsed as Record<string, unknown>;
-    const privateKeyPem = record.private_key_pem;
-    if (typeof privateKeyPem !== "string" || privateKeyPem.length === 0) return null;
-    return identityFromPrivateKeyPem(privateKeyPem);
+    const file = IdentityFileSchema.pick({ private_key_pem: true }).safeParse(JSON.parse(readFileSync(path, "utf8")));
+    return file.success ? identityFromPrivateKeyPem(file.data.private_key_pem) : null;
   } catch {
     return null;
   }
@@ -89,9 +96,8 @@ export function loadIdentity(dataRoot: string): NodeIdentity | null {
 function saveIdentity(dataRoot: string, identity: NodeIdentity): string {
   const path = identityPath(dataRoot);
   mkdirSync(dataRoot, { recursive: true });
-  const payload = {
+  const payload: IdentityFile = {
     orca_node_id: identity.orcaNodeId,
-    public_key: identity.publicKey,
     private_key_pem: identity.privateKeyPem,
     created_at: new Date().toISOString(),
   };

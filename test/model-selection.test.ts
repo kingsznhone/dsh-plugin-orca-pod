@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { parseModelSelection, validateModelOffers, validateModelSelection } from "../src/protocol/model.ts";
+import { ModelOffersSchema, parseModelSelection } from "../src/protocol/model.ts";
+import { parseSchema } from "../src/kernel/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/catalog.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
@@ -43,32 +44,40 @@ async function until<T>(check: () => T | null, timeoutMs = 5_000): Promise<T> {
   }
 }
 
+/** The checked value, or the "<path> <reason>" text of the first issue. */
+function offers(raw: unknown) {
+  const result = parseSchema(ModelOffersSchema, raw);
+  return result.ok ? result.value : `${result.issue.path.join(".")} ${result.issue.message}`;
+}
+
 describe("model catalog", () => {
   it("validates offers and selections", () => {
-    expect(validateModelOffers([{ provider: "deepseek", model: "deepseek-flash" }])).toHaveLength(1);
-    expect(() => validateModelOffers([{ provider: "", model: "x" }])).toThrow();
-    expect(() => validateModelOffers([{ provider: "p" }])).toThrow();
-    expect(() => validateModelOffers(Array.from({ length: 129 }, () => ({ provider: "p", model: "m" })))).toThrow();
-    expect(validateModelSelection({ provider: "p", model: "m", reasoning_effort: "high" })).toEqual({
+    expect(offers([{ provider: "deepseek", model: "deepseek-flash" }])).toHaveLength(1);
+    expect(typeof offers([{ provider: "", model: "x" }])).toBe("string");
+    expect(typeof offers([{ provider: "p" }])).toBe("string");
+    expect(typeof offers(Array.from({ length: 129 }, () => ({ provider: "p", model: "m" })))).toBe("string");
+    expect(parseModelSelection({ provider: "p", model: "m", reasoning_effort: "high" })).toEqual({
       provider: "p",
       model: "m",
       reasoning_effort: "high",
     });
-    expect(() => validateModelSelection({ provider: "p" })).toThrow();
-    expect(() => validateModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toThrow();
-    expect(() =>
-      validateModelOffers([
+    expect(parseModelSelection({ provider: "p" })).toBeNull();
+    expect(parseModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toBeNull();
+    // One blank-effort rule for the selection and for the standalone value.
+    expect(parseModelSelection({ provider: "p", model: "m", reasoning_effort: "  " })).toBeNull();
+    expect(
+      offers([
         { provider: "p", model: "m" },
         { provider: "p", model: "" },
       ]),
-    ).toThrow(/^1\.model /);
+    ).toMatch(/^1\.model /);
   });
 
   it("drops unknown keys from a copy instead of rejecting them", () => {
     const raw = { provider: "p", model: "m", tier: "gold" };
     expect(parseModelSelection(raw)).toEqual({ provider: "p", model: "m" });
     expect(raw).toHaveProperty("tier", "gold");
-    expect(validateModelOffers([{ provider: "p", model: "m", name: "M", extra: 1 }])).toEqual([
+    expect(offers([{ provider: "p", model: "m", name: "M", extra: 1 }])).toEqual([
       { provider: "p", model: "m", name: "M" },
     ]);
     expect(parseModelSelection("p/m")).toBeNull();

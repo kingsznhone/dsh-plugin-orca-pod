@@ -9,9 +9,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { errorMessage, isRecord } from "../kernel/index.ts";
-import { parseSettings } from "../node/index.ts";
-import { normalizePeerUrl } from "../transport/index.ts";
+import { errorMessage } from "../kernel/errors.ts";
+import { isRecord } from "../kernel/schema.ts";
+import { parseSettings } from "../node/settings.ts";
+import { normalizePeerUrl } from "../transport/net.ts";
 import type { HostContext, HostLogger } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 

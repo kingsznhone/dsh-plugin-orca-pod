@@ -12,9 +12,9 @@
  * `workgroup_password` in the config is a validation error.
  */
 
-import { safeParseSettings } from "../node/index.ts";
-import type { Settings } from "../node/index.ts";
-import { isRecord } from "../kernel/index.ts";
+import { safeParseSettings } from "../node/settings.ts";
+import type { Settings } from "../node/settings.ts";
+import { isRecord } from "../kernel/schema.ts";
 
 import type { StandardSchemaV1 } from "./dsh.ts";
 

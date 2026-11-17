@@ -11,22 +11,21 @@
 
 import { randomUUID } from "node:crypto";
 
-import { deriveChildGrant, checkGrant, type GrantLedger } from "../security/index.ts";
-import type { BlobStore, TaskStore } from "../storage/index.ts";
-import { assertNever, errorMessage, PodError } from "../kernel/index.ts";
-import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/index.ts";
-import type { NodeLogger } from "../membership/index.ts";
+import { deriveChildGrant, checkGrant, type GrantLedger } from "../security/grants.ts";
+import type { BlobStore, TaskStore } from "../storage/stores.ts";
+import { assertNever, errorMessage, PodError } from "../kernel/errors.ts";
+import type { NodeLogger } from "../kernel/events.ts";
+import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/executor.ts";
 import {
   isTerminal,
-  narrowPermissionMode,
+  messageText,
+  textMessage,
   type A2AMessage,
-  type PermissionMode,
-  type PermissionRequest,
-  type SignedGrant,
-  type TaskRelay,
   type TaskState,
   type TaskView,
-} from "../protocol/index.ts";
+} from "../protocol/task.ts";
+import { narrowPermissionMode, type PermissionMode } from "../protocol/permission.ts";
+import type { PermissionRequest, RequestedAccess, ResumeControl, SignedGrant, TaskRelay } from "../protocol/grant.ts";
 import { composePrompt, listNotes, materializeInputs, removeInputs } from "./inputs.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
 import type { Workspace } from "./workspace.ts";
@@ -49,7 +48,7 @@ export type RecordHost = {
   /** Inline result summary cap in bytes (§6.11). */
   resultMaxBytes: number;
   /** Hand a control message to a child task: a grant or a denial going down (§7.12). */
-  sendControl(child: TaskRelay, data: Record<string, unknown>): Promise<void>;
+  sendControl(child: TaskRelay, control: ResumeControl): Promise<void>;
   /** The task runner's single slot (§6.9). */
   claim(taskId: string): void;
   release(taskId: string): void;
@@ -79,17 +78,6 @@ type Wait = {
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-export function messageText(message: A2AMessage): string {
-  return message.parts
-    .map((part) => (part.kind === "text" ? part.text : ""))
-    .filter(Boolean)
-    .join("\n");
-}
-
-function textMessage(text: string): A2AMessage {
-  return { role: "agent", parts: [{ kind: "text", text }] };
 }
 
 /** Keep the inline summary under the local cap; longer text is cut with a marker (§6.11). */
@@ -368,7 +356,7 @@ export class TaskRecord {
   /** Ask the origin to decide on one tool (§7.11). A `child` is the task whose request this one passes on (§7.12). */
   private requestPermission(
     tool: string,
-    requested: Record<string, unknown>,
+    requested: RequestedAccess,
     child: TaskRelay | null,
     executorIdle: boolean,
   ): void {

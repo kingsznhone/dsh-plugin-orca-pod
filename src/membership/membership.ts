@@ -1,4 +1,4 @@
-import type { OrcaNodeId, PeerState, PeerView } from "../protocol/index.ts";
+import type { OrcaNodeId, PeerState, PeerView } from "../protocol/peer.ts";
 
 /** Peer directory contract; callers only depend on this interface. */
 export interface PeerStore {
@@ -301,34 +301,46 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     }
   }
 
+  /** Move a record between online, suspect and offline by how long it has been quiet. */
+  function reassess(record: PeerRecord, nowMs: number): void {
+    if (record.view.state === "offline" || record.last_recv_ms === null) return;
+    const age = nowMs - record.last_recv_ms;
+    if (age >= timings.offlineAfterMs) {
+      record.view.state = "offline";
+      record.suspect_reason = null;
+      record.offline_since_ms = nowMs;
+      record.next_probe_ms = nowMs;
+      return;
+    }
+    if (age >= timings.suspectAfterMs) {
+      if (record.view.state === "online") {
+        record.view.state = "suspect";
+        record.suspect_reason = "quiet";
+      } else if (record.suspect_reason === "unreachable") {
+        record.suspect_reason = "quiet";
+      }
+      return;
+    }
+    if (record.view.state === "suspect") {
+      record.view.state = "online";
+      record.suspect_reason = null;
+    }
+  }
+
+  /** A node that has been offline for the record TTL is forgotten. */
+  function shouldPrune(record: PeerRecord, nowMs: number): boolean {
+    return (
+      record.view.state === "offline" &&
+      record.offline_since_ms !== null &&
+      nowMs - record.offline_since_ms >= timings.recordTtlMs
+    );
+  }
+
   function evaluate(): PeerView[] {
     const nowMs = monotonicMs();
     for (const [orcaNodeId, record] of [...records]) {
-      if (record.view.state !== "offline" && record.last_recv_ms !== null) {
-        const age = nowMs - record.last_recv_ms;
-        if (age >= timings.offlineAfterMs) {
-          record.view.state = "offline";
-          record.suspect_reason = null;
-          record.offline_since_ms = nowMs;
-          record.next_probe_ms = nowMs;
-        } else if (age >= timings.suspectAfterMs) {
-          if (record.view.state === "online") {
-            record.view.state = "suspect";
-            record.suspect_reason = "quiet";
-          } else if (record.suspect_reason === "unreachable") {
-            record.suspect_reason = "quiet";
-          }
-        } else if (record.view.state === "suspect") {
-          record.view.state = "online";
-          record.suspect_reason = null;
-        }
-      }
-
-      if (
-        record.view.state === "offline" &&
-        record.offline_since_ms !== null &&
-        nowMs - record.offline_since_ms >= timings.recordTtlMs
-      ) {
+      reassess(record, nowMs);
+      if (shouldPrune(record, nowMs)) {
         records.delete(orcaNodeId);
         tombstones.set(orcaNodeId, nowMs + timings.tombstoneMs);
       }

@@ -12,23 +12,21 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { defaultDataRoot } from "../node/index.ts";
-import type { DispatchEntry } from "../storage/index.ts";
-import { shortenNodeId } from "../security/index.ts";
-import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/index.ts";
-import { isTerminal } from "../protocol/index.ts";
-import type {
-  PeerView,
-  PermissionMode,
-  PermissionRequest,
-  PodTaskMetadata,
-  SelfRecord,
-  TaskView,
-} from "../protocol/index.ts";
-import type { OrcaNode } from "../node/index.ts";
+import { defaultDataRoot } from "../node/config.ts";
+import type { DispatchEntry } from "../storage/stores.ts";
+import { shortenNodeId } from "../security/identity.ts";
+import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
+import { isTerminal } from "../protocol/task.ts";
+import type { PeerView, SelfRecord } from "../protocol/peer.ts";
+import type { PermissionMode } from "../protocol/permission.ts";
+import type { PermissionRequest } from "../protocol/grant.ts";
+import type { PodTaskMetadata, TaskState, TaskView } from "../protocol/task.ts";
+import type { ReasoningEffort } from "../protocol/model.ts";
+import type { ExecutorKind, PanelPatch } from "../node/settings.ts";
+import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
-import type { ApprovalBroker } from "./broker.ts";
+import { taskKey, type ApprovalBroker } from "./broker.ts";
 
 /** One artifact attached to a task. */
 export interface PodArtifact {
@@ -70,7 +68,7 @@ export interface PodTaskRow {
   id: string;
   /** Where details and cancel are addressed: this node's URL for local tasks, the target for dispatched ones. */
   peer: string;
-  state: string;
+  state: TaskState | "unknown";
   /** Origin of a local task, target of a dispatched one, as a display label. */
   who: string;
   who_title: string;
@@ -113,8 +111,8 @@ export interface PodAdvancedConfig {
   allow_public_peers: boolean | null;
   allow_loopback_peers: boolean | null;
   permission_mode: PermissionMode | null;
-  default_reasoning_effort: string | null;
-  executor: "echo" | "acp" | null;
+  default_reasoning_effort: ReasoningEffort | null;
+  executor: ExecutorKind | null;
 }
 
 /** Effective pod configuration as the panel may see it (never the password). */
@@ -161,7 +159,7 @@ export interface PodAdmin {
   /** Effective config plus setup state; the password itself is never returned. */
   config(): PodConfigView;
   /** Store a new password, persist the panel fields into the plugin config, and restart. */
-  saveConfig(patch: Record<string, unknown>): Promise<PodConfigView>;
+  saveConfig(patch: PanelPatch): Promise<PodConfigView>;
   /** `join` one peer now and remember it for later starts. */
   connect(peer: string): Promise<PodConfigView>;
   /** Leave the workgroup: tell known peers and forget them locally. */
@@ -187,7 +185,7 @@ function entries(dir: string): Array<{ name: string; is_dir: boolean }> {
   }
 }
 
-const podOf = (view: TaskView): PodTaskMetadata => (view.metadata?.pod ?? {}) as PodTaskMetadata;
+const podOf = (view: TaskView): PodTaskMetadata => view.metadata?.pod ?? {};
 
 const isActive = (state: string): boolean => state !== "unknown" && !isTerminal(state);
 
@@ -218,6 +216,9 @@ function chainOf(request: PermissionRequest, self: SelfRecord | null, label: (ke
 }
 
 /** Build the admin surface over one running orca node. */
+/** A permission request waiting for the human, whoever saw it first. */
+type PendingApproval = { peer: string; taskId: string; request: PermissionRequest; agentId: string | null };
+
 export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: ApprovalBroker): PodAdmin {
   /** The node, or null while startup failed / has not completed yet. */
   function node(): OrcaNode | null {
@@ -228,6 +229,55 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
     const current = node();
     if (current === null) throw new Error("orca node is not running");
     return current;
+  }
+
+  /** The broker's parked prompts plus requests only the tracker has seen, one per task. */
+  function waitingApprovals(): Map<string, PendingApproval> {
+    const waiting = new Map<string, PendingApproval>();
+    for (const prompt of broker.list()) {
+      waiting.set(taskKey(prompt.peer, prompt.task_id), {
+        peer: prompt.peer,
+        taskId: prompt.task_id,
+        request: prompt.request,
+        agentId: prompt.agent_id,
+      });
+    }
+    for (const tracked of tracker.list()) {
+      const key = taskKey(tracked.peer, tracked.taskId);
+      if (tracked.request !== null && !waiting.has(key)) {
+        waiting.set(key, { peer: tracked.peer, taskId: tracked.taskId, request: tracked.request, agentId: null });
+      }
+    }
+    return waiting;
+  }
+
+  /** A task this node runs: its origin is the root of the delegation tree. */
+  function localRow(current: OrcaNode, label: (key: string | undefined) => string, view: TaskView): PodTaskRow {
+    const origin = podOf(view).root_origin;
+    return {
+      id: view.id,
+      peer: current.endpoints[0] ?? "",
+      state: view.status.state,
+      who: label(origin),
+      who_title: origin ?? "",
+      at: view.status.timestamp,
+      artifacts: artifactsOf(current, view, true),
+      cancellable: isActive(view.status.state),
+    };
+  }
+
+  /** A task this node dispatched: its who is the target. */
+  function dispatchRow(label: (key: string | undefined) => string, entry: DispatchEntry): PodTaskRow {
+    return {
+      id: entry.task_id,
+      peer: entry.peer,
+      state: entry.state,
+      who: label(entry.peer),
+      who_title: entry.peer,
+      at: entry.updated_at,
+      artifacts: [],
+      cancellable: isActive(entry.state),
+    };
   }
 
   function artifactsOf(current: OrcaNode, view: TaskView, local: boolean): PodArtifact[] {
@@ -299,37 +349,15 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       const current = node();
       if (current === null) return [];
       const label = labeller(current);
-      const own = current.endpoints[0] ?? "";
       const tasks = current.listTasks(limit);
       const local = new Set(tasks.map((view) => view.id));
       const rows: PodTaskRow[] = [
-        ...tasks.map((view) => {
-          const origin = podOf(view).root_origin;
-          return {
-            id: view.id,
-            peer: own,
-            state: view.status.state,
-            who: label(origin),
-            who_title: origin ?? "",
-            at: view.status.timestamp,
-            artifacts: artifactsOf(current, view, true),
-            cancellable: isActive(view.status.state),
-          };
-        }),
+        ...tasks.map((view) => localRow(current, label, view)),
         ...current
           .listDispatches()
           .slice(-limit)
           .filter((entry) => !local.has(entry.task_id))
-          .map((entry) => ({
-            id: entry.task_id,
-            peer: entry.peer,
-            state: entry.state,
-            who: label(entry.peer),
-            who_title: entry.peer,
-            at: entry.updated_at,
-            artifacts: [],
-            cancellable: isActive(entry.state),
-          })),
+          .map((entry) => dispatchRow(label, entry)),
       ];
       return rows.sort((left, right) => right.at.localeCompare(left.at)).slice(0, limit);
     },
@@ -337,25 +365,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       const current = node();
       const label = labeller(current);
       const self = current?.self() ?? null;
-      const waiting = new Map<
-        string,
-        { peer: string; taskId: string; request: PermissionRequest; agentId: string | null }
-      >();
-      for (const prompt of broker.list()) {
-        waiting.set(`${prompt.peer}|${prompt.task_id}`, {
-          peer: prompt.peer,
-          taskId: prompt.task_id,
-          request: prompt.request,
-          agentId: prompt.agent_id,
-        });
-      }
-      for (const tracked of tracker.list()) {
-        const id = `${tracked.peer}|${tracked.taskId}`;
-        if (tracked.request !== null && !waiting.has(id)) {
-          waiting.set(id, { peer: tracked.peer, taskId: tracked.taskId, request: tracked.request, agentId: null });
-        }
-      }
-      return [...waiting].map(([id, { peer, taskId, request, agentId }]) => {
+      return [...waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => {
         const chain = chainOf(request, self, label);
         return {
           id,
@@ -401,16 +411,8 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
           .map((entry) => ({ task_id: entry.name, files: entries(join(paths.inputs, entry.name)).length })),
       };
     },
-    config() {
-      return configView();
-    },
+    config: configView,
     async saveConfig(patch) {
-      const rawPassword = patch.workgroup_password;
-      if (rawPassword !== undefined && (typeof rawPassword !== "string" || rawPassword.trim().length === 0)) {
-        // A passwordless mesh is not supported: either set a password or omit
-        // the field to keep the current one.
-        throw new Error("a workgroup password is required; a passwordless mesh is not supported");
-      }
       // The password goes to the DSH credential store and the other fields to the
       // plugin config; switching workgroups carries the current password over.
       await handle.reconfigure(patch);

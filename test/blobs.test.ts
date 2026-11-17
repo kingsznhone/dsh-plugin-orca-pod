@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
 import { createMemoryFileBlobStore, createMemoryBlobStore } from "../src/storage/memory.ts";
-import type { FileBlobRegistry, BlobStore } from "../src/storage/index.ts";
+import type { FileBlobRegistry, BlobStore } from "../src/storage/stores.ts";
 import { PodError } from "../src/kernel/errors.ts";
 import { runtimeDigest, type BusyState, type SelfRecord } from "../src/protocol/peer.ts";
 import type { TaskRunner } from "../src/protocol/task.ts";
@@ -14,8 +14,8 @@ import { generateNodeIdentity, type NodeIdentity } from "../src/security/identit
 import { createSqliteFileBlobStore } from "../src/storage/sqlite.ts";
 import { createMembership } from "../src/membership/membership.ts";
 import { createFsBlobStore } from "../src/storage/fs.ts";
-import { sha256Hex } from "../src/storage/blob-common.ts";
-import { createGateway, type GatewayDeps } from "../src/transport/gateway/index.ts";
+import { bodySha256 } from "../src/security/crypto.ts";
+import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
 
 const ENDPOINT = "http://orca-node.test";
 
@@ -114,7 +114,7 @@ function createHarness(
 
 async function upload(harness: Harness, payload: Buffer, options: { name?: string; digest?: string } = {}) {
   const url = options.name === undefined ? "/blobs" : `/blobs?name=${encodeURIComponent(options.name)}`;
-  const digest = options.digest ?? sha256Hex(payload);
+  const digest = options.digest ?? bodySha256(payload);
   return harness.app.inject({
     method: "POST",
     url,
@@ -151,7 +151,7 @@ describe("blob channel", () => {
       payload,
       headers: {
         "content-type": "application/octet-stream",
-        "x-pod-body-sha256": sha256Hex(payload),
+        "x-pod-body-sha256": bodySha256(payload),
       },
     });
     expect(response.statusCode).toBe(401);
@@ -162,11 +162,11 @@ describe("blob channel", () => {
     const harness = createHarness(idleTasks, createFileBlobRegistry(createMemoryFileBlobStore()), blobs);
     const payload = Buffer.from("payload");
     const response = await upload(harness, payload, {
-      digest: sha256Hex(Buffer.from("something else")),
+      digest: bodySha256(Buffer.from("something else")),
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: "blob_digest_mismatch" });
-    expect(blobs.has(sha256Hex(payload))).toBe(false);
+    expect(blobs.has(bodySha256(payload))).toBe(false);
   });
 
   it("stores bytes and returns 201 with the blob metadata", async () => {
@@ -175,7 +175,7 @@ describe("blob channel", () => {
     const response = await upload(harness, payload, { name: "notes.txt" });
     expect(response.statusCode).toBe(201);
     expect(response.json()).toEqual({
-      blob_id: sha256Hex(payload),
+      blob_id: bodySha256(payload),
       size: payload.length,
       name: "notes.txt",
       expires_at: null,
@@ -311,7 +311,7 @@ describe("file blobs registered by the local CLI", () => {
 
     const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
     const blob = await fileBlobs.register(filePath, 120);
-    expect(blob.blob_id).toBe(sha256Hex(content));
+    expect(blob.blob_id).toBe(bodySha256(content));
     expect(blob.size).toBe(content.length);
     expect(blob.expires_at).not.toBeNull();
 

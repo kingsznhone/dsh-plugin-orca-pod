@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { resolve } from "node:path";
 
-import { DEFAULT_BLOB_TTL_S, type FileBlob, type FileBlobRegistry, type FileBlobStore } from "./index.ts";
+import { DEFAULT_BLOB_TTL_S, type FileBlob, type FileBlobRegistry, type FileBlobStore } from "./stores.ts";
 
 async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   const hash = createHash("sha256");

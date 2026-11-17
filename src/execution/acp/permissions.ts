@@ -7,9 +7,10 @@ import type {
   ToolKind,
 } from "@agentclientprotocol/sdk";
 
-import type { PermissionMode } from "../../protocol/index.ts";
+import type { PermissionMode } from "../../protocol/permission.ts";
 
-export type PermissionRequest = {
+/** What an ACP child asks permission for, as the executor reads it (not the protocol's `PermissionRequest`). */
+export type AcpPermissionAsk = {
   toolCallId: string;
   title: string;
   kind: ToolKind | undefined;
@@ -18,7 +19,10 @@ export type PermissionRequest = {
 
 export const CANCELLED: RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 
-export function parsePermissionRequest(params: RequestPermissionRequest): PermissionRequest {
+/** The answer to an ask: let the tool run, or refuse it. */
+export type PermissionDecision = "allow" | "reject";
+
+export function parsePermissionRequest(params: RequestPermissionRequest): AcpPermissionAsk {
   const call = params.toolCall;
   return {
     toolCallId: call.toolCallId,
@@ -32,7 +36,7 @@ export function parsePermissionRequest(params: RequestPermissionRequest): Permis
  * Auto-answer a permission request the inherited mode already covers (§7.10).
  * `null` means the request is outside the mode and must go to the origin.
  */
-export function autoDecision(mode: PermissionMode, kind: ToolKind | undefined): "allow" | "reject" | null {
+export function autoDecision(mode: PermissionMode, kind: ToolKind | undefined): PermissionDecision | null {
   if (mode === "danger-full-access") return "allow";
   const readable = kind === "read" || kind === "search" || kind === "think";
   if (mode === "read-only") return readable ? "allow" : "reject";
@@ -41,7 +45,7 @@ export function autoDecision(mode: PermissionMode, kind: ToolKind | undefined): 
 }
 
 /** The ACP outcome for a decision; cancelled when the child offered no option of that kind. */
-export function outcomeFor(options: PermissionOption[], decision: "allow" | "reject"): RequestPermissionResponse {
+export function outcomeFor(options: PermissionOption[], decision: PermissionDecision): RequestPermissionResponse {
   const chosen =
     options.find((option) => option.kind === `${decision}_once`) ??
     options.find((option) => option.kind.startsWith(decision));

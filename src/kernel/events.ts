@@ -8,38 +8,29 @@
  *
  * Delivery is synchronous and a listener must never throw into the node: a UI
  * bug would otherwise break task execution.
+ *
+ * The bus does not know what an event holds; `protocol/events.ts` names the
+ * events of an orca node.
  */
 
-import type { DispatchEntry } from "../storage/index.ts";
-import type { PeerView, TaskView } from "../protocol/index.ts";
+/** Where a component reports what it refuses or drops; the entry point decides where that goes. */
+export type NodeLogger = { warn(message: string): void };
 
-/** Something a UI panel may want to re-render. */
-export type PodEventInput =
-  | { type: "task"; view: TaskView }
-  | { type: "members"; members: PeerView[]; digest: string }
-  | { type: "dispatch"; entry: DispatchEntry };
+/** An emitted event with the wall-clock time it happened. */
+type Stamped<E> = E & { at: string };
 
-/** Emitted event with the wall-clock time it happened. */
-export type PodEvent = PodEventInput & { at: string };
-
-/** Emit side, used by the node; not exposed to UI consumers. */
-type PodEventSink = (event: PodEventInput) => void;
-
-/** Subscribe side, used by the plugin/admin surface. */
-export type PodEventListener = (event: PodEvent) => void;
-
-type PodEventBus = {
-  emit: PodEventSink;
+export type EventBus<E extends object> = {
+  emit(event: E): void;
   /** Subscribe; returns an unsubscribe function. */
-  subscribe(listener: PodEventListener): () => void;
+  subscribe(listener: (event: Stamped<E>) => void): () => void;
 };
 
-export function createPodEventBus(): PodEventBus {
-  const listeners = new Set<PodEventListener>();
+export function createEventBus<E extends object>(): EventBus<E> {
+  const listeners = new Set<(event: Stamped<E>) => void>();
 
-  function emit(input: PodEventInput): void {
+  function emit(input: E): void {
     if (listeners.size === 0) return;
-    const event = { ...input, at: new Date().toISOString() } as PodEvent;
+    const event = { ...input, at: new Date().toISOString() };
     for (const listener of [...listeners]) {
       try {
         listener(event);
@@ -49,7 +40,7 @@ export function createPodEventBus(): PodEventBus {
     }
   }
 
-  function subscribe(listener: PodEventListener): () => void {
+  function subscribe(listener: (event: Stamped<E>) => void): () => void {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);

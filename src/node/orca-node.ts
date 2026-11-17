@@ -16,46 +16,39 @@ import {
   DEFAULT_BLOB_TTL_MS,
   type BlobStore,
   type TaskStore,
-} from "../storage/index.ts";
-import { blobLinkSignature, NonceCache, loadOrCreateIdentity } from "../security/index.ts";
-import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../delegation/index.ts";
-import { EchoExecutor, createAcpExecutor } from "../execution/index.ts";
-import type { LocalExecutor } from "../execution/index.ts";
-import { createPodEventBus, type PodEventListener, errorMessage } from "../kernel/index.ts";
+} from "../storage/stores.ts";
+import { NonceCache, signedBlobUrl } from "../security/crypto.ts";
+import { loadOrCreateIdentity } from "../security/identity.ts";
 import {
-  detectLocalEndpoints,
-  isBlockedFetchPort,
-  pickFreePort,
-  createGateway,
-  createPeerClient,
-  type FetchLike,
-} from "../transport/index.ts";
-import {
-  createWorkgroup,
-  type NodeLogger,
-  createMembership,
-  type MembershipClock,
-  type MembershipTimings,
-} from "../membership/index.ts";
-import type {
-  HeartbeatResponse,
-  JoinResponse,
-  ModelOffer,
-  ModelSelection,
-  PeerView,
-  RuntimeInfo,
-  SelfRecord,
-  SubmitTaskInput,
-  TaskRelay,
-  TaskView,
-} from "../protocol/index.ts";
+  createDelegation,
+  type ApprovalOptions,
+  type SendTaskOptions,
+  type TaskCallOptions,
+} from "../tasks/delegation.ts";
+import { EchoExecutor } from "../execution/echo.ts";
+import { createAcpExecutor } from "../execution/acp/executor.ts";
+import type { LocalExecutor } from "../execution/executor.ts";
+import { createEventBus } from "../kernel/events.ts";
+import { errorMessage } from "../kernel/errors.ts";
+import type { NodeLogger } from "../kernel/events.ts";
+import { detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/net.ts";
+import { createGateway } from "../transport/gateway/gateway.ts";
+import { createPeerClient, type FetchLike } from "../transport/peer-client.ts";
+import { createWorkgroup, type LeaveResult } from "../membership/mesh.ts";
+import { createMembership, type MembershipClock, type MembershipTimings } from "../membership/membership.ts";
+import type { HeartbeatResponse, JoinResponse, PeerView, RuntimeInfo, SelfRecord } from "../protocol/peer.ts";
+import type { ModelOffer, ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { PodEventInput, PodEventListener } from "../protocol/events.ts";
+import type { SubmitTaskInput, TaskView } from "../protocol/task.ts";
+import type { TaskRelay } from "../protocol/grant.ts";
 import { createSqliteDispatchStore, createSqliteFileBlobStore, createSqliteTaskStore } from "../storage/sqlite.ts";
 import { createFsBlobStore } from "../storage/fs.ts";
-import { createTaskRunner, createWorkspaceManager } from "../tasks/index.ts";
+import { createTaskRunner } from "../tasks/runner.ts";
+import { createWorkspaceManager, type WorkspacePaths } from "../tasks/workspace.ts";
 
-export type { ApprovalOptions, TaskCallOptions } from "../delegation/index.ts";
-export type { NodeLogger } from "../membership/index.ts";
-export type { FetchLike } from "../transport/index.ts";
+export type { ApprovalOptions, TaskCallOptions } from "../tasks/delegation.ts";
+export type { NodeLogger } from "../kernel/events.ts";
+export type { FetchLike } from "../transport/peer-client.ts";
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
 function collectRuntime(): RuntimeInfo {
@@ -142,7 +135,7 @@ export interface OrcaNode {
   setModelCatalog(
     models: ModelOffer[],
     defaultModel: ModelSelection | null,
-    defaultReasoningEffort?: string | null,
+    defaultReasoningEffort?: ReasoningEffort | null,
   ): void;
   /**
    * Admit this node at `peerUrl` with the workgroup password. This is the only
@@ -152,12 +145,8 @@ export interface OrcaNode {
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
   /** Leave the workgroup: tell every known peer, then clear the local roster. */
-  leave(): Promise<{ left: string[] }>;
-  sendTask(
-    peerUrl: string,
-    input: SubmitTaskInput,
-    options?: { parentTaskId?: string; signal?: AbortSignal },
-  ): Promise<TaskView>;
+  leave(): Promise<LeaveResult>;
+  sendTask(peerUrl: string, input: SubmitTaskInput, options?: SendTaskOptions): Promise<TaskView>;
   getTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
   cancelTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
   /** Approve a suspended permission request: sign a grant and resume the task (§7.11). */
@@ -194,7 +183,7 @@ export interface OrcaNode {
   /** Short-lived download URL for one blob. */
   blobLink(blobId: string, ttlS?: number): string;
   /** Workspace directories for UI browsing. */
-  workspacePaths(): { root: string; notes: string; inputs: string; state: string };
+  workspacePaths(): WorkspacePaths;
 }
 
 /**
@@ -209,31 +198,31 @@ export async function joinRoster(
   const failed: string[] = [];
   for (const member of members) {
     if (member.orca_node_id === orcaNode.orcaNodeId || member.endpoints.length === 0) continue;
-    let ok = false;
-    for (const endpoint of member.endpoints) {
-      try {
-        await orcaNode.join(endpoint);
-        ok = true;
-        break;
-      } catch {
-        // Try the peer's next advertised URL (IPv6 unreachable, LAN vs public…).
-      }
-    }
-    (ok ? joined : failed).push(member.orca_node_id);
+    ((await joinAny(orcaNode, member)) ? joined : failed).push(member.orca_node_id);
   }
   return { joined, failed };
+}
+
+/** Join one member at the first of its advertised URLs that answers (IPv6 unreachable, LAN vs public…). */
+async function joinAny(orcaNode: OrcaNode, member: PeerView): Promise<boolean> {
+  for (const endpoint of member.endpoints) {
+    try {
+      await orcaNode.join(endpoint);
+      return true;
+    } catch {
+      // Try the peer's next advertised URL.
+    }
+  }
+  return false;
 }
 
 /** Addresses a remote orca node should dial: explicit list, else derived from bind. */
 function endpointsFrom(config: OrcaNodeConfig, port: number): [string, ...string[]] {
   const [first, ...rest] = config.endpoints;
   if (first !== undefined) return [first, ...rest];
-  if (config.bind_host === "0.0.0.0" || config.bind_host === "::") {
-    const [firstDetected, ...restDetected] = detectLocalEndpoints(port);
-    if (firstDetected !== undefined) return [firstDetected, ...restDetected];
-    return [`http://127.0.0.1:${port}`];
-  }
-  return [`http://${config.bind_host}:${port}`];
+  if (config.bind_host !== "0.0.0.0" && config.bind_host !== "::") return [`http://${config.bind_host}:${port}`];
+  const [firstDetected, ...restDetected] = detectLocalEndpoints(port);
+  return firstDetected === undefined ? [`http://127.0.0.1:${port}`] : [firstDetected, ...restDetected];
 }
 
 const SILENT: NodeLogger = { warn() {} };
@@ -254,7 +243,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const fileBlobStore = storage?.fileBlobStore ?? createMemoryFileBlobStore();
   const fileBlobs = createFileBlobRegistry(fileBlobStore);
   const dispatches = storage?.dispatchStore ?? createMemoryDispatchStore();
-  const events = createPodEventBus();
+  const events = createEventBus<PodEventInput>();
   const workspaceManager = createWorkspaceManager({ dataRoot: config.data_root, workgroupId: config.workgroup_id });
   const workspace = workspaceManager.ensure();
   const logger = options.logger ?? SILENT;
@@ -432,8 +421,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     subscribe: events.subscribe,
     blobLink(blobId, ttlS = 300) {
       // Same URL shape the gateway's `/blobs/:id/link` mints (§5.6).
-      const exp = String(Math.floor(Date.now() / 1000) + ttlS);
-      return `${endpoints[0]}/blobs/${blobId}?exp=${exp}&sig=${blobLinkSignature(identity, blobId, exp)}`;
+      return signedBlobUrl(identity, endpoints[0], blobId, String(Math.floor(Date.now() / 1000) + ttlS));
     },
     workspacePaths() {
       return { root: workspace.root, notes: workspace.notes, inputs: workspace.inputs, state: workspace.state };

@@ -1,6 +1,6 @@
 /** The panel: status page, first-run wizard or settings, the sidebar light and the overlay. */
 
-import React, { type ReactNode } from "react";
+import React from "react";
 import { ApprovalList } from "./approvals.tsx";
 import { t, useLocale } from "./i18n.ts";
 import { Members, NodeDetail, Workspace } from "./members.tsx";
@@ -10,6 +10,43 @@ import { type Snapshot, store, useStore } from "./store.ts";
 import { ERROR, FOOTER_ACTION, H2, ICON_BUTTON, INPUT, MUTED, PRIMARY, SECTION, TITLE, short } from "./styles.ts";
 import { AllTasks, TaskDetail, TaskTable } from "./tasks.tsx";
 import type { PodPeer, PodState, PodTaskRow } from "./types.ts";
+
+/** The inline form that joins a peer by address. */
+function ConnectForm({
+  host,
+  busy,
+  onHost,
+  onConnect,
+  onCancel,
+}: {
+  host: string;
+  busy: boolean;
+  onHost: (host: string) => void;
+  onConnect: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={SECTION}>
+      <div style={H2}>{t("connectPeer")}</div>
+      <Field label={t("host")}>
+        <input
+          style={INPUT}
+          value={host}
+          onChange={(event) => onHost(event.target.value)}
+          placeholder={"192.168.1.12 / peer.example.com / http://host:11811"}
+        />
+      </Field>
+      <div style={{ display: "flex", gap: 8 }}>
+        <Button style={PRIMARY} disabled={busy || host.trim() === ""} onClick={onConnect}>
+          {t("connect")}
+        </Button>
+        <Button disabled={busy} onClick={onCancel}>
+          {t("cancel")}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export function StatusPage({
   snap,
@@ -68,25 +105,13 @@ export function StatusPage({
       {error ? <div style={{ ...ERROR, marginTop: 8 }}>{error}</div> : null}
       {joined ? null : <div style={{ ...MUTED, marginTop: 6 }}>{t("notJoined")}</div>}
       {!joined && connectOpen ? (
-        <div style={SECTION}>
-          <div style={H2}>{t("connectPeer")}</div>
-          <Field label={t("host")}>
-            <input
-              style={INPUT}
-              value={host}
-              onChange={(event) => setHost(event.target.value)}
-              placeholder={"192.168.1.12 / peer.example.com / http://host:11811"}
-            />
-          </Field>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Button style={PRIMARY} disabled={busy || host.trim() === ""} onClick={connect}>
-              {t("connect")}
-            </Button>
-            <Button disabled={busy} onClick={() => setConnectOpen(false)}>
-              {t("cancel")}
-            </Button>
-          </div>
-        </div>
+        <ConnectForm
+          host={host}
+          busy={busy}
+          onHost={setHost}
+          onConnect={connect}
+          onCancel={() => setConnectOpen(false)}
+        />
       ) : null}
       <Section title={t("pendingApprovals")}>
         <ApprovalList approvals={approvals} busy={busy} />
@@ -116,11 +141,19 @@ export function Panel() {
     return <div style={{ padding: "4px 0", ...MUTED }}>{snap.error ? `orca-pod: ${snap.error}` : t("connecting")}</div>;
   const { config } = snap.state;
   const toStatus = () => setView("status");
-  let content: ReactNode = <StatusPage snap={snap} state={snap.state} onOpenSettings={() => setView("settings")} />;
-  if (!config.configured) content = <ConfigForm key={"wizard"} config={config} wizard={true} onDone={toStatus} />;
-  else if (view === "settings")
-    content = <ConfigForm key={"settings"} config={config} wizard={false} onDone={toStatus} />;
-  return <div style={{ minWidth: 0 }}>{content}</div>;
+  const wizard = !config.configured;
+  if (wizard || view === "settings") {
+    return (
+      <div style={{ minWidth: 0 }}>
+        <ConfigForm key={wizard ? "wizard" : "settings"} config={config} wizard={wizard} onDone={toStatus} />
+      </div>
+    );
+  }
+  return (
+    <div style={{ minWidth: 0 }}>
+      <StatusPage snap={snap} state={snap.state} onOpenSettings={() => setView("settings")} />
+    </div>
+  );
 }
 /** Sidebar-foot status light: green with reachable peers, amber while a decision waits. */
 export function SidebarAction({ wide }: { wide?: boolean }) {

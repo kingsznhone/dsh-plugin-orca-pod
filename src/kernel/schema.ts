@@ -1,5 +1,10 @@
 import type { z } from "zod";
 
+/** A plain JSON object (not null, not an array). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Where an input failed its schema (`path` relative to the checked value) and why. */
 export type SchemaIssue = { path: string[]; message: string };
 

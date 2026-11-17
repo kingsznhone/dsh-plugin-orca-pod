@@ -1,7 +1,0 @@
-/** Membership: the member table, its watchdog, endpoint screening and the heartbeat/join/leave loop. */
-
-export { createMembership } from "./membership.ts";
-export type { Membership, MembershipClock, MembershipTimings, PeerStore } from "./membership.ts";
-export { createWorkgroup } from "./mesh.ts";
-export type { NodeLogger } from "./mesh.ts";
-export { EXPLICIT_DIAL_POLICY, isLoopbackAddress, screenEndpoint } from "./screening.ts";

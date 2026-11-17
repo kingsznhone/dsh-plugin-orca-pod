@@ -5,16 +5,17 @@
  * task's resume message answers the prompt.
  */
 
-import type { PromptResponse, RequestPermissionResponse, SessionUpdate } from "@agentclientprotocol/sdk";
+import type { PromptResponse, RequestPermissionResponse, SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 
-import type { NodeLogger } from "../../membership/index.ts";
-import { CLI_PATH, errorMessage } from "../../kernel/index.ts";
-import type { ModelSelection } from "../../protocol/index.ts";
-import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../executor.ts";
+import { CLI_PATH } from "../../kernel/entry.ts";
+import { errorMessage } from "../../kernel/errors.ts";
+import type { NodeLogger } from "../../kernel/events.ts";
+import { describeModelRequest, type ModelDefaults, type ModelSelection } from "../../protocol/model.ts";
+import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
 import { KILL_GRACE_MS, abortError } from "../process.ts";
-import type { AcpExecutorConfig } from "../../node/index.ts";
 import type { AcpConnection, SessionRoute } from "./connection.ts";
-import { CANCELLED, autoDecision, outcomeFor, parsePermissionRequest, type PermissionRequest } from "./permissions.ts";
+import { CANCELLED, autoDecision, outcomeFor, parsePermissionRequest, type AcpPermissionAsk } from "./permissions.ts";
+import type { AcpExecutorConfig } from "./config.ts";
 import { createAcpSessions } from "./session.ts";
 
 /** Extra executor-local options not part of the DSH-facing config. */
@@ -24,12 +25,12 @@ type AcpExecutorOptions = AcpExecutorConfig & {
    * Local defaults for a task that names no model or effort. ACP always gets
    * them, so a resumed session cannot keep a previous task's selection (§6.15).
    */
-  modelDefaults?: () => { model: ModelSelection | null; reasoningEffort: string | null };
+  modelDefaults?: () => ModelDefaults;
   logger?: NodeLogger;
 };
 
 /** Stop reasons that end a prompt without an answer (§6.14); anything else completes the task. */
-const FAILED_STOP_REASONS: Record<string, string> = {
+const FAILED_STOP_REASONS: Partial<Record<StopReason, string>> = {
   refusal: "model refused the task",
   max_tokens: "model stopped at its token limit",
   max_turn_requests: "agent stopped at its turn limit",
@@ -38,7 +39,7 @@ const FAILED_STOP_REASONS: Record<string, string> = {
 type RunEvent =
   | { kind: "prompt-done"; result: PromptResponse }
   | { kind: "prompt-error"; error: Error }
-  | { kind: "permission"; request: PermissionRequest; reply: (outcome: RequestPermissionResponse) => void };
+  | { kind: "permission"; request: AcpPermissionAsk; reply: (outcome: RequestPermissionResponse) => void };
 
 /** A small single-consumer async queue; the executor loop is the only reader. */
 class AsyncQueue<T> {
@@ -63,7 +64,7 @@ function textOf(update: SessionUpdate): string {
 }
 
 /** Responses are typed, not validated by the SDK: a prompt without a stop reason is a broken server. */
-function stopReasonOf(result: PromptResponse | undefined): string {
+function stopReasonOf(result: PromptResponse | undefined): StopReason {
   if (typeof result?.stopReason !== "string") throw new Error("acp prompt returned no stopReason");
   return result.stopReason;
 }
@@ -98,14 +99,87 @@ async function selectModel(
     }
     return null;
   } catch (error) {
-    const target = [
-      model === undefined ? "" : `model ${model.provider}/${model.model}`,
-      reasoningEffort === undefined ? "" : `reasoning effort "${reasoningEffort}"`,
-    ]
-      .filter(Boolean)
-      .join(" and ");
-    return `cannot select ${target}: ${errorMessage(error)}`;
+    return `cannot select ${describeModelRequest(model, reasoningEffort)}: ${errorMessage(error)}`;
   }
+}
+
+/** Replies the ACP child still waits for. */
+type OpenReplies = Set<(outcome: RequestPermissionResponse) => void>;
+
+/**
+ * What one run listens for from the child: message chunks are collected into
+ * the transcript; a permission the inherited mode covers is answered at once,
+ * any other is queued for the origin and remembered in `open`.
+ */
+function makeRoute(
+  input: ExecuteInput,
+  events: AsyncQueue<RunEvent>,
+  open: OpenReplies,
+  transcript: { text: string },
+): SessionRoute {
+  return {
+    update: (update) => {
+      transcript.text += textOf(update);
+    },
+    permission: (params) => {
+      const request = parsePermissionRequest(params);
+      const decision = autoDecision(input.permissionMode, request.kind);
+      if (decision !== null) return Promise.resolve(outcomeFor(request.options, decision));
+      return new Promise((resolve) => {
+        const reply = (outcome: RequestPermissionResponse): void => {
+          open.delete(reply);
+          resolve(outcome);
+        };
+        open.add(reply);
+        events.push({ kind: "permission", request, reply });
+      });
+    },
+  };
+}
+
+/**
+ * Cancel the run when `signal` aborts: answer the waiting permissions (an
+ * unanswered one would leave the child prompt waiting forever), cancel the
+ * prompt, and force-close the child if this run is still attached after the
+ * grace period. The child is shared with later tasks, hence the check.
+ */
+function armAbort(
+  signal: AbortSignal,
+  run: { connection: AcpConnection; sessionId: string; route: SessionRoute; open: OpenReplies },
+): { wasAborted(): boolean; disarm(): void } {
+  const { connection, sessionId, route, open } = run;
+  let aborted = false;
+  let forceClose: NodeJS.Timeout | undefined;
+  const onAbort = (): void => {
+    aborted = true;
+    for (const reply of [...open]) reply(CANCELLED);
+    connection.cancel(sessionId);
+    forceClose = setTimeout(() => {
+      if (connection.isAttached(sessionId, route)) void connection.close();
+    }, KILL_GRACE_MS);
+    forceClose.unref();
+  };
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  return {
+    wasAborted: () => aborted,
+    disarm() {
+      signal.removeEventListener("abort", onAbort);
+      clearTimeout(forceClose);
+    },
+  };
+}
+
+/** Suspending sets the task to input-required; coming back means the origin approved (a denial aborts the run). */
+function suspensionFor(request: AcpPermissionAsk): Suspension {
+  return {
+    kind: "permission",
+    tool: request.title,
+    requested: {
+      ...(request.toolCallId === undefined ? {} : { tool_call_id: request.toolCallId }),
+      ...(request.kind === undefined ? {} : { tool_kind: request.kind }),
+    },
+  };
 }
 
 export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecutor {
@@ -143,44 +217,11 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
 
       const events = new AsyncQueue<RunEvent>();
       /** Permission requests the child still waits on; an abort answers them all. */
-      const open = new Set<(outcome: RequestPermissionResponse) => void>();
-      let text = "";
-      const route: SessionRoute = {
-        update: (update) => {
-          text += textOf(update);
-        },
-        permission: (params) => {
-          const request = parsePermissionRequest(params);
-          const decision = autoDecision(input.permissionMode, request.kind);
-          if (decision !== null) return Promise.resolve(outcomeFor(request.options, decision));
-          return new Promise((resolve) => {
-            const reply = (outcome: RequestPermissionResponse): void => {
-              open.delete(reply);
-              resolve(outcome);
-            };
-            open.add(reply);
-            events.push({ kind: "permission", request, reply });
-          });
-        },
-      };
+      const open: OpenReplies = new Set();
+      const transcript = { text: "" };
+      const route = makeRoute(input, events, open, transcript);
       const detach = connection.attach(sessionId, route);
-
-      let aborted = false;
-      let forceClose: NodeJS.Timeout | undefined;
-      const onAbort = (): void => {
-        aborted = true;
-        // Aborting without answering would leave the child prompt waiting forever.
-        for (const reply of [...open]) reply(CANCELLED);
-        connection.cancel(sessionId);
-        // The child is shared with later tasks: force-close it only if this run
-        // is still the one attached after the grace period.
-        forceClose = setTimeout(() => {
-          if (connection.isAttached(sessionId, route)) void connection.close();
-        }, KILL_GRACE_MS);
-        forceClose.unref();
-      };
-      if (signal.aborted) onAbort();
-      else signal.addEventListener("abort", onAbort, { once: true });
+      const abort = armAbort(signal, { connection, sessionId, route, open });
 
       connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text: input.prompt }] }).then(
         (result) => events.push({ kind: "prompt-done", result }),
@@ -196,30 +237,20 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
           if (event.kind === "prompt-error") throw event.error;
           if (event.kind === "prompt-done") {
             const stop = stopReasonOf(event.result);
-            if (aborted || stop === "cancelled") throw abortError();
+            if (abort.wasAborted() || stop === "cancelled") throw abortError();
             const reason = FAILED_STOP_REASONS[stop];
-            terminal = reason === undefined ? { type: "completed", text } : { type: "failed", text: reason };
+            terminal =
+              reason === undefined ? { type: "completed", text: transcript.text } : { type: "failed", text: reason };
             break;
           }
           const { request, reply } = event;
           // Suspending sets the task to input-required; coming back means the
           // origin approved (a denial aborts the run instead).
-          yield {
-            type: "suspend",
-            suspend: {
-              kind: "permission",
-              tool: request.title,
-              requested: {
-                ...(request.toolCallId === undefined ? {} : { tool_call_id: request.toolCallId }),
-                ...(request.kind === undefined ? {} : { tool_kind: request.kind }),
-              },
-            },
-          };
+          yield { type: "suspend", suspend: suspensionFor(request) };
           reply(outcomeFor(request.options, "allow"));
         }
       } finally {
-        signal.removeEventListener("abort", onAbort);
-        clearTimeout(forceClose);
+        abort.disarm();
         detach();
       }
       yield terminal;

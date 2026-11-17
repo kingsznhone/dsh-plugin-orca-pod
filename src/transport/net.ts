@@ -2,10 +2,11 @@
 
 import type { IncomingHttpHeaders } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 
-import { isLoopbackAddress } from "../membership/index.ts";
-import { DEFAULT_PORT, isHttpEndpoint } from "../protocol/index.ts";
+import { isLoopbackAddress } from "../membership/screening.ts";
+import { DEFAULT_PORT } from "../protocol/constants.ts";
+import { isHttpEndpoint } from "../protocol/peer.ts";
 
 /**
  * Ports the WHATWG fetch standard forbids. `undici` (and browsers) reject a
@@ -77,19 +78,15 @@ export function isDirectLoopbackRequest(request: {
  * (`fe80::/10`, needs a zone id) is skipped.
  */
 export function detectLocalEndpoints(port: number): string[] {
-  const ipv4: string[] = [];
-  const ipv6: string[] = [];
-  for (const addresses of Object.values(networkInterfaces())) {
-    for (const address of addresses ?? []) {
-      if (address.internal) continue;
-      if (address.family === "IPv6") {
-        if (/^fe80:/i.test(address.address)) continue;
-        ipv6.push(`http://[${address.address}]:${port}`);
-      } else {
-        ipv4.push(`http://${address.address}:${port}`);
-      }
-    }
-  }
+  const external = Object.values(networkInterfaces())
+    .flat()
+    .filter((address): address is NetworkInterfaceInfo => address !== undefined && !address.internal);
+  const ipv4 = external
+    .filter((address) => address.family !== "IPv6")
+    .map((address) => `http://${address.address}:${port}`);
+  const ipv6 = external
+    .filter((address) => address.family === "IPv6" && !/^fe80:/i.test(address.address))
+    .map((address) => `http://[${address.address}]:${port}`);
   return [...new Set([...ipv4, ...ipv6])];
 }
 
@@ -97,6 +94,23 @@ export function detectLocalEndpoints(port: number): string[] {
 export function bindChoices(port: number): string[] {
   const hosts = detectLocalEndpoints(port).map((url) => new URL(url).hostname.replace(/^\[|\]$/g, ""));
   return [...new Set(["127.0.0.1", "::", ...hosts])];
+}
+
+/** Split `host[:port]` or `[ipv6][:port]` into the host and the port text (`undefined` when there is none). */
+function splitHostPort(rest: string, original: string): { host: string; portText: string | undefined } {
+  if (rest.startsWith("[")) {
+    const close = rest.indexOf("]");
+    const after = rest.slice(close + 1);
+    if (close === -1 || (after.length > 0 && !after.startsWith(":"))) {
+      throw new Error(`invalid IPv6 peer address: ${original}`);
+    }
+    return { host: rest.slice(1, close), portText: after.slice(1) };
+  }
+  const [name = "", suffix, ...more] = rest.split(":");
+  // More than one colon and no brackets is a bare IPv6 literal without a port.
+  return suffix !== undefined && more.length === 0
+    ? { host: name, portText: suffix }
+    : { host: rest, portText: undefined };
 }
 
 /**
@@ -114,21 +128,7 @@ export function normalizePeerUrl(peer: string): string {
   if (rest.includes("/") || rest.includes("?") || rest.includes("#")) {
     throw new Error(`peer address must be host[:port], without a path: ${trimmed}`);
   }
-  let host: string;
-  let portText: string | undefined;
-  if (rest.startsWith("[")) {
-    const close = rest.indexOf("]");
-    const after = rest.slice(close + 1);
-    if (close === -1 || (after.length > 0 && !after.startsWith(":"))) {
-      throw new Error(`invalid IPv6 peer address: ${trimmed}`);
-    }
-    host = rest.slice(1, close);
-    portText = after.slice(1);
-  } else {
-    const [name = "", suffix, ...more] = rest.split(":");
-    // More than one colon and no brackets is a bare IPv6 literal without a port.
-    [host, portText] = suffix !== undefined && more.length === 0 ? [name, suffix] : [rest, undefined];
-  }
+  const { host, portText } = splitHostPort(rest, trimmed);
   if (host.length === 0) throw new Error(`peer address must include a host: ${trimmed}`);
   const fallbackPort = schemeMatch === null ? DEFAULT_PORT : scheme === "https" ? 443 : 80;
   const port = portText === undefined || portText.length === 0 ? fallbackPort : Number(portText);

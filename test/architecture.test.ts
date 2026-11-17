@@ -2,16 +2,16 @@
  * Architecture guard: the runtime import graph of `src/` stays acyclic and
  * only points downwards through the bounded contexts.
  *
- *   kernel ← protocol ← security ← storage ← { membership, tasks, execution, delegation }
+ *   kernel ← protocol ← security ← storage ← { membership, tasks, execution }
  *          ← transport ← node ← { plugin, cli }
  *
  * - `import type` / `export type` are erased and do not count; an import whose
  *   specifiers are all inline `type` still does (it is emitted as `import {}`).
- * - Contexts in the same layer may use each other, but only through `index.ts`.
- * - A cross-context import must name the other context's `index.ts`; the
- *   assembly points (`node/`, `plugin/`, `cli/`) may reach inside.
- * - Storage implementations (every `storage/` file except `index.ts`) are wired
- *   only by the assembly points.
+ * - Contexts in the same layer may use each other; the no-cycle check keeps that honest.
+ * - There are no barrel files: an importer names the file that defines what it
+ *   uses, so moving code inside a context means updating its callers.
+ * - Storage implementations (every `storage/` file except `stores.ts`, which
+ *   declares the contracts) are wired only by the assembly points.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -31,7 +31,6 @@ const LAYERS: Record<string, number> = {
   membership: 4,
   tasks: 4,
   execution: 4,
-  delegation: 4,
   transport: 5,
   node: 6,
   plugin: 7,
@@ -40,7 +39,7 @@ const LAYERS: Record<string, number> = {
   root: 8,
 };
 
-/** The one layer whose contexts collaborate sideways (through `index.ts`). */
+/** The one layer whose contexts collaborate sideways. */
 const PEER_LAYER = 4;
 
 const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
@@ -131,11 +130,9 @@ function violation(from: string, to: string): string | null {
   if (targetLayer > sourceLayer || (targetLayer === sourceLayer && sourceLayer !== PEER_LAYER)) {
     return `${source} (layer ${sourceLayer}) must not import ${target} (layer ${targetLayer})`;
   }
-  const isIndex = to === `${target}/index.ts`;
-  if (target === "storage" && !isIndex && !ASSEMBLY.has(source)) {
+  if (target === "storage" && to !== "storage/stores.ts" && !ASSEMBLY.has(source)) {
     return "storage implementations are wired only by node/, plugin/ and cli/";
   }
-  if (!isIndex && !ASSEMBLY.has(source)) return `cross-context imports go through ${target}/index.ts`;
   return null;
 }
 

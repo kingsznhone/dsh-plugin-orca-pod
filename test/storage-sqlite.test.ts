@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createSqliteTaskStore } from "../src/storage/sqlite.ts";
-import type { PersistedTask } from "../src/storage/index.ts";
+import type { PersistedTask } from "../src/storage/stores.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 
 const dirs: string[] = [];

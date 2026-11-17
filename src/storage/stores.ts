@@ -6,7 +6,9 @@
 
 import type { Readable } from "node:stream";
 
-import type { TaskState, TaskView } from "../protocol/index.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
+import type { OrcaNodeId } from "../protocol/peer.ts";
+import type { TaskView } from "../protocol/task.ts";
 
 // Tasks (§5.5)
 
@@ -16,7 +18,7 @@ import type { TaskState, TaskView } from "../protocol/index.ts";
  */
 export type PersistedTask = {
   view: TaskView;
-  origin_orca_node: string;
+  origin_orca_node: OrcaNodeId;
   created_at: string;
   updated_at: string;
 };
@@ -44,6 +46,12 @@ export type BlobRecord = {
   expires_at: string | null;
 };
 
+/** The label a caller gives a blob when it stores it: a name hint and a media type. */
+export type BlobLabel = { name?: string; media_type?: string };
+
+/** What a store records about a blob besides its id. */
+export type BlobMeta = Omit<BlobRecord, "blob_id">;
+
 export type StoredBlob = BlobRecord & { bytes: Buffer };
 
 /** Streaming read handle: the caller pipes `stream` instead of buffering. */
@@ -53,9 +61,7 @@ export type BlobRead = {
   record: BlobRecord;
 };
 
-export type PutStreamOptions = {
-  name?: string;
-  media_type?: string;
+export type PutStreamOptions = BlobLabel & {
   maxBytes?: number;
   /** Digest the uploader declared (`X-Pod-Body-SHA256`). */
   sha256?: string;
@@ -66,7 +72,7 @@ export interface BlobStore {
    * Store bytes; returns the content hash. Same bytes => same id, no duplicate;
    * storing them again extends the expiry as if they were new.
    */
-  put(bytes: Buffer | Uint8Array, options?: { name?: string; media_type?: string }): StoredBlob;
+  put(bytes: Buffer | Uint8Array, label?: BlobLabel): StoredBlob;
   /**
    * Streamed upload; never buffers the body (§5.6). With `sha256`, bytes whose
    * digest differs are discarded and the call fails with `blob_digest_mismatch`
@@ -116,28 +122,9 @@ export type FileBlobRegistry = {
   has(blobId: string): boolean;
 };
 
-// Origin-side dispatch log (§8.3); what the entries mean is decided in `delegation/dispatch-log.ts`.
+// Origin-side dispatch log (§8.3); what the entries mean is decided in `tasks/delegation.ts` (`markInFlightUnknown`).
 
-export type DispatchEntry = {
-  /** Task id returned by the target. */
-  task_id: string;
-  /** Target endpoint the task was dispatched to. */
-  peer: string;
-  context_id?: string;
-  /** Last observed task state; `unknown` once a restart cut the origin off from it. */
-  state: TaskState | "unknown";
-  last_error?: string;
-  /** When the dispatching task was itself a local task, its id (for automatic relay). */
-  parent_local_task_id?: string;
-  /**
-   * DSH session that dispatched the task (§8.3). Persisted so the host can
-   * resume background tracking after a restart, when the in-memory tracker is
-   * empty but the remote task may still be running.
-   */
-  agent_id?: string;
-  created_at: string;
-  updated_at: string;
-};
+export type { DispatchEntry };
 
 export type DispatchStore = {
   save(entry: DispatchEntry): void;

@@ -6,12 +6,11 @@ import {
   isWorkgroupId,
   membersDigest,
   normalizeEndpoints,
-  normalizeOrcaNodeId,
   runtimeDigest,
   type PeerView,
   type RuntimeInfo,
 } from "../src/protocol/peer.ts";
-import { newTaskId } from "../src/kernel/ids.ts";
+import { newTaskId } from "../src/protocol/task.ts";
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.
 const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -80,22 +79,6 @@ describe("isOrcaNodeId", () => {
     expect(isOrcaNodeId(42)).toBe(false);
     expect(isOrcaNodeId(null)).toBe(false);
     expect(isOrcaNodeId(undefined)).toBe(false);
-  });
-});
-
-describe("normalizeOrcaNodeId", () => {
-  it("keeps the case-sensitive public key intact", () => {
-    const identity = generateNodeIdentity();
-    expect(normalizeOrcaNodeId(identity.orcaNodeId)).toBe(identity.orcaNodeId);
-  });
-
-  it("trims surrounding whitespace", () => {
-    expect(normalizeOrcaNodeId(`  ${VALID_NODE_ID}  `)).toBe(VALID_NODE_ID);
-  });
-
-  it("returns null for garbage", () => {
-    expect(normalizeOrcaNodeId("not-an-orca-node-id")).toBeNull();
-    expect(normalizeOrcaNodeId("")).toBeNull();
   });
 });
 

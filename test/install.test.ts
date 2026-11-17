@@ -171,13 +171,11 @@ describe("dsh check", () => {
 
   it("explains a failing or missing dsh", () => {
     const failing: CommandRunner = () => ({ ok: false, stdout: "", stderr: "not found" });
-    expect(checkDsh("dsh", failing)).toMatchObject({ ok: false });
-    expect(checkDsh("dsh", failing).message).toContain("not found");
+    expect(checkDsh("dsh", failing)).toMatchObject({ ok: false, message: expect.stringContaining("not found") });
     const throwing: CommandRunner = () => {
       throw new Error("ENOENT");
     };
-    expect(checkDsh("dsh", throwing)).toMatchObject({ ok: false });
-    expect(checkDsh("dsh", throwing).message).toContain("ENOENT");
+    expect(checkDsh("dsh", throwing)).toMatchObject({ ok: false, message: expect.stringContaining("ENOENT") });
   });
 });
 

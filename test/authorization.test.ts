@@ -7,9 +7,9 @@ import { generateNodeIdentity, type NodeIdentity } from "../src/security/identit
 import { createMembership } from "../src/membership/membership.ts";
 import type { PeerStore } from "../src/membership/membership.ts";
 import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage/memory.ts";
-import { sha256Hex } from "../src/storage/blob-common.ts";
+import { bodySha256 } from "../src/security/crypto.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
-import { createGateway, type GatewayDeps } from "../src/transport/gateway/index.ts";
+import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
 
 const ENDPOINT = "http://orca-node.test";
 const WORKGROUP = "orca-dev";
@@ -121,7 +121,7 @@ function peerView(identity: NodeIdentity, endpoint: string): PeerView {
 }
 
 async function upload(harness: Harness, stranger: NodeIdentity, payload: Buffer) {
-  const digest = sha256Hex(payload);
+  const digest = bodySha256(payload);
   return harness.app.inject({
     method: "POST",
     url: "/blobs",
@@ -200,18 +200,18 @@ describe("workgroup membership gate (C1)", () => {
         url: "/blobs",
         payload,
         contentType: "application/octet-stream",
-        headers: { "x-pod-body-sha256": sha256Hex(payload) },
-        authorization: strangerSign(harness, stranger, "POST", "/blobs", payload, sha256Hex(payload)),
+        headers: { "x-pod-body-sha256": bodySha256(payload) },
+        authorization: strangerSign(harness, stranger, "POST", "/blobs", payload, bodySha256(payload)),
       },
       {
         method: "GET",
-        url: `/blobs/${sha256Hex(payload)}`,
-        authorization: strangerSign(harness, stranger, "GET", `/blobs/${sha256Hex(payload)}`),
+        url: `/blobs/${bodySha256(payload)}`,
+        authorization: strangerSign(harness, stranger, "GET", `/blobs/${bodySha256(payload)}`),
       },
       {
         method: "POST",
-        url: `/blobs/${sha256Hex(payload)}/link`,
-        authorization: strangerSign(harness, stranger, "POST", `/blobs/${sha256Hex(payload)}/link`),
+        url: `/blobs/${bodySha256(payload)}/link`,
+        authorization: strangerSign(harness, stranger, "POST", `/blobs/${bodySha256(payload)}/link`),
       },
     ];
 
