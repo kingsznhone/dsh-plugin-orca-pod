@@ -1,18 +1,19 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import Type, { type Static, type TSchema } from "typebox";
 
 import {
-  MAX_MODEL_OFFERS,
+  BusyStateSchema,
+  ModelOffersSchema,
+  ModelSelectionSchema,
+  ReasoningEffortSchema,
+  RuntimeInfoSchema,
   membersDigest,
   normalizeEndpoints,
   runtimeDigest,
-  type BusyState,
   type HeartbeatResponse,
   type JoinResponse,
   type MembersResponse,
-  type ModelOffer,
-  type ModelSelection,
   type PeerView,
-  type RuntimeInfo,
   type SelfRecord,
 } from "../../protocol/index.ts";
 import { DEFAULT_CLOCK_SKEW_MS, verifyAdmissionProof, type AdmissionKind } from "../../security/index.ts";
@@ -21,113 +22,43 @@ import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../../membership/index.ts"
 import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./index.ts";
 
-type AdmissionBody = {
-  workgroup_id: string;
-  orca_node_id: string;
-  ts: number;
-  nonce: string;
-  proof: string;
+const NonEmpty = Type.String({ minLength: 1 });
+const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
+
+/** Fields every admission (join, heartbeat) carries (§7.1). */
+const admission = {
+  workgroup_id: Type.String(),
+  orca_node_id: Type.String(),
+  ts: Type.Integer(),
+  nonce: Type.String(),
+  proof: Type.String(),
 };
 
-type JoinBody = AdmissionBody & {
-  display_name: string;
-  endpoints: string[];
-  runtime?: RuntimeInfo | null;
-  max_task_ttl_s?: number;
-  models?: ModelOffer[];
-  default_model?: ModelSelection | null;
-  default_reasoning_effort?: string | null;
-};
+const JoinBody = Type.Object({
+  ...admission,
+  display_name: Type.String(),
+  endpoints: Type.Array(Type.String()),
+  runtime: Type.Optional(nullable(RuntimeInfoSchema)),
+  max_task_ttl_s: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+  models: Type.Optional(ModelOffersSchema),
+  default_model: Type.Optional(nullable(ModelSelectionSchema)),
+  default_reasoning_effort: Type.Optional(nullable(ReasoningEffortSchema)),
+});
+type JoinBody = Static<typeof JoinBody>;
+type AdmissionBody = Pick<JoinBody, keyof typeof admission>;
 
-type HeartbeatBody = AdmissionBody & { digest?: string; busy?: BusyState | null };
+const HeartbeatBody = Type.Object({
+  ...admission,
+  digest: Type.Optional(Type.String()),
+  busy: Type.Optional(nullable(BusyStateSchema)),
+});
+type HeartbeatBody = Static<typeof HeartbeatBody>;
 
-type ChildLinkBody = { parent_task_id: string; peer: string; child_task_id: string };
+const ChildLinkBody = Type.Object({ parent_task_id: NonEmpty, peer: NonEmpty, child_task_id: NonEmpty });
+type ChildLinkBody = Static<typeof ChildLinkBody>;
 
-const text = { type: "string" };
-const nonEmpty = { type: "string", minLength: 1 };
-
-const admissionProperties = {
-  workgroup_id: text,
-  orca_node_id: text,
-  ts: { type: "integer" },
-  nonce: text,
-  proof: text,
-};
-const admissionRequired = ["workgroup_id", "orca_node_id", "ts", "nonce", "proof"];
-
-const busySchema = {
-  type: ["object", "null"],
-  required: ["task_id", "origin_orca_node", "since"],
-  properties: { task_id: text, origin_orca_node: text, since: text },
-};
-
-const runtimeSchema = {
-  type: ["object", "null"],
-  required: ["os", "arch", "cpu", "memory", "node", "captured_at"],
-  properties: {
-    os: {
-      type: "object",
-      required: ["family", "name", "version"],
-      properties: { family: text, name: text, version: text },
-    },
-    arch: text,
-    cpu: {
-      type: "object",
-      required: ["model", "logical_cores"],
-      properties: { model: text, logical_cores: { type: "integer" } },
-    },
-    memory: { type: "object", required: ["total_bytes"], properties: { total_bytes: { type: "number" } } },
-    node: { type: "object", required: ["version"], properties: { version: text } },
-    captured_at: text,
-  },
-};
-
-const joinSchema = {
-  type: "object",
-  required: [...admissionRequired, "display_name", "endpoints"],
-  properties: {
-    ...admissionProperties,
-    display_name: text,
-    endpoints: { type: "array", items: text },
-    runtime: runtimeSchema,
-    max_task_ttl_s: { type: "number", exclusiveMinimum: 0 },
-    models: {
-      type: "array",
-      maxItems: MAX_MODEL_OFFERS,
-      items: {
-        type: "object",
-        required: ["provider", "model"],
-        additionalProperties: false,
-        properties: { provider: nonEmpty, model: nonEmpty, name: text, description: text },
-      },
-    },
-    default_model: {
-      type: ["object", "null"],
-      required: ["provider", "model"],
-      additionalProperties: false,
-      properties: { provider: nonEmpty, model: nonEmpty, reasoning_effort: nonEmpty },
-    },
-    default_reasoning_effort: { type: ["string", "null"], pattern: "\\S" },
-  },
-};
-
-const heartbeatSchema = {
-  type: "object",
-  required: admissionRequired,
-  properties: { ...admissionProperties, digest: text, busy: busySchema },
-};
-
-const childLinkSchema = {
-  type: "object",
-  required: ["parent_task_id", "peer", "child_task_id"],
-  properties: { parent_task_id: nonEmpty, peer: nonEmpty, child_task_id: nonEmpty },
-};
-
-const taskQuerySchema = {
-  type: "object",
-  required: ["task"],
-  properties: { task: nonEmpty },
-};
+const TaskQuery = Type.Object({ task: NonEmpty });
+type TaskQuery = Static<typeof TaskQuery>;
 
 /**
  * Admission (section 7.1): the Ed25519 signature proved which node is calling;
@@ -202,7 +133,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
 
   app.post<{ Body: JoinBody }>(
     "/cluster/join",
-    { config: { access: "join" }, schema: { body: joinSchema } },
+    { config: { access: "join" }, schema: { body: JoinBody } },
     async (request) => {
       const body = request.body;
       admit(deps, "join", request.auth.orcaNodeId, body);
@@ -234,7 +165,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
 
   app.post<{ Body: HeartbeatBody }>(
     "/cluster/heartbeat",
-    { config: { access: "member" }, schema: { body: heartbeatSchema } },
+    { config: { access: "member" }, schema: { body: HeartbeatBody } },
     async (request) => {
       const body = request.body;
       const caller = request.auth.orcaNodeId;
@@ -272,7 +203,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   // automatically (section 7.12).
   app.post<{ Body: ChildLinkBody }>(
     "/cluster/child-link",
-    { config: { access: "local" }, schema: { body: childLinkSchema } },
+    { config: { access: "local" }, schema: { body: ChildLinkBody } },
     async (request) => {
       const { parent_task_id: parentTaskId, peer, child_task_id: childTaskId } = request.body;
       deps.orcaNode.linkChildTask(parentTaskId, peer, childTaskId);
@@ -282,9 +213,9 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
 
   // Local control: read one of this node's task views so the CLI can inherit
   // `metadata.pod` (hop/chain/root) when it dispatches a child task (section 5.1).
-  app.get<{ Querystring: { task: string } }>(
+  app.get<{ Querystring: TaskQuery }>(
     "/cluster/task",
-    { config: { access: "local" }, schema: { querystring: taskQuerySchema } },
+    { config: { access: "local" }, schema: { querystring: TaskQuery } },
     async (request) => {
       const { task } = request.query;
       const view = deps.tasks.get(task);

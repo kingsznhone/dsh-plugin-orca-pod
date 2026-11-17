@@ -1,6 +1,7 @@
 /** Peers and the member directory on the wire (§3, §4). */
 
 import { createHash } from "node:crypto";
+import Type, { type Static } from "typebox";
 
 import type { ModelOffer, ModelSelection, ReasoningEffort } from "./model.ts";
 
@@ -12,20 +13,24 @@ type WorkgroupId = string;
 
 export type PeerState = "unknown" | "online" | "suspect" | "offline";
 
-export type RuntimeInfo = {
-  os: { family: string; name: string; version: string };
-  arch: string;
-  cpu: { model: string; logical_cores: number };
-  memory: { total_bytes: number };
-  node: { version: string };
-  captured_at: string;
-};
+/** Host facts a node advertises at join (§3.3); `runtime_digest` covers them. */
+export const RuntimeInfoSchema = Type.Object({
+  os: Type.Object({ family: Type.String(), name: Type.String(), version: Type.String() }),
+  arch: Type.String(),
+  cpu: Type.Object({ model: Type.String(), logical_cores: Type.Integer() }),
+  memory: Type.Object({ total_bytes: Type.Number() }),
+  node: Type.Object({ version: Type.String() }),
+  captured_at: Type.String(),
+});
+export type RuntimeInfo = Static<typeof RuntimeInfoSchema>;
 
-export type BusyState = {
-  task_id: string;
-  origin_orca_node: OrcaNodeId;
-  since: string;
-};
+/** The task holding a node's single slot (§6.9). */
+export const BusyStateSchema = Type.Object({
+  task_id: Type.String(),
+  origin_orca_node: Type.String(),
+  since: Type.String(),
+});
+export type BusyState = Static<typeof BusyStateSchema>;
 
 export type PeerView = {
   orca_node_id: OrcaNodeId;

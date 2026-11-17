@@ -4,6 +4,9 @@ export { DEFAULT_PORT } from "./constants.ts";
 export type { Grant, GrantMode, PermissionRequest, SignedGrant, TaskRelay } from "./grant.ts";
 export {
   MAX_MODEL_OFFERS,
+  ModelOffersSchema,
+  ModelSelectionSchema,
+  ReasoningEffortSchema,
   isModelSelection,
   isReasoningEffort,
   parseModelSpec,
@@ -12,6 +15,8 @@ export {
 } from "./model.ts";
 export type { ModelOffer, ModelSelection } from "./model.ts";
 export {
+  BusyStateSchema,
+  RuntimeInfoSchema,
   isHttpEndpoint,
   isOrcaNodeId,
   isWorkgroupId,

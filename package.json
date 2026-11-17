@@ -66,6 +66,7 @@
   },
   "dependencies": {
     "fastify": "^5.12.8",
+    "typebox": "^1.4.7",
     "ulid": "^3.0.2"
   },
   "devDependencies": {

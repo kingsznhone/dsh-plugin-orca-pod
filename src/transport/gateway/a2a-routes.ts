@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import Type from "typebox";
 
 import { PodError } from "../../kernel/index.ts";
 import type { A2AMessage, SubmitTaskInput, TaskRelay, TaskView } from "../../protocol/index.ts";
@@ -23,39 +24,36 @@ const REQUIRED_PARAMS: Record<string, string[]> = {
   "tasks/escalate": ["taskId", "relay"],
 };
 
-const bodySchema = {
-  type: "object",
-  required: ["method"],
-  properties: {
-    method: { type: "string" },
-    params: {
-      type: "object",
-      properties: {
-        message: {
-          type: "object",
-          required: ["parts"],
-          properties: { parts: { type: "array" }, taskId: { type: "string" } },
-        },
-        metadata: { type: "object" },
-        id: { type: "string" },
-        taskId: { type: "string" },
-        relay: {
-          type: "object",
-          required: ["peer", "task_id", "request"],
-          properties: {
-            peer: { type: "string" },
-            task_id: { type: "string" },
-            request: { type: "object" },
-          },
-        },
-      },
-    },
+const AnyObject = Type.Record(Type.String(), Type.Unknown());
+
+/**
+ * Only the outline is checked here; the task runner validates message parts and
+ * metadata, and the relay request is checked when it is escalated. Which params
+ * are present depends on the method: TypeBox has no builder for `if`/`then`, so
+ * that part is plain JSON Schema passed through the options.
+ */
+const A2aBody = Type.Object(
+  {
+    method: Type.String(),
+    params: Type.Optional(
+      Type.Object({
+        message: Type.Optional(
+          Type.Object({ parts: Type.Array(Type.Unknown()), taskId: Type.Optional(Type.String()) }),
+        ),
+        metadata: Type.Optional(AnyObject),
+        id: Type.Optional(Type.String()),
+        taskId: Type.Optional(Type.String()),
+        relay: Type.Optional(Type.Object({ peer: Type.String(), task_id: Type.String(), request: AnyObject })),
+      }),
+    ),
   },
-  allOf: Object.entries(REQUIRED_PARAMS).map(([method, required]) => ({
-    if: { required: ["method"], properties: { method: { const: method } } },
-    then: { required: ["params"], properties: { params: { type: "object", required } } },
-  })),
-};
+  {
+    allOf: Object.entries(REQUIRED_PARAMS).map(([method, required]) => ({
+      if: { required: ["method"], properties: { method: { const: method } } },
+      then: { required: ["params"], properties: { params: { type: "object", required } } },
+    })),
+  },
+);
 
 function dispatch(deps: GatewayDeps, { method, params }: A2aBody, caller: string): TaskView {
   switch (method) {
@@ -89,7 +87,7 @@ function dispatch(deps: GatewayDeps, { method, params }: A2aBody, caller: string
 export function a2aRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   app.post<{ Body: A2aBody }>(
     "/a2a",
-    { config: { access: "member", rpc: true }, schema: { body: bodySchema } },
+    { config: { access: "member", rpc: true }, schema: { body: A2aBody } },
     async (request) => ({
       jsonrpc: "2.0",
       id: request.body.id ?? null,

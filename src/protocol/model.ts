@@ -1,27 +1,45 @@
 /** Model routes a node offers and a task selects (§6.15). */
 
+import Type, { type Static } from "typebox";
+
 import { isRecord } from "../kernel/index.ts";
 
-/** One model route an orca node advertises for tasks (§6.15). */
-export type ModelOffer = {
-  provider: string;
-  model: string;
-  /** Human-readable model name, when the provider catalog publishes one. */
-  name?: string;
-  description?: string;
-};
+export const MAX_MODEL_OFFERS = 128;
+
+const NonEmptyString = Type.String({ minLength: 1 });
+
+/**
+ * One model route an orca node advertises for tasks (§6.15). Closed: a peer's
+ * catalog is stored and re-broadcast, so unknown keys are not carried along.
+ */
+export const ModelOfferSchema = Type.Object(
+  {
+    provider: NonEmptyString,
+    model: NonEmptyString,
+    /** Human-readable model name, when the provider catalog publishes one. */
+    name: Type.Optional(Type.String()),
+    description: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+export type ModelOffer = Static<typeof ModelOfferSchema>;
+
+/** The catalog a node advertises, at most `MAX_MODEL_OFFERS` routes. */
+export const ModelOffersSchema = Type.Array(ModelOfferSchema, { maxItems: MAX_MODEL_OFFERS });
 
 /** A provider/model route, optionally pinned to one reasoning effort. */
-export type ModelSelection = {
-  provider: string;
-  model: string;
-  reasoning_effort?: string;
-};
+export const ModelSelectionSchema = Type.Object(
+  { provider: NonEmptyString, model: NonEmptyString, reasoning_effort: Type.Optional(NonEmptyString) },
+  { additionalProperties: false },
+);
+export type ModelSelection = Static<typeof ModelSelectionSchema>;
 
 /**
  * One reasoning-effort value a provider offers (`off`, `low`, `high`, `max`
- * today; treated as an opaque string so a provider can add values).
+ * today; treated as an opaque string so a provider can add values). It must
+ * hold something other than whitespace.
  */
+export const ReasoningEffortSchema = Type.String({ pattern: String.raw`\S` });
 export type ReasoningEffort = string;
 
 /** True when `value` names a provider/model route with optional reasoning effort. */
@@ -53,8 +71,6 @@ export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSel
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return typeof value === "string" && value.trim().length > 0;
 }
-
-export const MAX_MODEL_OFFERS = 128;
 
 function fail(message: string): never {
   throw new Error(message);

@@ -1,6 +1,7 @@
 import { createReadStream, existsSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
+import Type, { type Static } from "typebox";
 
 import { blobLinkSignature } from "../../security/index.ts";
 import { DEFAULT_BLOB_TTL_S } from "../../storage/index.ts";
@@ -15,14 +16,10 @@ const BLOB_LINK_TTL_S = DEFAULT_BLOB_TTL_S;
 /** Names are hints only (§5.6): no separators, traversal or drive prefixes. */
 const SAFE_BLOB_NAME = String.raw`^(?![A-Za-z]:)(?![\s\S]*\.\.)[^/\\]+$`;
 
-const uploadSchema = {
-  headers: {
-    type: "object",
-    required: ["x-pod-body-sha256"],
-    properties: { "x-pod-body-sha256": { type: "string", pattern: "^[0-9a-f]{64}$" } },
-  },
-  querystring: { type: "object", properties: { name: { type: "string", pattern: SAFE_BLOB_NAME } } },
-};
+const UploadHeaders = Type.Object({ "x-pod-body-sha256": Type.String({ pattern: "^[0-9a-f]{64}$" }) });
+const UploadQuery = Type.Object({ name: Type.Optional(Type.String({ pattern: SAFE_BLOB_NAME })) });
+type UploadQuery = Static<typeof UploadQuery>;
+const uploadSchema = { headers: UploadHeaders, querystring: UploadQuery };
 
 function isExpired(expiresAt: string | null): boolean {
   return expiresAt !== null && Date.parse(expiresAt) <= Date.now();
@@ -31,7 +28,7 @@ function isExpired(expiresAt: string | null): boolean {
 export function blobRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   // The signature covers the file digest (`streamed`), so access is decided
   // before any body bytes are read; the store hashes while it writes (§5.6).
-  app.post<{ Querystring: { name?: string } }>(
+  app.post<{ Querystring: UploadQuery }>(
     "/blobs",
     { bodyLimit: MAX_BLOB_BYTES, config: { access: "member", streamed: true }, schema: uploadSchema },
     async (request, reply) => {
