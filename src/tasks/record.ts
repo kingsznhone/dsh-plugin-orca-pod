@@ -6,7 +6,7 @@
  * Every transition goes through `move` (live states) or `finish` (the single
  * exit, which also releases everything the task holds). The executor loop,
  * the permission wait (§7.11, §7.12) and the timers all live here; the slot,
- * the store and lookups belong to the task runner (`tasks.ts`).
+ * the store and lookups belong to the task runner (`runner.ts`).
  */
 
 import { randomUUID } from "node:crypto";

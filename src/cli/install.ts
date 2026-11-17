@@ -7,7 +7,7 @@
  * the plugin from its web UI instead; that path is not this command's job.
  *
  * Planning, prompting and unit rendering are pure so the tests never need
- * systemd or a terminal; the CLI wrapper (`src/orca_pod.ts`) performs the writes
+ * systemd or a terminal; the CLI wrapper (`src/cli/orca-pod.ts`) performs the writes
  * and owns the interactive readline session.
  */
 

@@ -54,7 +54,7 @@ export type TaskRunnerDeps = {
 /**
  * The task runner: the single slot (§6.9), the store and lookups. One orca node
  * runs one task at a time, so a second task is refused with `orca_node_busy`;
- * everything about one task's life is in `task_record.ts`.
+ * everything about one task's life is in `record.ts`.
  */
 export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   const { store } = deps;

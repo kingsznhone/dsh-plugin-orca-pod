@@ -13,7 +13,7 @@
  *  - any other option makes it fully flag-driven: missing required answers fail
  *    immediately, which is what an agent installing over SSH needs.
  *
- * Planning and rendering live in `src/install.ts`; this file owns argument
+ * Planning and rendering live in `src/cli/install.ts`; this file owns argument
  * parsing, the interactive readline session and console output.
  */
 

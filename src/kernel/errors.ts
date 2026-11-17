@@ -50,7 +50,7 @@ export const POD_ERROR_STATUS = {
   orca_node_busy: 429,
   quota_exceeded: 507,
   internal: 500,
-  // Outbound calls (see peer_client.ts): raised on this node, never sent over the wire.
+  // Outbound calls (see transport/peer-client.ts): raised on this node, never sent over the wire.
   unknown_peer: 404,
   peer_not_online: 503,
   peer_error: 502,
@@ -60,7 +60,7 @@ export type PodErrorCode = keyof typeof POD_ERROR_STATUS;
 
 /**
  * The one error type of this node: the gateway turns it into an HTTP response
- * (see gateway/error_handler.ts), and the peer client raises it for a failed
+ * (see transport/gateway/error-handler.ts), and the peer client raises it for a failed
  * outbound call, with the status the peer answered with.
  */
 export class PodError extends Error {

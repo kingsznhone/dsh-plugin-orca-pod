@@ -89,7 +89,7 @@ export type SubmitTaskInput = {
   metadata?: Record<string, unknown> & { pod?: PodTaskMetadata };
 };
 
-/** Implemented by orca_node (needs an executor), consumed by the gateway. */
+/** Implemented by `tasks/runner.ts` (wired with an executor in `node/`), consumed by the gateway. */
 export interface TaskRunner {
   /** `originOrcaNode` is the authenticated caller; it is recorded for busy/holder reporting (§6.9). */
   submit(input: SubmitTaskInput & { originOrcaNode: OrcaNodeId }): TaskView;
