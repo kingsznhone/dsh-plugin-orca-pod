@@ -19,8 +19,9 @@ function send(reply: FastifyReply, { stream, size }: OpenedBlob): FastifyReply {
 /**
  * Files move by name, never by URL (§5.6): a file is the sha256 a member
  * published, and whoever needs it asks its own node, which finds that member's
- * address the way its heartbeat does. A node never receives bytes from another
- * one.
+ * address the way its heartbeat does. The gateway never accepts bytes pushed by
+ * a peer (there is no upload route); a local caller's request makes this node
+ * fetch the file from its publisher on demand and forward it.
  */
 export function blobRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   // A file this node published, for a member's signed request.

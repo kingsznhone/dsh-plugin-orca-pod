@@ -56,7 +56,8 @@ Hard constraints that must not be undone:
   The calling model decides whether to retry, switch orca node, or report back to
   the user. No server-side queue. Endpoints are an ordered list (1-8, primary
   first); peers dial them in order. The protocol never carries
-  paths (task input names are bare file names).
+  paths; the task text refers to shared files by their
+  `<orca node id>/<sha256>` name.
 - Tasks are single-hop: a task is never forwarded, and the agent running it
   cannot dispatch another one (the executor sets ORCA_POD_IN_TASK=1; the CLI's
   and the plugin's send refuse). A task it cannot finish ends with a BLOCKED:

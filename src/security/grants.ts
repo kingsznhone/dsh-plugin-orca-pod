@@ -28,7 +28,11 @@ export type GrantExpectation = {
   pending: PermissionRequest;
 };
 
-/** Why a grant is not accepted; each is also the `PodErrorCode` the task fails with. */
+/**
+ * Why a grant is not accepted: the task fails with this string as its `reason`.
+ * `grant_invalid` / `grant_expired` are also `PodErrorCode`s; `grant_replayed`
+ * has no code (it can only happen after the ledger consumed the grant).
+ */
 export type GrantFailure = "grant_invalid" | "grant_expired" | "grant_replayed";
 
 /**
@@ -45,6 +49,8 @@ export function checkGrant(
   if (grant.origin_orca_node !== expected.origin) return "grant_invalid";
   if (grant.workgroup_id !== expected.workgroupId) return "grant_invalid";
   if (grant.tool !== expected.pending.tool) return "grant_invalid";
+  // The origin grants exactly the mode the task asked for; the target already checked it against its ceiling.
+  if (grant.permission_mode !== expected.pending.requested_mode) return "grant_invalid";
   if (Date.parse(grant.expires_at) <= now) return "grant_expired";
   // The grant allows exactly the request this task is parked on, for this task on this node.
   if (grant.request_id !== expected.pending.request_id) return "grant_invalid";
@@ -56,8 +62,8 @@ export function checkGrant(
 const LEDGER_LIMIT = 1024;
 
 /**
- * A grant is `allow_once`: remembering its id until it expires turns a replay
- * into `grant_replayed` instead of a second allowed tool call (§7.11).
+ * A grant answers one request once: remembering its id until it expires turns a
+ * replay into `grant_replayed` instead of a second upgrade (§7.11).
  */
 export type GrantLedger = {
   has(grantId: string, now?: number): boolean;

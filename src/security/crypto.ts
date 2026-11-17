@@ -310,7 +310,7 @@ function grantSignatureInput(grant: Grant): string {
     task_id: grant.task_id,
     target_orca_node: grant.target_orca_node,
     tool: grant.tool,
-    mode: grant.mode,
+    permission_mode: grant.permission_mode,
     request_id: grant.request_id,
     issued_at: grant.issued_at,
     expires_at: grant.expires_at,

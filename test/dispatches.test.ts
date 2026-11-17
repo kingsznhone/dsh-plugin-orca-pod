@@ -1,3 +1,4 @@
+import { SessionId } from "@deepseek-ai/dsh-session";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +55,7 @@ describe("dispatch store (13.4)", () => {
   it("persists the dispatching agent so tracking can resume after a restart", () => {
     const file = join(tempRoot(), "tasks.db");
     const store = createSqliteDispatchStore(file);
-    store.save(entry({ task_id: "task-1", state: "working", agent_id: "session-7" }));
+    store.save(entry({ task_id: "task-1", state: "working", agent_id: SessionId("session-7") }));
     store.close();
 
     const reopened = createSqliteDispatchStore(file);

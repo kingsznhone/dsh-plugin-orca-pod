@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
 import { isIPv4, isIPv6 } from "node:net";
 
 /**
@@ -26,7 +27,6 @@ type AddressClass = "loopback" | "link-local" | "private" | "public" | "reserved
 
 function ipv4Class(address: string): AddressClass {
   const [a = 0, b = 0] = address.split(".").map(Number);
-  if (a === 127) return "loopback";
   if (a === 169 && b === 254) return "link-local";
   if (a === 10) return "private";
   if (a === 172 && b >= 16 && b <= 31) return "private";
@@ -38,7 +38,6 @@ function ipv4Class(address: string): AddressClass {
 
 function ipv6Class(address: string): AddressClass {
   const lower = address.toLowerCase();
-  if (lower === "::1") return "loopback";
   if (lower === "::") return "reserved";
   if (/^fe[89ab]/.test(lower)) return "link-local";
   if (/^f[cd]/.test(lower)) return "private";
@@ -47,7 +46,9 @@ function ipv6Class(address: string): AddressClass {
   return "public";
 }
 
+/** Loopback by DSH's own rule (`isLoopbackHost`: 127/8, `::1` and their mapped forms); the other classes are ours. */
 function addressClass(address: string): AddressClass {
+  if (isLoopbackHost(address)) return "loopback";
   return isIPv4(address) ? ipv4Class(address) : ipv6Class(address);
 }
 
@@ -101,11 +102,4 @@ export async function screenEndpoint(endpoint: string, policy: DialPolicy = {}):
   }
   if (addresses.length === 0) return "unresolved";
   return addresses.every((entry) => addressAllowed(entry.address, policy)) ? "allowed" : "refused";
-}
-
-/** True for an IP literal on this machine: 127.0.0.0/8, `::1`, or an IPv4-mapped loopback. */
-export function isLoopbackAddress(address: string | undefined): boolean {
-  if (address === undefined) return false;
-  if (isIPv4(address)) return ipv4Class(address) === "loopback";
-  return isIPv6(address) && ipv6Class(address) === "loopback";
 }

@@ -76,6 +76,8 @@ interface FakeServices {
 
 /** The `Context` slice the plugin reads, with the fake's callbacks typed. */
 interface FakeCtx {
+  /** Cordis service lookup; nothing is provided here, so `launchEnvironmentOf` falls back to the process layer. */
+  get(name: string): undefined;
   tools: FakeServices["tools"];
   credentials: {
     resolve(ref: string): Promise<{ value: string; source: string } | undefined>;
@@ -153,6 +155,7 @@ function fakeHost() {
   const edits: Array<Record<string, unknown>> = [];
 
   const ctx: FakeCtx = {
+    get: () => undefined,
     tools: services.tools,
     credentials: {
       resolve: async (ref) => {

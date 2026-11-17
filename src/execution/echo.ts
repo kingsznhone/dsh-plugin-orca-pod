@@ -10,7 +10,9 @@ import { z } from "zod";
 
 import { PodError } from "../kernel/errors.ts";
 import { parseSchema } from "../kernel/schema.ts";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { RequestedAccessSchema } from "../protocol/grant.ts";
+import { SandboxModeSchema } from "../protocol/permission.ts";
 import { describeModelRequest } from "../protocol/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import { abortError } from "../kernel/errors.ts";
@@ -32,6 +34,8 @@ const EchoSuspendSchema = z.strictObject({
   kind: z.literal("permission", 'must be "permission"'),
   tool: z.string(),
   requested: RequestedAccessSchema,
+  /** The mode the scripted task asks to be upgraded to. */
+  mode: SandboxModeSchema.default("danger-full-access"),
 });
 
 const EchoStepSchema = z.strictObject({
@@ -90,7 +94,7 @@ export function parseEchoScript(raw: unknown): EchoScript {
 
 /** Deterministic executor used for connectivity, protocol, and approval probes (§6.3). */
 export class EchoExecutor implements LocalExecutor {
-  async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, void> {
+  async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
     if (input.model !== undefined || input.reasoningEffort !== undefined) {
       yield {
         type: "failed",
@@ -105,7 +109,8 @@ export class EchoExecutor implements LocalExecutor {
       await sleep(step.at_ms - lastAt, undefined, { signal });
       lastAt = step.at_ms;
       // Suspension time is not counted: the next delay is measured from at_ms.
-      yield { type: "suspend", suspend: step.suspend };
+      const { mode, ...suspend } = step.suspend;
+      yield { type: "suspend", suspend: { ...suspend, requestedMode: mode } };
     }
     for (const artifact of artifacts) yield { type: "artifact", name: artifact.name, content: artifact.content };
     if (final.state === "hang") {

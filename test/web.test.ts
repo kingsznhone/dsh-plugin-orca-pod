@@ -57,6 +57,8 @@ const APPROVAL: PodApproval = {
   tool: "write_file",
   requested: '{"path":"report.md"}',
   from: "node two",
+  current_mode: "read-only",
+  requested_mode: "workspace-write",
   agent_id: "session-1",
 };
 

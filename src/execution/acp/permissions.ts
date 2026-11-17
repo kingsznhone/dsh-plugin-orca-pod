@@ -5,17 +5,23 @@ import type {
   PermissionOptionKind,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  ToolCallUpdate,
   ToolKind,
 } from "@agentclientprotocol/sdk";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 
-/** What an ACP child asks permission for, as the executor reads it (not the protocol's `PermissionRequest`). */
-export type AcpPermissionAsk = {
-  toolCallId: string;
+import { narrowPermissionMode, widerModes } from "../../protocol/permission.ts";
+
+/**
+ * What an ACP child asks permission for, as the executor reads it (not the
+ * protocol's `PermissionRequest`): the SDK's tool call with its optional
+ * fields settled, plus the options it offers.
+ */
+export type AcpPermissionAsk = Pick<ToolCallUpdate, "toolCallId"> & {
   title: string;
   kind: ToolKind | undefined;
-  options: PermissionOption[];
+  options: RequestPermissionRequest["options"];
 };
 
 export const CANCELLED: RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
@@ -33,16 +39,30 @@ export function parsePermissionRequest(params: RequestPermissionRequest): AcpPer
   };
 }
 
-/**
- * Auto-answer a permission request the inherited mode already covers (§7.10).
- * `null` means the request is outside the mode and must go to the origin.
- */
-export function autoDecision(mode: SandboxMode, kind: ToolKind | undefined): PermissionDecision | null {
-  if (mode === "danger-full-access") return "allow";
+/** Whether `mode` lets a tool call of `kind` run without asking (§7.14). */
+export function modeAllows(mode: SandboxMode, kind: ToolKind | undefined): boolean {
+  if (mode === "danger-full-access") return true;
   const readable = kind === "read" || kind === "search" || kind === "think";
-  if (mode === "read-only") return readable ? "allow" : "reject";
-  const writable = kind === "edit" || kind === "delete" || kind === "move" || kind === "execute";
-  return readable || writable ? "allow" : null;
+  if (mode === "read-only") return readable;
+  return readable || kind === "edit" || kind === "delete" || kind === "move" || kind === "execute";
+}
+
+/**
+ * The mode to ask the origin for when `mode` does not allow a tool call: the
+ * narrowest wider mode on DSH's ladder that does, within this node's ceiling.
+ * `null` means no mode the node accepts would allow it, so the call is refused
+ * without asking anyone.
+ */
+export function escalationFor(
+  mode: SandboxMode,
+  ceiling: SandboxMode | undefined,
+  kind: ToolKind | undefined,
+): SandboxMode | null {
+  for (const wider of widerModes(mode)) {
+    if (ceiling !== undefined && narrowPermissionMode(ceiling, wider) !== wider) return null;
+    if (modeAllows(wider, kind)) return wider;
+  }
+  return null;
 }
 
 /** The ACP option kinds that carry each decision, the single-use one preferred. */

@@ -162,8 +162,19 @@ export type Settings = { [K in KeysWith<{ default: unknown }>]: FieldValue<Field
 /** The part of `Settings` that is persisted in `config.json`: everything but the `local` fields. */
 export type NodeSettings = Omit<Settings, KeysWith<{ local: true }>>;
 
-const FIELD_MAP: Record<string, Field<unknown>> = FIELDS;
-const FIELD_LIST = Object.entries(FIELD_MAP);
+type FieldKey = keyof FieldTable;
+
+/** Every field with its key; `Object.entries` forgets the key types, so they are restated once here. */
+const FIELD_ENTRIES = Object.entries(FIELDS) as [FieldKey, Field<unknown>][];
+
+/**
+ * An object built from the field table, typed per key by the caller. A loop
+ * over the table cannot carry each key's own type, so this is the one place
+ * that result is asserted; everything built through it is typed by the table.
+ */
+function fromFields<R>(entries: Iterable<readonly [FieldKey, unknown]>): R {
+  return Object.fromEntries(entries) as R;
+}
 
 /** Settings as the profile stores them: every key optional, `null` or absent means "default". */
 export type ConfigFields = { [K in keyof Settings]?: Settings[K] | null };
@@ -177,10 +188,13 @@ export type PanelPatch = Pick<ConfigFields, KeysWith<{ panel: true }>>;
  * again as a whole by `parseSettings`, where fields can depend on each other.
  */
 export const PanelPatchSchema = z.object(
-  Object.fromEntries(
-    FIELD_LIST.filter(([, meta]) => meta.panel === true).map(([key, meta]) => [key, meta.schema.nullable().optional()]),
+  fromFields<{ [K in KeysWith<{ panel: true }>]: z.ZodOptional<z.ZodNullable<FieldTable[K]["schema"]>> }>(
+    FIELD_ENTRIES.filter(([, meta]) => meta.panel === true).map(([key, meta]) => [
+      key,
+      meta.schema.nullable().optional(),
+    ]),
   ),
-) as unknown as z.ZodType<PanelPatch>;
+) satisfies z.ZodType<PanelPatch>;
 
 /** Thrown by `parseSettings`; the plugin schema reports the same issues instead. */
 export class ConfigValidationError extends HarnessError {
@@ -202,19 +216,19 @@ export class ConfigValidationError extends HarnessError {
  */
 export function safeParseSettings(input: unknown): { value: Settings } | { issues: SchemaIssue[] } {
   if (!isRecord(input)) return { issues: [{ path: [], message: "expected an object" }] };
-  const value: Record<string, unknown> = {};
+  const values: [FieldKey, unknown][] = [];
   const issues: SchemaIssue[] = [];
-  for (const [key, field] of FIELD_LIST) {
+  for (const [key, field] of FIELD_ENTRIES) {
     const raw = input[key] ?? undefined;
     if (raw === undefined) {
-      if (field.default !== undefined) value[key] = structuredClone(field.default);
+      if (field.default !== undefined) values.push([key, structuredClone(field.default)]);
       continue;
     }
     const result = parseSchema(field.schema, raw);
-    if (result.ok) value[key] = result.value;
+    if (result.ok) values.push([key, result.value]);
     else issues.push({ path: [key, ...result.issue.path], message: result.issue.message });
   }
-  return issues.length > 0 ? { issues } : { value: value as unknown as Settings };
+  return issues.length > 0 ? { issues } : { value: fromFields<Settings>(values) };
 }
 
 export function parseSettings(input: unknown): Settings {
@@ -225,5 +239,10 @@ export function parseSettings(input: unknown): Settings {
 
 /** Drop the plugin-only settings, leaving what `config.json` holds. */
 export function nodeSettings(settings: Settings): NodeSettings {
-  return Object.fromEntries(Object.entries(settings).filter(([key]) => FIELD_MAP[key]?.local !== true)) as NodeSettings;
+  return fromFields<NodeSettings>(
+    FIELD_ENTRIES.filter(([key, meta]) => meta.local !== true && settings[key] !== undefined).map(([key]) => [
+      key,
+      settings[key],
+    ]),
+  );
 }

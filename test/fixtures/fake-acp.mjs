@@ -1,9 +1,10 @@
 /**
  * Minimal fake ACP server for AcpExecutor tests: NDJSON JSON-RPC on stdio.
  * Usage: node fake-acp.mjs <mode> <logFile>
- * Modes: ok | permission | permission-fetch | hang | resume-fail | crash-once
+ * Modes: ok | permission | permission-twice | permission-fetch | hang | resume-fail | crash-once
  * `permission` asks to edit (a kind workspace-write allows by itself);
- * `permission-fetch` asks for a kind that only the origin can approve.
+ * `permission-twice` asks to edit, then once more after the first answer;
+ * `permission-fetch` asks for a kind that only danger-full-access allows.
  * Every request/notification is appended to <logFile> as one JSON object per line.
  */
 
@@ -13,7 +14,13 @@ import { createInterface } from "node:readline";
 // Skip trailing option-looking args the executor appends (e.g. `--profile acp`):
 // without this guard argv[3] would become a log path literally named "--profile".
 const rawMode = process.argv[2] ?? "ok";
-const mode = rawMode.startsWith("-") ? "ok" : rawMode === "permission-fetch" ? "permission" : rawMode;
+const mode = rawMode.startsWith("-")
+  ? "ok"
+  : rawMode === "permission-fetch" || rawMode === "permission-twice"
+    ? "permission"
+    : rawMode;
+const askTwice = rawMode === "permission-twice";
+let askedAgain = false;
 const toolKind = rawMode === "permission-fetch" ? "fetch" : "edit";
 const rawLog = process.argv[3] ?? null;
 const logFile = rawLog !== null && !rawLog.startsWith("-") ? rawLog : null;
@@ -212,6 +219,27 @@ function onResponse(message) {
       optionId: outcome?.optionId ?? null,
     });
     const allowed = outcome?.outcome === "selected" && outcome?.optionId === "allow-once";
+    if (askTwice && !askedAgain) {
+      askedAgain = true;
+      for (const sessionId of heldPrompts.keys()) {
+        update(sessionId, {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "m2",
+          content: { type: "text", text: allowed ? "allowed" : "denied" },
+        });
+        send({
+          jsonrpc: "2.0",
+          id: permissionSeq++,
+          method: "session/request_permission",
+          params: {
+            sessionId,
+            toolCall: { toolCallId: "call-2", title: "write another file", kind: toolKind },
+            options: permissionOptions,
+          },
+        });
+      }
+      return;
+    }
     for (const [sessionId, promptId] of heldPrompts) {
       update(sessionId, {
         sessionUpdate: "agent_message_chunk",

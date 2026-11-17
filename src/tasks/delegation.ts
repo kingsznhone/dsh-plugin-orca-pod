@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { SessionId } from "@deepseek-ai/dsh-session";
 import { signGrant } from "../security/crypto.ts";
 import type { DispatchStore } from "../storage/stores.ts";
 import type { DispatchEntry } from "../protocol/dispatch.ts";
@@ -15,13 +16,12 @@ import {
   type TaskView,
 } from "../protocol/task.ts";
 import type { A2AMethod, A2AParams } from "../protocol/a2a.ts";
-import type { Grant, GrantMode, ResumeControl } from "../protocol/grant.ts";
+import type { Grant, ResumeControl } from "../protocol/grant.ts";
 import type { PeerClient } from "../protocol/client.ts";
 import type { PodEventInput } from "../protocol/events.ts";
 import type { WorkgroupId } from "../protocol/peer.ts";
 
 export interface ApprovalOptions {
-  mode?: GrantMode;
   /** How long the signed grant stays valid, default 300s. */
   ttlS?: number;
 }
@@ -56,7 +56,7 @@ export type Delegation = {
   denyTask(peerUrl: string, view: TaskView, reason?: string): Promise<TaskView>;
   listDispatches(): DispatchEntry[];
   /** Stamp the DSH session that dispatched a task, so tracking can resume after a restart (§8.3). */
-  annotateDispatch(taskId: string, agentId: string): void;
+  annotateDispatch(taskId: string, agentId: SessionId): void;
   /** A restart means this node no longer knows what its in-flight dispatches did (§8.3). */
   start(): void;
 };
@@ -180,7 +180,8 @@ export function createDelegation(deps: DelegationDeps): Delegation {
       task_id: view.id,
       target_orca_node: request.requested_by,
       tool: request.tool,
-      mode: options.mode ?? "allow_once",
+      // The task asked for exactly this mode; it keeps it until it ends (§7.12).
+      permission_mode: request.requested_mode,
       request_id: request.request_id,
       issued_at: new Date(issuedAt).toISOString(),
       expires_at: new Date(issuedAt + (options.ttlS ?? GRANT_TTL_S) * 1000).toISOString(),

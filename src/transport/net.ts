@@ -4,7 +4,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 
-import { isLoopbackAddress } from "../membership/screening.ts";
+import { isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
 import { DEFAULT_PORT } from "../protocol/constants.ts";
 import { isHttpEndpoint } from "../protocol/peer.ts";
 
@@ -51,7 +51,7 @@ export async function pickFreePort(): Promise<number> {
 export function isLoopbackEndpoint(url: string): boolean {
   try {
     const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return host === "localhost" || isLoopbackAddress(host);
+    return host === "localhost" || isLoopbackHost(host);
   } catch {
     return false;
   }
@@ -66,7 +66,7 @@ export function isDirectLoopbackRequest(request: {
   headers: IncomingHttpHeaders;
 }): boolean {
   return (
-    isLoopbackAddress(request.socket?.remoteAddress) &&
+    isLoopbackHost(request.socket?.remoteAddress ?? "") &&
     PROXY_HEADERS.every((name) => request.headers[name] === undefined)
   );
 }
@@ -75,7 +75,7 @@ export function isDirectLoopbackRequest(request: {
  * Advertised-URL suggestions for the panel wizard and for nodes that listen on
  * a wildcard address: every non-internal IPv4/IPv6 address of this machine on
  * the given port. IPv4 comes first (the reliable LAN path); link-local IPv6
- * (`fe80::/10`, needs a zone id) is skipped.
+ * (`fe80:` prefix, needs a zone id) is skipped.
  */
 export function detectLocalEndpoints(port: number): string[] {
   const external = Object.values(networkInterfaces())

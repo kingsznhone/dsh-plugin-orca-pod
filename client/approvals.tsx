@@ -10,6 +10,10 @@ import { store, useStore } from "./store.ts";
 import type { PodApproval } from "./types.ts";
 import ui from "./ui.module.css";
 
+/** The upgrade an approval grants: this task runs with the requested mode until it ends. */
+const upgradeText = (approval: PodApproval): string =>
+  t("apUpgrade").replace("{to}", approval.requested_mode).replace("{from}", approval.current_mode);
+
 export const answer = (kind: "approve" | "deny", approval: PodApproval) =>
   store.act(kind, { peer: approval.peer, task_id: approval.task_id });
 
@@ -36,6 +40,7 @@ export function PromptCard({
         {`${t("apWants")} ${t("tool")} `}
         <span className={`${css.tool} ${ui.mono}`}>{approval.tool}</span>
         {approval.requested ? <div className={`${css.requested} ${ui.mono}`}>{approval.requested}</div> : null}
+        <div className={css.meta}>{upgradeText(approval)}</div>
       </div>
       <div className={css.actions}>
         <Button variant={"primary"} size={"sm"} disabled={busy} onClick={() => answer("approve", approval)}>
@@ -114,6 +119,7 @@ export function ApprovalList({ approvals, busy }: { approvals: PodApproval[]; bu
               <Tag tone={"outline"}>{short(approval.task_id)}</Tag>
             </div>
             <div className={css.meta}>{t("from") + approval.from}</div>
+            <div className={css.meta}>{upgradeText(approval)}</div>
           </div>
           <div className={css.itemActions}>
             <Button variant={"primary"} size={"sm"} disabled={busy} onClick={() => answer("approve", approval)}>

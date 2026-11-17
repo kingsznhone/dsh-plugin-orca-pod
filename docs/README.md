@@ -1,7 +1,7 @@
 # Orca Pod 设计文档
 
 > Status: 当前设计（与代码一致）
-> Updated: 2026-11-16
+> Updated: 2026-11-18
 > Scope: 2–10 台安装了 DSH 的机器，跨 Windows/Linux，对等任务调用与结果回报
 > Audience: 实现者 / 接手的新工作区 agent
 

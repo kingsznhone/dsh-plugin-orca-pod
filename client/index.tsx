@@ -1,7 +1,7 @@
 /**
  * Orca Pod panel — DSH client bundle entry (§9.2).
  *
- * `npm run build:client` bundles this module and its imports into
+ * `npm run build` (through `scripts/build-client.ts`) bundles this module and its imports into
  * `lib/client.js`, a classic script that registers a lazy factory with
  * `window.__ModuleLoader__`. The factory's `require` resolves only the shell's
  * platform module table (`react`, `react/jsx-runtime` and DSH's shared UI
@@ -11,7 +11,7 @@
  * The host sends ready-to-render data (names, labels, links, what is
  * cancellable); the client only draws it and posts the user's actions back.
  *
- * UI rules: render inside a Slot, build on DSH's primitives (`dsh-ui.d.ts`),
+ * UI rules: render inside a Slot, build on DSH's client UI primitives (types from `@deepseek-ai/dsh-client-ui-primitives`),
  * lay out with CSS modules that use only `--dsw-*` theme tokens, never touch
  * `document.body`, and keep all DOM work inside React. The one exception is
  * each CSS module's `<style>` tag, injected into `<head>` at materialization

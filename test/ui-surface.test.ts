@@ -25,7 +25,7 @@ import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
-import type { SessionId } from "@deepseek-ai/dsh-session";
+import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/protocol/peer.ts";
 
@@ -111,7 +111,7 @@ function handleFor(node: OrcaNode): PodHandle {
       started_at: null,
       error: null,
     },
-    config: parseSettings({ workgroup_id: "wg-ui", workgroup_password: "pw" }),
+    config: { ...parseSettings({ workgroup_id: "wg-ui", workgroup_password: "pw" }), data_root: "/data" },
     configured: true,
     rememberedPeers: [],
     adopt: async () => {},
@@ -306,7 +306,8 @@ describe("UI data surface", () => {
                   tool: "write_file",
                   requested: { tool_call_id: "call-1" },
                   requested_by: LEAF,
-                  via: [LEAF],
+                  current_mode: "read-only",
+                  requested_mode: "workspace-write",
                 },
               },
             },
@@ -329,7 +330,7 @@ describe("UI data surface", () => {
       notified += 1;
     });
     tracker.track(
-      { id: "agent-1" as SessionId, status: "idle", inject() {}, followup() {} },
+      { id: SessionId("agent-1"), status: "idle", inject() {}, followup() {} },
       "http://127.0.0.1:1",
       suspended.id,
     );

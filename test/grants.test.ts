@@ -16,6 +16,8 @@ const pending: PermissionRequest = {
   tool: "write_file",
   requested: {},
   requested_by: SELF,
+  current_mode: "read-only",
+  requested_mode: "workspace-write",
 };
 
 const expected: GrantExpectation = {
@@ -34,7 +36,7 @@ function grant(overrides: Partial<Grant> = {}) {
     task_id: "task-1",
     target_orca_node: SELF,
     tool: "write_file",
-    mode: "allow_once",
+    permission_mode: "workspace-write",
     request_id: "req-1",
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -59,6 +61,8 @@ describe("checkGrant", () => {
       "grant_expired",
     );
     expect(checkGrant(grant({ tool: "delete" }), expected, ledger)).toBe("grant_invalid");
+    // The origin grants exactly the mode the task asked for, no wider.
+    expect(checkGrant(grant({ permission_mode: "danger-full-access" }), expected, ledger)).toBe("grant_invalid");
     expect(checkGrant(grant({ request_id: "other" }), expected, ledger)).toBe("grant_invalid");
     expect(checkGrant(grant({ workgroup_id: wg("elsewhere") }), expected, ledger)).toBe("grant_invalid");
     expect(checkGrant(grant(), { ...expected, origin: fakeNodeId("SOMEONE-ELSE") }, ledger)).toBe("grant_invalid");
@@ -80,6 +84,6 @@ describe("boundary parsers", () => {
     expect(() => parseSignedGrant({ ...signed, request_id: "" })).toThrowError(/request_id/);
     expect(() => parseSignedGrant({ ...signed, sig: undefined })).toThrowError(/sig/);
     expect(() => parseSignedGrant({ ...signed, expires_at: "soon" })).toThrowError(/expires_at/);
-    expect(() => parseSignedGrant({ ...signed, mode: "forever" })).toThrowError(/mode/);
+    expect(() => parseSignedGrant({ ...signed, permission_mode: "root" })).toThrowError(/permission_mode/);
   });
 });

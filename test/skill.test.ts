@@ -21,8 +21,8 @@ describe("orca-node skill bundle", () => {
     expect(document.name).toBe("orca-node");
     expect(document.description.length).toBeGreaterThan(0);
     expect(document.whenToUse).toBeDefined();
-    expect(document.body.startsWith("#")).toBe(true);
-    expect(document.body).not.toContain("name: orca-node");
+    expect(document.content.startsWith("#")).toBe(true);
+    expect(document.content).not.toContain("name: orca-node");
   });
 
   it("registers the bundle as a runtime skill with its reference directory", () => {
@@ -37,5 +37,7 @@ describe("orca-node skill bundle", () => {
   it("rejects a document without frontmatter or a description", () => {
     expect(() => parseSkillDocument("no frontmatter")).toThrow(/frontmatter fence/);
     expect(() => parseSkillDocument("---\nname: x\n---\nbody")).toThrow(/description/);
+    // DSH's skill-name grammar (`isSkillName`) applies to the bundled file too.
+    expect(() => parseSkillDocument("---\nname: Not A Name\ndescription: d\n---\nbody")).toThrow(/skill name/);
   });
 });

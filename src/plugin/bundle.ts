@@ -11,9 +11,10 @@
  * registration made there is tied to that scope's `effect`, never to the plugin's.
  */
 
-import type { Context } from "@deepseek-ai/cordis";
+import type { Context, Inject } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { SessionId } from "@deepseek-ai/dsh-session";
+import type {} from "@deepseek-ai/dsh-app-boot";
+import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 // `ctx.settings` is this plugin's own injection; the service package owns the type.
 import type {} from "@deepseek-ai/dsh-settings";
@@ -21,7 +22,7 @@ import type {} from "@deepseek-ai/dsh-settings";
 import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
-import { defaultDataRoot } from "../node/config.ts";
+import { DATA_ROOT_ENV, defaultDataRoot } from "../node/config.ts";
 import { createModelCatalogFeed } from "./catalog.ts";
 import { startPod, stopPod } from "./lifecycle.ts";
 import { createHostStores } from "./stores.ts";
@@ -40,7 +41,7 @@ export const Config: StandardSchemaV1<unknown, Settings> = createConfigSchema();
  * workgroup password, and the config editor the panel saves through. All three
  * are part of the DSH base composition.
  */
-export const inject: string[] = ["tools", "credentials", "configEditor"];
+export const inject: Inject<Context> = ["tools", "credentials", "configEditor"];
 
 /**
  * Compose the plugin: runtime, approval broker, tracker, tool, panel route.
@@ -50,10 +51,14 @@ export const inject: string[] = ["tools", "credentials", "configEditor"];
  * running"), while `apply` returns immediately.
  */
 export function apply(ctx: Context, config: Settings): void {
+  // Read the environment the way DSH tells host plugins to (the launcher's
+  // snapshot, `.env` layers included) and take the DSH home the host resolved.
   // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
   // baseUrl is the profile hint that keeps two profiles apart.
   const logger = ctx.logger("orca-pod");
-  const defaultRoot = defaultDataRoot(process.env, ctx.baseUrl);
+  const launch = launchEnvironmentOf(ctx);
+  const env = Object.fromEntries(DATA_ROOT_ENV.map((name) => [name, launch.get(name)?.value]));
+  const defaultRoot = defaultDataRoot(env, ctx.baseUrl, ctx.dshHomePath?.());
   const catalog = createModelCatalogFeed(ctx, logger);
   const handle = startPod(config, logger, createHostStores(ctx), { onNodeStarted: catalog.advertise }, defaultRoot);
   catalog.watch(handle);
@@ -73,7 +78,7 @@ export function apply(ctx: Context, config: Settings): void {
     restoreTrackedDispatches(
       tracker,
       orcaNode.listDispatches(),
-      (id) => (agent !== undefined ? agent : agents.current()?.get(id as SessionId)),
+      (id) => (agent !== undefined ? agent : agents.current()?.get(id)),
       logger,
       agent?.id,
     );

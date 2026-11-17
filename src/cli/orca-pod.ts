@@ -17,6 +17,7 @@
  * parsing, the interactive readline session and console output.
  */
 
+import { DEFAULT_DSH_HOME_DISPLAY, DSH_HOME_ENV } from "@deepseek-ai/dsh-home-paths";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -56,7 +57,7 @@ Options:
                         Workgroup password
   --workgroup <id>      Workgroup id
   --data-root <path>    Node data directory (default: $ORCA_POD_HOME, else
-                        $DSH_PROFILE_DIR/orca-pod, else $DSH_HOME/orca-pod, else ~/.dsh/orca-pod)
+                        $DSH_PROFILE_DIR/orca-pod, else $${DSH_HOME_ENV}/orca-pod, else ${DEFAULT_DSH_HOME_DISPLAY}/orca-pod)
   --bind-host <addr>    Listen address (default: ::, all interfaces)
   --port <number>       Listen port (default: ${DEFAULT_PORT})
   --endpoint <url>      Advertised endpoint; repeatable
@@ -248,7 +249,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   }
 
   if (values["skip-dsh-check"] !== true) {
-    const checked = checkDsh(environment.dshBin);
+    const checked = await checkDsh(environment.dshBin);
     if (!checked.ok) {
       writeError(`dsh was not found: ${checked.message}`);
       writeError("Install DeepSeek Harness first, or pass --dsh-bin <path>; --skip-dsh-check overrides this check.");

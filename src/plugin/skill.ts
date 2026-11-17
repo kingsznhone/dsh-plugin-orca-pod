@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { SkillRegistration } from "@deepseek-ai/dsh-skill";
+import { isSkillName, type SkillRegistration } from "@deepseek-ai/dsh-skill";
 
 /** Skill name; also its frontmatter name. */
 const SKILL_NAME = "orca-node";
@@ -29,13 +29,8 @@ export const SKILL_SOURCE_DIR = fileURLToPath(new URL("../../skills/orca-node/",
 /** Canonical `SKILL.md` entry of the bundle. */
 export const SKILL_ENTRY = join(SKILL_SOURCE_DIR, "SKILL.md");
 
-/** Flat skill frontmatter plus the Markdown body that follows it. */
-interface SkillDocument {
-  name: string;
-  description: string;
-  whenToUse: string | undefined;
-  body: string;
-}
+/** What the bundle's `SKILL.md` contributes to DSH's `SkillRegistration`: its frontmatter and body. */
+type SkillDocument = Pick<SkillRegistration, "name" | "description" | "whenToUse" | "content">;
 
 /**
  * Split a skill file into its frontmatter and body.
@@ -57,6 +52,7 @@ export function parseSkillDocument(source: string): SkillDocument {
     if (key.length > 0 && value.length > 0) fields.set(key, value);
   }
   const name = fields.get("name") ?? SKILL_NAME;
+  if (!isSkillName(name)) throw new Error(`SKILL.md name "${name}" is not a valid skill name`);
   const description = fields.get("description");
   if (description === undefined) throw new Error("SKILL.md frontmatter needs a description");
   const bodyStart = normalized.indexOf("\n", end + 1);
@@ -64,7 +60,7 @@ export function parseSkillDocument(source: string): SkillDocument {
     name,
     description,
     whenToUse: fields.get("whenToUse"),
-    body: (bodyStart === -1 ? "" : normalized.slice(bodyStart + 1)).trim(),
+    content: (bodyStart === -1 ? "" : normalized.slice(bodyStart + 1)).trim(),
   };
 }
 
@@ -74,12 +70,8 @@ export function parseSkillDocument(source: string): SkillDocument {
  * shipped `references/` directory.
  */
 export function skillRegistration(): SkillRegistration {
-  const document = parseSkillDocument(readFileSync(SKILL_ENTRY, "utf8"));
   return {
-    name: document.name,
-    description: document.description,
-    whenToUse: document.whenToUse,
-    content: document.body,
+    ...parseSkillDocument(readFileSync(SKILL_ENTRY, "utf8")),
     source: "runtime",
     path: SKILL_ENTRY,
     resourceBase: { kind: "directory", path: SKILL_SOURCE_DIR },

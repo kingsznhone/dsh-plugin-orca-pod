@@ -2,7 +2,8 @@
  * The single DSH tool registered by the Orca pod bundle.
  *
  * Every operation is a method on `orca_pod` instead of a separate tool, so the
- * agent's context carries one schema rather than six. Task methods are
+ * agent's context carries one schema rather than five (send/status/cancel/
+ * members/connect). Task methods are
  * non-blocking wrappers over `OrcaNode`: `send` returns a task id immediately
  * and callers poll `status` for the result.
  */
@@ -11,6 +12,7 @@ import { normalizePeerUrl } from "../transport/net.ts";
 import { DEFAULT_PORT } from "../protocol/constants.ts";
 import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../protocol/task.ts";
 import { parseModelSpec } from "../protocol/model.ts";
+import { narrowPermissionMode } from "../protocol/permission.ts";
 import type { PeerView } from "../protocol/peer.ts";
 import { runningInTask } from "../kernel/entry.ts";
 import { abortError, errorMessage, PodError } from "../kernel/errors.ts";
@@ -82,7 +84,7 @@ const PARAMETERS = {
     type: "string",
     enum: SANDBOX_MODES,
     description:
-      "send: explicit permission mode; when omitted the dispatching session's sandbox mode is inherited. The target caps it by its own policy and never runs above it.",
+      "send: optional permission mode, no wider than this session's (the default). The target caps it by its own policy; when the task needs more it asks the user here to upgrade it.",
   },
   model: {
     type: "string",
@@ -202,23 +204,37 @@ function peerSummary(peer: PeerView): PeerSummary {
 /**
  * The dispatching session's sandbox mode (`ctx.sandboxPolicy` resolves it, and
  * its `SandboxMode` values match the orca node permission modes, so a task
- * inherits the session setting verbatim). Without the service or a session the
- * target's own default (read-only) applies.
+ * inherits the session setting verbatim). Undefined without the service or a
+ * session; the task then starts read-only.
  */
-export function sessionSandboxMode(
-  policy: SandboxReader | undefined,
-  exec: ToolExecution | undefined,
-): SandboxMode | undefined {
-  const session = exec?.agent?.session;
+export function sessionSandboxMode(policy: SandboxReader | undefined, exec: ToolExecution): SandboxMode | undefined {
+  const session = exec.agent?.session;
   if (policy === undefined || session === undefined) return undefined;
   return policy.resolve({ session }).mode;
+}
+
+/**
+ * The mode a dispatched task starts with: the session's, or a narrower one the
+ * caller names (P1). A wider one is refused: the target asks the origin for an
+ * upgrade when the task needs it (§7.12). A session whose mode cannot be read
+ * counts as read-only.
+ */
+function taskMode(explicit: SandboxMode | undefined, session: SandboxMode | undefined): SandboxMode {
+  const ceiling = session ?? "read-only";
+  if (explicit === undefined) return ceiling;
+  if (narrowPermissionMode(ceiling, explicit) !== explicit) {
+    throw new Error(
+      `permission_mode ${explicit} is wider than this session's ${ceiling}; a task can only start narrower, and asks for an upgrade when it needs one`,
+    );
+  }
+  return explicit;
 }
 
 async function runSend(
   handle: PodHandle,
   tracker: Tracker,
   args: SendArgs,
-  exec: ToolRunContext | undefined,
+  exec: ToolRunContext,
   policy: SandboxReader | undefined,
 ): Promise<SendResult> {
   // Tasks are single-hop: a session the task executor spawned never dispatches (§7.9).
@@ -227,9 +243,9 @@ async function runSend(
       "send is not available inside a task: tasks are single-hop; end the task with a BLOCKED: report instead",
     );
   }
-  const signal = exec?.signal;
+  const { signal } = exec;
   const peer = normalizePeerUrl(args.peer);
-  const permissionMode = args.permission_mode ?? sessionSandboxMode(policy, exec);
+  const permissionMode = taskMode(args.permission_mode, sessionSandboxMode(policy, exec));
   const model = args.model === undefined ? undefined : (parseModelSpec(args.model, args.reasoning_effort) ?? undefined);
   if (args.model !== undefined && model === undefined) {
     throw new Error("model must be a provider/model string");
@@ -247,8 +263,8 @@ async function runSend(
     },
   };
   throwIfAborted(signal);
-  const view = await orcaNode.sendTask(peer, input, signal === undefined ? {} : { signal });
-  if (signal?.aborted === true) {
+  const view = await orcaNode.sendTask(peer, input, { signal });
+  if (signal.aborted) {
     // The remote accepted the task after the caller's turn was cancelled: the
     // caller never learns its id, so it must not keep running unobserved.
     // Best effort; the dispatch log still lists it for the panel.
@@ -257,22 +273,18 @@ async function runSend(
   }
   // Track the task so the dispatching agent is told when it finishes, even
   // after its turn ends.
-  if (exec?.agent !== undefined) tracker.track(exec.agent, peer, view.id);
+  if (exec.agent !== undefined) tracker.track(exec.agent, peer, view.id);
   return { task_id: view.id, state: view.status.state, peer };
 }
 
-async function runStatus(handle: PodHandle, args: TaskArgs, signal?: AbortSignal): Promise<TaskStatusResult> {
+async function runStatus(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle);
-  return taskStatus(
-    await orcaNode.getTask(normalizePeerUrl(args.peer), args.task_id, signal === undefined ? {} : { signal }),
-  );
+  return taskStatus(await orcaNode.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
 }
 
-async function runCancel(handle: PodHandle, args: TaskArgs, signal?: AbortSignal): Promise<TaskStatusResult> {
+async function runCancel(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle);
-  return taskStatus(
-    await orcaNode.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal === undefined ? {} : { signal }),
-  );
+  return taskStatus(await orcaNode.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
 }
 
 async function runMembers(handle: PodHandle): Promise<MembersResult> {
@@ -284,7 +296,7 @@ async function runMembers(handle: PodHandle): Promise<MembersResult> {
   };
 }
 
-async function runConnect(handle: PodHandle, args: PeerArgs, signal?: AbortSignal): Promise<ConnectResult> {
+async function runConnect(handle: PodHandle, args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
   const peer = normalizePeerUrl(args.peer);
   await requireNode(handle);
   // Joining persists the peer; do not start it for a turn that is already gone.
@@ -298,8 +310,8 @@ async function runConnect(handle: PodHandle, args: PeerArgs, signal?: AbortSigna
   };
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) throw abortError("cancelled by the caller");
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortError("cancelled by the caller");
 }
 
 /**
@@ -308,8 +320,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  * wait; the methods forward the same signal to their outbound requests and
  * check it before any step with a lasting effect.
  */
-function withSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (signal === undefined) return work;
+function withSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
     // Nobody waits for the abandoned work any more; keep its rejection handled.
     work.catch(() => {});
@@ -347,20 +358,20 @@ function runCall(
   handle: PodHandle,
   tracker: Tracker,
   call: PodCall,
-  exec: ToolRunContext | undefined,
+  exec: ToolRunContext,
   policy: SandboxReader | undefined,
 ): Promise<SendResult | TaskStatusResult | MembersResult | ConnectResult> {
   switch (call.method) {
     case "send":
       return runSend(handle, tracker, call.args, exec, policy);
     case "status":
-      return runStatus(handle, call.args, exec?.signal);
+      return runStatus(handle, call.args, exec.signal);
     case "cancel":
-      return runCancel(handle, call.args, exec?.signal);
+      return runCancel(handle, call.args, exec.signal);
     case "members":
       return runMembers(handle);
     case "connect":
-      return runConnect(handle, call.args, exec?.signal);
+      return runConnect(handle, call.args, exec.signal);
   }
 }
 
@@ -390,8 +401,8 @@ export function createPodTools(
     async execute(args, exec) {
       const call = parseCall(args);
       try {
-        throwIfAborted(exec?.signal);
-        return json(await withSignal(runCall(handle, tracker, call, exec, policy?.()), exec?.signal));
+        throwIfAborted(exec.signal);
+        return json(await withSignal(runCall(handle, tracker, call, exec, policy?.()), exec.signal));
       } catch (error) {
         throw describeError("orca_pod", error);
       }

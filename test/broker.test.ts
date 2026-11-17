@@ -19,6 +19,8 @@ const REQUEST: PermissionRequest = {
   tool: "write_file",
   requested: { path: "report.md" },
   requested_by: labelId("NODE02"),
+  current_mode: "read-only",
+  requested_mode: "workspace-write",
 };
 
 function suspended(request: PermissionRequest = REQUEST): TaskView {
@@ -176,6 +178,8 @@ describe("approval broker", () => {
         tool: "write_file",
         requested: '{"path":"report.md"}',
         from: "NODE02",
+        current_mode: "read-only",
+        requested_mode: "workspace-write",
         agent_id: "session-1",
       },
     ]);

@@ -19,7 +19,7 @@ import type { FileBlobRegistry, TaskStore } from "../storage/stores.ts";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
-import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/executor.ts";
+import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../execution/executor.ts";
 import {
   isTerminal,
   messageText,
@@ -29,7 +29,7 @@ import {
   type TaskView,
 } from "../protocol/task.ts";
 import { narrowPermissionMode } from "../protocol/permission.ts";
-import type { PermissionRequest, RequestedAccess } from "../protocol/grant.ts";
+import type { PermissionRequest } from "../protocol/grant.ts";
 import { composePrompt, listNotes } from "./prompt.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
 import type { WorkspacePaths } from "./workspace.ts";
@@ -99,9 +99,10 @@ export class TaskRecord {
   private readonly ttlS: number;
   private readonly text: string;
   private readonly abort = new AbortController();
-  private readonly mode: SandboxMode;
+  /** Effective mode: inherited and capped at the start, widened by a grant (§7.12). */
+  private mode: SandboxMode;
   /** The executor run; created by `begin()` before the first `drive()`. */
-  private iterator!: AsyncGenerator<ExecutorEvent, void, void>;
+  private iterator!: AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined>;
   private ttl: NodeJS.Timeout | null = null;
   private permissionTimer: NodeJS.Timeout | null = null;
   /** The permission request this task is parked on, if any. */
@@ -116,7 +117,7 @@ export class TaskRecord {
     this.meta = init.meta;
     this.ttlS = init.ttlS;
     this.text = init.text;
-    // Resolved once: the ceiling only narrows what the origin asked for (§7.10).
+    // The ceiling only narrows what the origin asked for (§7.10); a grant widens it later (§7.12).
     this.mode =
       host.permissionMode === undefined
         ? init.meta.permissionMode
@@ -173,6 +174,8 @@ export class TaskRecord {
       return;
     }
     this.host.ledger.consume(control.grant);
+    // The task runs with the granted mode until it ends; nothing else inherits it.
+    this.mode = control.grant.permission_mode;
     this.proceed();
   }
 
@@ -228,7 +231,7 @@ export class TaskRecord {
     this.armTtl();
     this.host.claim(this.id);
     this.move("working");
-    void this.guarded(() => this.drive());
+    void this.guarded(() => this.drive(this.mode));
   }
 
   // ---- running ----
@@ -251,16 +254,19 @@ export class TaskRecord {
       workspaceDir: host.workspace.root,
       podDir: host.workspace.state,
       permissionMode: this.mode,
+      permissionCeiling: host.permissionMode,
       model: meta.model,
       reasoningEffort: meta.effort,
       echo: meta.echo,
     };
   }
 
-  /** Feed executor events into the state machine until the task ends or parks. */
-  private async drive(): Promise<void> {
+  /** Feed executor events into the state machine until the task ends or parks; `granted` answers the last suspension. */
+  private async drive(granted?: SandboxMode): Promise<void> {
+    let answer = granted;
     for (;;) {
-      const step = await this.iterator.next();
+      const step = await this.iterator.next(answer);
+      answer = undefined;
       if (this.over) {
         await this.iterator.return();
         return;
@@ -270,7 +276,7 @@ export class TaskRecord {
       const event = step.value;
       switch (event.type) {
         case "suspend":
-          return this.requestPermission(event.suspend.tool, event.suspend.requested);
+          return this.requestPermission(event.suspend);
         case "artifact":
           await this.addArtifact(event.name, event.content);
           break;
@@ -305,8 +311,8 @@ export class TaskRecord {
     this.host.onEvent(this.snapshot());
   }
 
-  /** Ask the origin to decide on one tool (§7.11); the executor waits for the answer. */
-  private requestPermission(tool: string, requested: RequestedAccess): void {
+  /** Ask the origin to let this task continue with a wider mode (§7.12); the executor waits for the answer. */
+  private requestPermission({ tool, requested, requestedMode }: Suspension): void {
     const ttlS = this.host.permissionTtlS;
     const request: PermissionRequest = {
       request_id: randomUUID(),
@@ -314,6 +320,8 @@ export class TaskRecord {
       tool,
       requested,
       requested_by: this.host.selfOrcaNodeId,
+      current_mode: this.mode,
+      requested_mode: requestedMode,
       // No expiry by default: the origin waits however long the human takes (§7.12).
       expires_at: ttlS === undefined ? undefined : new Date(Date.now() + ttlS * 1000).toISOString(),
     };
@@ -390,8 +398,7 @@ export class TaskRecord {
 
   /**
    * Housekeeping must not take the node down or strand a live task: a failing
-   * disk is logged, and the task stays readable from memory (leftover input
-   * directories are purged at the next start).
+   * disk is logged, and the task stays readable from memory.
    */
   private attempt(problem: string, work: () => void): void {
     try {

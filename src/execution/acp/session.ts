@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
-import { RequestError, type McpServer, type SessionConfigOption } from "@agentclientprotocol/sdk";
+import { RequestError, type ErrorCode, type McpServerStdio, type SessionConfigOption } from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
 import type { ExecuteInput } from "../executor.ts";
@@ -19,7 +19,7 @@ import type { AcpMcpServer } from "./config.ts";
 import { AcpConnection, HANDSHAKE_TIMEOUT_MS, spawnAcpChild, type AcpSpawnSpec } from "./connection.ts";
 
 /** JSON-RPC code ACP agents use for a session they do not know. */
-const RESOURCE_NOT_FOUND = -32002;
+const RESOURCE_NOT_FOUND: ErrorCode = -32002;
 
 /**
  * Executor session bindings persisted under `<data_root>/state/<workgroup>/sessions.json`
@@ -67,7 +67,7 @@ type AcpSessions = {
 };
 
 /** ACP wants `args` and `env` always present, and `env` as name/value pairs. */
-function toAcpMcpServers(servers: AcpMcpServer[]): McpServer[] {
+function toAcpMcpServers(servers: AcpMcpServer[]): McpServerStdio[] {
   return servers.map(({ name, command, args, env }) => ({
     name,
     command,

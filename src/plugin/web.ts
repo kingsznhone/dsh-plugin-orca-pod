@@ -17,7 +17,7 @@ import { pipeline } from "node:stream/promises";
 import type { z } from "zod";
 
 import type { Context } from "@deepseek-ai/cordis";
-import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
+import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
 import type { PodAdmin } from "./admin.ts";
 import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads, type PodState } from "./panel-api.ts";
@@ -33,13 +33,6 @@ export const POD_API_PREFIX = "/orca-api";
 /** Largest JSON body accepted for one approval action. */
 const MAX_BODY_BYTES = 64 * 1024;
 
-/**
- * Hostnames a same-origin panel request may carry. This is the DNS-rebinding
- * defense: a malicious page can point `evil.example` at 127.0.0.1, but the
- * browser still sends `Host: evil.example`, which fails this check.
- */
-const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
-
 /** Custom header the panel sends on every call; browsers preflight it cross-origin. */
 const PANEL_HEADER = "x-orca-pod";
 
@@ -48,13 +41,16 @@ function headerOf(request: IncomingMessage, name: string): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw;
 }
 
-function hostNameOf(host: string): string {
-  const value = host.trim();
-  if (value.startsWith("[")) {
-    const end = value.indexOf("]");
-    return end === -1 ? value.toLowerCase() : value.slice(0, end + 1).toLowerCase();
-  }
-  return (value.split(":")[0] ?? "").toLowerCase();
+/**
+ * Whether a `Host` header names this machine: a loopback address by DSH's own
+ * rule (`isLoopbackHost`: 127/8, `::1` and their mapped forms) or `localhost`.
+ * This is the DNS-rebinding defense: a malicious page can point `evil.example`
+ * at 127.0.0.1, but the browser still sends `Host: evil.example`.
+ */
+function isLocalHostHeader(host: string): boolean {
+  const value = host.trim().toLowerCase();
+  const name = value.startsWith("[") ? value.slice(1, value.indexOf("]")) : (value.split(":")[0] ?? "");
+  return name === "localhost" || isLoopbackHost(name);
 }
 
 /**
@@ -66,7 +62,7 @@ function hostNameOf(host: string): string {
  */
 function isSameOriginPanelRequest(request: IncomingMessage): boolean {
   const host = headerOf(request, "host");
-  if (host === undefined || !LOCAL_HOSTS.has(hostNameOf(host))) return false;
+  if (host === undefined || !isLocalHostHeader(host)) return false;
   const origin = headerOf(request, "origin");
   if (origin !== undefined && (!URL.canParse(origin) || new URL(origin).host !== host.trim().toLowerCase())) {
     return false;

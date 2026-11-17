@@ -23,7 +23,9 @@
 | `public` | 任何人                                                                                    |
 | `join`   | 任何持有 Ed25519 密钥的人（签名可以不带接收方 id，因为首次 join 还不知道它）              |
 | `member` | 本机，或成员表里的 peer。验签只证明“持有私钥”，陌生人也能生成密钥，所以还要过成员闸门     |
-| `local`  | 仅本机：回环 socket、无转发头，且签名身份就是本机自己                                     |
+| `local`  | 仅本机：回环 socket、无转发头，且签名身份就是本机自己（只有 `/cluster/blob`）              |
+
+`/orca-api`（面板）不是网关路由，也没有 access 级：它由 DSH web server 上的同源桥承接，只验回环 socket、无转发头、`Host`/`Origin`/`Sec-Fetch-Site` 同源与 `X-Orca-Pod` 请求头（`403 local_only` / `403 cross_origin`；非 GET 且无 JSON `Content-Type` 时为 `403 json_required`），不验节点签名——与 `/cluster/blob` 共享的只是“信任传输层事实”，不是本机签名（[§7.1](07-security.md#71-workgroup-与密码)）。
 
 | Method | Path                           | 用途                                                       | access                          |
 | ------ | ------------------------------ | ---------------------------------------------------------- | ------------------------------- |
@@ -52,11 +54,11 @@
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
 | 403  | `not_a_member`、`local_only`、`not_task_origin`                                                                             |
-| 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`blob_digest_mismatch`、`input_blob_missing`、`too_many_inputs`、`inputs_too_large`、`endpoint_refused` |
+| 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
 | 409  | `permission_denied`、`grant_invalid`、`grant_expired`                                                                       |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
-| 413  | `blob_too_large`、`body_too_large`                                                                                          |
+| 413  | `body_too_large`                                                                                                            |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |
 | 507  | `quota_exceeded`（工作区超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                                |
 | 500  | `internal`                                                                                                                  |
@@ -127,7 +129,7 @@
 
 **出站调用只有一个客户端**（`src/transport/peer-client.ts`），CLI、心跳、tracker 都走它：
 
-- 每次调用带 `AbortSignal.timeout`：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
+- 每次调用带 DSH `deadline` 截止时间：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
 - 签名绑定接收方 `orca_node_id` 与 `path+query`（[§7.2](07-security.md#72-请求签名没有-session-token)）。接收方 id 来自：本机自己、本机拨过的 URL 记录、或成员表里自述了该 URL 的成员。
 - **不做隐式 join**：URL 不认识就是本机抛 `unknown_peer`，请求根本不发出。只有显式的 join/connect（插件 `connect`、CLI `serve --peer`、面板“连接”）才会向陌生地址发出准入证明。陌生地址是否可信，是调用者在 join 前该想清楚的事。
 - 只有 `sendTask` 会新建 origin 派发日志；`tasks/get`、`tasks/cancel`、审批等读写只刷新已存在的条目，避免面板和轮询把别人的任务记成本机派发。目标不是 `online` 时 `sendTask` 直接 `peer_not_online`。

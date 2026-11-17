@@ -19,11 +19,11 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
   - **DSH 插件**：密码是 DSH 凭据（`ctx.credentials`，默认是 `$DSH_HOME/.credentials.yaml`），引用名默认按 workgroup 派生为 `ORCA_POD_PASSWORD_<WORKGROUP>`（`-` 换成 `_`，全大写），也可以用 `workgroup_password_ref` 指定。凭据文件为整个 DSH home 共用，所以引用名按 workgroup 区分：同一 workgroup 的 profile 共用密码，不同 workgroup 互不覆盖。凭据库里没有值时依次回落到启动环境变量与 `.env`，无头宿主可以直接导出同名变量。插件配置（profile 的 `cordis.patch.yml`）**不接受**明文 `workgroup_password`，校验直接报错。面板读到的配置视图永不返回密码，只给 `password_set`。
   - `<data_root>/config.json`：存**派生密钥** `key_base64`（不存密码），原子写入、文件权限 0600；`orca-node serve` 与 CLI 只读它，不再需要密码。配置文件泄露 = 直接获得准入证明能力。
   - `<data_root>/identity.json`：节点私钥，0600。
-  - 同一个节点的 agent 能读到这些文件：ACP 子进程继承 `ORCA_POD_DATA_ROOT`，CLI 用这里的私钥以本节点身份签名（`publish`/`fetch`）。agent 与节点是同一个 OS 用户，**不做密钥隔离**；“任务里不能再派任务”是非对抗性约束（[§7.9](07-security.md#79-权限跟随发起-orca-node)），防的是守规矩的 agent 走偏，不防有意绕过。
+  - 同一个节点的 agent 能读到这些文件：ACP 子进程继承 `ORCA_POD_DATA_ROOT`，CLI 用这里的私钥签发出站请求（`fetch`/`send`/`status` 等）；`publish` 不发 HTTP，直接写本机 SQLite。agent 与节点是同一个 OS 用户，**不做密钥隔离**；“任务里不能再派任务”是非对抗性约束（[§7.9](07-security.md#79-权限跟随发起-orca-node)），防的是守规矩的 agent 走偏，不防有意绕过。
 - DSH 插件默认 `bind_host: "127.0.0.1"`，bundle 不携带任何 workgroup/密码：首次启动必须先在面板向导里完成 setup（workgroup、密码、监听地址）。向导默认仍选 loopback，只有显式选择 LAN 地址或 `::` 才接受 peer——同网段访问是运维的显式决定，不是默认。认证仍靠节点签名与成员闸门；不支持无密码的开放 mesh。需要更严格时保持 loopback 并让流量只走代理。
 - **换密码**：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，下一拍心跳的准入证明对不上，双方互相 401 丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥，每个请求由本节点私钥签名，接收方用公钥验签——签名能证明“谁在调用”，伪造不了。密码不参与请求签名。
-- **local-only 能力用传输层判定**：“只有本机可以做”的操作（`/cluster/blob`、面板的 `/orca-api`）只看 socket 与转发头，并要求签名身份就是本机自己——代理可能改写来源地址，传输层事实更难伪造。文件 blob 登记更彻底：`publish` 由 CLI 直写本机 SQLite，根本没有 HTTP 路由（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
+- **local-only 能力用传输层判定**：“只有本机可以做”的 `/cluster/blob` 落在 `local` 访问级：只看 socket 与转发头，并要求签名身份就是本机自己（`403 local_only`）——代理可能改写来源地址，传输层事实更难伪造。面板的 `/orca-api` 由 DSH web server 承接，只做回环 + 无转发头 + 同源闸门（`403 local_only` / `403 cross_origin`；非 GET 且无 JSON `Content-Type` 时为 `403 json_required`），**不依赖节点签名**。文件 blob 登记更彻底：`publish` 由 CLI 直写本机 SQLite，根本没有 HTTP 路由（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
 - **目录不能改写已知成员**：他人目录里的条目只是“我还知道这个人”的提示，只用于把从未见过的 `orca_node_id` 加为候选端点；已存在记录的端点/显示名/runtime 只接受该节点本人签名的 join 更新，否则任一成员都能把别人的流量重定向到自己。
 - **响应绑定拨号目标**：join/heartbeat 的响应体本身没有签名，接收方把 `self`/`from` 绑定到本次拨号目标的身份——已知端点不得声明成另一个 `orca_node_id`，否则按失败处理。首次接触没有可比对的身份，仍是 TOFU；明文 HTTP 下的完整消息认证由前置代理的 TLS 承担。
 - **未认证请求只允许小 body**：认证发生在 body 解析之后、schema 校验之前，所以全局 `bodyLimit` 是 1 MiB，没有任何路由放宽；陌生人最多让服务端缓冲 1 MiB。
@@ -102,15 +102,16 @@ sig = Ed25519(identity.private_key,
 
 | 操作                                   | 谁能做                                                     | 依据                                  |
 | -------------------------------------- | ---------------------------------------------------------- | ------------------------------------- |
-| 派任务（`message/send` 新建）          | 同 workgroup 的任意已加入 orca node                        | 成员闸门；没有按 `orca_node_id` 的白名单 |
+| 派任务（`message/send` 新建）          | 同 workgroup 的任意已加入 orca node                        | 成员闸门；不做按 `orca_node_id` 的白名单 |
 | 读任务 / 读 blob                       | 同 workgroup 凭 id                                         | 无 per-task / per-blob ACL            |
 | 取消、恢复（批准/拒绝/补输入）         | 只有 task 的 origin（及本机自己）                          | `403 not_task_origin`                 |
-| `/cluster/blob`、面板 API               | 只有本机（回环 + 无转发头 + 本机签名）                     | `403 local_only`                      |
+| `/cluster/blob`                        | 只有本机（回环 + 无转发头 + 本机签名）                     | `403 local_only`                      |
+| 面板 API（`/orca-api`）                | 只有本机（回环 + 无转发头 + 同源闸门，不验节点签名）       | `403 local_only` / `403 cross_origin` / `403 json_required` |
 | 权限上限                               | 继承 origin 会话的 mode，本机 `permission_mode` 可再降一档 | [§7.10](07-security.md#710-权限模式继承) |
 | 工作区                                 | 整个 workgroup 共用一份                                    | [§6.7](06-execution.md#67-工作区一份持久) |
 | 登记本机文件为 blob                    | 只有本机（`publish` 直写 SQLite）                          | 没有 HTTP 路由                        |
 
-按节点白名单、预授权策略目前没有（[§11](11-open-questions.md#11-未决问题)）。
+不做按节点的派发白名单：同组即可派任务。权限请求改为请求升级权限模式的方案见 [§11](11-open-questions.md#11-未决问题)。
 
 ### 7.7 SSRF / 候选端点防护
 
@@ -122,7 +123,7 @@ sig = Ed25519(identity.private_key,
 - **不跟随重定向**：出站请求带 `redirect: "manual"`，3xx 按失败处理，签名请求不会被弹到别的地址；
 - 已知残余：校验与 `fetch` 各自解析一次 DNS，两次之间改答案（DNS rebinding）的窗口仍在。
 
-实现：`membership/membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/membership/screening.ts` 的 `candidateEndpointAllowed`；入站 join 走 `screenEndpoint`。
+实现：`membership/membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate）；心跳循环与候选端点筛查在 `src/membership/mesh.ts`（`endpointAllowed` 复用 60 秒判定缓存、`dialOrder` 只在拨号 candidate 前筛查、`heartbeatPeer` 逐个试探），`src/membership/screening.ts` 只是纯策略（`candidateEndpointAllowed` / `screenEndpoint`）；入站 join 走 `screenEndpoint`。
 
 ### 7.8 审计
 
@@ -155,22 +156,23 @@ sig = Ed25519(identity.private_key,
 
 origin 发起任务时携带会话的 permission mode（`metadata.pod.permission_mode`），target 按它执行：
 
-- **继承**：`orca_pod` 的 `send` 默认从 DSH 的 `sandboxPolicy` 服务读当前会话的 sandbox 模式（`ctx.sandboxPolicy.resolve({ session }).mode`，其 `SandboxMode` 与本报文的三档同名）；工具的 `permission_mode` 参数显式给出时**用显式值**（是否应只允许收窄见 [§11](11-open-questions.md#11-未决问题)“显式 permission_mode 的方向”）。CLI `orca-node send` 没有 DSH 会话，用 `--permission-mode` 显式传。
+- **继承**：`orca_pod` 的 `send` 默认从 DSH 的 `sandboxPolicy` 服务读当前会话的 sandbox 模式（`ctx.sandboxPolicy.resolve({ session }).mode`，其 `SandboxMode` 与本报文的三档同名）；工具的 `permission_mode` 参数只能比会话模式**更窄**，更宽的直接报错（要更宽就由 target 在需要时请求升级，[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；读不到会话模式时按 `read-only`。CLI `orca-node send` 没有 DSH 会话，用 `--permission-mode` 显式传（终端里的人自己决定）。
 - **没继承到**（元数据没带 mode）：target 按 `read-only` 执行。
-- **本机上限**：`permission_mode` 设置（面板高级设置）是本机上限，生效模式 = 上限与继承值中较窄的一个；没配上限就用继承值。**只能降，不能升**。
+- **本机上限**：`permission_mode` 设置（面板高级设置）是本机上限，生效模式 = 上限与继承值中较窄的一个；没配上限就用继承值。继承只能降；任务运行中可以经 origin 批准**升级**，但永远不超过本机上限（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+- **模式阶梯**：宽窄顺序用 DSH 的 `WIDER_MODES`（`read-only` → `workspace-write` → `danger-full-access`），本包不自己排序。
 - **执行**：target 并不把模式传给 `dsh` 子进程；约束完全来自对 ACP `session/request_permission` 的应答规则（[§7.14](07-security.md#714-acp-request_permission-映射)）。
 
 | 生效模式             | 含义                                                                                         |
 | -------------------- | -------------------------------------------------------------------------------------------- |
-| `read-only`          | 只放行读/搜索/思考类请求，其余一律自动拒绝（不上交）                                         |
-| `workspace-write`    | 放行读写类请求：`edit`/`delete`/`move`/`execute`；**不校验路径是否在工作区内**；其它类型上交 origin |
+| `read-only`          | 自动放行读/搜索/思考类请求；其余请求升级（本机上限不允许时自动拒绝）                         |
+| `workspace-write`    | 自动放行读写类请求：`edit`/`delete`/`move`/`execute`；**不校验路径是否在工作区内**；其它类型请求升级到 `danger-full-access` |
 | `danger-full-access` | 全部自动放行，没有额外限制                                                                   |
 
-mode 随任务元数据一起签名传递，target 校验签名后再执行，中间人改不了；mode 不写进 grant 之外的任何持久状态，任务结束即失效。
+起始 mode 随任务元数据一起签名传递，target 校验签名后再执行，中间人改不了；升级后的 mode 由 grant 携带并签名。两者都只对这一个任务有效，任务结束即失效，下一个任务重新从继承的 mode 开始。
 
 ### 7.11 Grant
 
-grant 是 origin 对“这一次权限请求”的授权凭证，由 origin 节点的 Ed25519 私钥签名，随恢复消息（`message/send` 的 data part）下发：
+grant 是 origin 对一次升级请求的答复：允许这个任务从此用 `permission_mode` 跑到结束。它由 origin 节点的 Ed25519 私钥签名，随恢复消息（`message/send` 的 data part）下发：
 
 ```json
 {
@@ -180,7 +182,7 @@ grant 是 origin 对“这一次权限请求”的授权凭证，由 origin 节�
   "task_id": "<被授权的 task>",
   "target_orca_node": "<请求者的 id>",
   "tool": "write_file",
-  "mode": "allow_once",
+  "permission_mode": "danger-full-access",
   "request_id": "<被批准的请求 id>",
   "issued_at": "2026-11-14T04:40:00Z",
   "expires_at": "2026-11-14T04:45:00Z",
@@ -188,14 +190,14 @@ grant 是 origin 对“这一次权限请求”的授权凭证，由 origin 节�
 }
 ```
 
-- 签名输入是 `orca-pod/grant\n` + 固定键序的规范 JSON（上面除 `sig` 外的全部字段），所以 `origin_orca_node`、`request_id` 都在签名保护内，grant 不能被改标成另一个 origin 或拿去回应另一个请求；
-- `mode` 只有 `allow_once`；有效期由 origin 在批准时决定（默认 300 秒，只需覆盖一次恢复）；grant 不带 `limits` 或 `permission_mode`。
+- 签名输入是 `orca-pod/grant\n` + 固定键序的规范 JSON（上面除 `sig` 外的全部字段），所以 `origin_orca_node`、`request_id`、`permission_mode` 都在签名保护内，grant 不能被改标成另一个 origin、拿去回应另一个请求或改成别的模式；
+- `permission_mode` 就是请求里的 `requested_mode`，人批的是“这个任务升到这一档”；grant 的有效期只需覆盖一次恢复（默认 300 秒），升级本身持续到任务结束。
 
 target 收到恢复消息后按顺序校验（`checkGrant`，全部通过才放行，任一不符即终止任务并以对应 reason `failed`）：
 
 1. 签名能用 `origin_orca_node` 的公钥验过；
 2. `origin_orca_node` 就是该任务的 origin（`message/send` 的签名者）——别的成员签的 grant 不算数；
-3. `workgroup_id` 一致、`tool` 与挂起的请求一致；
+3. `workgroup_id` 一致、`tool` 与挂起的请求一致、`permission_mode` 等于请求的 `requested_mode`（target 发请求时已按本机上限算过）；
 4. 未过期（`grant_expired`）；
 5. `request_id` 等于挂起请求的 `request_id`；
 6. 未被用过：target 在进程内按 `grant_id` 记已消费集合（到 `expires_at` 为止，容量 1024），重复使用 `grant_replayed`；
@@ -203,13 +205,14 @@ target 收到恢复消息后按顺序校验（`checkGrant`，全部通过才放�
 
 其他：
 
-- 已消费集合与 grant 都不持久化（重启时任务本来就都失败了）；没有“取消时吊销 grant”这一步，grant 本身只有一次有效且很快过期；
+- 已消费集合与 grant 都不持久化（重启时任务本来就都失败了）；没有“取消时吊销 grant”这一步：grant 只能用一次且很快过期，升级随任务结束而失效；
 - 签发见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用)：只有 origin 节点的 `approveTask` 签 grant。
 
 ### 7.12 升级回路：任务状态，不是反向调用
 
 ```text
-target: 执行器发起一次生效模式之外的权限请求
+target: 执行器收到一次生效模式之外的权限请求
+  → 按 DSH 的 WIDER_MODES 找能放行它的最窄一档；超出本机上限 → 直接拒绝这次调用，不打扰人
   → 任务运行器（不是 agent）把 task 置为 input-required、释放槽位
   → 结构化 permission_request 写进 task 的 status.message（data part）
   → 连接结束。target 不拨 origin，不新建任何到 origin 的请求：
@@ -220,13 +223,16 @@ target: 执行器发起一次生效模式之外的权限请求
       "tool": "write_file",
       "requested": { "tool_call_id": "…", "tool_kind": "edit" },
       "requested_by": "<需要权限的 orca node，即 target 自己>",
+      "current_mode": "workspace-write",    // 任务现在的模式
+      "requested_mode": "danger-full-access",  // 请求升到的模式
       "expires_at": "…"                     // 可选：仅当 target 配置了 approval_timeout_s
     }
 
 origin: tracker 的下一次 tasks/get 看到 input-required
   → 交给 ApprovalBroker（不往 agent 对话里塞原始文本）
   → UI 三落点：正在看的会话里贴聊天卡；后台会话弹窗；面板 Pending approvals 列表
-  → 批准：origin 节点签 grant（单次、默认 300s），作为同一 task 的后续 message 发给 target
+  → 批准：origin 节点签 grant（permission_mode = requested_mode），作为同一 task 的后续 message 发给 target；
+    target 校验后把这个任务的模式升上去、放行这次调用，之后同类操作按新模式自动应答，不再询问
   → 拒绝：发 message `permission_denied`，target 把 task 置 failed(reason=permission_denied)
   → 默认不超时（人可能不在）；target 配置了 approval_timeout_s 才在到点后 failed(permission_timeout)
 ```
@@ -238,31 +244,35 @@ origin: tracker 的下一次 tasks/get 看到 input-required
 - 补发的授权是**同一 task 的后续 message**（带 `taskId` + grant），不是第二个任务，也不是独立的 grant 端点；只有 origin 能发。
 - **只有一个 `ApprovalBroker`，UI 是唯一的答复通道**：`orca_pod` 工具没有 approve 方法（方法只有 `send`/`status`/`cancel`/`members`/`connect`），所以模型无法替用户批准。批准/拒绝按钮直接调 `OrcaNode.approveTask/denyTask`，不经过模型与工具轮次。
 - **权限请求不产生聊天 notice**，也不唤醒 agent；UI 三个落点共用同一个 broker 与同一条决议通道：**当前正在看的会话**里贴一张聊天卡（`conversation.input.dock`，按发起任务的会话 id 匹配）；**后台会话**的请求在框内弹窗（`shell.overlay`）；**面板** Pending approvals 列表可随时签发。任务终态或不再挂起时，卡片自动收回。
-- 卡片显示：需要权限的节点、工具名、`requested` 的预览；这些都是不可信的远端文本，当纯文本渲染，不当 HTML。
+- 卡片显示：需要权限的节点、触发升级的工具与 `requested` 的预览、以及“本任务改用 X 运行到结束（当前 Y）”；远端文本当纯文本渲染，不当 HTML。
 - `decided_by` 必须来自 UI 的人类动作，不能由模型自批；origin 端是唯一能产生“用户同意”的地方。
 
-- **agent 这一侧不做任何事**：权限请求来自 ACP 的 `session/request_permission`，由执行器与任务运行器挂起任务、等待、恢复，agent 只是这次工具调用暂时没有返回；批准后同一轮继续，拒绝则任务以 `permission_denied` 结束。没有 agent 可调用的“上交”命令。
+- **agent 这一侧不做任何事**：权限请求来自 ACP 的 `session/request_permission`，由执行器与任务运行器挂起任务、等待、恢复，agent 只是这次工具调用暂时没有返回；批准后同一个任务、同一轮从卡住的地方继续，拒绝则任务以 `permission_denied` 结束。没有 agent 可调用的“上交”命令。
+- **升级只对这一个任务有效**：中断、授权、继续都发生在同一个任务上，所以升级随任务结束失效；同一会话上下文的下一个任务重新从继承的模式开始。挂起期间 target 重启，任务以 `node_restart` 失败，升级随之作废。
 - **只有一跳**：任务里的 agent 不能再派任务（[§7.9](07-security.md#79-权限跟随发起-orca-node)），所以请求总是直接挂在 origin 派出的那个任务上，grant 也总是 origin 对这个任务签的；没有中间节点转发 grant，也没有逐跳上交。
 
 ### 7.13 目标侧硬拒绝清单
 
-没有。权限请求要么落在 [§7.14](07-security.md#714-acp-request_permission-映射) 的自动应答规则里，要么上交 origin；节点不维护与模式、grant 无关的“永远拒绝”清单，也不保护自己的配置与凭据目录不被 agent 读写（见 [§7.1](07-security.md#71-workgroup-与密码)）。要限制一台机器能做什么，把本机 `permission_mode` 设成 `read-only` 或 `workspace-write`。
+没有。权限请求要么落在 [§7.14](07-security.md#714-acp-request_permission-映射) 的自动应答规则里，要么请求 origin 升级模式；节点不维护与模式、grant 无关的“永远拒绝”清单，也不保护自己的配置与凭据目录不被 agent 读写（见 [§7.1](07-security.md#71-workgroup-与密码)）。要限制一台机器能做什么，把本机 `permission_mode` 设成 `read-only` 或 `workspace-write`。
 
 ### 7.14 ACP `request_permission` 映射
 
-AcpExecutor 收到 `session/request_permission` 时，先用生效模式（[§7.10](07-security.md#710-权限模式继承)）和请求里的工具类别 `kind` 做自动应答（`src/execution/acp/permissions.ts`）：
+AcpExecutor 收到 `session/request_permission` 时，用任务当前的生效模式（[§7.10](07-security.md#710-权限模式继承)，可能已被升级）和请求里的工具类别 `kind` 决定（`src/execution/acp/permissions.ts`）：
 
 | 生效模式             | 请求的 `kind`                                          | 结论                                                    |
 | -------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
 | `danger-full-access` | 任意                                                   | 自动 `allow`                                            |
 | `workspace-write`    | `read` / `search` / `think` / `edit` / `delete` / `move` / `execute` | 自动 `allow`（不校验路径）                |
-| `workspace-write`    | 其它（`fetch`、`switch_mode`、`other` 或未标注）       | 不回复 ACP，任务挂起为 `input-required` → origin 决定   |
+| `workspace-write`    | 其它（`fetch`、`switch_mode`、`other` 或未标注）       | 请求升级到 `danger-full-access`：不回复 ACP，任务挂起为 `input-required` → origin 决定 |
 | `read-only`          | `read` / `search` / `think`                            | 自动 `allow`                                            |
-| `read-only`          | 其它一切                                               | 自动 `reject`（不上交，不弹卡）                         |
+| `read-only`          | `edit` / `delete` / `move` / `execute`                 | 请求升级到 `workspace-write`                            |
+| `read-only`          | 其它                                                   | 请求升级到 `danger-full-access`                         |
+
+请求的目标档超过本机上限（`permission_mode` 设置）时，这次调用自动 `reject`，不弹卡；上限内最窄的那一档才是请求的目标。
 
 - 自动应答选 `allow_once`/`reject_once` 选项，没有就选第一个同类选项，都没有则回 `cancelled`。
-- 上交的请求等 origin 的后续 message：批准 → 回 `allow`；拒绝/取消/TTL/超时 → 任务终止，所有未答复的请求回 `cancelled`，避免 ACP 侧永久悬挂。挂起本身没有超时，除非配置 `approval_timeout_s`。
-- 没有“无 grant 即拒绝”这一条：自动放行不需要 grant，grant 只对上交的请求有意义。
+- 升级请求等 origin 的后续 message：批准 → 回 `allow`，任务改用新模式，排在后面的同类请求直接按新模式放行；拒绝/取消/TTL/超时 → 任务终止，所有未答复的请求回 `cancelled`，避免 ACP 侧永久悬挂。挂起本身没有超时，除非配置 `approval_timeout_s`。
+- 没有“无 grant 即拒绝”这一条：模式覆盖的请求不需要 grant，grant 只对升级请求有意义。
 
 ### 7.15 凭据回传与注入防护
 

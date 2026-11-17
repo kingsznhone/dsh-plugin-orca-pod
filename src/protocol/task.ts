@@ -88,7 +88,6 @@ export const PodTaskMetadataSchema = z.looseObject({
   model: ModelSelectionSchema.optional(),
   /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
   reasoning_effort: ReasoningEffortSchema.optional(),
-  idempotency_key: z.string().optional(),
   task_ttl_s: z.number("must be a positive number").finite().positive("must be a positive number").optional(),
 });
 export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;

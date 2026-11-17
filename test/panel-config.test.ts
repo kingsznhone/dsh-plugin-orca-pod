@@ -400,7 +400,7 @@ describe("panel admin configuration", () => {
     const handle: PodHandle = {
       ready: Promise.resolve(),
       runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
-      config: parseSettings({ workgroup_id: "wg-panel", workgroup_password: "pw" }),
+      config: { ...parseSettings({ workgroup_id: "wg-panel", workgroup_password: "pw" }), data_root: "/data" },
       configured: false,
       rememberedPeers: [],
       reconfigure: async () => {},

@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 
@@ -149,7 +150,7 @@ export interface OrcaNode {
    * background tracking after a restart (§8.3). The dispatch entry must already
    * exist; unknown ids are ignored.
    */
-  annotateDispatch(taskId: string, agentId: string): void;
+  annotateDispatch(taskId: string, agentId: SessionId): void;
   /** Local (inbound) tasks, newest first, for the UI task panel (§9.2). */
   listTasks(limit?: number): TaskView[];
   /**

@@ -32,7 +32,7 @@
 
 ### 10.4 Phase 3：权限模型 + 审批回路
 
-- grant 签发/校验（[§7.11](07-security.md#711-grant)）：单次、绑定请求与决策链。
+- grant 签发/校验（[§7.11](07-security.md#711-grant)）：答复一次升级请求，绑定请求与升到的模式，升级只对该任务有效。
 - `input-required` 升级回路（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询看到 → **UI 卡片/弹窗/面板作答** → 批准发 grant 作为同一 task 的后续 message / 拒绝置 `failed(permission_denied)`。
 - 任务只有一跳：执行器会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 拒绝；越界请求只在 origin 派出的那个任务上挂起，grant 由 origin 对该任务签发（D39）。
 - 验收：权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
@@ -88,9 +88,9 @@
 
 #### 权限与工作区
 
-- [x] origin 只读会话 → target 写文件被拒（ACP 按继承模式自动拒绝）
+- [x] origin 只读会话 → target 写文件时请求升级到 `workspace-write`；本机上限为 `read-only` 时直接拒绝
 - [x] 没带模式的任务按 `read-only` 执行；本机上限收窄继承值
-- [x] `workspace-write` 之外的请求类型上交 origin，由人决定
+- [x] `workspace-write` 之外的请求类型请求升级到 `danger-full-access`，由人决定；批准后同一任务的同类操作不再询问
 - [x] 升级请求只在 origin 由人决定，target 无本地弹窗（权限请求 park 在 `ApprovalBroker`，由会话聊天卡/后台弹窗/面板作答；`orca_pod` 没有 approve 方法）
 - [x] 权限请求不产生聊天 notice
 - [x] 审批卡片显示需要权限的节点（`requested_by`）

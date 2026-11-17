@@ -1,5 +1,7 @@
 /** What an origin remembers about a task it handed to a peer (§8.3). */
 
+import type { SessionId } from "@deepseek-ai/dsh-session";
+
 import type { TaskState } from "./task.ts";
 
 export type DispatchEntry = {
@@ -16,7 +18,7 @@ export type DispatchEntry = {
    * resume background tracking after a restart, when the in-memory tracker is
    * empty but the remote task may still be running.
    */
-  agent_id?: string;
+  agent_id?: SessionId;
   created_at: string;
   updated_at: string;
 };

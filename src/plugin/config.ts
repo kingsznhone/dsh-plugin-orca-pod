@@ -19,7 +19,7 @@ import { isRecord } from "../kernel/schema.ts";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 
 /** Parse a plugin config: the shared settings parser, minus the plaintext password. */
-export function validatePluginConfig(input: unknown): ReturnType<typeof safeParseSettings> {
+export function validatePluginConfig(input: unknown): StandardSchemaV1.Result<Settings> {
   if (isRecord(input) && typeof input.workgroup_password === "string" && input.workgroup_password.length > 0) {
     return {
       issues: [

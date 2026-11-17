@@ -1,3 +1,4 @@
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 /**
  * The task prompt (§6.7, §6.14): the node's trusted preamble first, notes from
  * earlier tasks, and the origin's text last inside an untrusted block. Files
@@ -20,7 +21,7 @@ function message(text = "do the work") {
 /** Executor that records the prompt it was given. */
 function promptRecorder(prompts: string[]): LocalExecutor {
   return {
-    async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
+    async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
       prompts.push(input.prompt);
       yield { type: "completed", text: "ok" };
     },
@@ -61,7 +62,7 @@ describe("task prompt", () => {
     const runner = createTestRunner({
       ...deps,
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },
@@ -82,7 +83,7 @@ describe("task prompt", () => {
     const prompts: string[] = [];
     const runner = createTestRunner({
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },
@@ -100,7 +101,7 @@ describe("task prompt", () => {
     const prompts: string[] = [];
     const runner = createTestRunner({
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },
@@ -123,7 +124,7 @@ describe("task prompt", () => {
     const runner = createTestRunner({
       ...deps,
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },

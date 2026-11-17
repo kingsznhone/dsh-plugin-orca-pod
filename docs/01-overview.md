@@ -60,7 +60,7 @@
 | **workspace**             | orca node 上自动分配的持久目录，跨任务、跨 session 保留上下文；每个 workgroup 一份，也叫 group workspace。                                                           |
 | **session**               | ACP 会话状态，绑定 `(origin_orca_node, context_id)`，存在 `<data_root>/state/<workgroup_id>/sessions.json`。                                                         |
 | **context_id**            | A2A 的逻辑会话 id，把多个 task 归到同一串工作里。                                                                                                                    |
-| **grant**                 | origin 签发的单次授权，绑定 origin/target/task/tool/request 与决策链，用掉即作废。                                                                                   |
+| **grant**                 | origin 对一次升级请求的签名答复：允许这个任务改用某个权限模式跑到结束；绑定 origin/target/task/tool/request/模式，用掉即作废。                                                             |
 
 **命名注意：** `workgroup_id`、`workspace`、`session` 三者不能混用。DSH GUI 里把项目目录叫“工作区”，本文的 `workspace` 指的是被调用 orca node 上自动分配的那份执行目录；代码与日志里不允许用裸的 `workspace` 表示命名空间。同理，mesh 成员一律写 **orca node**，不写裸的 `node`——那是 Node.js。
 

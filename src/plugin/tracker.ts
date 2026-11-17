@@ -14,6 +14,7 @@
  * with the source kind this bundle registers.
  */
 
+import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { boundContextSummary, createUserMessage, type ContextFormed, type UserMessage } from "@deepseek-ai/dsh-llm";
@@ -39,7 +40,7 @@ export type TrackerAgent = Pick<Agent, "id" | "status" | "inject" | "followup">;
 export interface TrackerNode {
   getTask(peerUrl: string, taskId: string): Promise<TaskView>;
   /** Persist the dispatching agent so tracking can resume after a host restart. */
-  annotateDispatch(taskId: string, agentId: string): void;
+  annotateDispatch(taskId: string, agentId: SessionId): void;
   /** The member behind a URL, so a task's files can be named `<node id>/<sha256>` (§5.6). */
   nodeIdOf(endpoint: string): string | undefined;
 }
@@ -471,9 +472,9 @@ export function createTracker(
 export function restoreTrackedDispatches(
   tracker: Tracker,
   dispatches: readonly DispatchEntry[],
-  resolveAgent: (agentId: string) => TrackerAgent | undefined,
+  resolveAgent: (agentId: SessionId) => TrackerAgent | undefined,
   logger: Logger,
-  onlyAgentId?: string,
+  onlyAgentId?: SessionId,
 ): number {
   let restored = 0;
   for (const entry of dispatches) {

@@ -3,14 +3,14 @@
  *
  * Files move between nodes by link only: a node publishes a file of its own,
  * and whoever needs it pulls the bytes from that node's gateway. The registry
- * maps the file's sha256 to its local path and a TTL. A task appends the URL of
- * a result to its summary; an origin puts the URLs of the files it hands over
- * into the task text.
+ * maps the file's sha256 to its local path and a TTL. A task appends the name
+ * of a result to its summary; an origin puts the names of the files it hands
+ * over into the task text. A name is `<orca_node_id>/<sha256>` (`blobRefText`),
+ * while the `blob_id` itself is the bare sha256.
  *
  * Registration is a local capability, not an HTTP route: publishing a path is
  * equivalent to reading it. The CLI therefore writes the mapping straight into
- * the node's SQLite database; peers only ever see content-addressed URLs, never
- * a path.
+ * the node's SQLite database; peers only ever see that name, never a path.
  */
 
 import { createHash } from "node:crypto";

@@ -45,10 +45,13 @@ interface PodRuntime {
 }
 
 /** Handle returned by `startPod`; cleanup and tools share it. */
+/** Settings with the data directory resolved: the lifecycle fixes it once, at start (DX13). */
+export type RootedSettings = Settings & { data_root: string };
+
 export interface PodHandle {
   runtime: PodRuntime;
   /** Effective config: the plugin config plus the resolved password (in memory only). */
-  config: Settings;
+  config: RootedSettings;
   /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
   configured: boolean;
   /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
@@ -112,13 +115,13 @@ function needsSetup(config: Settings): boolean {
 }
 
 async function startNode(
-  config: Settings,
+  config: RootedSettings,
   remembered: readonly string[],
   runtime: PodRuntime,
   logger: Logger,
   hooks: StartPodHooks,
 ): Promise<void> {
-  const dataRoot = config.data_root ?? defaultDataRoot();
+  const dataRoot = config.data_root;
   // The plugin runs real DSH sessions by default. A loopback-only advertise list
   // is useless across machines, so it means "derive from the listen address".
   const nodeConfig = createOrcaNodeConfig({
@@ -222,7 +225,7 @@ export function startPod(
   // host-provided default (the DSH profile directory), else the process default.
   // Every later read (peer state, node config, panel) then sees the same path.
   const dataRoot = bundleConfig.data_root ?? defaultRoot ?? defaultDataRoot();
-  const rooted = (config: Settings): Settings => ({
+  const rooted = (config: Settings): RootedSettings => ({
     ...config,
     data_root: config.data_root ?? dataRoot,
     workgroup_password: "",

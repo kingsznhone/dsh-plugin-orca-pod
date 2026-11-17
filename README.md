@@ -4,7 +4,7 @@
 
 - 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
 - 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、按名字（`<节点 id>/<sha256>`）拉取的文件。
-- 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，自研模块在 `src/`，随包发布的是编译后的 `lib/`（`npm run build`），安装时不需要本仓库的 `node_modules`。
+- 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时依赖见 `package.json`（16 项：`fastify`、`zod`、`ulid`、`cross-spawn`、`@agentclientprotocol/sdk` 与 11 个 `@deepseek-ai/dsh-*` 子包），自研模块在 `src/`，随包发布的是编译后的 `lib/`（`npm run build`）；本地 checkout 用 `link:` 接入时先在仓库里 `npm install`，依赖从该仓库的 `node_modules` 解析（从安装包安装则依赖随包解析）。
 - 验收：`npm run check`（biome + tsc + vitest）。
 
 ## 布局
@@ -18,21 +18,21 @@ orca-pod/
 ├── icon.svg              # 插件图标（随包发布）
 ├── biome.json            # lint + format
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、sync-guest.ps1
+├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、build-client.ts（客户端 TSX 构建）、sync-guest.ps1
 ├── skills/orca-node/     # 标准 skill bundle（随包发布）
 ├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按限界上下文分目录，依赖只能向下
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── kernel/           # errors（PodError + 错误码表）、schema（isRecord、parseSchema）、events（事件总线与 NodeLogger）、entry（包内入口路径）
-│   ├── protocol/         # 线上协议（zod schema）：peer / cluster / a2a / task / grant / model / permission / client（PeerClient 契约）/ dispatch / events / constants
-│   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce）、grants（grant 校验与转发）
+│   ├── protocol/         # 线上协议（zod schema）：peer / cluster / a2a / task / grant / model / permission / client（PeerClient 契约）/ blob / dispatch / events / constants
+│   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce）、grants（grant 校验与消费账本）
 │   ├── storage/          # stores（全部存储接口）；实现 memory / file-registry（publish）/ sqlite
 │   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
 │   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、prompt（任务书）、workspace、delegation（发起侧派发、审批签 grant、派发日志语义）
-│   ├── execution/        # executor 契约、echo、process（子进程公共件）、acp/（config / connection / session / permissions / executor）
+│   ├── execution/        # executor 契约、echo、process（子进程公共件）、kinds（执行器种类）、acp/（config / connection / session / permissions / executor）
 │   ├── transport/        # peer-client（唯一的出站客户端）、net（地址归一化、回环、端口）、gateway/（入站 HTTP 路由）
-│   ├── node/             # orca-node（组合根 createOrcaNode）、config（config.json）、settings（字段表）、harness（测试用多节点）
+│   ├── node/             # orca-node（组合根 createOrcaNode）、config（config.json）、settings（字段表）
 │   ├── cli/              # main（orca-node 分派）+ 每个子命令一个文件、shared；orca-pod（install bin）、install
-│   └── plugin/           # DSH bundle：bundle / lifecycle / stores / catalog / services / broker / tracker / tools / admin / web / panel-api / skill / config / dsh
+│   └── plugin/           # DSH bundle：admin / broker / bundle / catalog / config / lifecycle / panel-api / services / skill / stores / tools / tracker / web
 └── test/                 # vitest 套件
 ```
 
@@ -46,7 +46,7 @@ dsh plugin --profile desktop add /absolute/path/to/orca-pod
 dsh --profile desktop --dump-config
 ```
 
-`dsh plugin add` 把包记成 profile 里的 `link:` 依赖并追加到 `dsh.profile.bundles`；DSH 通过 profile 的 `node_modules` 解析包名并应用 `cordis.patch.yml`。bundle 没有私有依赖，运行时不需要本 checkout 的 `node_modules`。之后用 Plugin Manager（或改 profile 的 patch/config）改配置。
+`dsh plugin add` 把包记成 profile 里的 `link:` 依赖并追加到 `dsh.profile.bundles`；DSH 通过 profile 的 `node_modules` 解析包名并应用 `cordis.patch.yml`。bundle 的运行时依赖见 `package.json`（16 项，含 11 个 `@deepseek-ai/dsh-*` 与 `cross-spawn`）；`link:` 安装时这些依赖从本 checkout 的 `node_modules` 解析，所以先在本仓库跑过 `npm install`。之后用 Plugin Manager（或改 profile 的 patch/config）改配置。
 
 首次启动保持空闲：`cordis.patch.yml` 不携带 workgroup 或密码，必须先在面板向导里完成 setup（workgroup、密码、监听地址）才会开始监听。监听默认 `127.0.0.1`；要让局域网 peer 直连，在向导里选择 LAN 地址或 `::`。
 
@@ -98,7 +98,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 
 `config.json` 首次启动生成（身份 + 派生密钥，0600），同一 `data_root` 下复用，因此 node id 跨重启保持不变；改密码 = 重建组。ACP/CLI 子会话从 executor 收到 `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT`。
 
-任务的权限模式继承发起会话（没继承到就 `read-only`），本机 `permission_mode` 只能收窄；审批默认无限等待，只有配置了 `approval_timeout_s` 才在到点自动拒绝。任务只有一跳：执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 在里面拒绝——这是防 agent 转手的非对抗性约束，不是密钥隔离。
+任务的权限模式继承发起会话（没继承到就 `read-only`），显式传的模式只能更窄，本机 `permission_mode` 是上限；任务需要更多权限时请求发起者把本任务升级一档，人在面板或聊天卡上批准后，该任务余下的同类操作不再询问。审批默认无限等待，只有配置了 `approval_timeout_s` 才在到点自动拒绝。任务只有一跳：执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 在里面拒绝——这是防 agent 转手的非对抗性约束，不是密钥隔离。
 
 ## 工具
 

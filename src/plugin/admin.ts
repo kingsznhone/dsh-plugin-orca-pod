@@ -13,7 +13,6 @@ import { readdirSync } from "node:fs";
 
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import { defaultDataRoot } from "../node/config.ts";
 import type { OpenedBlob } from "../storage/stores.ts";
 import type { DispatchEntry } from "../protocol/dispatch.ts";
 import { shortenNodeId } from "../security/identity.ts";
@@ -53,6 +52,9 @@ export interface PodApproval {
   requested: string;
   /** Label of the node that needs the permission. */
   from: string;
+  /** The task's mode now, and the mode it asks to continue with until it ends. */
+  current_mode: SandboxMode;
+  requested_mode: SandboxMode;
   /** DSH session that dispatched the task; null when only the tracker has seen the request. */
   agent_id: string | null;
 }
@@ -296,7 +298,7 @@ export function createPodAdmin(
       reasoning_efforts: reasoningEfforts(),
       bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
       peers: [...new Set([...config.peers, ...handle.rememberedPeers])],
-      data_root: config.data_root ?? defaultDataRoot(),
+      data_root: config.data_root,
       advanced: {
         task_timeout_s: config.task_timeout_s ?? null,
         approval_timeout_s: config.approval_timeout_s ?? null,
@@ -356,6 +358,8 @@ export function createPodAdmin(
         tool: request.tool,
         requested: preview(request.requested),
         from: label(request.requested_by),
+        current_mode: request.current_mode,
+        requested_mode: request.requested_mode,
         agent_id: agentId,
       }));
     },

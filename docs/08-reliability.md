@@ -37,7 +37,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 - 授权请求随之失效；origin 下一次轮询看到 `failed(node_restart)`，卡片随之收回；
 - 工作区目录不删，cwd 不变；ACP session 绑定保留，下一个任务会 `session/resume`。
 
-**origin 重启（origin 侧派发日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（`task_id`、`peer`、`context_id`、`state`、`last_error`、`agent_id`、`created_at`、`updated_at`）：
+**origin 重启（origin 侧派发日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（表只有 `task_id`、`payload`、`updated_at` 三列；条目 JSON 里才是 `peer`、`context_id`、`state`、`last_error`、`agent_id`、`created_at`）：
 
 - 只有 `sendTask` 新建条目；`getTask`/`cancelTask`/审批只刷新已存在的条目；
 - 节点启动时把仍非终态的条目标成 `state=unknown, last_error=origin_restart`——**不把“看不见”写成“失败”**；之后重新轮询到真实状态再覆盖；
@@ -46,7 +46,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 ### 8.4 重复提交
 
-没有幂等键去重：同一条 `message/send` 提交两次就是两个 task。要避免重复，靠调用方（agent 不自动重试；tracker 只读不写）。`idempotency_key` 的设计见 [§11](11-open-questions.md#11-未决问题)“idempotency_key 与跨节点追踪”。
+不做幂等去重，协议里也没有幂等键：同一条 `message/send` 提交两次就是两个 task。要避免重复，靠调用方（agent 不自动重试；tracker 只读不写）。
 
 ### 8.5 超时与背压
 

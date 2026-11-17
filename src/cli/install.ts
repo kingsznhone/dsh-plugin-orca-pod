@@ -11,7 +11,6 @@
  * and owns the interactive readline session.
  */
 
-import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -22,6 +21,8 @@ import { parseSettings, type Settings } from "../node/settings.ts";
 import { bindChoices } from "../transport/net.ts";
 import { errorMessage } from "../kernel/errors.ts";
 import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
+import { isCredentialRefName } from "@deepseek-ai/dsh-credentials";
+import { runNativeCommand, type NativeCommandRunner } from "@deepseek-ai/dsh-native-command";
 
 /** A service listens on all interfaces unless told otherwise (the plugin defaults to loopback). */
 export const INSTALL_BIND_HOST = "::";
@@ -65,13 +66,12 @@ export interface InstallPlan {
   commands: string[][];
 }
 
+/** One command's outcome, as the install reports it. */
 interface CommandResult {
   ok: boolean;
   stdout: string;
   stderr: string;
 }
-
-export type CommandRunner = (command: string, args: string[]) => CommandResult;
 
 /** The setting each install question fills in. */
 const ANSWER_FIELD = {
@@ -120,7 +120,9 @@ export function planInstall(options: InstallOptions, env: InstallEnvironment): I
     if (file === "") throw new Error("--env-file needs a non-empty path");
   }
   for (const assignment of environment) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(assignment)) {
+    // DSH's environment-name grammar: the one its credential references use.
+    const separator = assignment.indexOf("=");
+    if (separator <= 0 || !isCredentialRefName(assignment.slice(0, separator))) {
       throw new Error(`--env must be KEY=VALUE with an environment-style name, got ${JSON.stringify(assignment)}`);
     }
   }
@@ -188,28 +190,31 @@ export function renderUnit(plan: InstallPlan, description = "orca-pod host node"
   return `${lines.join("\n")}\n`;
 }
 
-function runCommand(command: string, args: string[]): CommandResult {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  return {
-    ok: result.status === 0,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-  };
+/** Run one command through DSH's no-shell runner; it rejects on a non-zero exit, carrying the captured output. */
+async function runCommand(run: NativeCommandRunner, command: string, args: string[]): Promise<CommandResult> {
+  try {
+    const { stdout, stderr } = await run(command, args, new AbortController().signal, "hidden");
+    return { ok: true, stdout, stderr };
+  } catch (error) {
+    const output = error as { stdout?: unknown; stderr?: unknown };
+    const stderr = typeof output.stderr === "string" ? output.stderr : "";
+    return {
+      ok: false,
+      stdout: typeof output.stdout === "string" ? output.stdout : "",
+      stderr: stderr.trim() === "" ? errorMessage(error) : stderr,
+    };
+  }
 }
 
 /** What looking for `dsh` found: its version, or why it could not be run. */
 export type DshCheck = { ok: true; version: string } | { ok: false; message: string };
 
 /** Check that `dsh` exists and print its version; tasks need it at runtime. */
-export function checkDsh(dshBin: string, run: CommandRunner = runCommand): DshCheck {
-  try {
-    const result = run(dshBin, ["--version"]);
-    if (!result.ok)
-      return { ok: false, message: `${dshBin} --version failed: ${result.stderr.trim() || result.stdout.trim()}` };
-    return { ok: true, version: result.stdout.trim() };
-  } catch (error) {
-    return { ok: false, message: `could not run ${dshBin}: ${errorMessage(error)}` };
-  }
+export async function checkDsh(dshBin: string, run: NativeCommandRunner = runNativeCommand): Promise<DshCheck> {
+  const result = await runCommand(run, dshBin, ["--version"]);
+  if (!result.ok)
+    return { ok: false, message: `${dshBin} --version failed: ${result.stderr.trim() || result.stdout.trim()}` };
+  return { ok: true, version: result.stdout.trim() };
 }
 
 interface ConfigDeps {
@@ -304,7 +309,7 @@ export async function ensureNodeConfig(
 }
 
 interface InstallDeps extends ConfigDeps {
-  run?: CommandRunner;
+  run?: NativeCommandRunner;
   mkdir?: (path: string, options?: { recursive?: boolean; mode?: number }) => Promise<unknown>;
   writeFile?: (path: string, text: string) => Promise<void>;
 }
@@ -331,8 +336,8 @@ export async function installService(
   const configCreated = (await ensureNodeConfig(plan, options, deps)).created;
   const commands: CommandResult[] = [];
   if (!options.noStart) {
-    const run = deps.run ?? runCommand;
-    for (const [program = "", ...args] of plan.commands) commands.push(run(program, args));
+    const run = deps.run ?? runNativeCommand;
+    for (const [program = "", ...args] of plan.commands) commands.push(await runCommand(run, program, args));
   }
   return { plan, unit, configCreated, commands };
 }

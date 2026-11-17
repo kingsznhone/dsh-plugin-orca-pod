@@ -1,3 +1,4 @@
+import type { NativeCommandRunner } from "@deepseek-ai/dsh-native-command";
 import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +17,6 @@ import {
   renderUnit,
   resolveEnvironment,
   systemdQuote,
-  type CommandRunner,
   type InstallEnvironment,
   type InstallOptions,
   type PromptQuestion,
@@ -164,18 +164,21 @@ describe("install plan", () => {
 });
 
 describe("dsh check", () => {
-  it("reports the version from a successful run", () => {
-    const run: CommandRunner = () => ({ ok: true, stdout: "0.4.2\n", stderr: "" });
-    expect(checkDsh("dsh", run)).toEqual({ ok: true, version: "0.4.2" });
+  it("reports the version from a successful run", async () => {
+    const run: NativeCommandRunner = async () => ({ stdout: "0.4.2\n", stderr: "" });
+    expect(await checkDsh("dsh", run)).toEqual({ ok: true, version: "0.4.2" });
   });
 
-  it("explains a failing or missing dsh", () => {
-    const failing: CommandRunner = () => ({ ok: false, stdout: "", stderr: "not found" });
-    expect(checkDsh("dsh", failing)).toMatchObject({ ok: false, message: expect.stringContaining("not found") });
-    const throwing: CommandRunner = () => {
-      throw new Error("ENOENT");
+  it("explains a failing or missing dsh", async () => {
+    // DSH's runner rejects on a non-zero exit with the captured output attached.
+    const failing: NativeCommandRunner = async () => {
+      throw Object.assign(new Error("exit 1"), { stdout: "", stderr: "not found" });
     };
-    expect(checkDsh("dsh", throwing)).toMatchObject({ ok: false, message: expect.stringContaining("ENOENT") });
+    expect(await checkDsh("dsh", failing)).toMatchObject({ ok: false, message: expect.stringContaining("not found") });
+    const missing: NativeCommandRunner = async () => {
+      throw new Error("spawn dsh ENOENT");
+    };
+    expect(await checkDsh("dsh", missing)).toMatchObject({ ok: false, message: expect.stringContaining("ENOENT") });
   });
 });
 
@@ -267,9 +270,9 @@ describe("service installation", () => {
         written.push({ path, text });
       },
       exists: () => false,
-      run: (command, args) => {
+      run: async (command, args) => {
         commands.push([command, ...args]);
-        return { ok: true, stdout: "", stderr: "" };
+        return { stdout: "", stderr: "" };
       },
     });
     expect(mkdirs).toEqual([dirname(plan.unitPath)]);
@@ -288,9 +291,9 @@ describe("service installation", () => {
       mkdir: async () => undefined,
       writeFile: async () => undefined,
       exists: () => false,
-      run: (command, args) => {
+      run: async (command, args) => {
         commands.push([command, ...args]);
-        return { ok: true, stdout: "", stderr: "" };
+        return { stdout: "", stderr: "" };
       },
     });
     expect(result.commands).toEqual([]);

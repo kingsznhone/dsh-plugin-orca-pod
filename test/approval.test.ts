@@ -129,7 +129,7 @@ function grantFor(view: TaskView, originOrcaNode: OrcaNodeId, tool = "write_file
     task_id: view.id,
     target_orca_node: request.requested_by,
     tool,
-    mode: "allow_once",
+    permission_mode: request.requested_mode,
     request_id: request.request_id,
     issued_at: issuedAt.toISOString(),
     expires_at: new Date(issuedAt.getTime() + 60_000).toISOString(),

@@ -27,7 +27,7 @@ declare module "fastify" {
     rpc?: boolean;
   }
   interface FastifyRequest {
-    /** Set by the access hook on every route except `public` (and link downloads). */
+    /** Set by the access hook on every route except `public`. */
     auth: VerifiedAuth;
     /** Raw body bytes, kept for signature verification. */
     rawBody?: Buffer;

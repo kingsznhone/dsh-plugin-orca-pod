@@ -32,7 +32,7 @@ export function heartbeatIntervalMsFor(orcaNodeCount: number): number {
 }
 
 export type MembershipTimings = {
-  /** Heartbeat period; each orca node sends one every interval (+-20% jitter). */
+  /** Heartbeat period; each orca node sends one every interval (±10% jitter). */
   intervalMs: number;
   /** Consecutive missed heartbeats before a peer becomes suspect. */
   suspectAfterMs: number;

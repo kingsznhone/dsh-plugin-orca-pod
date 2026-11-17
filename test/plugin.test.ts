@@ -4,7 +4,7 @@ import { parseSettings } from "../src/node/settings.ts";
 import type { DispatchEntry } from "../src/protocol/dispatch.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
-import type { SessionId } from "@deepseek-ai/dsh-session";
+import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import type { TaskView } from "../src/protocol/task.ts";
@@ -39,7 +39,7 @@ function tool(result: ReturnType<typeof createPodTools>) {
 /** The host always supplies a run context; tests default it for argument-validation cases. */
 function run(tools: ReturnType<typeof createPodTools>, args: unknown, exec: Record<string, unknown> = {}) {
   const { execute } = tool(tools);
-  return execute(args, exec as unknown as ToolRunContext);
+  return execute(args, { signal: new AbortController().signal, ...exec } as unknown as ToolRunContext);
 }
 
 describe("plugin config", () => {
@@ -126,7 +126,7 @@ describe("orca_pod tool", () => {
   const handle: PodHandle = {
     ready: Promise.resolve(),
     runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
-    config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
+    config: { ...parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }), data_root: "/data" },
     configured: true,
     rememberedPeers: [],
     adopt: async () => {},
@@ -243,6 +243,23 @@ describe("orca_pod tool", () => {
     );
     const explicit = sent[1] as { metadata?: { pod?: Record<string, unknown> } };
     expect(explicit.metadata?.pod?.permission_mode).toBe("read-only");
+
+    // A task can only start narrower than the session; more is asked for as an upgrade (P1).
+    await expect(
+      run(
+        sendTools,
+        { method: "send", peer: "http://127.0.0.1:11811", text: "hi", permission_mode: "danger-full-access" },
+        { agent },
+      ),
+    ).rejects.toThrow(/wider than this session's workspace-write/);
+    expect(sent).toHaveLength(2);
+
+    // A session whose mode cannot be read counts as read-only.
+    const blind = createPodTools(handleForSend, tracker);
+    await run(blind, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
+    expect((sent[2] as { metadata?: { pod?: Record<string, unknown> } }).metadata?.pod?.permission_mode).toBe(
+      "read-only",
+    );
   });
 
   it("forwards the caller's abort signal and cancels a task accepted after the turn was cancelled", async () => {
@@ -316,7 +333,7 @@ describe("orca_pod tool", () => {
     const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxReader;
     expect(sessionSandboxMode(policy, { agent } as unknown as ToolExecution)).toBe("danger-full-access");
     expect(sessionSandboxMode(undefined, { agent } as unknown as ToolExecution)).toBeUndefined();
-    expect(sessionSandboxMode(policy, undefined)).toBeUndefined();
+    expect(sessionSandboxMode(policy, {} as unknown as ToolExecution)).toBeUndefined();
     expect(sessionSandboxMode(policy, { agent: {} } as unknown as ToolExecution)).toBeUndefined();
   });
 
@@ -353,7 +370,7 @@ describe("orca_pod tool", () => {
 });
 
 describe("tracker recovery (8.3)", () => {
-  function dispatch(taskId: string, state: DispatchEntry["state"], agentId?: string): DispatchEntry {
+  function dispatch(taskId: string, state: DispatchEntry["state"], agentId?: SessionId): DispatchEntry {
     const now = new Date().toISOString();
     return {
       task_id: taskId,
@@ -376,7 +393,7 @@ describe("tracker recovery (8.3)", () => {
 
   it("resumes only non-terminal dispatches with a live dispatching agent", async () => {
     const agent: TrackerAgent = {
-      id: "live-session" as SessionId,
+      id: SessionId("live-session"),
       status: "idle",
       inject: () => {},
       followup: () => {},
@@ -393,11 +410,11 @@ describe("tracker recovery (8.3)", () => {
       const restored = restoreTrackedDispatches(
         tracker,
         [
-          dispatch("running", "working", "live-session"),
-          dispatch("parked", "input-required", "live-session"),
-          dispatch("done", "completed", "live-session"),
+          dispatch("running", "working", SessionId("live-session")),
+          dispatch("parked", "input-required", SessionId("live-session")),
+          dispatch("done", "completed", SessionId("live-session")),
           dispatch("unattributed", "working"),
-          dispatch("orphaned", "working", "gone-session"),
+          dispatch("orphaned", "working", SessionId("gone-session")),
         ],
         (agentId) => (agentId === "live-session" ? agent : undefined),
         logger,

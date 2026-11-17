@@ -14,7 +14,7 @@
 | D30 | 10 个 orca node 是建议上限，不是硬限制；超过时没有检查，见 [§11](11-open-questions.md#11-未决问题) | 心跳节奏随成员数自适应（`N` 秒，夹在 2–10s），总流量线性增长；超过 10 个时判定延迟变长，不是静默失败 |
 | D37 | `src/` 按限界上下文分目录、依赖只能向下（[§9.1](09-implementation.md#91-单包内的模块划分)），由 `test/architecture.test.ts` 固化；保持纯 DI，不引入 DI 容器（[§9.6](09-implementation.md#96-工程约定)） | 服务对象早已存在（`createX(deps)` 工厂、唯一装配根、无环），缺的是边界：目录 + 架构测试把边界变成可检查的约束（曾要求跨上下文只经各目录的 `index.ts`，后因纯转发层只增加维护成本、对底层上下文几乎没有保护作用而取消，调用方直接引用定义文件）。容器只会带来字符串 key 与隐式生命周期，装饰器与运行时反射和 `erasableSyntaxOnly` 冲突，插件侧已经跑在 Cordis 这个容器里 |
 | D39 | 任务只有一跳：执行任务的 agent 不能再派任务（执行器会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 拒绝）；去掉调用链元数据、grant 转发、逐跳上交及其路由；不做 agent 侧密钥隔离（[§7.9](07-security.md#79-权限跟随发起-orca-node)） | 级联派发把协议、grant 校验、任务状态机和 CLI 都拖进了“谁替谁上交”的复杂度，而局域网里几台机器的编排由有人坐着的根会话来做就够了。agent 与节点同一个 OS 用户，密钥隔离做不成真边界；非对抗性约束挡住守规矩的 agent 转手，代价是一个环境变量 |
-| D40 | DSH 公开导出的类型、常量与工具一律直接用，不在本包重抄、手写或套别名：运行时依赖 DSH 包（`dsh-llm`、`dsh-agent`、`dsh-credentials`、`dsh-tools`、`dsh-home-paths`、`dsh-atomic-write`、`dsh-brand`、`dsh-error`、`dsh-util-values`、`dsh-timeout`、`dsh-sandbox-policy`）；模型选择的线上形状就是 DSH 的 `ModelSelection` | 手写的副本会和宿主漂移（`PermissionMode` 与 `SandboxMode`、effort 清单、凭据名语法、摘要截断长度都出过这种情况），而且掩盖了宿主已有的保证（类型化返回值被重新解析）。这些包大多不依赖 cordis，独立 CLI 同样能加载 |
+| D40 | DSH 公开导出的类型、常量与工具一律直接用，不在本包重抄、手写或套别名：运行时依赖 DSH 包（清单见 `package.json` 的 `dependencies`）；模型选择的线上形状就是 DSH 的 `ModelSelection` | 手写的副本会和宿主漂移（`PermissionMode` 与 `SandboxMode`、effort 清单、凭据名语法、摘要截断长度都出过这种情况），而且掩盖了宿主已有的保证（类型化返回值被重新解析）。这些包大多不依赖 cordis，独立 CLI 同样能加载 |
 
 ## 已并入章节的决策
 

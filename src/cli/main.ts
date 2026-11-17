@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** `orca-node`: parse the command line and hand it to one subcommand. */
 
+import { DEFAULT_DSH_HOME_DISPLAY, DSH_HOME_ENV } from "@deepseek-ai/dsh-home-paths";
 import process from "node:process";
 
 import { errorMessage } from "../kernel/errors.ts";
@@ -30,7 +31,7 @@ Usage:
 Common options:
   --config <path>       use a config file instead of <data-root>/config.json
   --data-root <path>    directory holding config.json (default $ORCA_POD_HOME, else
-                        $DSH_PROFILE_DIR/orca-pod, else $DSH_HOME/orca-pod, else ~/.dsh/orca-pod)
+                        $DSH_PROFILE_DIR/orca-pod, else $${DSH_HOME_ENV}/orca-pod, else ${DEFAULT_DSH_HOME_DISPLAY}/orca-pod)
 
 Exit codes (wait):
   0 completed    1 failed/canceled    2 still running    3 input-required (a human decides on the origin)

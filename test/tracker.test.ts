@@ -4,7 +4,7 @@ import { PodError } from "../src/kernel/errors.ts";
 import type { TaskState, TaskView } from "../src/protocol/task.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
-import type { SessionId } from "@deepseek-ai/dsh-session";
+import { SessionId } from "@deepseek-ai/dsh-session";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { DispatchEntry } from "../src/protocol/dispatch.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
@@ -18,7 +18,7 @@ function noticeText(message: UserMessage): string {
 }
 
 class FakeAgent {
-  readonly id = "agent-1" as SessionId;
+  readonly id = SessionId("agent-1");
   status: "idle" | "running" = "idle";
   readonly injected: UserMessage[] = [];
   readonly followed: UserMessage[] = [];
@@ -65,7 +65,8 @@ function permissionView(id: string, requestId: string): TaskView {
                 tool: "write_file",
                 requested: { path: "note.txt" },
                 requested_by: fakeNodeId("TARGET1"),
-                via: [fakeNodeId("ORIGIN")],
+                current_mode: "read-only",
+                requested_mode: "workspace-write",
                 expires_at: new Date(Date.now() + 60_000).toISOString(),
               },
             },
@@ -342,7 +343,7 @@ describe("createTracker", () => {
 describe("tracking restore and poll rounds", () => {
   const peer = "http://peer:11811";
 
-  function dispatch(taskId: string, agentId: string): DispatchEntry {
+  function dispatch(taskId: string, agentId: SessionId): DispatchEntry {
     const now = new Date().toISOString();
     return { task_id: taskId, peer, state: "unknown", agent_id: agentId, created_at: now, updated_at: now };
   }
@@ -362,7 +363,7 @@ describe("tracking restore and poll rounds", () => {
   it("restores only the named session's dispatches", () => {
     const tracker = createTracker(() => fakeNode(new Map()), { intervalMs: 60_000 });
     const agentWith = (id: string): TrackerAgent => ({
-      id: id as SessionId,
+      id: SessionId(id),
       status: "idle",
       inject() {},
       followup() {},
@@ -373,8 +374,8 @@ describe("tracking restore and poll rounds", () => {
       ["agent-1", one],
       ["agent-2", two],
     ]);
-    const log = [dispatch("01A", "agent-1"), dispatch("01B", "agent-2")];
-    expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger, "agent-2")).toBe(1);
+    const log = [dispatch("01A", SessionId("agent-1")), dispatch("01B", SessionId("agent-2"))];
+    expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger, SessionId("agent-2"))).toBe(1);
     expect(tracker.list().map((task) => task.taskId)).toEqual(["01B"]);
     // Restoring everything afterwards only adds what is not watched yet.
     expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger)).toBe(1);

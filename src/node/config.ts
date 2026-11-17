@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
-import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
+import { PROFILES_DIR } from "@deepseek-ai/dsh-app-boot";
+import { DSH_HOME_ENV, resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 
 import { deriveWorkgroupKey } from "../security/crypto.ts";
 import { loadOrCreateIdentity, shortenNodeId } from "../security/identity.ts";
@@ -31,13 +32,21 @@ export type OrcaNodeConfig = NodeSettings & {
  * (only to the shells it spawns), so the plugin also passes the loader
  * `baseUrl` — the profile directory for a profile-scoped host.
  */
-export function defaultDataRoot(env: NodeJS.ProcessEnv = process.env, baseUrl?: string): string {
+export function defaultDataRoot(
+  env: Record<string, string | undefined> = process.env,
+  baseUrl?: string,
+  /** The DSH home as the host resolved it (`ctx.dshHomePath()`); otherwise DSH's own rule over `env`. */
+  dshHome?: string,
+): string {
   const explicit = nonEmpty(env.ORCA_POD_HOME);
   if (explicit !== undefined) return resolve(explicit);
   const profile = nonEmpty(env.DSH_PROFILE_DIR) ?? profileDirFrom(baseUrl);
   if (profile !== undefined) return resolve(profile, "orca-pod");
-  return resolve(resolveDshHome(undefined, env), "orca-pod");
+  return resolve(resolveDshHome(dshHome, env), "orca-pod");
 }
+
+/** The environment variables `defaultDataRoot` reads. */
+export const DATA_ROOT_ENV = ["ORCA_POD_HOME", "DSH_PROFILE_DIR", DSH_HOME_ENV] as const;
 
 /** A trimmed environment value, or undefined when unset or blank. */
 function nonEmpty(value: string | undefined): string | undefined {
@@ -50,7 +59,8 @@ function profileDirFrom(baseUrl?: string): string | undefined {
   if (baseUrl === undefined || baseUrl.length === 0) return undefined;
   const path = baseUrl.startsWith("file:") ? filePathOf(baseUrl) : baseUrl;
   if (path === undefined || !isAbsolute(path)) return undefined;
-  return /[\\/]profiles[\\/][^\\/]+$/.test(path) ? path : undefined;
+  // A profile lives at `<DSH home>/<PROFILES_DIR>/<name>` (DSH's own layout).
+  return basename(dirname(path)) === PROFILES_DIR ? path : undefined;
 }
 
 /** The path a `file:` URL names, or undefined when it is not a valid one. */

@@ -17,13 +17,21 @@ import { CLI_PATH, IN_TASK_ENV } from "../../kernel/entry.ts";
 import { errorMessage } from "../../kernel/errors.ts";
 import type { NodeLogger } from "../../kernel/events.ts";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { describeModelRequest, type ModelDefaults } from "../../protocol/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
 import { KILL_GRACE_MS } from "../process.ts";
 import { abortError } from "../../kernel/errors.ts";
 import type { AcpConnection, SessionRoute } from "./connection.ts";
-import { CANCELLED, autoDecision, outcomeFor, parsePermissionRequest, type AcpPermissionAsk } from "./permissions.ts";
+import {
+  CANCELLED,
+  escalationFor,
+  modeAllows,
+  outcomeFor,
+  parsePermissionRequest,
+  type AcpPermissionAsk,
+} from "./permissions.ts";
 import type { AcpExecutorConfig } from "./config.ts";
 import { createAcpSessions, type OpenSession } from "./session.ts";
 
@@ -117,8 +125,12 @@ type OpenReplies = Set<(outcome: RequestPermissionResponse) => void>;
  * the transcript; a permission the inherited mode covers is answered at once,
  * any other is queued for the origin and remembered in `open`.
  */
+/** The run's effective mode; a grant from the origin widens it for the rest of the task (§7.12). */
+type ModeHolder = { current: SandboxMode };
+
 function makeRoute(
   input: ExecuteInput,
+  mode: ModeHolder,
   events: AsyncQueue<RunEvent>,
   open: OpenReplies,
   transcript: { text: string },
@@ -129,8 +141,11 @@ function makeRoute(
     },
     permission: (params) => {
       const request = parsePermissionRequest(params);
-      const decision = autoDecision(input.permissionMode, request.kind);
-      if (decision !== null) return Promise.resolve(outcomeFor(request.options, decision));
+      if (modeAllows(mode.current, request.kind)) return Promise.resolve(outcomeFor(request.options, "allow"));
+      // Past this node's ceiling nobody may allow it: refuse without asking.
+      if (escalationFor(mode.current, input.permissionCeiling, request.kind) === null) {
+        return Promise.resolve(outcomeFor(request.options, "reject"));
+      }
       return new Promise((resolve) => {
         const reply = (outcome: RequestPermissionResponse): void => {
           open.delete(reply);
@@ -176,15 +191,16 @@ function armAbort(
   };
 }
 
-/** Suspending sets the task to input-required; coming back means the origin approved (a denial aborts the run). */
-function suspensionFor(request: AcpPermissionAsk): Suspension {
+/** Suspending sets the task to input-required; coming back means the origin granted the mode (a denial aborts the run). */
+function suspensionFor(request: AcpPermissionAsk, requestedMode: SandboxMode): Suspension {
   return {
     kind: "permission",
     tool: request.title,
     requested: {
-      ...(request.toolCallId === undefined ? {} : { tool_call_id: request.toolCallId }),
+      tool_call_id: request.toolCallId,
       ...(request.kind === undefined ? {} : { tool_kind: request.kind }),
     },
+    requestedMode,
   };
 }
 
@@ -209,7 +225,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
   return {
     close: sessions.close,
 
-    async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, void> {
+    async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
       const session = await sessions.open(input);
       const { connection, sessionId } = session;
       const defaults = options.modelDefaults?.();
@@ -227,7 +243,8 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
       /** Permission requests the child still waits on; an abort answers them all. */
       const open: OpenReplies = new Set();
       const transcript = { text: "" };
-      const route = makeRoute(input, events, open, transcript);
+      const mode: ModeHolder = { current: input.permissionMode };
+      const route = makeRoute(input, mode, events, open, transcript);
       const detach = connection.attach(sessionId, route);
       const abort = armAbort(signal, { connection, sessionId, route, open });
 
@@ -252,9 +269,20 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
             break;
           }
           const { request, reply } = event;
+          // A grant for an earlier request may already cover one queued behind it.
+          if (modeAllows(mode.current, request.kind)) {
+            reply(outcomeFor(request.options, "allow"));
+            continue;
+          }
+          const requestedMode = escalationFor(mode.current, input.permissionCeiling, request.kind);
+          if (requestedMode === null) {
+            reply(outcomeFor(request.options, "reject"));
+            continue;
+          }
           // Suspending sets the task to input-required; coming back means the
-          // origin approved (a denial aborts the run instead).
-          yield { type: "suspend", suspend: suspensionFor(request) };
+          // origin granted the mode (a denial aborts the run instead), and the
+          // rest of the task runs under it.
+          mode.current = (yield { type: "suspend", suspend: suspensionFor(request, requestedMode) }) ?? requestedMode;
           reply(outcomeFor(request.options, "allow"));
         }
       } finally {

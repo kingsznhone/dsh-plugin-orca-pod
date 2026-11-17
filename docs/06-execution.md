@@ -57,7 +57,7 @@ type ExecuteInput = {
     "steps": [
       {
         "at_ms": 600,
-        "suspend": { "kind": "permission", "tool": "write_file", "requested": { "permission_mode": "workspace-write" } }
+        "suspend": { "kind": "permission", "tool": "write_file", "requested": { "path": "note.txt" }, "mode": "workspace-write" }
       }
     ],
     "final": { "state": "completed", "text": "echo: done" },
@@ -69,7 +69,7 @@ type ExecuteInput = {
 规则：
 
 - `steps` 最多 8 个；每个 `at_ms` 必须是非负整数、严格递增、且 ≤ 60000。`at_ms` 从任务开始计，**挂起等待的时间不计入**（恢复后从上次位置继续），断言不依赖机器速度。
-- `suspend.kind` 只有 `permission`：需要 `tool` 与 `requested` 对象，生成 [§4.8](04-transport.md#48-任务状态机) 的 `permission_request`。没有“向 origin 提问”的挂起：要演练阻塞，就用 `final: { state: "completed", text: "BLOCKED: …" }`。恢复需要 origin 发一条带 `message.taskId` 的 `message/send`，内容是签名 grant 或拒绝，且 task 必须处于 `input-required`；纯文本的恢复消息 → `400 bad_request`，任务不变。
+- `suspend.kind` 只有 `permission`：需要 `tool` 与 `requested` 对象，`mode` 是请求升到的模式（默认 `danger-full-access`），生成 [§4.8](04-transport.md#48-任务状态机) 的 `permission_request`。没有“向 origin 提问”的挂起：要演练阻塞，就用 `final: { state: "completed", text: "BLOCKED: …" }`。恢复需要 origin 发一条带 `message.taskId` 的 `message/send`，内容是签名 grant 或拒绝，且 task 必须处于 `input-required`；纯文本的恢复消息 → `400 bad_request`，任务不变。
 - `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB（按 UTF-8 字节），**原样返回**，不做模板替换，便于逐字节断言。
 - `final.text` 缺省为空串；`echo` 缺省（或 `null`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
 - `artifacts` ≤ 4 个、每个 `content` ≤ 4 KiB（UTF-8）；`name` 必须是非空纯文件名（不得含 `/`、`\`），只作显示标签。executor 真的写文件：内容存进 `state/<workgroup_id>/artifacts/<task_id>/<序号>` 并登记成发布文件，`artifactId` = `sha256(content)` 的 hex（即 `blob_id`），`media_type` 固定为 `text/plain`。**artifact 事件先于终态事件产出**，因此 `completed`/`failed`/`hang` 都可能带 artifact。
@@ -121,6 +121,7 @@ Pod gateway (local)
    │     └─ notes/                   ← 跨 session 的态势感知（STATUS.md、决策、待办）
    └─ state/<workgroup_id>/          ← 网关状态，agent 的 cwd 之外
          ├─ sessions.json            ← (origin, context) → ACP session
+         ├─ tasks/                   ← 预留目录（当前无使用方）
          └─ artifacts/<task_id>/     ← echo 脚本产出的 artifact，登记成发布文件
 ```
 
@@ -145,7 +146,7 @@ Pod gateway (local)
 
 - 网关状态在 cwd 之外（`state/<workgroup_id>/`），agent 删不到 session 绑定。
 - 节点**不做**路径规范化、越界检查或符号链接防护：agent 的文件访问范围由它所在的 DSH/ACP 会话的沙箱与权限模式决定，节点只负责不把路径放进协议。`workspace-write` 对路径没有额外约束（[§7.10](07-security.md#710-权限模式继承)）。
-- 节点自己拼的路径只有两类：`state/<workgroup_id>/sessions.json` 与 `state/<workgroup_id>/artifacts/<task_id>/<序号>`（`task_id` 由节点生成，序号由节点编号，都不取自请求）。
+- 节点自己拼的路径只有 `<data_root>` 下这几处：`workgroups/<workgroup_id>/`（含 `notes/`）、`state/<workgroup_id>/`（含 `sessions.json`、`tasks/` 与 `artifacts/<task_id>/<序号>`）；`workgroup_id` 来自本机配置，`task_id` 由节点生成，序号由节点编号，都不取自请求。
 - Windows 路径边角（8.3 短名、junction、`\\?\`、保留名、尾随点）见 [§11](11-open-questions.md#11-未决问题)“Windows 路径测试矩阵”。
 
 ### 6.9 单槽执行：一个 orca node 同一时间只做一件事
@@ -165,7 +166,7 @@ Pod gateway (local)
   "holder": { "task_id": "…", "origin_orca_node": "…", "since": "2026-11-14T05:10:00Z" } }
 ```
 
-- 忙时拒绝发生在**建 task 之前**：不产生 task；模型重试就是一次新的 `message/send`。`submit` 的检查顺序是：槽位 → 元数据/Echo 脚本 → 工作区配额（[§6.13](06-execution.md#613-配额清理跨平台)）→ 输入清单。
+- 忙时拒绝发生在**建 task 之前**：不产生 task；模型重试就是一次新的 `message/send`。`submit` 的检查顺序是：槽位 → 元数据/Echo 脚本 → 工作区配额（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - **`input-required` 的恢复也要重新拿槽**：挂起的任务不占槽，它等 origin 回话时别的任务可以进来；origin 的恢复消息到达时槽若被占，同样回 `429 orca_node_busy`，任务仍停在 `input-required`，**由 origin 自己决定什么时候重试**——不预留、不排队、不替上游重发。
 - **本地硬预算**：`task_timeout_s`（默认 3600s）是本机对单个任务的硬上限，实际 TTL 取 `min(pod.task_ttl_s, task_timeout_s)`；到点先置终态、再 abort 执行器，语义是 `failed("task ttl exceeded", reason="timeout")`，不依赖任务自己配合。`input-required` 期间 TTL 暂停，恢复后重新计时。这个上限随 Agent Card 与 self record 里的 `max_task_ttl_s` 对外公布，origin 据此决定拆多细的任务。
 - **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一 orca node 上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
@@ -244,14 +245,14 @@ session_id → workspace（本 orca node 的 workgroup 根）
 | `session/prompt {sessionId, prompt: [{type:"text", text}]}`             | 发送任务书                                                                                                    |
 | `session/update` → `agent_message_chunk`                                | 累积结论文本                                                                                                  |
 | `session/update` → thought / tool_call / usage                          | 忽略（不映射成事件）                                                                                          |
-| `session/request_permission`                                            | 模式覆盖的直接应答；否则 `yield suspend {kind:"permission", tool: toolCall.title, requested: {tool_call_id, tool_kind}}` |
-| origin 批准（恢复）                                                     | 回 `{outcome:{outcome:"selected", optionId:<allow_once 或首个 allow*>}}`                                      |
+| `session/request_permission`                                            | 当前模式覆盖的直接 `allow`；本机上限内有更宽一档能覆盖的 `yield suspend {kind:"permission", tool: toolCall.title, requested: {tool_call_id, tool_kind}, requestedMode}`；否则直接 `reject` |
+| origin 批准（恢复）                                                     | 运行器以批下来的模式恢复生成器，任务此后按它应答；回 `{outcome:{outcome:"selected", optionId:<allow_once 或首个 allow*>}}` |
 | origin 拒绝 / 取消 / 超时                                               | 任务终止，abort 把所有未答复的权限请求回 `{outcome:{outcome:"cancelled"}}`                                    |
 | `stopReason: "end_turn"` 等                                             | `completed(累积文本)`                                                                                         |
 | `stopReason: "max_tokens"` / `"refusal"` / `"max_turn_requests"`        | `failed(原因文本)`                                                                                            |
 | 取消                                                                    | 发 `session/cancel`；2s 宽限后该 session 仍是连接上正在跑的那个，才关连接/杀进程树（避免误杀已复用同一连接的下一个任务） |
 
-**grant 与 ACP 的对齐**：[§7.11](07-security.md#711-grant) 的 grant 就是 `allow_once`，与 ACP 的 `session/request_permission`（one-shot allow/reject）语义一一对应；target 侧只校验 grant（绑定哪个任务、哪个请求、谁签的），然后把“允许”翻译成 optionId。
+**grant 与 ACP 的对齐**：[§7.11](07-security.md#711-grant) 的 grant 升级的是任务的模式，不是单次调用：触发它的那次 `session/request_permission` 回 `allow_once`，之后的请求由执行器按新模式自己应答，不再挂起。target 侧只校验 grant（绑定哪个任务、哪个请求、哪个模式、谁签的）。
 
 **给 ACP 会话加工具：CLI 优先**：ACP agent 自带 shell，所以不需要把工具 schema 常驻进上下文。executor 给子进程环境注入 `ORCA_POD_CLI`（CLI 绝对路径）、`ORCA_POD_DATA_ROOT`，以及 `ORCA_POD_IN_TASK=1`（标记“这是任务会话”，CLI 与插件的 `send` 见到就拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）；任务书的可信前言（[§6.7](06-execution.md#67-工作区一份持久)）教 agent 怎么用：
 

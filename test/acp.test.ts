@@ -337,6 +337,7 @@ describe("AcpExecutor", () => {
       workspaceDir: pod,
       podDir: join(pod, ".state"),
       permissionMode: "read-only",
+      permissionCeiling: undefined,
       model: undefined,
       reasoningEffort: undefined,
       echo: parseEchoScript(undefined),
