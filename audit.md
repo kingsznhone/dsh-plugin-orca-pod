@@ -4,6 +4,7 @@
 > 基线：`3b1dbc5 refactor` 加上工作区未提交的改动。
 > 验证：`biome check .`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 均通过；vitest 在 `--pool=vmThreads` 下 48 个文件、424 个用例全部通过（默认池的问题见 §6）。
 > 架构重组（按限界上下文分目录，[§9.1](docs/09-implementation.md#91-单包内的模块划分)）完成后：49 个文件、427 个用例（新增 `test/architecture.test.ts`）全部通过；文中路径已改为新位置。
+> R0 ①② 完成后（`ulid`、`typebox`）：50 个文件、435 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
 > 本文**只列尚未完成的事项**；已完成的项不再记录。编号沿用历次审计，便于对照。
 
 ---
@@ -13,7 +14,7 @@
 | ID | 事项 | 现状 |
 |---|---|---|
 | G2 | 远端任务中的 agent 与节点密钥的隔离；子任务的 hop/chain 由 CLI 在客户端拼装 | agent 以同一个 OS 用户运行，读得到 `<data_root>`（`identity.json` 私钥、`config.json` 的 `key_base64`），也读得到 DSH 凭据文件 `$DSH_HOME/.credentials.yaml` 里的工作组口令。CLI 用本节点身份签名。`ORCA_POD_PARENT_TASK` 只在 `cli/send.ts` 读取，没有任何地方设置。由此导致 **N11**：agent 运行 CLI 时不带 `--local-task`，发出的就是一个全新的根任务，既没有 `chain` 也没有 `root_origin`，祖先禁调拦不住它回调整棵树的发起方。方向：密钥目录与工作区分离；CLI 改为调用回环控制端点，由节点代签，并强制注入父链与收窄后的权限；执行器按任务注入父任务 id |
-| R0 | 用成熟包替换手写轮子（架构重组的第 4 步） | 未做，等所有者批准。一次只换一个、各自单独提交，并同步 [§9.7](docs/09-implementation.md#97-依赖选型基础能力不自己写)：① `ulid`（3.x，零依赖）替换 `kernel/ids.ts` 的 `newTaskId`，保留 `test/protocol.test.ts` 里对照 ULID 规范参考值的用例；② `typebox`（1.x）统一三套校验：先 `transport/gateway/*` 的路由 schema，再 `protocol/*` 的守卫，最后 `node/settings.ts` 的字段表（保留 `panel`/`local` 元数据）；③ `@agentclientprotocol/sdk`（2.x）替换 `execution/acp/connection.ts` 手写的 JSON-RPC，替换后必须用真实 `dsh --profile acp` 跑 `scripts/e2e-acp.mjs`，`test/fixtures/fake-acp.mjs` 可能要跟着改。明确不引入：DI 容器、zod、commander、pino、`p-queue`；`write-file-atomic`（`storage/fs.ts`、`node/config.ts`、`execution/acp/session-store.ts` 三处"写临时文件再 rename"）收益小，可做可不做 |
+| R0 | 用成熟包替换手写轮子：剩 ③ `@agentclientprotocol/sdk` | ① `ulid`、② `typebox` 已完成。③ 卡在依赖上：SDK 2.7.0 把 `zod`（`^3.25.76 \|\| ^4`）列为必需 peer，稳定入口 `dist/v1/stable/acp.js` 在加载时就 `import` `zod.gen.js` → `zod/v4`，不是可选依赖；与本条“明确不引入 zod”冲突。SDK 解包约 9.8 MB，zod 约 6.1 MB；被替换的是 `execution/acp/connection.ts` 约 240 行。需所有者在“接受 zod”与“放弃 ③、保留手写 JSON-RPC”之间决定；若做，替换后仍须用真实 `dsh --profile acp` 跑 `scripts/e2e-acp.mjs`。`write-file-atomic` 仍属可做可不做 |
 | P1 | `orca_pod` `send` 的显式 `permission_mode` 可以**放宽**会话模式 | `plugin/tools.ts`：`explicitMode ?? sessionSandboxMode(...)`。需要确认这是否有意为之；若不是，应改为只能在会话模式之下收窄，读不到会话模式时按 `read-only` |
 
 ## 2. 延后实施（所有者决定）
