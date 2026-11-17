@@ -50,7 +50,7 @@ kernel ← protocol ← security ← storage(接口) ← { membership, tasks, ex
 
 `transport/gateway` 通过构造参数拿到 `TaskRunner`、`PeerStore` 等接口实例，而不是 import 执行器或任务实现——这是“gateway 能单独测”的前提。`node/orca-node.ts` 是装配 orca node 的库根，与 Node.js 运行时无关；命名里带 orca 就是为了让 import 和 grep 一眼分清。`index.ts` 是聚合导出，引入它就会加载整个上下文：装配点为了不造出环，可以直接 import 别的上下文内部的文件（例如 `node/settings.ts` 直接用 `transport/net.ts`，避开会加载 gateway 的 `transport/index.ts`）。
 
-HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、schema 校验、错误处理都用它现成的，不手写 http server。**每条路由必须声明 `config.access`**（`public|join|member|link|local`），缺了启动即失败；验签与授权只在一个钩子里做；错误只从一个错误处理器出去。
+HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理都用它现成的，不手写 http server。路由不向 Fastify 注册 schema：处理器先用 `transport/gateway/input.ts` 的 `parseInput` 按 zod schema 解析自己的输入（失败即 `400 bad_request`，信息带出错路径，如 `body.models.0.provider`），解析结果才是处理器用的值。**每条路由必须声明 `config.access`**（`public|join|member|link|local`），缺了启动即失败；验签与授权只在一个钩子里做；错误只从一个错误处理器出去。
 
 ### 9.2 面板
 
@@ -227,11 +227,10 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 
 | 依赖                                  | 类别 | 理由                                                                                                |
 | ------------------------------------- | ---- | --------------------------------------------------------------------------------------------------- |
-| `fastify`                             | 运行时 | 路由、body 解析与限额、schema 校验、错误处理；不手写 http server                                     |
+| `fastify`                             | 运行时 | 路由、body 解析与限额、错误处理；不手写 http server                                                   |
 | `ulid`                                | 运行时 | 任务 id（`kernel/ids.ts`）：规范实现、零依赖，随机部分取自 `crypto.getRandomValues`                 |
-| `typebox`                             | 运行时 | 唯一的 schema 写法：协议线上形状、网关路由、设置字段表都用它声明，类型由 `Static` 推导。路由 schema 交给 Fastify 自带的 Ajv；协议守卫用 `Value.Check`；不可信输入（任务元数据、设置）经 `kernel/schema.ts` 的 `parseSchema`：先在副本上去掉 schema 未描述的键，再校验，报第一处问题及其路径 |
 | `@agentclientprotocol/sdk`            | 运行时 | ACP v1 客户端：`execution/acp/connection.ts` 不再手写 JSON-RPC；类型化的请求、响应与处理器（`McpServer` 等形状由它约束）。子进程的派生与生命周期仍归本项目 |
-| `zod`                                 | 运行时 | 只因 `@agentclientprotocol/sdk` 而在：SDK 把它列为必需 peer，稳定入口加载时就引入。本项目代码不直接使用 zod；校验统一用 `typebox` |
+| `zod`                                 | 运行时 | 唯一的 schema 写法：协议线上形状、网关输入、设置字段表都用它声明，类型由 `z.infer` 推导，规范化（endpoints、peer 地址）写成 `.transform`。不可信输入经 `kernel/schema.ts` 的 `parseSchema`：`z.object` 丢弃未描述的键并返回新值，报第一处问题及其路径；只看外形的地方（A2A 的 message、metadata）用 `z.looseObject` 保留其余字段。`@agentclientprotocol/sdk` 也依赖它（必需 peer），所以它本来就在运行期里。不调用 `z.config()`：全局配置会波及 SDK |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |
 | `esbuild`                             | 开发 | 把 `client/` 的 TSX 打成 `lib/client.js`（`scripts/build-client.ts`）                               |
 | `@types/react`                        | 开发 | 客户端 TSX 的类型；React 运行时由 DSH 壳提供，不随包发布                                           |
@@ -239,6 +238,6 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 | `@types/node`                         | 开发 | Node 类型                                                                                           |
 | `@biomejs/biome`                      | 开发 | lint + format，一个工具                                                                             |
 
-其余能力都用 Node 内置：`node:crypto`（Ed25519、scrypt、HMAC）、`node:sqlite`、全局 `fetch`、`node:util` 的 `parseArgs`、`node:fs`、`node:stream`。不引 pino、commander、ORM、DI 容器、消息队列，也不在自己的代码里用 zod（它只作为 ACP SDK 的依赖存在）：集群只有十台机器，这些是负资产；也没有比 `node:crypto` 里几十行更合适的认证/签名框架。
+其余能力都用 Node 内置：`node:crypto`（Ed25519、scrypt、HMAC）、`node:sqlite`、全局 `fetch`、`node:util` 的 `parseArgs`、`node:fs`、`node:stream`。不引 pino、commander、ORM、DI 容器、消息队列，也不再引第二个校验库：集群只有十台机器，这些是负资产；也没有比 `node:crypto` 里几十行更合适的认证/签名框架。
 
 ---

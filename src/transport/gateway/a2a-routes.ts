@@ -1,97 +1,87 @@
 import type { FastifyInstance } from "fastify";
-import Type from "typebox";
+import { z } from "zod";
 
 import { PodError } from "../../kernel/index.ts";
-import type { A2AMessage, SubmitTaskInput, TaskRelay, TaskView } from "../../protocol/index.ts";
+import type { A2AMessage, SubmitTaskInput, TaskView } from "../../protocol/index.ts";
 import type { GatewayDeps } from "./index.ts";
+import { parseInput } from "./input.ts";
 
-type A2aParams = {
-  message: A2AMessage;
-  metadata?: SubmitTaskInput["metadata"];
-  id: string;
-  taskId: string;
-  relay: TaskRelay;
-};
+const AnyObject = z.record(z.string(), z.unknown());
 
-/** `params` is only guaranteed to hold the fields of the method it was validated for. */
-type A2aBody = { id?: unknown; method: string; params: A2aParams };
-
-/** The params a method needs; the schema below requires them only for that method. */
-const REQUIRED_PARAMS: Record<string, string[]> = {
-  "message/send": ["message"],
-  "tasks/get": ["id"],
-  "tasks/cancel": ["id"],
-  "tasks/escalate": ["taskId", "relay"],
-};
-
-const AnyObject = Type.Record(Type.String(), Type.Unknown());
+/** The JSON-RPC envelope; `params` is checked per method below. */
+const Envelope = z.object({ id: z.unknown().optional(), method: z.string(), params: z.unknown().optional() });
 
 /**
- * Only the outline is checked here; the task runner validates message parts and
- * metadata, and the relay request is checked when it is escalated. Which params
- * are present depends on the method: TypeBox has no builder for `if`/`then`, so
- * that part is plain JSON Schema passed through the options.
+ * Only the outline is checked here: loose objects keep the fields the gateway
+ * does not look at. The task runner validates message parts and metadata, and
+ * the relay request is checked when it is escalated.
  */
-const A2aBody = Type.Object(
-  {
-    method: Type.String(),
-    params: Type.Optional(
-      Type.Object({
-        message: Type.Optional(
-          Type.Object({ parts: Type.Array(Type.Unknown()), taskId: Type.Optional(Type.String()) }),
-        ),
-        metadata: Type.Optional(AnyObject),
-        id: Type.Optional(Type.String()),
-        taskId: Type.Optional(Type.String()),
-        relay: Type.Optional(Type.Object({ peer: Type.String(), task_id: Type.String(), request: AnyObject })),
-      }),
-    ),
-  },
-  {
-    allOf: Object.entries(REQUIRED_PARAMS).map(([method, required]) => ({
-      if: { required: ["method"], properties: { method: { const: method } } },
-      then: { required: ["params"], properties: { params: { type: "object", required } } },
-    })),
-  },
-);
+const Message = z.looseObject({ parts: z.array(z.unknown()), taskId: z.string().optional() });
+const TaskId = z.looseObject({ id: z.string() });
 
-function dispatch(deps: GatewayDeps, { method, params }: A2aBody, caller: string): TaskView {
+const PARAMS = {
+  "message/send": z.looseObject({ message: Message, metadata: AnyObject.optional() }),
+  "tasks/get": TaskId,
+  "tasks/cancel": TaskId,
+  "tasks/escalate": z.looseObject({
+    taskId: z.string(),
+    relay: z.looseObject({ peer: z.string(), task_id: z.string(), request: AnyObject }),
+  }),
+};
+
+type Method = keyof typeof PARAMS;
+
+function isMethod(method: string): method is Method {
+  return Object.hasOwn(PARAMS, method);
+}
+
+function dispatch(deps: GatewayDeps, method: string, raw: unknown, caller: string): TaskView {
+  if (!isMethod(method)) throw new PodError("unsupported", `unsupported method ${method}`);
   switch (method) {
-    case "message/send":
-      return params.message.taskId
-        ? deps.tasks.resume(params.message.taskId, params.message, caller)
-        : deps.tasks.submit({ message: params.message, metadata: params.metadata, originOrcaNode: caller });
+    case "message/send": {
+      // The runner validates the parts and metadata.pod; the gateway only checked the outline.
+      const params = parseInput(PARAMS[method], raw, "params");
+      const message = params.message as A2AMessage;
+      return message.taskId
+        ? deps.tasks.resume(message.taskId, message, caller)
+        : deps.tasks.submit({
+            message,
+            metadata: params.metadata as SubmitTaskInput["metadata"],
+            originOrcaNode: caller,
+          });
+    }
     case "tasks/get": {
-      const view = deps.tasks.get(params.id);
-      if (!view) throw new PodError("task_not_found", `unknown task ${params.id}`);
+      const { id } = parseInput(PARAMS[method], raw, "params");
+      const view = deps.tasks.get(id);
+      if (!view) throw new PodError("task_not_found", `unknown task ${id}`);
       return view;
     }
-    case "tasks/escalate":
+    case "tasks/escalate": {
       // Local control used by the CLI: the agent parks its own task because a
       // child task needs an approval that only this task's origin can give.
-      return deps.tasks.escalate(params.taskId, params.relay, caller);
+      const { taskId, relay } = parseInput(PARAMS[method], raw, "params");
+      return deps.tasks.escalate(taskId, relay, caller);
+    }
     case "tasks/cancel": {
-      const origin = deps.tasks.originOf(params.id);
-      if (origin === null) throw new PodError("task_not_found", `unknown task ${params.id}`);
+      const { id } = parseInput(PARAMS[method], raw, "params");
+      const origin = deps.tasks.originOf(id);
+      if (origin === null) throw new PodError("task_not_found", `unknown task ${id}`);
       // Only the origin (or this orca node itself, e.g. local control paths) may cancel.
       if (caller !== origin && caller !== deps.orcaNode.orca_node_id) {
         throw new PodError("not_task_origin", "only the task origin may cancel it");
       }
-      return deps.tasks.cancel(params.id);
+      return deps.tasks.cancel(id);
     }
-    default:
-      throw new PodError("unsupported", `unsupported method ${method}`);
   }
 }
 
 export function a2aRoutes(app: FastifyInstance, deps: GatewayDeps): void {
-  app.post<{ Body: A2aBody }>(
-    "/a2a",
-    { config: { access: "member", rpc: true }, schema: { body: A2aBody } },
-    async (request) => ({
+  app.post("/a2a", { config: { access: "member", rpc: true } }, async (request) => {
+    const { id, method, params } = parseInput(Envelope, request.body, "body");
+    return {
       jsonrpc: "2.0",
-      id: request.body.id ?? null,
-      result: dispatch(deps, request.body, request.auth.orcaNodeId),
-    }),
-  );
+      id: id ?? null,
+      result: dispatch(deps, method, params, request.auth.orcaNodeId),
+    };
+  });
 }

@@ -1,46 +1,43 @@
 /** Model routes a node offers and a task selects (§6.15). */
 
-import Type, { type Static } from "typebox";
-import Value from "typebox/value";
+import { z } from "zod";
 
 import { describeIssue, parseSchema } from "../kernel/index.ts";
 
 export const MAX_MODEL_OFFERS = 128;
 
-const NonEmptyString = Type.String({ minLength: 1 });
+const NonEmptyString = z.string().min(1);
 
 /**
- * One model route an orca node advertises for tasks (§6.15). Closed: a peer's
- * catalog is stored and re-broadcast, so unknown keys are not carried along.
+ * One model route an orca node advertises for tasks (§6.15). Unknown keys are
+ * dropped: a peer's catalog is stored and re-broadcast, so they are not carried along.
  */
-export const ModelOfferSchema = Type.Object(
-  {
-    provider: NonEmptyString,
-    model: NonEmptyString,
-    /** Human-readable model name, when the provider catalog publishes one. */
-    name: Type.Optional(Type.String()),
-    description: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false },
-);
-export type ModelOffer = Static<typeof ModelOfferSchema>;
+export const ModelOfferSchema = z.object({
+  provider: NonEmptyString,
+  model: NonEmptyString,
+  /** Human-readable model name, when the provider catalog publishes one. */
+  name: z.string().optional(),
+  description: z.string().optional(),
+});
+export type ModelOffer = z.infer<typeof ModelOfferSchema>;
 
 /** The catalog a node advertises, at most `MAX_MODEL_OFFERS` routes. */
-export const ModelOffersSchema = Type.Array(ModelOfferSchema, { maxItems: MAX_MODEL_OFFERS });
+export const ModelOffersSchema = z.array(ModelOfferSchema).max(MAX_MODEL_OFFERS);
 
 /** A provider/model route, optionally pinned to one reasoning effort. */
-export const ModelSelectionSchema = Type.Object(
-  { provider: NonEmptyString, model: NonEmptyString, reasoning_effort: Type.Optional(NonEmptyString) },
-  { additionalProperties: false },
-);
-export type ModelSelection = Static<typeof ModelSelectionSchema>;
+export const ModelSelectionSchema = z.object({
+  provider: NonEmptyString,
+  model: NonEmptyString,
+  reasoning_effort: NonEmptyString.optional(),
+});
+export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
 
 /**
  * One reasoning-effort value a provider offers (`off`, `low`, `high`, `max`
  * today; treated as an opaque string so a provider can add values). It must
  * hold something other than whitespace.
  */
-export const ReasoningEffortSchema = Type.String({ pattern: String.raw`\S` });
+export const ReasoningEffortSchema = z.string().regex(/\S/, "must not be blank");
 export type ReasoningEffort = string;
 
 /** Parse a `provider/model` spec, optionally with a reasoning effort (§6.15). */
@@ -60,7 +57,7 @@ export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSel
 
 /** True when `value` is a usable reasoning-effort selector (§6.15). */
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return Value.Check(ReasoningEffortSchema, value);
+  return ReasoningEffortSchema.safeParse(value).success;
 }
 
 /**

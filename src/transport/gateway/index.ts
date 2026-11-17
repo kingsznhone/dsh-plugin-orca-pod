@@ -70,13 +70,9 @@ function installBodyParsers(app: FastifyInstance): void {
 
 export function createGateway(deps: GatewayDeps): FastifyInstance {
   // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
-  // shutdown must not wait for it. Schemas are strict: no type coercion.
-  const app = Fastify({
-    logger: false,
-    bodyLimit: MAX_REQUEST_BYTES,
-    forceCloseConnections: true,
-    ajv: { customOptions: { coerceTypes: false } },
-  });
+  // shutdown must not wait for it. Routes register no Fastify schemas: each
+  // handler parses its input with zod (`input.ts`) after the access policy ran.
+  const app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
   installBodyParsers(app);
   installErrorHandler(app, deps);
   installAccessPolicy(app, deps);

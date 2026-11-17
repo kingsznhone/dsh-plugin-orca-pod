@@ -1,8 +1,7 @@
 /** Peers and the member directory on the wire (§3, §4). */
 
 import { createHash } from "node:crypto";
-import Type, { type Static } from "typebox";
-import Value from "typebox/value";
+import { z } from "zod";
 
 import type { ModelOffer, ModelSelection, ReasoningEffort } from "./model.ts";
 
@@ -13,23 +12,23 @@ type WorkgroupId = string;
 export type PeerState = "unknown" | "online" | "suspect" | "offline";
 
 /** Host facts a node advertises at join (§3.3); `runtime_digest` covers them. */
-export const RuntimeInfoSchema = Type.Object({
-  os: Type.Object({ family: Type.String(), name: Type.String(), version: Type.String() }),
-  arch: Type.String(),
-  cpu: Type.Object({ model: Type.String(), logical_cores: Type.Integer() }),
-  memory: Type.Object({ total_bytes: Type.Number() }),
-  node: Type.Object({ version: Type.String() }),
-  captured_at: Type.String(),
+export const RuntimeInfoSchema = z.object({
+  os: z.object({ family: z.string(), name: z.string(), version: z.string() }),
+  arch: z.string(),
+  cpu: z.object({ model: z.string(), logical_cores: z.number().int() }),
+  memory: z.object({ total_bytes: z.number() }),
+  node: z.object({ version: z.string() }),
+  captured_at: z.string(),
 });
-export type RuntimeInfo = Static<typeof RuntimeInfoSchema>;
+export type RuntimeInfo = z.infer<typeof RuntimeInfoSchema>;
 
 /** The task holding a node's single slot (§6.9). */
-export const BusyStateSchema = Type.Object({
-  task_id: Type.String(),
-  origin_orca_node: Type.String(),
-  since: Type.String(),
+export const BusyStateSchema = z.object({
+  task_id: z.string(),
+  origin_orca_node: z.string(),
+  since: z.string(),
 });
-export type BusyState = Static<typeof BusyStateSchema>;
+export type BusyState = z.infer<typeof BusyStateSchema>;
 
 export type PeerView = {
   orca_node_id: OrcaNodeId;
@@ -88,16 +87,18 @@ export function normalizeOrcaNodeId(raw: string): OrcaNodeId | null {
  * base64url of a raw 32-byte Ed25519 public key: 43 chars, which always decode
  * to exactly 32 bytes (258 bits, the last two are padding).
  */
-export const OrcaNodeIdSchema = Type.String({ pattern: "^[A-Za-z0-9_-]{43}$" });
+export const OrcaNodeIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)");
 
 export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
-  return Value.Check(OrcaNodeIdSchema, value);
+  return OrcaNodeIdSchema.safeParse(value).success;
 }
 
-export const WorkgroupIdSchema = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{1,31}$" });
+export const WorkgroupIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}");
 
 export function isWorkgroupId(value: unknown): value is WorkgroupId {
-  return Value.Check(WorkgroupIdSchema, value);
+  return WorkgroupIdSchema.safeParse(value).success;
 }
 
 export function runtimeDigest(runtime: RuntimeInfo | null): string {

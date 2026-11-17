@@ -35,9 +35,9 @@ describe("settings parser", () => {
     } catch (error) {
       const { issues, message } = error as ConfigValidationError;
       expect(issues).toEqual([
-        { path: ["port"], message: "must be <= 65535" },
-        { path: ["executor"], message: 'must be one of "echo", "acp"' },
-        { path: ["acp", "mcp_servers", "0", "command"], message: expect.stringMatching(/fewer than 1/) },
+        { path: ["port"], message: expect.stringMatching(/<=65535/) },
+        { path: ["executor"], message: expect.stringMatching(/"echo"\|"acp"/) },
+        { path: ["acp", "mcp_servers", "0", "command"], message: expect.stringMatching(/>=1 characters/) },
       ]);
       expect(message).toMatch(/acp\.mcp_servers\.0\.command: /);
     }

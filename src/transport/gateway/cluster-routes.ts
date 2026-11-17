@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import Type, { type Static, type TSchema } from "typebox";
+import { z } from "zod";
 
 import {
   BusyStateSchema,
@@ -21,44 +21,40 @@ import { PodError } from "../../kernel/index.ts";
 import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../../membership/index.ts";
 import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./index.ts";
+import { parseInput } from "./input.ts";
 
-const NonEmpty = Type.String({ minLength: 1 });
-const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
+const NonEmpty = z.string().min(1);
 
 /** Fields every admission (join, heartbeat) carries (§7.1). */
 const admission = {
-  workgroup_id: Type.String(),
-  orca_node_id: Type.String(),
-  ts: Type.Integer(),
-  nonce: Type.String(),
-  proof: Type.String(),
+  workgroup_id: z.string(),
+  orca_node_id: z.string(),
+  ts: z.number().int(),
+  nonce: z.string(),
+  proof: z.string(),
 };
 
-const JoinBody = Type.Object({
+const JoinBody = z.object({
   ...admission,
-  display_name: Type.String(),
-  endpoints: Type.Array(Type.String()),
-  runtime: Type.Optional(nullable(RuntimeInfoSchema)),
-  max_task_ttl_s: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
-  models: Type.Optional(ModelOffersSchema),
-  default_model: Type.Optional(nullable(ModelSelectionSchema)),
-  default_reasoning_effort: Type.Optional(nullable(ReasoningEffortSchema)),
+  display_name: z.string(),
+  endpoints: z.array(z.string()),
+  runtime: RuntimeInfoSchema.nullable().optional(),
+  max_task_ttl_s: z.number().positive().optional(),
+  models: ModelOffersSchema.optional(),
+  default_model: ModelSelectionSchema.nullable().optional(),
+  default_reasoning_effort: ReasoningEffortSchema.nullable().optional(),
 });
-type JoinBody = Static<typeof JoinBody>;
-type AdmissionBody = Pick<JoinBody, keyof typeof admission>;
+type AdmissionBody = Pick<z.infer<typeof JoinBody>, keyof typeof admission>;
 
-const HeartbeatBody = Type.Object({
+const HeartbeatBody = z.object({
   ...admission,
-  digest: Type.Optional(Type.String()),
-  busy: Type.Optional(nullable(BusyStateSchema)),
+  digest: z.string().optional(),
+  busy: BusyStateSchema.nullable().optional(),
 });
-type HeartbeatBody = Static<typeof HeartbeatBody>;
 
-const ChildLinkBody = Type.Object({ parent_task_id: NonEmpty, peer: NonEmpty, child_task_id: NonEmpty });
-type ChildLinkBody = Static<typeof ChildLinkBody>;
+const ChildLinkBody = z.object({ parent_task_id: NonEmpty, peer: NonEmpty, child_task_id: NonEmpty });
 
-const TaskQuery = Type.Object({ task: NonEmpty });
-type TaskQuery = Static<typeof TaskQuery>;
+const TaskQuery = z.object({ task: NonEmpty });
 
 /**
  * Admission (section 7.1): the Ed25519 signature proved which node is calling;
@@ -131,61 +127,53 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
     };
   });
 
-  app.post<{ Body: JoinBody }>(
-    "/cluster/join",
-    { config: { access: "join" }, schema: { body: JoinBody } },
-    async (request) => {
-      const body = request.body;
-      admit(deps, "join", request.auth.orcaNodeId, body);
-      const declared = normalizeEndpoints(body.endpoints);
-      if (declared === null) {
-        throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
-      }
-      const endpoints = await dialableEndpoints(declared, request);
-      const runtime = body.runtime ?? null;
-      deps.peers.upsert({
-        orca_node_id: body.orca_node_id,
-        display_name: body.display_name,
-        endpoints,
-        runtime,
-        runtime_digest: runtimeDigest(runtime),
-        state: "online",
-        busy: null,
-        last_recv_at: new Date().toISOString(),
-        max_task_ttl_s: body.max_task_ttl_s,
-        models: body.models,
-        default_model: body.default_model,
-        default_reasoning_effort: body.default_reasoning_effort,
-      });
-      const { self, digest } = roster(deps);
-      const response: JoinResponse = { self, members: deps.peers.list(), members_digest: digest };
-      return response;
-    },
-  );
+  app.post("/cluster/join", { config: { access: "join" } }, async (request) => {
+    const body = parseInput(JoinBody, request.body, "body");
+    admit(deps, "join", request.auth.orcaNodeId, body);
+    const declared = normalizeEndpoints(body.endpoints);
+    if (declared === null) {
+      throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
+    }
+    const endpoints = await dialableEndpoints(declared, request);
+    const runtime = body.runtime ?? null;
+    deps.peers.upsert({
+      orca_node_id: body.orca_node_id,
+      display_name: body.display_name,
+      endpoints,
+      runtime,
+      runtime_digest: runtimeDigest(runtime),
+      state: "online",
+      busy: null,
+      last_recv_at: new Date().toISOString(),
+      max_task_ttl_s: body.max_task_ttl_s,
+      models: body.models,
+      default_model: body.default_model,
+      default_reasoning_effort: body.default_reasoning_effort,
+    });
+    const { self, digest } = roster(deps);
+    const response: JoinResponse = { self, members: deps.peers.list(), members_digest: digest };
+    return response;
+  });
 
-  app.post<{ Body: HeartbeatBody }>(
-    "/cluster/heartbeat",
-    { config: { access: "member" }, schema: { body: HeartbeatBody } },
-    async (request) => {
-      const body = request.body;
-      const caller = request.auth.orcaNodeId;
-      admit(deps, "heartbeat", caller, body);
-      if (caller !== deps.orcaNode.orca_node_id && !deps.peers.touch(caller)) {
-        throw new PodError("unknown_orca_node");
-      }
-      const peer = deps.peers.get(caller);
-      if (body.busy !== undefined && peer) deps.peers.upsert({ ...peer, busy: body.busy });
+  app.post("/cluster/heartbeat", { config: { access: "member" } }, async (request) => {
+    const body = parseInput(HeartbeatBody, request.body, "body");
+    const caller = request.auth.orcaNodeId;
+    admit(deps, "heartbeat", caller, body);
+    if (caller !== deps.orcaNode.orca_node_id && !deps.peers.touch(caller)) {
+      throw new PodError("unknown_orca_node");
+    }
+    const peer = deps.peers.get(caller);
+    if (body.busy !== undefined && peer) deps.peers.upsert({ ...peer, busy: body.busy });
 
-      const { members, digest } = roster(deps);
-      const response: HeartbeatResponse = {
-        from: deps.orcaNode.orca_node_id,
-        busy: deps.tasks.busy(),
-        members_digest: digest,
-        members: body.digest === digest ? null : members,
-      };
-      return response;
-    },
-  );
+    const { members, digest } = roster(deps);
+    const response: HeartbeatResponse = {
+      from: deps.orcaNode.orca_node_id,
+      busy: deps.tasks.busy(),
+      members_digest: digest,
+      members: body.digest === digest ? null : members,
+    };
+    return response;
+  });
 
   app.get("/cluster/members", { config: { access: "member" } }, async () => {
     const { members, digest } = roster(deps);
@@ -201,26 +189,22 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   // Local control: tell this node that one of its local tasks delegated
   // `child_task_id` to `peer`, so it can relay the child's permission requests
   // automatically (section 7.12).
-  app.post<{ Body: ChildLinkBody }>(
-    "/cluster/child-link",
-    { config: { access: "local" }, schema: { body: ChildLinkBody } },
-    async (request) => {
-      const { parent_task_id: parentTaskId, peer, child_task_id: childTaskId } = request.body;
-      deps.orcaNode.linkChildTask(parentTaskId, peer, childTaskId);
-      return { ok: true };
-    },
-  );
+  app.post("/cluster/child-link", { config: { access: "local" } }, async (request) => {
+    const {
+      parent_task_id: parentTaskId,
+      peer,
+      child_task_id: childTaskId,
+    } = parseInput(ChildLinkBody, request.body, "body");
+    deps.orcaNode.linkChildTask(parentTaskId, peer, childTaskId);
+    return { ok: true };
+  });
 
   // Local control: read one of this node's task views so the CLI can inherit
   // `metadata.pod` (hop/chain/root) when it dispatches a child task (section 5.1).
-  app.get<{ Querystring: TaskQuery }>(
-    "/cluster/task",
-    { config: { access: "local" }, schema: { querystring: TaskQuery } },
-    async (request) => {
-      const { task } = request.query;
-      const view = deps.tasks.get(task);
-      if (view === null) throw new PodError("task_not_found", `unknown task ${task}`);
-      return view;
-    },
-  );
+  app.get("/cluster/task", { config: { access: "local" } }, async (request) => {
+    const { task } = parseInput(TaskQuery, request.query, "querystring");
+    const view = deps.tasks.get(task);
+    if (view === null) throw new PodError("task_not_found", `unknown task ${task}`);
+    return view;
+  });
 }

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { PodError } from "../src/kernel/errors.ts";
 import { createMembership } from "../src/membership/membership.ts";
 import { runtimeDigest, type SelfRecord } from "../src/protocol/peer.ts";
-import type { TaskRunner } from "../src/protocol/task.ts";
+import type { SubmitTaskInput, TaskRunner } from "../src/protocol/task.ts";
 import { NonceCache, admissionProof, buildAuthHeader } from "../src/security/crypto.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
@@ -13,8 +13,11 @@ import { createGateway } from "../src/transport/gateway/index.ts";
 
 const WORKGROUP = "orca-schema";
 
+const submitted: SubmitTaskInput[] = [];
+
 const tasks: TaskRunner = {
-  submit() {
+  submit(input) {
+    submitted.push(input);
     throw new PodError("internal", "submit reached");
   },
   get: () => null,
@@ -110,6 +113,29 @@ describe("gateway body schemas", () => {
     expect(unknown.json()).toMatchObject({ error: { message: "task_not_found" } });
     const unsupported = await post(self, "/a2a", { method: "tasks/other" });
     expect(unsupported.json()).toMatchObject({ error: { message: "unsupported" } });
+  });
+
+  it("passes the message and metadata through with the fields the gateway does not check", async () => {
+    const { self, post } = harness();
+    submitted.length = 0;
+    const message = { role: "user", messageId: "m-1", contextId: "c-1", parts: [{ kind: "text", text: "hi" }] };
+    const metadata = { pod: { task_ttl_s: 30 }, echo: { final: { text: "x" } } };
+    await post(self, "/a2a", { method: "message/send", params: { message, metadata } });
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.message).toEqual(message);
+    expect(submitted[0]?.metadata).toEqual(metadata);
+  });
+
+  it("names the part and path that failed", async () => {
+    const { self, post, joinBody } = harness();
+    const noBody = await post(self, "/a2a", "not an object");
+    expect(noBody.json()).toMatchObject({ error: { data: { message: expect.stringMatching(/^body Invalid input/) } } });
+    const joiner = generateNodeIdentity();
+    const bad = await post(joiner, "/cluster/join", joinBody(joiner, { models: [{ provider: "", model: "m" }] }));
+    expect(bad.json()).toMatchObject({
+      code: "bad_request",
+      message: expect.stringMatching(/^body\.models\.0\.provider /),
+    });
   });
 
   it("drops unknown keys from a joining node's model catalog", async () => {

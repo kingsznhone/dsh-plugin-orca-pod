@@ -8,11 +8,10 @@ const BUSY_RETRY_AFTER_S = 30;
 /** Anything that is not already a PodError is either the caller's malformed input or a bug. */
 function toPodError(error: unknown): PodError {
   if (error instanceof PodError) return error;
-  const { code, validation, message } = error as FastifyError;
+  const { code } = error as FastifyError;
   if (code === "FST_ERR_CTP_BODY_TOO_LARGE") {
     return new PodError("body_too_large", "request body exceeds the size limit");
   }
-  if (validation !== undefined) return new PodError("bad_request", message);
   if (error instanceof SyntaxError) return new PodError("bad_request", "invalid JSON body");
   return new PodError("internal", "internal server error");
 }

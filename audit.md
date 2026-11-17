@@ -4,7 +4,7 @@
 > 基线：`3b1dbc5 refactor` 加上工作区未提交的改动。
 > 验证：`biome check .`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 均通过；vitest 在 `--pool=vmThreads` 下 48 个文件、424 个用例全部通过（默认池的问题见 §6）。
 > 架构重组（按限界上下文分目录，[§9.1](docs/09-implementation.md#91-单包内的模块划分)）完成后：49 个文件、427 个用例（新增 `test/architecture.test.ts`）全部通过；文中路径已改为新位置。
-> R0 完成后（`ulid`、`typebox`、`@agentclientprotocol/sdk`）：50 个文件、435 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
+> R0 完成后（`ulid`、`@agentclientprotocol/sdk`，校验统一用 `zod`，先用过的 `typebox` 已移除）：50 个文件、437 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
 > 本文**只列尚未完成的事项**；已完成的项不再记录。编号沿用历次审计，便于对照。
 
 ---

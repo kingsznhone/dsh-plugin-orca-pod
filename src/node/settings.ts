@@ -5,7 +5,7 @@
  * through `parseSettings`; nothing else validates a setting.
  */
 
-import Type, { type Static, type TSchema } from "typebox";
+import { z } from "zod";
 
 import { normalizePeerUrl } from "../transport/net.ts";
 import {
@@ -20,33 +20,33 @@ import {
   type ModelSelection,
   type PermissionMode,
 } from "../protocol/index.ts";
-import { errorMessage, isRecord, parseSchema, type SchemaIssue } from "../kernel/index.ts";
+import { errorMessage, isRecord, parseSchema } from "../kernel/index.ts";
 
-const NonEmpty = Type.String({ minLength: 1 });
-const PositiveNumber = Type.Number({ exclusiveMinimum: 0 });
-const PositiveInteger = Type.Integer({ minimum: 1 });
+const NonEmpty = z.string().min(1);
+const PositiveNumber = z.number().positive();
+const PositiveInteger = z.number().int().min(1);
 
-const ExecutorKindSchema = Type.Enum(["echo", "acp"]);
-type ExecutorKind = Static<typeof ExecutorKindSchema>;
+const ExecutorKindSchema = z.enum(["echo", "acp"]);
+type ExecutorKind = z.infer<typeof ExecutorKindSchema>;
 
 /** One MCP server handed to the ACP session at session/new (§6.15). */
-const AcpMcpServerSchema = Type.Object({
+const AcpMcpServerSchema = z.object({
   name: NonEmpty,
   command: NonEmpty,
-  args: Type.Optional(Type.Array(Type.String())),
-  env: Type.Optional(Type.Record(Type.String(), Type.String())),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
 });
-export type AcpMcpServer = Static<typeof AcpMcpServerSchema>;
+export type AcpMcpServer = z.infer<typeof AcpMcpServerSchema>;
 
 /** ACP executor options: the `dsh --profile acp` stdio server (§6.15). */
-const AcpExecutorConfigSchema = Type.Object({
-  command: Type.Optional(NonEmpty),
-  profile: Type.Optional(NonEmpty),
-  extra_args: Type.Optional(Type.Array(Type.String())),
+const AcpExecutorConfigSchema = z.object({
+  command: NonEmpty.optional(),
+  profile: NonEmpty.optional(),
+  extra_args: z.array(z.string()).optional(),
   /** MCP servers passed to session/new — how an ACP agent gets extra tools. */
-  mcp_servers: Type.Optional(Type.Array(AcpMcpServerSchema)),
+  mcp_servers: z.array(AcpMcpServerSchema).optional(),
 });
-export type AcpExecutorConfig = Static<typeof AcpExecutorConfigSchema>;
+export type AcpExecutorConfig = z.infer<typeof AcpExecutorConfigSchema>;
 
 /** Everything a node can be configured with, after parsing (defaults applied). */
 export interface Settings {
@@ -120,11 +120,9 @@ type LocalKey = "workgroup_password" | "workgroup_password_ref" | "peers" | "ski
 /** The part of `Settings` that is persisted in `config.json`. */
 export type NodeSettings = Omit<Settings, LocalKey>;
 
-type FieldResult<T> = { ok: true; value: T } | { ok: false; issue: SchemaIssue };
-
 type Field<T> = {
-  /** Validates one present value; issue paths are relative to the field. */
-  parse: (raw: unknown) => FieldResult<T>;
+  /** Validates one present value and returns its canonical form; issue paths are relative to the field. */
+  schema: z.ZodType<T>;
   /** Applied when the value is absent or `null`. */
   default?: T;
   /** The panel may set it. */
@@ -133,49 +131,33 @@ type Field<T> = {
   local?: true;
 };
 
-type FieldOptions<S extends TSchema, T> = {
-  /**
-   * Checks the schema cannot express (URLs) and the canonical form, run on a
-   * value that matched the schema; throws a message that completes "<key> ...".
-   */
-  normalize?: (value: Static<S>) => T;
-  default?: T;
-  panel?: true;
-  local?: true;
-};
-
-function field<S extends TSchema, T = Static<S>>(schema: S, options: FieldOptions<S, T> = {}): Field<T> {
-  const { normalize, ...meta } = options;
-  return {
-    ...meta,
-    parse: (raw) => {
-      const result = parseSchema(schema, raw);
-      if (!result.ok || normalize === undefined) return result as FieldResult<T>;
-      try {
-        return { ok: true, value: normalize(result.value) };
-      } catch (error) {
-        return { ok: false, issue: { path: [], message: errorMessage(error) } };
-      }
-    },
-  };
+function field<T>(schema: z.ZodType<T>, meta: Omit<Field<T>, "schema"> = {}): Field<T> {
+  return { schema, ...meta };
 }
 
-function fail(message: string): never {
-  throw new Error(message);
-}
-
-/** Empty is allowed: the endpoints are then derived from the listen address (§3.2). */
-function normalizeEndpointList(value: string[]): string[] {
+/** Advertised endpoints; empty is allowed, they are then derived from the listen address (§3.2). */
+const EndpointsSchema = z.array(z.string()).transform((value, ctx) => {
   if (value.length === 0) return [];
-  return normalizeEndpoints(value) ?? fail("must be 1-8 http(s) URLs");
-}
+  const endpoints = normalizeEndpoints(value);
+  if (endpoints !== null) return endpoints;
+  ctx.addIssue({ code: "custom", message: "must be 1-8 http(s) URLs" });
+  return z.NEVER;
+});
 
-function normalizePeers(value: string[]): string[] {
-  return [...new Set(value.map((peer) => normalizePeerUrl(peer)))];
-}
+/** Peer addresses in canonical URL form, deduplicated. */
+const PeersSchema = z.array(z.string()).transform((value, ctx) => {
+  try {
+    return [...new Set(value.map((peer) => normalizePeerUrl(peer)))];
+  } catch (error) {
+    ctx.addIssue({ code: "custom", message: errorMessage(error) });
+    return z.NEVER;
+  }
+});
 
 /** A DSH credential reference is a POSIX shell identifier (it doubles as an environment variable name). */
-const CredentialRefSchema = Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" });
+const CredentialRefSchema = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be an environment-variable style name ([A-Za-z_][A-Za-z0-9_]*)");
 
 /**
  * Credential reference of a workgroup's password: the explicit
@@ -196,15 +178,15 @@ export function passwordRefFor(
 /** The field table: the single place a setting's type, default and editability live. */
 const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> } = {
   workgroup_id: field(WorkgroupIdSchema, { panel: true }),
-  workgroup_password: field(Type.String(), { default: "", panel: true, local: true }),
+  workgroup_password: field(z.string(), { default: "", panel: true, local: true }),
   workgroup_password_ref: field(CredentialRefSchema, { local: true }),
   display_name: field(NonEmpty, { panel: true }),
   bind_host: field(NonEmpty, { default: "127.0.0.1", panel: true }),
-  port: field(Type.Integer({ minimum: 0, maximum: 65535 }), { default: DEFAULT_PORT, panel: true }),
-  endpoints: field(Type.Array(Type.String()), { normalize: normalizeEndpointList, default: [], panel: true }),
-  peers: field(Type.Array(Type.String()), { normalize: normalizePeers, default: [], panel: true, local: true }),
+  port: field(z.number().int().min(0).max(65535), { default: DEFAULT_PORT, panel: true }),
+  endpoints: field(EndpointsSchema, { default: [], panel: true }),
+  peers: field(PeersSchema, { default: [], panel: true, local: true }),
   data_root: field(NonEmpty),
-  skill_injection: field(Type.Boolean(), { default: false, local: true }),
+  skill_injection: field(z.boolean(), { default: false, local: true }),
   executor: field(ExecutorKindSchema, { panel: true }),
   acp: field(AcpExecutorConfigSchema),
   permission_mode: field(PermissionModeSchema, { panel: true }),
@@ -217,8 +199,8 @@ const FIELDS: { [K in keyof Settings]-?: Field<Exclude<Settings[K], undefined>> 
   max_workspace_files: field(PositiveInteger, { default: 50_000, panel: true }),
   max_blob_store_bytes: field(PositiveInteger, { default: 5 * 1024 ** 3, panel: true }),
   request_timeout_ms: field(PositiveNumber),
-  allow_public_peers: field(Type.Boolean(), { panel: true }),
-  allow_loopback_peers: field(Type.Boolean(), { panel: true }),
+  allow_public_peers: field(z.boolean(), { panel: true }),
+  allow_loopback_peers: field(z.boolean(), { panel: true }),
   models: field(ModelOffersSchema),
   default_model: field(ModelSelectionSchema),
   default_reasoning_effort: field(ReasoningEffortSchema, { panel: true }),
@@ -260,7 +242,7 @@ export function safeParseSettings(input: unknown): { value: Settings } | { issue
       if (field.default !== undefined) value[key] = structuredClone(field.default);
       continue;
     }
-    const result = field.parse(raw);
+    const result = parseSchema(field.schema, raw);
     if (result.ok) value[key] = result.value;
     else issues.push({ path: [key, ...result.issue.path], message: result.issue.message });
   }

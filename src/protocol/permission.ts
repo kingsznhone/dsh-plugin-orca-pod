@@ -1,5 +1,4 @@
-import Type from "typebox";
-import Value from "typebox/value";
+import { z } from "zod";
 
 /** Modes in rank order: a later mode lets the agent do more. */
 const PERMISSION_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
@@ -7,10 +6,10 @@ const PERMISSION_MODES = ["read-only", "workspace-write", "danger-full-access"] 
 /** How much an agent may do on the orca node running its task (§7.10). */
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-export const PermissionModeSchema = Type.Enum(PERMISSION_MODES);
+export const PermissionModeSchema = z.enum(PERMISSION_MODES);
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
-  return Value.Check(PermissionModeSchema, value);
+  return PermissionModeSchema.safeParse(value).success;
 }
 
 /** Rank of a mode; a higher rank lets the agent do more. */

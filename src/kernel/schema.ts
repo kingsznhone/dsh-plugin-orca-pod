@@ -1,51 +1,27 @@
-import type { Static, TSchema } from "typebox";
-import Value from "typebox/value";
+import type { z } from "zod";
 
 /** Where an input failed its schema (`path` relative to the checked value) and why. */
 export type SchemaIssue = { path: string[]; message: string };
 
-function pointerPath(pointer: string): string[] {
-  if (pointer === "") return [];
-  return pointer
-    .slice(1)
-    .split("/")
-    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
-}
-
-type SchemaError = ReturnType<typeof Value.Errors>[number];
-
-function messageOf(error: SchemaError): string {
-  const allowed = (error.params as { allowedValues?: unknown[] }).allowedValues;
-  return error.keyword === "enum" && Array.isArray(allowed)
-    ? `must be one of ${allowed.map((value) => JSON.stringify(value)).join(", ")}`
-    : error.message;
-}
-
 /**
- * Parse untrusted input against a TypeBox schema: keys the schema does not
- * describe are dropped from a copy (the caller's value is not touched), then
- * the copy must match. On failure the first issue is reported; for a union
- * that is the mismatch against its first member.
+ * Parse untrusted input against a zod schema. Objects declared with
+ * `z.object` drop the keys they do not describe (the result is a new value;
+ * the caller's is not touched), transforms produce the canonical form, and on
+ * failure the first issue is reported with its path.
  */
-export function parseSchema<T extends TSchema>(
+export function parseSchema<T extends z.ZodType>(
   schema: T,
   raw: unknown,
-): { ok: true; value: Static<T> } | { ok: false; issue: SchemaIssue } {
-  let copy: unknown;
-  try {
-    copy = structuredClone(raw);
-  } catch {
-    return { ok: false, issue: { path: [], message: "must be plain data" } };
-  }
-  const value = Value.Clean(schema, copy);
-  if (Value.Check(schema, value)) return { ok: true, value };
-  const [first] = Value.Errors(schema, value);
+): { ok: true; value: z.output<T> } | { ok: false; issue: SchemaIssue } {
+  const result = schema.safeParse(raw);
+  if (result.success) return { ok: true, value: result.data };
+  const [first] = result.error.issues;
   return {
     ok: false,
     issue:
       first === undefined
         ? { path: [], message: "is invalid" }
-        : { path: pointerPath(first.instancePath), message: messageOf(first) },
+        : { path: first.path.map((segment) => String(segment)), message: first.message },
   };
 }
 

@@ -1,12 +1,13 @@
 import { createReadStream, existsSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
-import Type, { type Static } from "typebox";
+import { z } from "zod";
 
 import { blobLinkSignature } from "../../security/index.ts";
 import { DEFAULT_BLOB_TTL_S } from "../../storage/index.ts";
 import { PodError } from "../../kernel/index.ts";
 import type { GatewayDeps } from "./index.ts";
+import { parseInput } from "./input.ts";
 
 /** The one route that legitimately receives more than the default body limit (§5.6). */
 const MAX_BLOB_BYTES = 256 * 1024 * 1024;
@@ -14,12 +15,10 @@ const MAX_BLOB_BYTES = 256 * 1024 * 1024;
 const BLOB_LINK_TTL_S = DEFAULT_BLOB_TTL_S;
 
 /** Names are hints only (§5.6): no separators, traversal or drive prefixes. */
-const SAFE_BLOB_NAME = String.raw`^(?![A-Za-z]:)(?![\s\S]*\.\.)[^/\\]+$`;
+const SAFE_BLOB_NAME = /^(?![A-Za-z]:)(?![\s\S]*\.\.)[^/\\]+$/;
 
-const UploadHeaders = Type.Object({ "x-pod-body-sha256": Type.String({ pattern: "^[0-9a-f]{64}$" }) });
-const UploadQuery = Type.Object({ name: Type.Optional(Type.String({ pattern: SAFE_BLOB_NAME })) });
-type UploadQuery = Static<typeof UploadQuery>;
-const uploadSchema = { headers: UploadHeaders, querystring: UploadQuery };
+const BlobDigest = z.string().regex(/^[0-9a-f]{64}$/, "must be a lowercase sha256 hex digest");
+const UploadQuery = z.object({ name: z.string().regex(SAFE_BLOB_NAME, "must be a plain file name").optional() });
 
 function isExpired(expiresAt: string | null): boolean {
   return expiresAt !== null && Date.parse(expiresAt) <= Date.now();
@@ -28,16 +27,17 @@ function isExpired(expiresAt: string | null): boolean {
 export function blobRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   // The signature covers the file digest (`streamed`), so access is decided
   // before any body bytes are read; the store hashes while it writes (§5.6).
-  app.post<{ Querystring: UploadQuery }>(
+  app.post(
     "/blobs",
-    { bodyLimit: MAX_BLOB_BYTES, config: { access: "member", streamed: true }, schema: uploadSchema },
+    { bodyLimit: MAX_BLOB_BYTES, config: { access: "member", streamed: true } },
     async (request, reply) => {
-      const declared = request.headers["x-pod-body-sha256"] as string;
+      const declared = parseInput(BlobDigest, request.headers["x-pod-body-sha256"], "headers.x-pod-body-sha256");
+      const query = parseInput(UploadQuery, request.query, "querystring");
       const existed = deps.blobs.has(declared);
       const stream = (request.body as Readable | undefined) ?? Readable.from([]);
       // The store checks the digest before committing: mismatched bytes are discarded.
       const record = await deps.blobs.putStream(stream, {
-        name: request.query.name,
+        name: query.name,
         maxBytes: MAX_BLOB_BYTES,
         sha256: declared,
       });
