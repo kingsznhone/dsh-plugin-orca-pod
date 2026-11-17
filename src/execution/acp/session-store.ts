@@ -1,4 +1,4 @@
-/** Executor session bindings persisted under `<workspace>/.pod/sessions.json`. */
+/** Executor session bindings persisted under `<data_root>/state/<workgroup>/sessions.json` (the task's `podDir`). */
 
 import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";

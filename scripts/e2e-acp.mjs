@@ -41,7 +41,7 @@ while (!TERMINAL.has(view.status.state) && Date.now() - startedAt < 120_000) {
 
 const part = view.status.message?.parts[0];
 const text = part !== undefined && part.kind === "text" ? part.text : "";
-const sessions = await readFile(join(root, "workgroups", "e2e-acp", ".pod", "sessions.json"), "utf8").catch(() => "");
+const sessions = await readFile(join(root, "state", "e2e-acp", "sessions.json"), "utf8").catch(() => "");
 
 console.log(
   JSON.stringify(
