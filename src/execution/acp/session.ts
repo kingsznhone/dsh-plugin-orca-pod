@@ -4,12 +4,14 @@
  * binding when the child still knows it.
  */
 
+import { RequestError, type McpServer } from "@agentclientprotocol/sdk";
+
 import type { ExecuteInput } from "../executor.ts";
 import type { NodeLogger } from "../../membership/index.ts";
 import { readSessions, writeSessions } from "./session-store.ts";
-import { isRecord, errorMessage } from "../../kernel/index.ts";
+import { errorMessage } from "../../kernel/index.ts";
 import type { AcpMcpServer } from "../../node/index.ts";
-import { AcpConnection, AcpRpcError, HANDSHAKE_TIMEOUT_MS, spawnAcpChild, type AcpSpawnSpec } from "./connection.ts";
+import { AcpConnection, HANDSHAKE_TIMEOUT_MS, spawnAcpChild, type AcpSpawnSpec } from "./connection.ts";
 
 /** JSON-RPC code ACP agents use for a session they do not know. */
 const RESOURCE_NOT_FOUND = -32002;
@@ -28,7 +30,18 @@ type AcpSessions = {
   close(): Promise<void>;
 };
 
-export function createAcpSessions({ spawn, mcpServers, logger }: AcpSessionsOptions): AcpSessions {
+/** ACP wants `args` and `env` always present, and `env` as name/value pairs. */
+function toAcpMcpServers(servers: AcpMcpServer[]): McpServer[] {
+  return servers.map(({ name, command, args, env }) => ({
+    name,
+    command,
+    args: args ?? [],
+    env: Object.entries(env ?? {}).map(([key, value]) => ({ name: key, value })),
+  }));
+}
+
+export function createAcpSessions({ spawn, mcpServers: configured, logger }: AcpSessionsOptions): AcpSessions {
+  const mcpServers = toAcpMcpServers(configured);
   /** Session ids belong to one connection: a fresh child cannot resume ids cached for the old one. */
   let current: { connection: AcpConnection; sessions: Map<string, string> } | null = null;
 
@@ -46,7 +59,7 @@ export function createAcpSessions({ spawn, mcpServers, logger }: AcpSessionsOpti
       await connection.request("session/resume", { sessionId, cwd, mcpServers }, HANDSHAKE_TIMEOUT_MS);
       return true;
     } catch (error) {
-      if (!(error instanceof AcpRpcError && error.code === RESOURCE_NOT_FOUND)) {
+      if (!(error instanceof RequestError && error.code === RESOURCE_NOT_FOUND)) {
         logger.warn(`acp session/resume failed, starting a new session: ${errorMessage(error)}`);
       }
       return false;
@@ -67,8 +80,8 @@ export function createAcpSessions({ spawn, mcpServers, logger }: AcpSessionsOpti
       return { connection, sessionId: bound };
     }
     const created = await connection.request("session/new", { cwd, mcpServers }, HANDSHAKE_TIMEOUT_MS);
-    if (!isRecord(created) || typeof created.sessionId !== "string")
-      throw new Error("acp server returned no session id");
+    // Responses are typed, not validated: a broken server must not bind `undefined`.
+    if (typeof created?.sessionId !== "string") throw new Error("acp server returned no session id");
     sessions.set(key, created.sessionId);
     bindings[key] = created.sessionId;
     await writeSessions(input.podDir, bindings);

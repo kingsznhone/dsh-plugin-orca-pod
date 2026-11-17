@@ -30,7 +30,10 @@ function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig
     acp: {
       command: process.execPath,
       extra_args: [FAKE_ACP, mode, join(root, "acp.log")],
-      mcp_servers: [{ name: "probe", command: process.execPath, args: ["-e", ""] }],
+      mcp_servers: [
+        { name: "probe", command: process.execPath, args: ["-e", ""], env: { PROBE_TOKEN: "t" } },
+        { name: "bare", command: process.execPath },
+      ],
     },
   });
   return { ...config, ...overrides };
@@ -94,7 +97,7 @@ type LogEntry = {
   method?: string;
   text?: string;
   cwd?: string;
-  mcpServers?: number;
+  mcpServers?: unknown[];
   configId?: string;
   value?: string;
   outcome?: string | null;
@@ -133,7 +136,11 @@ describe("AcpExecutor", () => {
     const entries = await logEntries(join(root, "acp.log"));
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);
-    expect(created?.mcpServers).toBe(1);
+    // ACP's McpServerStdio shape: args and env always present, env as name/value pairs.
+    expect(created?.mcpServers).toEqual([
+      { name: "probe", command: process.execPath, args: ["-e", ""], env: [{ name: "PROBE_TOKEN", value: "t" }] },
+      { name: "bare", command: process.execPath, args: [], env: [] },
+    ]);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");
     // The preamble tells the ACP agent how to reach the CLI for delegation.
@@ -201,7 +208,9 @@ describe("AcpExecutor", () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const node = await startNode(configFor(root, "crash-once"));
     const first = await send(node, "crash me");
-    await waitForState(node, first.id, ["failed"]);
+    const crashed = await waitForState(node, first.id, ["failed"]);
+    // The pending prompt learns how the child ended, not just that the connection closed.
+    expect(taskText(crashed)).toMatch(/acp server exited \(code 1\): fake-acp: crashing on purpose/);
 
     const second = await send(node, "survive");
     const completed = await waitForState(node, second.id, ["completed"]);

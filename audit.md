@@ -4,7 +4,7 @@
 > 基线：`3b1dbc5 refactor` 加上工作区未提交的改动。
 > 验证：`biome check .`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 均通过；vitest 在 `--pool=vmThreads` 下 48 个文件、424 个用例全部通过（默认池的问题见 §6）。
 > 架构重组（按限界上下文分目录，[§9.1](docs/09-implementation.md#91-单包内的模块划分)）完成后：49 个文件、427 个用例（新增 `test/architecture.test.ts`）全部通过；文中路径已改为新位置。
-> R0 ①② 完成后（`ulid`、`typebox`）：50 个文件、435 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
+> R0 完成后（`ulid`、`typebox`、`@agentclientprotocol/sdk`）：50 个文件、435 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
 > 本文**只列尚未完成的事项**；已完成的项不再记录。编号沿用历次审计，便于对照。
 
 ---
@@ -14,7 +14,6 @@
 | ID | 事项 | 现状 |
 |---|---|---|
 | G2 | 远端任务中的 agent 与节点密钥的隔离；子任务的 hop/chain 由 CLI 在客户端拼装 | agent 以同一个 OS 用户运行，读得到 `<data_root>`（`identity.json` 私钥、`config.json` 的 `key_base64`），也读得到 DSH 凭据文件 `$DSH_HOME/.credentials.yaml` 里的工作组口令。CLI 用本节点身份签名。`ORCA_POD_PARENT_TASK` 只在 `cli/send.ts` 读取，没有任何地方设置。由此导致 **N11**：agent 运行 CLI 时不带 `--local-task`，发出的就是一个全新的根任务，既没有 `chain` 也没有 `root_origin`，祖先禁调拦不住它回调整棵树的发起方。方向：密钥目录与工作区分离；CLI 改为调用回环控制端点，由节点代签，并强制注入父链与收窄后的权限；执行器按任务注入父任务 id |
-| R0 | 用成熟包替换手写轮子：剩 ③ `@agentclientprotocol/sdk` | ① `ulid`、② `typebox` 已完成。③ 卡在依赖上：SDK 2.7.0 把 `zod`（`^3.25.76 \|\| ^4`）列为必需 peer，稳定入口 `dist/v1/stable/acp.js` 在加载时就 `import` `zod.gen.js` → `zod/v4`，不是可选依赖；与本条“明确不引入 zod”冲突。SDK 解包约 9.8 MB，zod 约 6.1 MB；被替换的是 `execution/acp/connection.ts` 约 240 行。需所有者在“接受 zod”与“放弃 ③、保留手写 JSON-RPC”之间决定；若做，替换后仍须用真实 `dsh --profile acp` 跑 `scripts/e2e-acp.mjs`。`write-file-atomic` 仍属可做可不做 |
 | P1 | `orca_pod` `send` 的显式 `permission_mode` 可以**放宽**会话模式 | `plugin/tools.ts`：`explicitMode ?? sessionSandboxMode(...)`。需要确认这是否有意为之；若不是，应改为只能在会话模式之下收窄，读不到会话模式时按 `read-only` |
 
 ## 2. 延后实施（所有者决定）
@@ -24,6 +23,7 @@
 | G5 | 可观测性指标（`pod_*`） | 未做 |
 | G9 | `message/stream` / SSE / `tasks/resubscribe` | 未做，任务进度只能轮询 |
 | D5 | 工具 schema 中删除测试用的 `echo` 参数 | `echo` 仍在 schema 和 `METHODS_HELP` 里 |
+| R0b | `write-file-atomic` 替换三处“写临时文件再 rename”（`storage/fs.ts`、`node/config.ts`、`execution/acp/session-store.ts`） | 收益小，R0 时未做 |
 
 ## 3. 待决策的设计缺口
 
@@ -70,6 +70,7 @@
 - 一次 `ctx.slots.inject("shell.overlay", …)` 回调里注册两个 slot 条目，是否被 DSH 支持。
 - tracker 判断"用户消息"所依据的 `message.source.kind === "user"`，只能从 README 示例中确认。
 - 跨机场景（Windows ↔ Linux、IPv6、`https` 端点）本轮改动后没有用 `scripts/cross.ts` 实测。
+- ACP SDK 换上后，`scripts/e2e-acp.mjs` 在本机 dsh 0.2.2-rc.3 上走通了 `initialize`、`session/new`（dsh 返回真实 session id，绑定写入 `state/<workgroup>/sessions.json`）与 `session/prompt`，但这一轮被 dsh 以“没有 `deepseek-official` 的 API key”失败，没有拿到模型回答。需要在有 `DEEPSEEK_API_KEY`（或凭据库里有 key）的环境再跑一次，看到 `state: completed`、`text: pong`。权限挂起（`session/request_permission`）与 `session/resume` 只在假 ACP 上测过。
 
 ## 8. 已有结论、不再跟踪
 

@@ -5,8 +5,10 @@
  * task's resume message answers the prompt.
  */
 
+import type { PromptResponse, RequestPermissionResponse, SessionUpdate } from "@agentclientprotocol/sdk";
+
 import type { NodeLogger } from "../../membership/index.ts";
-import { isRecord, CLI_PATH, errorMessage } from "../../kernel/index.ts";
+import { CLI_PATH, errorMessage } from "../../kernel/index.ts";
 import type { ModelSelection } from "../../protocol/index.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../executor.ts";
 import { KILL_GRACE_MS, abortError } from "../process.ts";
@@ -34,9 +36,9 @@ const FAILED_STOP_REASONS: Record<string, string> = {
 };
 
 type RunEvent =
-  | { kind: "prompt-done"; result: unknown }
+  | { kind: "prompt-done"; result: PromptResponse }
   | { kind: "prompt-error"; error: Error }
-  | { kind: "permission"; request: PermissionRequest; reply: (outcome: unknown) => void };
+  | { kind: "permission"; request: PermissionRequest; reply: (outcome: RequestPermissionResponse) => void };
 
 /** A small single-consumer async queue; the executor loop is the only reader. */
 class AsyncQueue<T> {
@@ -56,13 +58,13 @@ class AsyncQueue<T> {
   }
 }
 
-function textOf(update: unknown): string {
-  if (!isRecord(update) || update.sessionUpdate !== "agent_message_chunk" || !isRecord(update.content)) return "";
-  return update.content.type === "text" && typeof update.content.text === "string" ? update.content.text : "";
+function textOf(update: SessionUpdate): string {
+  return update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" ? update.content.text : "";
 }
 
-function stopReasonOf(result: unknown): string {
-  if (!isRecord(result) || typeof result.stopReason !== "string") throw new Error("acp prompt returned no stopReason");
+/** Responses are typed, not validated by the SDK: a prompt without a stop reason is a broken server. */
+function stopReasonOf(result: PromptResponse | undefined): string {
+  if (typeof result?.stopReason !== "string") throw new Error("acp prompt returned no stopReason");
   return result.stopReason;
 }
 
@@ -141,7 +143,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
 
       const events = new AsyncQueue<RunEvent>();
       /** Permission requests the child still waits on; an abort answers them all. */
-      const open = new Set<(outcome: unknown) => void>();
+      const open = new Set<(outcome: RequestPermissionResponse) => void>();
       let text = "";
       const route: SessionRoute = {
         update: (update) => {
@@ -152,7 +154,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
           const decision = autoDecision(input.permissionMode, request.kind);
           if (decision !== null) return Promise.resolve(outcomeFor(request.options, decision));
           return new Promise((resolve) => {
-            const reply = (outcome: unknown): void => {
+            const reply = (outcome: RequestPermissionResponse): void => {
               open.delete(reply);
               resolve(outcome);
             };
@@ -169,7 +171,7 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
         aborted = true;
         // Aborting without answering would leave the child prompt waiting forever.
         for (const reply of [...open]) reply(CANCELLED);
-        connection.notify("session/cancel", { sessionId });
+        connection.cancel(sessionId);
         // The child is shared with later tasks: force-close it only if this run
         // is still the one attached after the grace period.
         forceClose = setTimeout(() => {

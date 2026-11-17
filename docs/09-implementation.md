@@ -230,6 +230,8 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 | `fastify`                             | 运行时 | 路由、body 解析与限额、schema 校验、错误处理；不手写 http server                                     |
 | `ulid`                                | 运行时 | 任务 id（`kernel/ids.ts`）：规范实现、零依赖，随机部分取自 `crypto.getRandomValues`                 |
 | `typebox`                             | 运行时 | 唯一的 schema 写法：协议线上形状、网关路由、设置字段表都用它声明，类型由 `Static` 推导。路由 schema 交给 Fastify 自带的 Ajv；协议守卫用 `Value.Check`；不可信输入（任务元数据、设置）经 `kernel/schema.ts` 的 `parseSchema`：先在副本上去掉 schema 未描述的键，再校验，报第一处问题及其路径 |
+| `@agentclientprotocol/sdk`            | 运行时 | ACP v1 客户端：`execution/acp/connection.ts` 不再手写 JSON-RPC；类型化的请求、响应与处理器（`McpServer` 等形状由它约束）。子进程的派生与生命周期仍归本项目 |
+| `zod`                                 | 运行时 | 只因 `@agentclientprotocol/sdk` 而在：SDK 把它列为必需 peer，稳定入口加载时就引入。本项目代码不直接使用 zod；校验统一用 `typebox` |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |
 | `esbuild`                             | 开发 | 把 `client/` 的 TSX 打成 `lib/client.js`（`scripts/build-client.ts`）                               |
 | `@types/react`                        | 开发 | 客户端 TSX 的类型；React 运行时由 DSH 壳提供，不随包发布                                           |
@@ -237,6 +239,6 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 | `@types/node`                         | 开发 | Node 类型                                                                                           |
 | `@biomejs/biome`                      | 开发 | lint + format，一个工具                                                                             |
 
-其余能力都用 Node 内置：`node:crypto`（Ed25519、scrypt、HMAC）、`node:sqlite`、全局 `fetch`、`node:util` 的 `parseArgs`、`node:fs`、`node:stream`。不引 zod、pino、commander、ORM、DI 容器、消息队列：集群只有十台机器，这些是负资产；也没有比 `node:crypto` 里几十行更合适的认证/签名框架。
+其余能力都用 Node 内置：`node:crypto`（Ed25519、scrypt、HMAC）、`node:sqlite`、全局 `fetch`、`node:util` 的 `parseArgs`、`node:fs`、`node:stream`。不引 pino、commander、ORM、DI 容器、消息队列，也不在自己的代码里用 zod（它只作为 ACP SDK 的依赖存在）：集群只有十台机器，这些是负资产；也没有比 `node:crypto` 里几十行更合适的认证/签名框架。
 
 ---

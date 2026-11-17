@@ -42,6 +42,23 @@ function fail(id, message, code = -32602) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
+/** ACP `McpServerStdio`: `args` and `env` are required, `env` is a list of name/value pairs. */
+function badMcpServers(servers) {
+  if (servers === undefined) return null;
+  if (!Array.isArray(servers)) return "mcpServers must be an array";
+  for (const [index, server] of servers.entries()) {
+    if (!Array.isArray(server?.args)) return `mcpServers[${index}].args must be an array`;
+    const env = server?.env;
+    if (
+      !Array.isArray(env) ||
+      !env.every((entry) => typeof entry?.name === "string" && typeof entry?.value === "string")
+    ) {
+      return `mcpServers[${index}].env must be an array of {name, value}`;
+    }
+  }
+  return null;
+}
+
 function update(sessionId, payload) {
   send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: payload } });
 }
@@ -61,6 +78,7 @@ function promptTurn(id, params) {
     const marker = `${logFile ?? ""}.crashed`;
     if (!existsSync(marker)) {
       writeFileSync(marker, "1");
+      process.stderr.write("fake-acp: crashing on purpose\n");
       process.exit(1);
     }
   }
@@ -113,13 +131,18 @@ function onRequest(message) {
       fail(id, "cwd required");
       return;
     }
+    const invalid = badMcpServers(params?.mcpServers);
+    if (invalid !== null) {
+      fail(id, invalid);
+      return;
+    }
     const sessionId = `fake-${++counter}`;
     sessions.add(sessionId);
     log({
       method: "session/new",
       sessionId,
       cwd: params.cwd,
-      mcpServers: Array.isArray(params?.mcpServers) ? params.mcpServers.length : 0,
+      mcpServers: params?.mcpServers ?? [],
     });
     respond(id, { sessionId });
     return;
@@ -127,6 +150,11 @@ function onRequest(message) {
   if (method === "session/resume") {
     if (mode === "resume-fail") {
       fail(id, "session not found", -32002);
+      return;
+    }
+    const invalid = badMcpServers(params?.mcpServers);
+    if (invalid !== null) {
+      fail(id, invalid);
       return;
     }
     log({ method: "session/resume", sessionId: params?.sessionId });

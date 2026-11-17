@@ -232,7 +232,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 结构：
 
-- `acp/connection.ts`：一个 orca node 一个 `dsh` 子进程、一条连接；按 `sessionId` 把子进程发来的 `session/update` 与 `session/request_permission` **路由到拥有该 session 的那次运行**；一个 session 同时只能挂一次运行。连接失败（子进程退出、stdin 错误、握手超时）即关闭并终止进程树；`close()` 等子进程真正退出才 resolve。
+- `acp/connection.ts`：一个 orca node 一个 `dsh` 子进程、一条连接。JSON-RPC（请求 id、挂起请求、换行分帧、参数类型）交给官方 SDK `@agentclientprotocol/sdk`（ACP v1 稳定入口）；本文件只管子进程：派生、生命周期，以及按 `sessionId` 把子进程发来的 `session/update` 与 `session/request_permission` **路由到拥有该 session 的那次运行**；一个 session 同时只能挂一次运行。连接失败（子进程退出、stdin 错误、握手超时）即关闭并终止进程树；子进程的 stdout 结束不算关闭，等子进程 `close` 后才以“退出码 + stderr 尾部”关闭连接，挂起的请求拿到的就是这条原因。`close()` 等子进程真正退出才 resolve。SDK 会按 schema 校验子进程发来的通知与请求：不合格的通知被丢弃并打日志，不合格的请求回 JSON-RPC 错误；响应不校验，`sessionId`、`stopReason` 仍由本端检查。
 - `acp/session.ts`：`(origin, context)` → session 绑定；下一个任务发现连接已关就重建 `dsh` 子进程并清空内存里的 session 缓存（`sessions.json` 的绑定仍可 `session/resume`）。
 - `acp/permissions.ts`：按生效模式自动应答，规则见 [§7.14](07-security.md#714-acp-request_permission-映射)。
 - `acp/executor.ts`：串起上面三者，并产生 `LocalExecutor` 事件。
@@ -262,7 +262,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 - **阻塞只有一种表达**：任务不能暂停下来向 origin 提问，只有权限请求会等 origin。缺信息、需要只有 origin 能做的决定、必需的对端离线（先最多重试一次）时，都把**自己的任务按 completed 结束**（不挂在 working），结论首行写 `BLOCKED: <原因>`，随后列出已完成的步骤、被阻步骤，以及 origin 应补充什么或重跑什么，由 origin 决定下一步。tracker 会把它标成 “completed with a blocker report”。不能继续的子任务会带着自己的 `BLOCKED:` 结论结束，不要等它。
 - 永不自己批准自己的权限请求。
 
-CLI 读本机 `config.json`，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；它不是节点，没有独立身份、不监听端口。同一套用法也随包发布为标准 skill bundle（`skills/orca-node/`），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认关；不写用户 skill 目录）；技能与前言互为兜底。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，原样传给 `session/new`。
+CLI 读本机 `config.json`，对 loopback `/a2a` 按本 orca node 身份签名，走的仍是 [§4.8](04-transport.md#48-任务状态机) 的 A2A 路径；它不是节点，没有独立身份、不监听端口。同一套用法也随包发布为标准 skill bundle（`skills/orca-node/`），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认关；不写用户 skill 目录）；技能与前言互为兜底。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，传给 `session/new` / `session/resume` 时换成 ACP 的 `McpServerStdio` 形状（`args` 缺省为 `[]`，`env` 由对象换成 `[{name, value}]`）。
 
 **不做**：把 ACP 的进度透传到 A2A 流、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、同一 session 上的多个 in-flight prompt。
 

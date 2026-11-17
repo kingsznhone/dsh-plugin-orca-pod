@@ -1,49 +1,43 @@
 /**
- * JSON-RPC over the stdio of one `dsh --profile acp` child (newline-delimited).
- * The connection owns the child's lifetime: a failure of any kind closes it and
- * terminates the process, and requests from the child are routed to the run
- * that owns the named session.
+ * One `dsh --profile acp` child driven over ACP v1 with the official SDK. The
+ * SDK owns JSON-RPC (ids, pending requests, newline-delimited framing, typed
+ * params); this module owns the child process: spawning it, its lifetime, and
+ * the routing of the child's per-session messages to the run that owns the
+ * session. A failure of any kind closes the connection and terminates the child.
  */
 
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import { isRecord, errorMessage } from "../../kernel/index.ts";
+import {
+  PROTOCOL_VERSION,
+  RequestError,
+  client,
+  ndJsonStream,
+  type AgentRequestMethod,
+  type AgentRequestParamsByMethod,
+  type AgentRequestResponsesByMethod,
+  type ClientConnection,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
+  type SendRequestOptions,
+  type SessionUpdate,
+} from "@agentclientprotocol/sdk";
+
 import { isCmdShim, quoteForCmd, resolveCommand, terminateChild } from "../process.ts";
 
-const PROTOCOL_VERSION = 1;
 const STDERR_TAIL = 4096;
 /** The handshake must not hang a task forever if the child is wedged. */
 export const HANDSHAKE_TIMEOUT_MS = 30_000;
 
-const METHOD_NOT_FOUND = -32601;
-const INVALID_PARAMS = -32602;
-const INTERNAL_ERROR = -32603;
-
 type AcpChild = ChildProcessByStdio<Writable, Readable, Readable>;
-
-/** The child answered a request with a JSON-RPC error. */
-export class AcpRpcError extends Error {
-  readonly code: number;
-
-  constructor(message: string, code: number) {
-    super(message);
-    this.code = code;
-  }
-}
 
 /** What one run does with the messages the child addresses to its session. */
 export type SessionRoute = {
-  update(update: unknown): void;
-  permission(params: Record<string, unknown>): Promise<unknown>;
+  update(update: SessionUpdate): void;
+  permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse>;
 };
 
 type ConnectionState = { status: "starting" } | { status: "ready" } | { status: "closed"; error: Error };
-
-type Pending = {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
 
 export type AcpSpawnSpec = { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 
@@ -65,14 +59,49 @@ export function spawnAcpChild({ command, args, cwd, env }: AcpSpawnSpec): AcpChi
   );
 }
 
+/**
+ * The child's stdout as the SDK's input. It does not end when stdout ends: the
+ * SDK would then close with a bare "connection closed". It errors only once
+ * the child is gone (`close`: exited and stdio drained), with `reason()`, so
+ * pending requests learn the exit code and the stderr tail.
+ */
+function childOutput(child: AcpChild, reason: () => Error): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      child.stdout.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+      child.on("close", () => controller.error(reason()));
+    },
+  });
+}
+
+function childInput(child: AcpChild): WritableStream<Uint8Array> {
+  return new WritableStream({
+    write: (chunk) =>
+      new Promise<void>((resolve, reject) => {
+        child.stdin.write(chunk, (error) => (error ? reject(error) : resolve()));
+      }),
+  });
+}
+
+/** Settle with `promise`, or reject after `timeoutMs`; the late result is dropped. */
+function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`acp ${label} timed out after ${timeoutMs} ms`)), timeoutMs);
+    timer.unref();
+  });
+  promise.catch(() => {});
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export class AcpConnection {
   /** Settles when `initialize` succeeded; rejects, with the connection closed, when it did not. */
   readonly ready: Promise<void>;
   private state: ConnectionState = { status: "starting" };
   private readonly child: AcpChild;
-  private readonly pending = new Map<number, Pending>();
+  private readonly rpc: ClientConnection;
   private readonly routes = new Map<string, SessionRoute>();
-  private nextId = 1;
   private stderr = "";
   private exited: Promise<void> = Promise.resolve();
 
@@ -85,10 +114,26 @@ export class AcpConnection {
     child.on("error", (error) => this.fail(new Error(`cannot start acp server: ${error.message}`)));
     // EPIPE on a dead child must not surface as an uncaught exception.
     child.stdin.on("error", (error) => this.fail(new Error(`acp stdin failed: ${error.message}`)));
-    child.on("exit", (code) =>
-      this.fail(new Error(`acp server exited (code ${code ?? "null"})${this.stderrSuffix()}`)),
-    );
-    createInterface({ input: child.stdout }).on("line", (line) => this.onLine(line));
+    const exitError = (): Error =>
+      new Error(`acp server exited (code ${child.exitCode ?? "null"})${this.stderrSuffix()}`);
+    child.on("close", () => this.fail(exitError()));
+
+    this.rpc = client({ name: "orca-pod" })
+      .onNotification("session/update", ({ params }) => {
+        this.routes.get(params.sessionId)?.update(params.update);
+      })
+      .onRequest("session/request_permission", ({ params }) => {
+        const route = this.routes.get(params.sessionId);
+        if (route === undefined) throw RequestError.invalidParams(undefined, "no task is running on that session");
+        return route.permission(params);
+      })
+      .connect(ndJsonStream(childInput(child), childOutput(child, exitError)));
+    // The SDK closes on its own when the stream fails; the child goes with it.
+    void this.rpc.closed.then(() => {
+      const reason: unknown = this.rpc.signal.reason;
+      this.fail(reason instanceof Error ? reason : new Error("acp connection closed"));
+    });
+
     this.ready = this.request(
       "initialize",
       {
@@ -124,34 +169,20 @@ export class AcpConnection {
     return this.routes.get(sessionId) === route;
   }
 
-  request(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
+  /** A typed agent request; rejects with the SDK's `RequestError` when the child answers with an error. */
+  request<Method extends AgentRequestMethod>(
+    method: Method,
+    params: AgentRequestParamsByMethod[Method],
+    timeoutMs?: number,
+    options?: SendRequestOptions,
+  ): Promise<AgentRequestResponsesByMethod[Method]> {
     if (this.state.status === "closed") return Promise.reject(this.state.error);
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer =
-        timeoutMs === undefined
-          ? undefined
-          : setTimeout(() => {
-              this.pending.delete(id);
-              reject(new Error(`acp ${method} timed out after ${timeoutMs} ms`));
-            }, timeoutMs);
-      timer?.unref();
-      this.pending.set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.write({ jsonrpc: "2.0", id, method, params });
-    });
+    return withTimeout(this.rpc.agent.request(method, params, options), method, timeoutMs);
   }
 
-  notify(method: string, params: unknown): void {
-    if (this.state.status !== "closed") this.write({ jsonrpc: "2.0", method, params });
+  /** Tell the child to stop the session's current prompt; it answers the prompt with `cancelled`. */
+  cancel(sessionId: string): void {
+    if (this.state.status !== "closed") this.rpc.agent.notify("session/cancel", { sessionId }).catch(() => {});
   }
 
   /** Close the connection; resolves once the child process has exited. */
@@ -165,80 +196,11 @@ export class AcpConnection {
     return tail ? `: ${tail}` : "";
   }
 
-  private write(message: Record<string, unknown>): void {
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
-  }
-
   private fail(error: Error): void {
     if (this.state.status === "closed") return;
     this.state = { status: "closed", error };
-    for (const pending of this.pending.values()) pending.reject(error);
-    this.pending.clear();
     this.routes.clear();
+    this.rpc?.close(error);
     this.exited = terminateChild(this.child);
-  }
-
-  private respond(id: number | string, result: unknown): void {
-    this.write({ jsonrpc: "2.0", id, result });
-  }
-
-  private respondError(id: number | string, code: number, message: string): void {
-    this.write({ jsonrpc: "2.0", id, error: { code, message } });
-  }
-
-  private onLine(line: string): void {
-    let message: unknown;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return; // tolerate non-protocol noise on stdout
-    }
-    if (!isRecord(message)) return;
-    const { id, method, params } = message;
-    if (typeof method === "string") {
-      if (id === undefined) this.onNotification(method, params);
-      else if (typeof id === "number" || typeof id === "string") this.onRequest(id, method, params);
-    } else if (typeof id === "number") {
-      this.onResponse(id, message);
-    }
-  }
-
-  private onNotification(method: string, params: unknown): void {
-    if (method !== "session/update" || !isRecord(params) || typeof params.sessionId !== "string") return;
-    this.routes.get(params.sessionId)?.update(params.update);
-  }
-
-  private onRequest(id: number | string, method: string, params: unknown): void {
-    if (method !== "session/request_permission") {
-      this.respondError(id, METHOD_NOT_FOUND, `unsupported client method ${method}`);
-      return;
-    }
-    const route =
-      isRecord(params) && typeof params.sessionId === "string" ? this.routes.get(params.sessionId) : undefined;
-    if (route === undefined || !isRecord(params)) {
-      this.respondError(id, INVALID_PARAMS, "no task is running on that session");
-      return;
-    }
-    route.permission(params).then(
-      (result) => this.respond(id, result),
-      (error: unknown) => this.respondError(id, INTERNAL_ERROR, errorMessage(error)),
-    );
-  }
-
-  private onResponse(id: number, message: Record<string, unknown>): void {
-    const pending = this.pending.get(id);
-    if (pending === undefined) return;
-    this.pending.delete(id);
-    if (isRecord(message.error)) {
-      const { message: text, code } = message.error;
-      pending.reject(
-        new AcpRpcError(
-          typeof text === "string" ? text : "acp request failed",
-          typeof code === "number" ? code : INTERNAL_ERROR,
-        ),
-      );
-    } else {
-      pending.resolve(message.result);
-    }
   }
 }
