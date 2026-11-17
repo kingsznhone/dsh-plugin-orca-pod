@@ -49,9 +49,7 @@ const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
  * Known violations, as `from -> to` paths relative to `src/`. Only removals are
  * allowed: a fixed edge must leave this list, and a new violation fails.
  */
-const ALLOWED_VIOLATIONS: string[] = [
-  "membership/mesh.ts -> transport/net.ts",
-];
+const ALLOWED_VIOLATIONS: string[] = [];
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

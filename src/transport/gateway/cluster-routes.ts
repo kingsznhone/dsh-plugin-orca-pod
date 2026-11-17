@@ -17,7 +17,8 @@ import {
 } from "../../protocol/index.ts";
 import { DEFAULT_CLOCK_SKEW_MS, verifyAdmissionProof, type AdmissionKind } from "../../security/index.ts";
 import { PodError } from "../../kernel/index.ts";
-import { EXPLICIT_DIAL_POLICY, isDirectLoopbackRequest, screenEndpoint } from "../net.ts";
+import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../../membership/index.ts";
+import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./index.ts";
 
 type AdmissionBody = {

@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { createMembership } from "../src/membership/membership.ts";
-import {
-  candidateEndpointAllowed,
-  detectLocalEndpoints,
-  isBlockedFetchPort,
-  isLoopbackEndpoint,
-  pickFreePort,
-} from "../src/transport/net.ts";
+import { candidateEndpointAllowed } from "../src/membership/screening.ts";
+import { detectLocalEndpoints, isBlockedFetchPort, isLoopbackEndpoint, pickFreePort } from "../src/transport/net.ts";
 import type { PeerView } from "../src/protocol/peer.ts";
 
 function peer(orcaNodeId: string, endpoint: string): PeerView {

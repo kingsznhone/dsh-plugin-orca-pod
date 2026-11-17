@@ -18,7 +18,7 @@ import {
   type RuntimeInfo,
   type SelfRecord,
 } from "../protocol/index.ts";
-import { candidateEndpointAllowed } from "../transport/net.ts";
+import { candidateEndpointAllowed } from "./screening.ts";
 
 /** Where the node reports what it refuses or drops; the entry point decides where that goes. */
 export type NodeLogger = { warn(message: string): void };
