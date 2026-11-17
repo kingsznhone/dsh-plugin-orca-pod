@@ -7,9 +7,9 @@
 import { parseEchoScript, type EchoScript } from "../execution/index.ts";
 import { PodError, isRecord } from "../kernel/index.ts";
 import {
-  isModelSelection,
   isPermissionMode,
   isReasoningEffort,
+  parseModelSelection,
   type A2AMessage,
   type ModelSelection,
   type PermissionMode,
@@ -93,10 +93,8 @@ export function parsePodMetadata(
     permission_mode === undefined || isPermissionMode(permission_mode),
     "pod.permission_mode must be one of read-only, workspace-write, danger-full-access",
   );
-  need(
-    model === undefined || isModelSelection(model),
-    "pod.model must name a provider, model and optional reasoning_effort",
-  );
+  const selection = model === undefined ? undefined : parseModelSelection(model);
+  need(selection !== null, "pod.model must name a provider, model and optional reasoning_effort");
   need(
     reasoning_effort === undefined || isReasoningEffort(reasoning_effort),
     "pod.reasoning_effort must be a non-empty string",
@@ -122,8 +120,8 @@ export function parsePodMetadata(
     chain,
     rootOrigin: root_origin ?? originOrcaNode,
     permissionMode: permission_mode ?? "read-only",
-    model,
-    effort: reasoning_effort ?? model?.reasoning_effort,
+    model: selection,
+    effort: reasoning_effort ?? selection?.reasoning_effort,
     taskTtlS: task_ttl_s,
     inputs: inputs === undefined ? [] : parseInputs(inputs),
     echo,

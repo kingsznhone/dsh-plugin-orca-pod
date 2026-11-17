@@ -7,8 +7,8 @@ export {
   ModelOffersSchema,
   ModelSelectionSchema,
   ReasoningEffortSchema,
-  isModelSelection,
   isReasoningEffort,
+  parseModelSelection,
   parseModelSpec,
   validateModelOffers,
   validateModelSelection,
@@ -16,7 +16,9 @@ export {
 export type { ModelOffer, ModelSelection } from "./model.ts";
 export {
   BusyStateSchema,
+  OrcaNodeIdSchema,
   RuntimeInfoSchema,
+  WorkgroupIdSchema,
   isHttpEndpoint,
   isOrcaNodeId,
   isWorkgroupId,
@@ -35,7 +37,7 @@ export type {
   RuntimeInfo,
   SelfRecord,
 } from "./peer.ts";
-export { isPermissionMode, narrowPermissionMode } from "./permission.ts";
+export { PermissionModeSchema, isPermissionMode, narrowPermissionMode } from "./permission.ts";
 export type { PermissionMode } from "./permission.ts";
 export { isTerminal, permissionRequestOf } from "./task.ts";
 export type {

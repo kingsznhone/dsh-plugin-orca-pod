@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { validateModelOffers, validateModelSelection } from "../src/protocol/model.ts";
+import { parseModelSelection, validateModelOffers, validateModelSelection } from "../src/protocol/model.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/catalog.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
@@ -56,6 +56,20 @@ describe("model catalog", () => {
     });
     expect(() => validateModelSelection({ provider: "p" })).toThrow();
     expect(() => validateModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toThrow();
+    expect(() => validateModelOffers([{ provider: "p", model: "m" }, { provider: "p", model: "" }])).toThrow(
+      /^1\.model /,
+    );
+  });
+
+  it("drops unknown keys from a copy instead of rejecting them", () => {
+    const raw = { provider: "p", model: "m", tier: "gold" };
+    expect(parseModelSelection(raw)).toEqual({ provider: "p", model: "m" });
+    expect(raw).toHaveProperty("tier", "gold");
+    expect(validateModelOffers([{ provider: "p", model: "m", name: "M", extra: 1 }])).toEqual([
+      { provider: "p", model: "m", name: "M" },
+    ]);
+    expect(parseModelSelection("p/m")).toBeNull();
+    expect(parseModelSelection(null)).toBeNull();
     const configured = createOrcaNodeConfig({
       workgroup_id: "wg",
       workgroup_password: "pw",

@@ -227,6 +227,25 @@ describe("normalizeEndpoints", () => {
   });
 });
 
+describe("id guards", () => {
+  it("accepts exactly 43 base64url characters as an orca node id", () => {
+    expect(isOrcaNodeId(VALID_NODE_ID)).toBe(true);
+    expect(isOrcaNodeId(generateNodeIdentity().orcaNodeId)).toBe(true);
+    expect(isOrcaNodeId(VALID_NODE_ID.slice(1))).toBe(false);
+    expect(isOrcaNodeId(`${VALID_NODE_ID}A`)).toBe(false);
+    expect(isOrcaNodeId(`${VALID_NODE_ID.slice(1)}+`)).toBe(false);
+    expect(isOrcaNodeId(42)).toBe(false);
+  });
+
+  it("checks workgroup ids against the documented pattern", () => {
+    expect(isWorkgroupId("wg-a")).toBe(true);
+    expect(isWorkgroupId("a")).toBe(false);
+    expect(isWorkgroupId("-wg")).toBe(false);
+    expect(isWorkgroupId("WG")).toBe(false);
+    expect(isWorkgroupId("a".repeat(33))).toBe(false);
+  });
+});
+
 describe("newTaskId", () => {
   it("encodes the millisecond timestamp in the leading ten characters, like a ULID", () => {
     // Reference value from the ULID specification.

@@ -2,10 +2,9 @@
 
 import { createHash } from "node:crypto";
 import Type, { type Static } from "typebox";
+import Value from "typebox/value";
 
 import type { ModelOffer, ModelSelection, ReasoningEffort } from "./model.ts";
-
-const WORKGROUP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,31}$/;
 
 export type OrcaNodeId = string;
 
@@ -85,20 +84,20 @@ export function normalizeOrcaNodeId(raw: string): OrcaNodeId | null {
   return isOrcaNodeId(value) ? value : null;
 }
 
-/** base64url of a raw 32-byte Ed25519 public key → 43 chars. */
-const ORCA_NODE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/**
+ * base64url of a raw 32-byte Ed25519 public key: 43 chars, which always decode
+ * to exactly 32 bytes (258 bits, the last two are padding).
+ */
+export const OrcaNodeIdSchema = Type.String({ pattern: "^[A-Za-z0-9_-]{43}$" });
 
 export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
-  if (typeof value !== "string" || !ORCA_NODE_ID_PATTERN.test(value)) return false;
-  try {
-    return Buffer.from(value, "base64url").length === 32;
-  } catch {
-    return false;
-  }
+  return Value.Check(OrcaNodeIdSchema, value);
 }
 
+export const WorkgroupIdSchema = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{1,31}$" });
+
 export function isWorkgroupId(value: unknown): value is WorkgroupId {
-  return typeof value === "string" && WORKGROUP_ID_PATTERN.test(value);
+  return Value.Check(WorkgroupIdSchema, value);
 }
 
 export function runtimeDigest(runtime: RuntimeInfo | null): string {

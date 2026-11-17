@@ -1,10 +1,16 @@
-/** How much an agent may do on the orca node running its task (§7.10). */
-export type PermissionMode = "read-only" | "workspace-write" | "danger-full-access";
+import Type from "typebox";
+import Value from "typebox/value";
 
-const PERMISSION_MODES: readonly PermissionMode[] = ["read-only", "workspace-write", "danger-full-access"];
+/** Modes in rank order: a later mode lets the agent do more. */
+const PERMISSION_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
+
+/** How much an agent may do on the orca node running its task (§7.10). */
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+export const PermissionModeSchema = Type.Enum(PERMISSION_MODES);
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
-  return value === "read-only" || value === "workspace-write" || value === "danger-full-access";
+  return Value.Check(PermissionModeSchema, value);
 }
 
 /** Rank of a mode; a higher rank lets the agent do more. */
