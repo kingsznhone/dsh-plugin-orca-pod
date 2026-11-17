@@ -11,7 +11,7 @@ import {
 import React, { type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { EXECUTOR_KINDS } from "../src/execution/kinds.ts";
 import { KNOWN_REASONING_EFFORTS, PERMISSION_MODES } from "../src/protocol/vocabulary.ts";
-import { DEFAULT_WORKGROUP, GIB, MIB } from "./constants.ts";
+import { DEFAULT_WORKGROUP, GIB } from "./constants.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
 import css from "./settings.module.css";
@@ -62,11 +62,8 @@ export const LIMITS: Limit[] = [
   { key: "task_timeout_s", label: "cfgTaskTimeout", hint: "cfgTaskTimeoutHint" },
   { key: "approval_timeout_s", label: "cfgApprovalTimeout", hint: "cfgApprovalTimeoutHint" },
   { key: "result_max_bytes", label: "cfgResultMaxBytes", integer: true },
-  { key: "max_input_files", label: "cfgMaxInputFiles", integer: true },
-  { key: "max_input_bytes", label: "cfgMaxInputMiB", unit: MIB },
   { key: "max_workspace_bytes", label: "cfgMaxWorkspaceGiB", hint: "cfgMaxWorkspaceHint", unit: GIB },
   { key: "max_workspace_files", label: "cfgMaxWorkspaceFiles", integer: true },
-  { key: "max_blob_store_bytes", label: "cfgMaxBlobGiB", hint: "cfgMaxBlobHint", unit: GIB },
 ];
 export const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
 

@@ -97,7 +97,6 @@ export function NodeDetail({ member, onClose }: { member: PodPeer; onClose: () =
 
 export function Workspace({ workspace }: { workspace: WorkspaceView | null }) {
   if (workspace === null) return <Empty>{t("workspaceUnavailable")}</Empty>;
-  const inputs = workspace.inputs_dirs.map((dir) => `${short(dir.task_id)} (${dir.files})`);
   return (
     <div className={panel.workspace}>
       <div className={`${panel.path} ${ui.mono}`} title={workspace.root}>
@@ -106,8 +105,6 @@ export function Workspace({ workspace }: { workspace: WorkspaceView | null }) {
       <dl className={panel.kv}>
         <dt>{t("notes")}</dt>
         <dd>{workspace.notes_files.join(", ") || t("empty")}</dd>
-        <dt>{t("inputs")}</dt>
-        <dd>{inputs.join(", ") || t("empty")}</dd>
       </dl>
     </div>
   );

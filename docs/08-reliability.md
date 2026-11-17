@@ -25,7 +25,7 @@ origin 的 tracker 轮询 tasks/get
 
 - origin 的“放弃跟踪”不是任务状态：origin 不会把任务记成 `failed`，不补发 `tasks/cancel`，也没有 `node_unreachable`、`task_lost` 这类状态——它只知道自己看不到了；
 - 为什么不做重发 / 不做自动判死：跨 orca node 无法知道“执行到哪一步”，重发可能重复写文件、重复调 API；判死又可能冤枉一个只是网络抖动的任务。把事实交给 agent 与人：任务可能仍在跑，用 `status` 再查；
-- 目标恢复后如果它自己完成了：**不处理、不召回**，也没有 `late_result` 状态。没有被引用的 blob 按 7 天 GC；
+- 目标恢复后如果它自己完成了：**不处理、不召回**，也没有 `late_result` 状态。它发布的文件按登记的有效期（默认 7 天）可下载；
 - 目标侧：目标 orca node 继续跑（如果还活着），结果留在本地 SQLite，不回调 origin；
 - 成员层面的失联（心跳断）只影响**新任务的路由**（只有 `online` 接新任务，[§3.3](03-membership.md#33-心跳与双向看门狗)），不改变已派任务的状态。
 
@@ -35,7 +35,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 - 不区分“是否已开始”，也不尝试 resume 那个任务——那会让 origin 的状态和实际再次分叉；
 - 授权请求随之失效；停在别处 `input-required` 的子任务不会被自动收尾（挂起时 TTL 暂停），要靠 origin 取消，或目标侧配置的 `approval_timeout_s`；
-- 工作区目录不删，cwd 不变；`inputs/` 在启动时清空；ACP session 绑定保留，下一个任务会 `session/resume`。
+- 工作区目录不删，cwd 不变；ACP session 绑定保留，下一个任务会 `session/resume`。
 
 **origin 重启（origin 侧派发日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（`task_id`、`peer`、`context_id`、`state`、`last_error`、`parent_local_task_id`、`agent_id`、`created_at`、`updated_at`）：
 
@@ -52,7 +52,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 - 任务寿命：`pod.task_ttl_s` 与本机 `task_timeout_s`（默认 3600）取较小者；到点 `failed(timeout)`；`input-required` 期间暂停；
 - orca node 单槽：同一时间只跑 1 个任务（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）；忙时 `429 orca_node_busy` + `Retry-After: 30`，不排队；挂起任务的恢复遇到槽被占也是 429，由 origin 重试；
-- 配额：工作区超额时新任务 `507 quota_exceeded`；blob 存储超额时上传 `507 quota_exceeded`（[§6.13](06-execution.md#613-配额清理跨平台)、[§5.6](05-tasks.md#56-文件交换blob-通道)）；
+- 配额：工作区超额时新任务 `507 quota_exceeded`（[§6.13](06-execution.md#613-配额清理跨平台)）；
 - 出站调用都有截止时间与响应上限（[§4.7](04-transport.md#47-方法与异步语义)）；
 - origin 侧 tracker 轮询固定 1s、失败退避到 30s，见 §8.2。
 
@@ -95,6 +95,6 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 - **面板**：`/orca-api/state` 一次轮询拿到自己、成员、待审批、最近任务、工作区（[§9.2](09-implementation.md#92-面板)）；
 - **日志**：节点通过注入的 logger 记 warning（拒绝的候选端点、被丢弃的 peer、落盘失败、blob 清理失败等），插件里是 DSH 的 logger，CLI 里是 console。
 
-UI 的成员详情展示：显示名与 id、在线状态、忙闲（正在跑哪个任务）、最近心跳、单任务预算、运行环境（OS、CPU、内存、Node 版本）、默认/可用模型、自报地址；工作区与 blob 存储配额在设置页的高级项里配置，面板不显示当前用量。
+UI 的成员详情展示：显示名与 id、在线状态、忙闲（正在跑哪个任务）、最近心跳、单任务预算、运行环境（OS、CPU、内存、Node 版本）、默认/可用模型、自报地址；工作区配额在设置页的高级项里配置，面板不显示当前用量。
 
 ---

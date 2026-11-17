@@ -5,7 +5,8 @@ import { afterEach } from "vitest";
 
 import { EchoExecutor } from "../../src/execution/echo.ts";
 import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/protocol/task.ts";
-import { createMemoryBlobStore, createMemoryTaskStore } from "../../src/storage/memory.ts";
+import { createFileBlobRegistry } from "../../src/storage/file-registry.ts";
+import { createMemoryFileBlobStore, createMemoryTaskStore } from "../../src/storage/memory.ts";
 import { createTaskRunner, type TaskRunnerDeps } from "../../src/tasks/runner.ts";
 import { createWorkspaceManager } from "../../src/tasks/workspace.ts";
 import { labelId, wg } from "./ids.ts";
@@ -33,7 +34,7 @@ export function runnerDeps(overrides: Partial<TaskRunnerDeps> = {}): TaskRunnerD
   const dataRoot = tempDir();
   return {
     executor: new EchoExecutor(),
-    blobs: createMemoryBlobStore(),
+    fileBlobs: createFileBlobRegistry(createMemoryFileBlobStore()),
     store: createMemoryTaskStore(),
     workspace: createWorkspaceManager({ dataRoot, workgroupId: wg("runner-test") }).ensure(),
     logger: { warn() {} },

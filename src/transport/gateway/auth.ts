@@ -4,7 +4,6 @@ import { z } from "zod";
 import { verifyAuth, verifyBlobLinkSignature, type VerifiedAuth } from "../../security/crypto.ts";
 import { PodError } from "../../kernel/errors.ts";
 import { parseSchema } from "../../kernel/schema.ts";
-import { BODY_SHA256_HEADER } from "../../protocol/constants.ts";
 import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import type { OrcaNodeId } from "../../protocol/peer.ts";
@@ -29,13 +28,11 @@ declare module "fastify" {
     access?: Access;
     /** Errors are answered as JSON-RPC envelopes. */
     rpc?: boolean;
-    /** The body is streamed; its sha256 is signed in `BODY_SHA256_HEADER` instead of hashed here. */
-    streamed?: boolean;
   }
   interface FastifyRequest {
     /** Set by the access hook on every route except `public` (and link downloads). */
     auth: VerifiedAuth;
-    /** Raw body bytes, kept for signature verification; absent for streamed bodies. */
+    /** Raw body bytes, kept for signature verification. */
     rawBody?: Buffer;
   }
 }
@@ -58,8 +55,7 @@ function acceptLink(request: FastifyRequest, deps: GatewayDeps): boolean {
 }
 
 /** Verify the signature of a request and return who signed it. */
-function authenticate(request: FastifyRequest, access: Access, deps: GatewayDeps, streamed: boolean): VerifiedAuth {
-  const declaredDigest = request.headers[BODY_SHA256_HEADER];
+function authenticate(request: FastifyRequest, access: Access, deps: GatewayDeps): VerifiedAuth {
   return verifyAuth({
     method: request.method,
     // The signature covers the full request target, query included: a captured
@@ -71,7 +67,6 @@ function authenticate(request: FastifyRequest, access: Access, deps: GatewayDeps
     // started closes the replay window a restart would otherwise reopen.
     notBefore: deps.startedAt,
     body: request.rawBody,
-    bodySha256: streamed && typeof declaredDigest === "string" ? declaredDigest : undefined,
     header: request.headers.authorization,
     nonceCache: deps.nonceCache,
   });
@@ -103,7 +98,7 @@ export function installAccessPolicy(app: FastifyInstance, deps: GatewayDeps): vo
   // preValidation: the body is parsed (signature needs its bytes) but not yet
   // schema-checked, so an unauthenticated caller learns nothing from a 400.
   app.addHook("preValidation", async (request) => {
-    const { access, streamed } = request.routeOptions.config;
+    const { access } = request.routeOptions.config;
     // `undefined`: no route matched, so Fastify answers 404 without a signature check.
     if (access === undefined || access === "public") return;
     // Refused before any signature work: a local control is never reachable from off the machine.
@@ -111,7 +106,7 @@ export function installAccessPolicy(app: FastifyInstance, deps: GatewayDeps): vo
       throw new PodError("local_only", "this route is a local control");
     }
     if (access === "link" && acceptLink(request, deps)) return;
-    request.auth = authenticate(request, access, deps, streamed === true);
+    request.auth = authenticate(request, access, deps);
     authorize(access, request.auth.orcaNodeId, deps);
   });
 }

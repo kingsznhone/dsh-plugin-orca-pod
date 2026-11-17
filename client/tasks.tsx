@@ -91,7 +91,7 @@ export function TaskTable({
 
 /** What the detail dialog shows once the task is loaded. */
 function TaskFacts({ data }: { data: PodTaskDetail }) {
-  const { task, origin, dispatch, artifacts, inputs } = data;
+  const { task, origin, dispatch, artifacts } = data;
   const pod = task.metadata?.pod ?? {};
   const message = (task.status.message?.parts ?? [])
     .map((part) => (part.kind === "text" ? part.text : ""))
@@ -132,16 +132,6 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
       ) : (
         <div className={ui.chips}>
           <ArtifactLinks artifacts={artifacts} />
-        </div>
-      )}
-      <SubTitle>{t("dtInputs")}</SubTitle>
-      {inputs.length === 0 ? (
-        <Empty>{t("dtInputsNone")}</Empty>
-      ) : (
-        <div className={`${ui.chips} ${ui.mono} ${ui.muted}`}>
-          {inputs.map((name) => (
-            <span key={name}>{name}</span>
-          ))}
         </div>
       )}
     </>

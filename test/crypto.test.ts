@@ -6,7 +6,6 @@ import {
   NonceCache,
   admissionProof,
   blobLinkSignature,
-  bodySha256,
   buildAuthHeader,
   deriveWorkgroupKey,
   parseAuthHeader,
@@ -154,27 +153,6 @@ describe("buildAuthHeader + verifyAuth", () => {
         nonceCache: new NonceCache(),
       }),
     );
-  });
-
-  it("signs a caller-provided body digest for streamed bodies", () => {
-    const identity = generateNodeIdentity();
-    const digest = bodySha256("streamed");
-    const header = buildAuthHeader({
-      identity,
-      method: METHOD,
-      url: PATH,
-      targetOrcaNodeId: TARGET,
-      bodySha256: digest,
-    });
-    const verified = verify({
-      method: METHOD,
-      url: PATH,
-      targetOrcaNodeId: TARGET,
-      bodySha256: digest,
-      header,
-      nonceCache: new NonceCache(),
-    });
-    expect(verified.orcaNodeId).toBe(identity.orcaNodeId);
   });
 
   it("rejects a tampered body with bad_signature", () => {

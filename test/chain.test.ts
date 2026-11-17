@@ -118,7 +118,6 @@ describe("chain metadata", () => {
       chain: [],
       rootOrigin: NODE_A,
       permissionMode: "read-only",
-      inputs: [],
     });
     expect(parsePodMetadata({ pod: { root_origin: NODE_R } }, NODE_C, NODE_A).rootOrigin).toBe(NODE_R);
   });

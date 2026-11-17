@@ -1,4 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NonceCache, admissionProof, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
 import { runtimeDigest, type BusyState, type PeerView, type SelfRecord } from "../src/protocol/peer.ts";
@@ -6,9 +9,9 @@ import type { TaskRunner } from "../src/protocol/task.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createMembership } from "../src/membership/membership.ts";
 import type { PeerStore } from "../src/membership/membership.ts";
-import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage/memory.ts";
-import { bodySha256 } from "../src/security/crypto.ts";
+import { createMemoryFileBlobStore } from "../src/storage/memory.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
+import type { FileBlobRegistry } from "../src/storage/stores.ts";
 import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -65,7 +68,8 @@ type Harness = {
   identity: NodeIdentity;
   orcaNodeId: string;
   peers: PeerStore;
-  sign(method: string, path: string, body?: Uint8Array | string, bodySha256?: string): string;
+  fileBlobs: FileBlobRegistry;
+  sign(method: string, path: string, body?: Uint8Array | string): string;
 };
 
 function createHarness(): Harness {
@@ -73,6 +77,7 @@ function createHarness(): Harness {
   const identity = generateNodeIdentity();
   const orcaNodeId = identity.orcaNodeId;
   const peers = createMembership({ selfOrcaNodeId: orcaNodeId }).peers;
+  const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
   const deps: GatewayDeps = {
     orcaNode: {
       orca_node_id: orcaNodeId,
@@ -86,8 +91,7 @@ function createHarness(): Harness {
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks: idleTasks,
-    blobs: createMemoryBlobStore(),
-    fileBlobs: createFileBlobRegistry(createMemoryFileBlobStore()),
+    fileBlobs,
   };
   return {
     app: createGateway(deps),
@@ -95,15 +99,8 @@ function createHarness(): Harness {
     identity,
     orcaNodeId,
     peers,
-    sign: (method, url, body, bodySha256) =>
-      buildAuthHeader({
-        identity,
-        method,
-        url,
-        targetOrcaNodeId: orcaNodeId,
-        body,
-        ...(bodySha256 === undefined ? {} : { bodySha256 }),
-      }),
+    fileBlobs,
+    sign: (method, url, body) => buildAuthHeader({ identity, method, url, targetOrcaNodeId: orcaNodeId, body }),
   };
 }
 
@@ -121,18 +118,11 @@ function peerView(identity: NodeIdentity, endpoint: string): PeerView {
   };
 }
 
-async function upload(harness: Harness, stranger: NodeIdentity, payload: Buffer) {
-  const digest = bodySha256(payload);
-  return harness.app.inject({
-    method: "POST",
-    url: "/blobs",
-    payload,
-    headers: {
-      "content-type": "application/octet-stream",
-      authorization: strangerSign(harness, stranger, "POST", "/blobs", payload, digest),
-      "x-pod-body-sha256": digest,
-    },
-  });
+/** Publish `content` on the harness node, as `orca-node publish` would; returns the blob id. */
+async function publish(harness: Harness, content: Buffer): Promise<string> {
+  const path = join(await mkdtemp(join(tmpdir(), "orca-auth-blob-")), "file.bin");
+  await writeFile(path, content);
+  return (await harness.fileBlobs.register(path, 60)).blob_id;
 }
 
 function strangerSign(
@@ -141,20 +131,12 @@ function strangerSign(
   method: string,
   path: string,
   body?: Uint8Array | string,
-  bodySha256?: string,
 ): string {
-  return buildAuthHeader({
-    identity: stranger,
-    method,
-    url: path,
-    targetOrcaNodeId: harness.orcaNodeId,
-    body,
-    ...(bodySha256 === undefined ? {} : { bodySha256 }),
-  });
+  return buildAuthHeader({ identity: stranger, method, url: path, targetOrcaNodeId: harness.orcaNodeId, body });
 }
 
 describe("workgroup membership gate (C1)", () => {
-  it("lets a member read the roster and upload blobs", async () => {
+  it("lets a member read the roster and a published file", async () => {
     const harness = createHarness();
     const members = await harness.app.inject({
       method: "GET",
@@ -163,14 +145,19 @@ describe("workgroup membership gate (C1)", () => {
     });
     expect(members.statusCode).toBe(200);
 
-    const uploaded = await upload(harness, harness.identity, Buffer.from("member bytes"));
-    expect(uploaded.statusCode).toBe(201);
+    const blobId = await publish(harness, Buffer.from("member bytes"));
+    const read = await harness.app.inject({
+      method: "GET",
+      url: `/blobs/${blobId}`,
+      headers: { authorization: harness.sign("GET", `/blobs/${blobId}`) },
+    });
+    expect(read.statusCode).toBe(200);
   });
 
   it("rejects every signed route from a valid but unknown key", async () => {
     const harness = createHarness();
     const stranger = generateNodeIdentity();
-    const payload = Buffer.from("unknown bytes");
+    const blobId = await publish(harness, Buffer.from("not for strangers"));
 
     const calls = [
       {
@@ -197,22 +184,9 @@ describe("workgroup membership gate (C1)", () => {
         ),
       },
       {
-        method: "POST",
-        url: "/blobs",
-        payload,
-        contentType: "application/octet-stream",
-        headers: { "x-pod-body-sha256": bodySha256(payload) },
-        authorization: strangerSign(harness, stranger, "POST", "/blobs", payload, bodySha256(payload)),
-      },
-      {
         method: "GET",
-        url: `/blobs/${bodySha256(payload)}`,
-        authorization: strangerSign(harness, stranger, "GET", `/blobs/${bodySha256(payload)}`),
-      },
-      {
-        method: "POST",
-        url: `/blobs/${bodySha256(payload)}/link`,
-        authorization: strangerSign(harness, stranger, "POST", `/blobs/${bodySha256(payload)}/link`),
+        url: `/blobs/${blobId}`,
+        authorization: strangerSign(harness, stranger, "GET", `/blobs/${blobId}`),
       },
     ];
 
@@ -224,7 +198,6 @@ describe("workgroup membership gate (C1)", () => {
         headers: {
           authorization: call.authorization,
           ...(call.contentType === undefined ? {} : { "content-type": call.contentType }),
-          ...(call.headers ?? {}),
         },
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
@@ -294,9 +267,7 @@ describe("workgroup membership gate (C1)", () => {
     expect(joined.statusCode).toBe(200);
 
     const payload = Buffer.from("public by link");
-    const uploaded = await upload(harness, harness.identity, payload);
-    expect(uploaded.statusCode).toBe(201);
-    const blobId = uploaded.json<{ blob_id: string }>().blob_id;
+    const blobId = await publish(harness, payload);
     const exp = String(Math.floor(Date.now() / 1000) + 60);
     const sig = blobLinkSignature(harness.identity, blobId, exp);
     const direct = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}?exp=${exp}&sig=${sig}` });

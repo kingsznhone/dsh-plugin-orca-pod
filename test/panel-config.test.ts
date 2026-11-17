@@ -209,8 +209,6 @@ describe("panel configuration lifecycle", () => {
         task_timeout_s: 120,
         approval_timeout_s: 45,
         result_max_bytes: 4096,
-        max_input_files: 4,
-        max_input_bytes: 1048576,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
@@ -222,11 +220,8 @@ describe("panel configuration lifecycle", () => {
         task_timeout_s: 120,
         approval_timeout_s: 45,
         result_max_bytes: 4096,
-        max_input_files: 4,
-        max_input_bytes: 1048576,
         max_workspace_bytes: 5 * 1024 ** 3,
         max_workspace_files: 50_000,
-        max_blob_store_bytes: 5 * 1024 ** 3,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
@@ -238,7 +233,7 @@ describe("panel configuration lifecycle", () => {
       expect(stores.raw().task_timeout_s).toBe(120);
       const nodeConfig = await readJson(configPath(root));
       expect(nodeConfig.task_timeout_s).toBe(120);
-      expect(nodeConfig.max_input_bytes).toBe(1048576);
+      expect(nodeConfig.result_max_bytes).toBe(4096);
       expect(nodeConfig.permission_mode).toBe("workspace-write");
       expect(nodeConfig.default_reasoning_effort).toBe("max");
       expect(nodeConfig.executor).toBe("echo");
@@ -452,7 +447,6 @@ describe("panel admin configuration", () => {
       expect(advanced).toMatchObject({
         max_workspace_bytes: 5 * 1024 ** 3,
         max_workspace_files: 50_000,
-        max_blob_store_bytes: 5 * 1024 ** 3,
       });
     } finally {
       await stopPod(handle, logger);

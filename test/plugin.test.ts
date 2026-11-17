@@ -47,7 +47,6 @@ describe("plugin config", () => {
       peers: [],
       max_workspace_bytes: 5 * 1024 ** 3,
       max_workspace_files: 50_000,
-      max_blob_store_bytes: 5 * 1024 ** 3,
     });
   });
 
@@ -78,7 +77,6 @@ describe("plugin config", () => {
       peers: [],
       max_workspace_bytes: 5 * 1024 ** 3,
       max_workspace_files: 50_000,
-      max_blob_store_bytes: 5 * 1024 ** 3,
     });
   });
 

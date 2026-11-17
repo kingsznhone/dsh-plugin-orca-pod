@@ -1,10 +1,8 @@
 /**
  * Storage contracts (§5.5, §5.6, §8.3). Business code depends on these
- * interfaces only; the memory, disk and SQLite implementations next to this
+ * interfaces only; the memory and SQLite implementations next to this
  * file are wired by the assembly points (`node/`, `plugin/`, `cli/`).
  */
-
-import type { Readable } from "node:stream";
 
 import type { DispatchEntry } from "../protocol/dispatch.ts";
 import type { OrcaNodeId } from "../protocol/peer.ts";
@@ -35,66 +33,10 @@ export interface TaskStore {
   close(): void;
 }
 
-// Content-addressed blobs (§5.6): an in-memory store and a disk store (with GC and a size quota) share one contract.
-
-/** Metadata of one stored blob; its id is the sha256 of the bytes. */
-export type BlobRecord = {
-  blob_id: string;
-  size: number;
-  name: string | null;
-  media_type: string | null;
-  expires_at: string | null;
-};
-
-/** The label a caller gives a blob when it stores it: a name hint and a media type. */
-export type BlobLabel = { name?: string; media_type?: string };
-
-/** What a store records about a blob besides its id. */
-export type BlobMeta = Omit<BlobRecord, "blob_id">;
-
-export type StoredBlob = BlobRecord & { bytes: Buffer };
-
-/** Streaming read handle: the caller pipes `stream` instead of buffering. */
-export type BlobRead = {
-  stream: Readable;
-  size: number;
-  record: BlobRecord;
-};
-
-export type PutStreamOptions = BlobLabel & {
-  maxBytes?: number;
-  /** Digest the uploader declared (`X-Pod-Body-SHA256`). */
-  sha256?: string;
-};
-
-export interface BlobStore {
-  /**
-   * Store bytes; returns the content hash. Same bytes => same id, no duplicate;
-   * storing them again extends the expiry as if they were new.
-   */
-  put(bytes: Buffer | Uint8Array, label?: BlobLabel): StoredBlob;
-  /**
-   * Streamed upload; never buffers the body (§5.6). With `sha256`, bytes whose
-   * digest differs are discarded and the call fails with `blob_digest_mismatch`
-   * instead of being stored under their real digest.
-   */
-  putStream(stream: Readable, options?: PutStreamOptions): Promise<BlobRecord>;
-  /** Streamed download; avoids reading the whole blob into memory. */
-  openRead(blobId: string): BlobRead | undefined;
-  /** Size and metadata of a blob, without reading or opening its content. */
-  stat(blobId: string): BlobRecord | undefined;
-  /** Copy a blob into `destination` (its directory must exist) without buffering it (task inputs, §6.7). */
-  copyTo(blobId: string, destination: string): Promise<boolean>;
-  get(blobId: string): StoredBlob | undefined;
-  has(blobId: string): boolean;
-  /** Best-effort TTL sweep; returns the number of removed blobs (§5.6). */
-  gc(): number;
-}
-
-/** Default retention for blobs nobody referenced (§5.6). */
+/** How long a published file stays downloadable unless `publish --ttl` says otherwise (§5.6). */
 export const DEFAULT_BLOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** The one retention constant: uploads, published files and direct links. */
+/** The same retention in seconds: published files and the links to them. */
 export const DEFAULT_BLOB_TTL_S = Math.floor(DEFAULT_BLOB_TTL_MS / 1000);
 
 // Published files (§5.6)

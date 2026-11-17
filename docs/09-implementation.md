@@ -27,7 +27,7 @@ orca-pod/
 | `kernel/`     | `errors` / `schema` / `events` / `entry`                                                                | `PodError` 与错误码 → HTTP 状态表（唯一一张）；`isRecord` 与 `parseSchema`（不可信输入的唯一入口）；与载荷无关的进程内事件总线与 `NodeLogger`；包内入口路径（按当前模块扩展名解析 `cli/main.ts`/`cli/main.js`，`ORCA_POD_CLI` 与 `ExecStart` 都用它） |
 | `protocol/`   | `peer` / `cluster` / `a2a` / `task` / `grant` / `model` / `permission` / `client` / `dispatch` / `events` / `constants` | 线上形状全部是 zod schema，类型用 `z.infer`：成员目录与 digest、orca node id 格式；join / 心跳请求体（`cluster`）；A2A 方法参数与错误体（`a2a`）；任务视图与元数据、`TaskRunner` 接口；权限请求、grant、relay；模型路由；权限模式；出站客户端契约 `PeerClient`（`client`）；派发日志条目与进程内事件载荷；默认端口与 `BODY_SHA256_HEADER` |
 | `security/`   | `identity` / `crypto` / `grants`                                                                         | Ed25519 身份；请求签名、准入证明（`createAdmission` / `verifyAdmission`）、nonce、grant 与直链签名（`signedBlobUrl`）、scrypt 派生；grant 解析、校验与向子任务转发（`deriveChildGrant`） |
-| `storage/`    | `stores`；实现 `memory` / `fs` / `file-registry` / `sqlite`（+ `blob-common`）                          | `stores` 声明全部存储接口（task、blob、publish 映射、派发日志）；内存实现；内容寻址 fs blob store（配额与 GC）；`publish` 的文件哈希与登记；`node:sqlite` 实现（tasks / dispatches / file_blobs） |
+| `storage/`    | `stores`；实现 `memory` / `file-registry` / `sqlite`                                                     | `stores` 声明全部存储接口（task、publish 映射、派发日志）；内存实现；`publish` 的文件哈希与登记；`node:sqlite` 实现（tasks / dispatches / file_blobs） |
 | `membership/` | `membership` / `mesh` / `screening`                                                                      | 成员记录与看门狗；join、心跳循环、leave、自述记录与模型目录；端点筛查（候选拨号前、入站 join 登记前）与地址分类 |
 | `tasks/`      | `runner` / `record` / `meta` / `inputs` / `workspace` / `delegation`                                    | 单槽运行器与查找；一个任务的状态机与计时器；元数据一次性解析；任务书（可信前言在前、远端文本在最后的不可信块）与输入物化；工作区与配额测量；发起侧（`delegation`）：`sendTask`/`getTask`/`cancelTask`/审批/上交、child-link 轮询、`childPodMetadata`（与 `meta` 解析的是同一块 `pod` 元数据）、派发日志语义（`markInFlightUnknown`，重启后在途条目记为 `unknown`） |
 | `execution/`  | `executor` / `echo` / `process` / `acp/`                                                                 | 执行器契约；Echo；子进程公共件（Windows shim、杀进程树）；ACP（`config` 配置类型、`connection` 按 sessionId 路由、`session` 绑定与 `sessions.json`、`permissions` 自动应答、`executor`） |
@@ -59,7 +59,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | `listTasks(limit?)`       | `node/orca-node.ts`          | 本机任务（inbound），内存记录在前，持久 store 回填历史                               |
 | `subscribe(listener)`     | `node/orca-node.ts` → `protocol/events.ts` | `task`（每次状态/权限变化）、`members`（名单、state、busy、endpoints、模型目录变化，按签名去重）、`dispatch`（origin 侧派发落库） |
 | `blobLink(blobId, ttlS?)` | `node/orca-node.ts`          | 签名直链（`?exp&sig`），默认 300 秒，面板直接 `<a href>` 下载产物                    |
-| `workspacePaths()`        | `node/orca-node.ts`          | workgroup 根、`notes/`、`inputs/`、`state/` 路径                                     |
+| `workspacePaths()`        | `node/orca-node.ts`          | workgroup 根、`notes/`、`state/` 路径                                                |
 
 `createPodAdmin(handle, tracker, broker)` 组合出面板 API：`self()`、`members()`（不含 offline）、`recent(limit)`（本机任务与派发到 peer 的任务合并）、`approvals()`（broker 与 tracker 里挂着的权限请求）、`task(peer, id)`、`approve/deny/cancel`、`workspace()`（路径 + notes 文件名 + 最近的 inputs 目录）、`config()`（去敏视图，**永不返回密码**，只给 `password_set`）、`saveConfig(patch)`、`connect(peer)`、`disconnect()`、`reset()`、`subscribe()`。审批只有一个 `ApprovalBroker`（`plugin/broker.ts`）：tracker 把看到的权限请求 park 进去，UI 三个落点读它、答复它，答复直接调 `OrcaNode.approveTask/denyTask`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
@@ -70,7 +70,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 - `reconfigure`：只取面板可改的字段（`null` 表示删除该键、回到默认），先用合并结果整体复验；有新密码先写凭据库（插件重启后要能读到），再写插件配置。配置有变化时由宿主重启插件；只改了密码时就地重启节点。写配置不进生命周期的串行队列：宿主重启插件时要等这条队列排空，放进去会互相等待。节点身份（`identity.json`）不变。
 - `connect(peer)`：地址先归一化（裸 host/IP 补 `http://` 与默认端口 `11811`；`host:port`；完整 URL；裸 IPv6 加方括号；拒绝带路径/查询串），立即 `join` 一次，成功才记进 `peers.json`（不改配置、不重启）；失败只回错误、不落盘。`orca_pod` 工具的 `connect` 方法走同一条路径。启动时 join 插件配置里的 `peers` 与 `peers.json` 的并集。
 - `disconnect()`：`OrcaNode.leave()` 通知已知 peer，清空 `peers.json`；插件配置里写了 `peers` 时一并删掉。`reset()`：删除 `config.json`、`identity.json`、`peers.json`，从凭据库删掉该 workgroup 的密码（同一 DSH home 下同一 workgroup 的其他 profile 也会失去它），并从插件配置删掉 `workgroup_id`，节点回到首启向导（不动 `state/`、blob、工作区）。
-- 设置视图的“高级设置”：任务超时、审批等待超时、结果简报上限、单任务输入文件数与大小、工作区与 blob 存储配额、公网/回环候选端点、本机权限上限、默认 reasoning effort、执行器。
+- 设置视图的“高级设置”：任务超时、审批等待超时、结果简报上限、工作区配额、公网/回环候选端点、本机权限上限、默认 reasoning effort、执行器。
 
 #### 9.2.1 同源桥（`plugin/web.ts`）
 
@@ -112,7 +112,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | `protocol/` / `node/settings.ts`  | 固定 JSON 样本                                                    | schema 通过/拒绝、错误信息指向具体字段                                                 |
 | `security/crypto.ts`              | 冻结的签名样本                                                    | 换密钥/时间/body/查询串/接收方 id 任一字节即变；重启前签发的请求被 `stale_request` 拒绝 |
 | `security/grants.ts` / `tasks/delegation.ts`（`childPodMetadata`） | 纯函数 + 多 orca node 真实 HTTP                                   | 祖先禁调、grant 校验/转发/过期/重放/工具不符                                           |
-| `storage/`                        | 一套 contract test，跑内存、fs 与 sqlite                          | 实现行为一致；过期/GC/去重/配额；关闭重开仍在                                          |
+| `storage/`                        | 内存与 sqlite 实现                                                 | 实现行为一致；登记过期；关闭重开仍在                                                    |
 | `tasks/workspace.ts`              | 临时目录                                                          | 目录一次创建、`inputDir` 拒绝路径穿越、用量测量                                        |
 | `transport/gateway/`              | 进程内真实 HTTP，假 executor、注入时钟                            | 路由、401/403/429/507、签名与成员闸门                                                  |
 | `execution/` 契约与 echo          | echo 脚本样本                                                     | 状态时序、`input-required`、resume                                                     |
@@ -205,7 +205,7 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 - **发布形态是编译产物，不是 `.ts`**：`main`/`exports`/`types`/`bin` 都指向 `lib/`，`files` 不含 `src/`，`prepare` 即 `npm run build`。DSH 的插件加载器用原生 `import()` 加载入口，没有转译钩子，发行版（Electron 内置 Node 24）里也没有任何 TS 转译器，所以不需要也不能依赖 tsx。Node 的类型剥离对 `node_modules` 下的文件直接报 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，tarball 安装的包里放 `.ts` 必然加载失败。`dsh plugin add <本地路径>` 装的是 `link:`，真实路径在 `node_modules` 之外，原始 `.ts` 碰巧能跑——这只是本地开发的特例，不能据此推断发布也能跑。加载器会把说明符里的 `.ts` 改写成 `.js`，那只是对源码风格写法的兼容，不是编译。客户端 bundle（`dsh.client`、`platform: web`）另由 esbuild 产出，与此无关但同样必需。
 - **验收入口：`npm run check`** = `biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run`。另有 `npm run format`、`npm run typecheck`、`npm test`、`npm run harness`。
 - 不引入 DI 容器（awilix、inversify 等）：服务是 `createX(deps)` 工厂、依赖显式传入，装配只在 `node/`（插件与 CLI 各自再装配一层）。服务图只有约 20 个节点、一个装配根；装饰器与运行时反射和 `erasableSyntaxOnly` 冲突；插件侧已跑在 Cordis 里，它本身就是 DI 容器。新代码不再新增 class 形式的服务；`TaskRecord` 这类有状态实体保留 class。
-- 存储：task store 用 `node:sqlite`（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM）；成员表是内存；blob 用内容寻址的 fs 目录 + GC；工作区目录由 `tasks/workspace.ts` 管理。内存实现只给单测与 harness 用（[§5.5](05-tasks.md#55-任务存储)）。
+- 存储：task store 用 `node:sqlite`（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM）；成员表是内存；文件只登记映射、不复制字节；工作区目录由 `tasks/workspace.ts` 管理。内存实现只给单测与 harness 用（[§5.5](05-tasks.md#55-任务存储)）。
 - 本地联调命令：
 
   ```bash

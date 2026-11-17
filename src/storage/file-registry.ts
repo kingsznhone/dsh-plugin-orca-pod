@@ -1,10 +1,11 @@
 /**
  * File-backed blob registry (§5.6).
  *
- * A task that produced a file on this orca node can publish it instead of
- * uploading a copy: the registry maps the file's sha256 to its local path and a
- * TTL. The child then appends the returned blob URL to its summary, and the
- * origin pulls the bytes only if it wants them.
+ * Files move between nodes by link only: a node publishes a file of its own,
+ * and whoever needs it pulls the bytes from that node's gateway. The registry
+ * maps the file's sha256 to its local path and a TTL. A task appends the URL of
+ * a result to its summary; an origin puts the URLs of the files it hands over
+ * into the task text.
  *
  * Registration is a local capability, not an HTTP route: publishing a path is
  * equivalent to reading it. The CLI therefore writes the mapping straight into

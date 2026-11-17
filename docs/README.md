@@ -57,7 +57,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - 入组 = `workgroup_id` + **非空密码**：密码只派生 `/cluster/join` 与每拍心跳的准入证明（HMAC）；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。
 - 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询；没有 SSE、没有 push。
-- 文件交换走**内容寻址 blob 通道**：素材先传后引用；产物由子节点 `publish` 出带签名的直链，贴在结论文本里；结论文本内联返回，`notes/` 不出本机。
+- 文件交换走**发布链接**：节点只发布自己机器上的文件（`publish` 出带签名的直链），谁需要谁来拉——产物贴在结论文本里由 origin 取，交给任务的文件贴在任务书里由 target 上的 agent 取；结论文本内联返回，`notes/` 不出本机。
 - **任务与产物凭 id 交接**：同 workgroup 任意 orca node 知道 `task_id` / `blob_id` 就能读；没有列表接口，也没有 per-task ACL——id 就是句柄。
 - **交接靠工作区**：同一 workgroup 的任务共享一份持久工作区（agent 的 cwd 就是 workgroup 根）与 `notes/`；后到的 agent 读现场决定接着干什么，协议不定义“续跑”。
 - **权限跟着发起会话走**：任务继承发起会话的权限模式（没继承到就按只读）；target 按这个模式自动应答 ACP 的权限请求，模式之外的请求挂起为 `input-required`，由 origin 的人在 UI 上决定；target 永不本地弹窗。

@@ -1,57 +1,14 @@
 /**
- * A task's inputs and its prompt (§6.7, §6.14): attachments are blobs the origin
- * uploaded first; the target saves them under `<workspace>/inputs/<task_id>/`
- * before the executor starts and removes them when the task ends. The prompt
- * lists them, starts with the node's own trusted preamble and carries the
- * origin's text last, inside an untrusted block.
+ * A task's prompt (§6.7, §6.14): the node's own trusted preamble, the notes
+ * left by earlier tasks, and the origin's text last, inside an untrusted block.
+ * Files the origin shares arrive as links in that text (§5.6); the agent
+ * fetches what it needs.
  */
 
 import { readdir } from "node:fs/promises";
-import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
 
-import type { BlobStore } from "../storage/stores.ts";
 import { CLI_PATH } from "../kernel/entry.ts";
-import { PodError } from "../kernel/errors.ts";
-import type { TaskInputRef } from "../protocol/task.ts";
 import type { OrcaNodeId } from "../protocol/peer.ts";
-
-export const DEFAULT_MAX_INPUT_FILES = 32;
-export const DEFAULT_MAX_INPUT_BYTES = 512 * 1024 * 1024;
-
-/**
- * Refuse a request whose inputs are missing or over a cap, before any task or
- * directory exists. The copy itself happens later, in `materializeInputs`.
- */
-export function checkInputs(
-  blobs: BlobStore,
-  inputs: TaskInputRef[],
-  limits: { maxFiles: number; maxBytes: number },
-): void {
-  if (inputs.length > limits.maxFiles)
-    throw new PodError("too_many_inputs", `at most ${limits.maxFiles} inputs per task`);
-  let total = 0;
-  for (const input of inputs) {
-    const blob = blobs.stat(input.blob_id);
-    if (blob === undefined) throw new PodError("input_blob_missing", `unknown blob ${input.blob_id}`);
-    total += blob.size;
-  }
-  if (total > limits.maxBytes) throw new PodError("inputs_too_large", `task inputs exceed ${limits.maxBytes} bytes`);
-}
-
-/** Copy the inputs into `dir` without buffering them; the caller removes `dir` when the task ends. */
-export async function materializeInputs(blobs: BlobStore, dir: string, inputs: TaskInputRef[]): Promise<void> {
-  mkdirSync(dir, { recursive: true });
-  for (const input of inputs) {
-    if (!(await blobs.copyTo(input.blob_id, join(dir, input.name)))) {
-      throw new PodError("input_blob_missing", `unknown blob ${input.blob_id}`);
-    }
-  }
-}
-
-export function removeInputs(dir: string): void {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
-}
 
 const MAX_NOTES = 20;
 /** Note names come from files an agent wrote, so they are data: no control characters, no markup. */
@@ -76,7 +33,6 @@ type PromptParts = {
   dataRoot: string;
   /** The origin's text; untrusted. */
   text: string;
-  inputs: TaskInputRef[];
   notes: string[];
 };
 
@@ -107,8 +63,10 @@ function preamble({ taskId, selfOrcaNodeId, dataRoot }: PromptParts): string {
     `then list what you already finished, what is blocked, and what the origin should provide or rerun.`,
     `A required peer can be offline: retry the same command at most once after a few seconds; do not poll for long.`,
     `A child task that cannot continue ends on its own with its own BLOCKED report; do not wait on it.`,
+    `Files the origin shares are links in the task text: download the ones you need into the workspace (curl -fL -o <file> <url>).`,
     `To share a file with the origin, attach a blob URL to your summary:`,
     `  ${cli} publish <path> --json`,
+    `  To hand files to a child task, publish them the same way and put the URLs in the task text you send.`,
     `Never approve your own permission requests; escalate them instead.`,
   ].join("\n");
 }
@@ -118,10 +76,6 @@ const CLOSING_TAG = "</untrusted-task-input>";
 /** Trusted sections first; the origin's text last, so nothing in it can pose as one of ours (§6.7). */
 export function composePrompt(parts: PromptParts): string {
   const sections = [preamble(parts)];
-  if (parts.inputs.length > 0) {
-    const list = parts.inputs.map((input) => `- inputs/${parts.taskId}/${input.name}`).join("\n");
-    sections.push(`[orca-pod] Task inputs are in the current directory; they are deleted when the task ends.\n${list}`);
-  }
   if (parts.notes.length > 0) {
     const list = parts.notes.map((note) => `- ${JSON.stringify(note)}`).join("\n");
     sections.push(`[orca-pod] Notes from earlier tasks in this workgroup (read before you start):\n${list}`);

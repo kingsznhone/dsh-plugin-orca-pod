@@ -26,7 +26,7 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 - **local-only 能力用传输层判定**：“只有本机可以做”的操作（`/cluster/child-link`、`/cluster/task`、`/a2a` 的 `tasks/escalate`、面板的 `/orca-api`）只看 socket 与转发头，并要求签名身份就是本机自己——代理可能改写来源地址，传输层事实更难伪造。文件 blob 登记更彻底：`publish` 由 CLI 直写本机 SQLite，根本没有 HTTP 路由（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
 - **目录不能改写已知成员**：他人目录里的条目只是“我还知道这个人”的提示，只用于把从未见过的 `orca_node_id` 加为候选端点；已存在记录的端点/显示名/runtime 只接受该节点本人签名的 join 更新，否则任一成员都能把别人的流量重定向到自己。
 - **响应绑定拨号目标**：join/heartbeat 的响应体本身没有签名，接收方把 `self`/`from` 绑定到本次拨号目标的身份——已知端点不得声明成另一个 `orca_node_id`，否则按失败处理。首次接触没有可比对的身份，仍是 TOFU；明文 HTTP 下的完整消息认证由前置代理的 TLS 承担。
-- **未认证请求只允许小 body**：认证发生在 body 解析之后、schema 校验之前，所以全局 `bodyLimit` 是 1 MiB，只有 `/blobs` 上传路由单独放宽到 256 MiB（流式，签名覆盖文件摘要）；陌生人最多让服务端缓冲 1 MiB。
+- **未认证请求只允许小 body**：认证发生在 body 解析之后、schema 校验之前，所以全局 `bodyLimit` 是 1 MiB，没有任何路由放宽；陌生人最多让服务端缓冲 1 MiB。
 - **先证明是成员，再谈签名**：签名只证明“持有这把私钥”，陌生人生成一把 Ed25519 密钥同样能签出合法格式的请求。因此除 `/health`、agent card、`/cluster/join` 和 blob 直链外，所有签名路由在验签后都要过成员闸门：调用者必须是本机，或在成员表里，否则 `403 not_a_member`。`/cluster/join` 是唯一的准入入口——它同时校验密码派生的准入证明。**不存在隐式 join**：出站调用不认识的 URL 时直接 `unknown_peer`，只有显式的 join/connect 才会向陌生地址发出准入证明（[§4.7](04-transport.md#47-方法与异步语义)）。
 - **授权按记录归属，不按签名身份**：读接口允许同组成员读；写操作在记录归属上校验——`tasks/cancel` 与恢复（`message/send` 带 `taskId`）只接受 task 的 origin（或本机自己），其他成员 `403 not_task_origin`；`tasks/escalate` 只接受本机自己（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
@@ -62,8 +62,7 @@ sig = Ed25519(identity.private_key,
 - **重放窗口**：60s + nonce 去重 + 重启拒绝；跨 orca node 时钟必须大致同步（NTP）；
 - **同组内的定向往返**：签名绑定接收方 id 与完整 URL，因此 A 发给 B 的请求不能被转发给 C、也不能被代理换掉查询串参数；代价是所有出站调用都要先知道对方 id（成员表/join 已提供）；
 - **代理友好**：签名覆盖 method/url（含 query）/body，代理改写 body 或查询串会验签失败（这是特性）；路径大小写、百分号编码也要求前后一致；
-- **大 body 的签名**：带 body 的流式上传加 `X-Pod-Body-SHA256` 头，签名覆盖这个摘要而不是把整个 body 读进内存重算一遍；服务端流式落盘并计算实际摘要，不一致即 `400 blob_digest_mismatch` 并丢弃这些字节；
-- **下载可换短期直链**：任意同组 orca node 调 `POST /blobs/{id}/link`，服务端返回 `GET /blobs/{id}?exp=<unix 秒>&sig=<base64url>`，`sig = Ed25519(该节点私钥, "orca-pod/blob-link|" + blob_id + "|" + exp)`，用该节点自己的公钥验。直链只是省掉签名头的便利，不扩大可读范围（持有成员身份的人本来就能直接 `GET`）；有效期见 [§5.6](05-tasks.md#56-文件交换blob-通道)。
+- **下载用短期直链**：`orca-node publish` 打印 `GET /blobs/{id}?exp=<unix 秒>&sig=<base64url>`，`sig = Ed25519(发布节点私钥, "orca-pod/blob-link|" + blob_id + "|" + exp)`，用该节点自己的公钥验。直链只是省掉签名头的便利，不扩大可读范围（持有成员身份的人本来就能直接 `GET`）；有效期见 [§5.6](05-tasks.md#56-文件交换blob-通道)。
 
 `/cluster/join` 除节点签名外还带 `ts`/`nonce`/`proof`：`proof = base64url(HMAC-SHA256(k, "orca-pod/join|" + workgroup_id + "|" + orca_node_id + "|" + ts + "|" + nonce))`，其中 `k` 是上面的 scrypt 密钥——密码只出现在这一步。`/cluster/heartbeat` 同样带 `ts`/`nonce`/`proof`（标签 `orca-pod/heartbeat`），验不过回 `401 bad_proof`，双方据此在下一拍互相丢弃。`/health` 不签，会返回 `orca_node_id`（公开信息，不扩大权限面）。
 
@@ -93,7 +92,7 @@ sig = Ed25519(identity.private_key,
 
 - 任务 prompt、结论文本、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
-- **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义），inputs/notes 清单在块外、notes 文件名 JSON 转义（`src/tasks/inputs.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；
+- **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义），notes 清单在块外、notes 文件名 JSON 转义（`src/tasks/prompt.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；正文里的文件链接只是数据，下载与否由 agent 在本任务的权限模式下决定；
 - **origin 侧**：tracker 通知只给状态/原因/产物名，远端结论放进 `<untrusted-remote-result>` 块并截断到 800 字符（结束标签转义），并提示 agent 用 `orca_pod` 的 `status` 自己拉全文；权限请求不进对话，面板卡片只显示 `requested` 的 160 字符预览（`src/plugin/tracker.ts`、`admin.ts`）；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
 - 可观测：谁（origin_orca_node）、何时、对哪个任务、用了什么 mode——留在任务记录与派发日志里（`tasks/get`、`orca-node log`），不另落一份审计文件。

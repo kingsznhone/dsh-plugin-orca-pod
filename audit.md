@@ -25,7 +25,7 @@
 | G5 | 可观测性指标（`pod_*`） | 未做 |
 | G9 | `message/stream` / SSE / `tasks/resubscribe` | 未做，任务进度只能轮询 |
 | D5 | 工具 schema 中删除测试用的 `echo` 参数 | `echo` 仍在 schema 和 `METHODS_HELP` 里 |
-| R0b | `write-file-atomic` 替换三处“写临时文件再 rename”（`storage/fs.ts`、`node/config.ts`、`execution/acp/session-store.ts`） | 收益小，R0 时未做 |
+| R0b | `write-file-atomic` 替换两处“写临时文件再 rename”（`node/config.ts`、`execution/acp/session.ts`） | 收益小，R0 时未做 |
 
 ## 3. 待决策的设计缺口
 

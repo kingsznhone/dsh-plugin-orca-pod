@@ -18,7 +18,7 @@ const USAGE = `orca-node
 
 Usage:
   orca-node serve   --config <path> [--peer <url>] [--bind <host>] [--port <n>]  start an orca node from a config file
-  orca-node send    --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
+  orca-node send    --peer <url> --text <text|-> [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]

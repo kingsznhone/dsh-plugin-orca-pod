@@ -63,16 +63,3 @@ export type ErrorReply = z.infer<typeof ErrorReplySchema>;
 
 /** A reply that carries only an acknowledgement (leave, child-link). */
 export const AckSchema = z.object({ ok: z.literal(true) });
-
-/** What a successful blob upload answers (§5.6). */
-export const BlobUploadResponseSchema = z.object({
-  blob_id: z.string(),
-  size: z.number(),
-  name: z.string().nullable(),
-  expires_at: z.string().nullable(),
-});
-export type BlobUploadResponse = z.infer<typeof BlobUploadResponseSchema>;
-
-/** A signed direct link to a blob (§5.6). */
-export const BlobLinkResponseSchema = z.object({ url: z.string(), expires_at: z.string() });
-export type BlobLinkResponse = z.infer<typeof BlobLinkResponseSchema>;

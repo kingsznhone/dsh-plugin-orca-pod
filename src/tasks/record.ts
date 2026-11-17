@@ -9,10 +9,12 @@
  * the store and lookups belong to the task runner (`runner.ts`).
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { deriveChildGrant, checkGrant, type GrantLedger } from "../security/grants.ts";
-import type { BlobStore, TaskStore } from "../storage/stores.ts";
+import type { FileBlobRegistry, TaskStore } from "../storage/stores.ts";
 import { assertNever, errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/executor.ts";
@@ -26,7 +28,7 @@ import {
 } from "../protocol/task.ts";
 import { narrowPermissionMode, type PermissionMode } from "../protocol/permission.ts";
 import type { PermissionRequest, RequestedAccess, ResumeControl, SignedGrant, TaskRelay } from "../protocol/grant.ts";
-import { composePrompt, listNotes, materializeInputs, removeInputs } from "./inputs.ts";
+import { composePrompt, listNotes } from "./prompt.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
 import type { Workspace } from "./workspace.ts";
 import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
@@ -34,7 +36,8 @@ import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 /** What a record needs from the node and the task runner. */
 export type RecordHost = {
   executor: LocalExecutor;
-  blobs: BlobStore;
+  /** Where the files a task produces are published (§5.6). */
+  fileBlobs: FileBlobRegistry;
   workspace: Workspace;
   store: TaskStore;
   ledger: GrantLedger;
@@ -111,7 +114,6 @@ export class TaskRecord {
   private ttl: NodeJS.Timeout | null = null;
   private permissionTimer: NodeJS.Timeout | null = null;
   private wait: Wait | null = null;
-  private inputsDir: string | null;
 
   constructor(host: RecordHost, init: RecordInit) {
     this.host = host;
@@ -122,7 +124,6 @@ export class TaskRecord {
     this.meta = init.meta;
     this.ttlS = init.ttlS;
     this.text = init.text;
-    this.inputsDir = init.meta.inputs.length > 0 ? host.workspace.inputDir(this.id) : null;
     // Resolved once: the ceiling only narrows what the origin asked for (§7.10).
     this.mode =
       host.permissionMode === undefined
@@ -138,7 +139,7 @@ export class TaskRecord {
     return structuredClone(this.view);
   }
 
-  /** Record the new task, start its clock and run it: materialize inputs, then drive the executor. */
+  /** Record the new task, start its clock and run it: compose the prompt, then drive the executor. */
   begin(): void {
     this.persist();
     this.armTtl();
@@ -229,9 +230,6 @@ export class TaskRecord {
     this.clearPermissionTimer();
     this.wait = null;
     this.host.release(this.id);
-    if (this.inputsDir !== null)
-      this.attempt("its inputs could not be removed", removeInputs.bind(null, this.inputsDir));
-    this.inputsDir = null;
     this.persist();
     this.host.onEvent(this.snapshot());
     this.host.drop(this.id);
@@ -293,7 +291,6 @@ export class TaskRecord {
 
   private async prepare(): Promise<ExecuteInput> {
     const { host, meta } = this;
-    if (this.inputsDir !== null) await materializeInputs(host.blobs, this.inputsDir, meta.inputs);
     const notes = await listNotes(host.workspace.notes);
     return {
       taskId: this.id,
@@ -303,7 +300,6 @@ export class TaskRecord {
         selfOrcaNodeId: host.selfOrcaNodeId,
         dataRoot: host.dataRoot,
         text: this.text,
-        inputs: meta.inputs,
         notes,
       }),
       originOrcaNode: this.origin,
@@ -332,7 +328,7 @@ export class TaskRecord {
         case "suspend":
           return this.requestPermission(event.suspend.tool, event.suspend.requested, event.suspend.relay ?? null, true);
         case "artifact":
-          this.addArtifact(event.name, event.content);
+          await this.addArtifact(event.name, event.content);
           break;
         case "completed":
           return this.finish("completed", textMessage(event.text));
@@ -344,8 +340,19 @@ export class TaskRecord {
     }
   }
 
-  private addArtifact(name: string, content: string): void {
-    const blob = this.host.blobs.put(Buffer.from(content, "utf8"), { name });
+  /**
+   * An artifact the executor hands over as text (only the echo script does):
+   * written under this node's own state, outside the agent's workspace, and
+   * published like any produced file (§5.6). The name is the origin's label and
+   * never a path; the file is numbered.
+   */
+  private async addArtifact(name: string, content: string): Promise<void> {
+    const dir = join(this.host.workspace.state, "artifacts", this.id);
+    const path = join(dir, String((this.view.artifacts ?? []).length + 1));
+    await mkdir(dir, { recursive: true });
+    await writeFile(path, content, "utf8");
+    const blob = await this.host.fileBlobs.register(path);
+    if (this.over) return;
     this.view.artifacts = [
       ...(this.view.artifacts ?? []),
       { artifactId: blob.blob_id, name, mediaType: "text/plain", bytes: blob.size },

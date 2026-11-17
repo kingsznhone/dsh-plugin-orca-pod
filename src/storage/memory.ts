@@ -1,22 +1,6 @@
 /** In-memory stores: unit tests, harness nodes and any node created without persistent storage. */
 
-import { writeFile } from "node:fs/promises";
-import { Readable } from "node:stream";
-
-import { bodySha256 } from "../security/crypto.ts";
-import { blobMeta, digestMismatch, laterExpiry, recordOf, tooLarge } from "./blob-common.ts";
-import type {
-  BlobRecord,
-  BlobRead,
-  BlobStore,
-  DispatchEntry,
-  DispatchStore,
-  FileBlob,
-  FileBlobStore,
-  PersistedTask,
-  StoredBlob,
-  TaskStore,
-} from "./stores.ts";
+import type { DispatchEntry, DispatchStore, FileBlob, FileBlobStore, PersistedTask, TaskStore } from "./stores.ts";
 
 function cloneTask(task: PersistedTask): PersistedTask {
   return structuredClone(task);
@@ -39,75 +23,6 @@ export function createMemoryTaskStore(initial: readonly PersistedTask[] = []): T
     },
     close() {},
   };
-}
-
-export function createMemoryBlobStore(ttlMs: number | null = null): BlobStore {
-  const blobs = new Map<string, StoredBlob>();
-  const expiry = (): string | null => (ttlMs === null ? null : new Date(Date.now() + ttlMs).toISOString());
-  const store: BlobStore = {
-    put(bytes, options): StoredBlob {
-      const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-      const blobId = bodySha256(buffer);
-      const existing = blobs.get(blobId);
-      if (existing) {
-        existing.expires_at = laterExpiry(existing.expires_at, expiry());
-        return { ...existing };
-      }
-      const blob: StoredBlob = { blob_id: blobId, ...blobMeta(buffer.length, options, expiry()), bytes: buffer };
-      blobs.set(blobId, blob);
-      return { ...blob };
-    },
-    async putStream(stream, options): Promise<BlobRecord> {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      for await (const chunk of stream) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-        size += buffer.length;
-        if (options?.maxBytes !== undefined && size > options.maxBytes) {
-          throw tooLarge(options.maxBytes);
-        }
-        chunks.push(buffer);
-      }
-      const bytes = Buffer.concat(chunks);
-      const actual = bodySha256(bytes);
-      if (options?.sha256 !== undefined && options.sha256 !== actual) throw digestMismatch(options.sha256, actual);
-      return recordOf(store.put(bytes, options));
-    },
-    openRead(blobId): BlobRead | undefined {
-      const blob = blobs.get(blobId);
-      if (!blob) return undefined;
-      return { stream: Readable.from(blob.bytes), size: blob.size, record: recordOf(blob) };
-    },
-    stat(blobId) {
-      const blob = blobs.get(blobId);
-      return blob && recordOf(blob);
-    },
-    async copyTo(blobId, destination) {
-      const blob = blobs.get(blobId);
-      if (!blob) return false;
-      await writeFile(destination, blob.bytes);
-      return true;
-    },
-    get(blobId) {
-      const blob = blobs.get(blobId);
-      return blob ? { ...blob } : undefined;
-    },
-    has(blobId) {
-      return blobs.has(blobId);
-    },
-    gc() {
-      const now = Date.now();
-      let removed = 0;
-      for (const [blobId, blob] of blobs) {
-        if (blob.expires_at !== null && Date.parse(blob.expires_at) <= now) {
-          blobs.delete(blobId);
-          removed += 1;
-        }
-      }
-      return removed;
-    },
-  };
-  return store;
 }
 
 /** A mapping that lives as long as the process: unit tests and in-memory orca nodes. */

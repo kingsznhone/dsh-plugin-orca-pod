@@ -90,11 +90,6 @@ type AuthHeaderOptions = {
   url: string;
   targetOrcaNodeId?: string;
   body?: Uint8Array | string;
-  /**
-   * Digest of a body that is streamed rather than held in memory (§5.6): the
-   * caller hashes the file first and signs that digest.
-   */
-  bodySha256?: string;
   ts?: number;
   nonce?: string;
 };
@@ -109,7 +104,7 @@ export function buildAuthHeader(options: AuthHeaderOptions): string {
       method: options.method,
       url: options.url,
       targetOrcaNodeId: target,
-      bodySha256: options.bodySha256 ?? bodySha256(options.body),
+      bodySha256: bodySha256(options.body),
       ts,
       nonce,
     }),
@@ -119,7 +114,8 @@ export function buildAuthHeader(options: AuthHeaderOptions): string {
 }
 
 type ParsedAuthHeader = {
-  orcaNodeId: OrcaNodeId;
+  /** As sent; `verifyAuth` checks that it is a node id. */
+  orcaNodeId: string;
   target: string;
   ts: number;
   nonce: string;
@@ -141,8 +137,7 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
   const ts = fields.get("ts");
   const nonce = fields.get("nonce");
   const signature = fields.get("sig");
-  // A key id that is not a node id can never verify; reject the header as malformed.
-  if (!orcaNodeId || !isOrcaNodeId(orcaNodeId) || !ts || !nonce || !signature) return null;
+  if (!orcaNodeId || !ts || !nonce || !signature) return null;
   const tsValue = Number(ts);
   if (!Number.isSafeInteger(tsValue)) return null;
   return { orcaNodeId, target: fields.get("target") ?? "", ts: tsValue, nonce, signature };
@@ -192,8 +187,6 @@ export type VerifyAuthOptions = {
   /** Reject requests issued before this process started: blocks restart replay. */
   notBefore: number;
   body?: Uint8Array | string;
-  /** Digest signed by a streaming client; overrides hashing `body` when set. */
-  bodySha256?: string;
   header: string | undefined;
   nonceCache: NonceCache;
   now?: number;
@@ -234,7 +227,7 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
       method: options.method,
       url: options.url,
       targetOrcaNodeId: parsed.target,
-      bodySha256: options.bodySha256 ?? bodySha256(options.body),
+      bodySha256: bodySha256(options.body),
       ts: parsed.ts,
       nonce: parsed.nonce,
     }),

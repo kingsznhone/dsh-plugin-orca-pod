@@ -72,16 +72,10 @@ export interface Settings {
   approval_timeout_s?: number;
   /** Inline result summary cap in bytes (§6.11). */
   result_max_bytes?: number;
-  /** Max number of task inputs one origin may attach (§6.7). */
-  max_input_files?: number;
-  /** Max total bytes of task inputs materialized per task (§6.7). */
-  max_input_bytes?: number;
   /** A new task is refused while the group workspace holds more bytes than this (§6.13). */
   max_workspace_bytes: number;
   /** ... or more files than this. */
   max_workspace_files: number;
-  /** Total size of the blob store; uploads that would pass it are refused (§5.6). */
-  max_blob_store_bytes: number;
   /** Timeout for one outbound A2A/cluster call; default 30s (§4.7). */
   request_timeout_ms?: number;
   /** Allow candidate endpoints on public IPs (§7.7). */
@@ -178,11 +172,8 @@ const FIELDS = {
   task_timeout_s: field(PositiveNumber, { panel: true }),
   approval_timeout_s: field(PositiveNumber, { panel: true }),
   result_max_bytes: field(PositiveInteger, { panel: true }),
-  max_input_files: field(PositiveInteger, { panel: true }),
-  max_input_bytes: field(PositiveInteger, { panel: true }),
   max_workspace_bytes: field(PositiveInteger, { default: 5 * 1024 ** 3, panel: true }),
   max_workspace_files: field(PositiveInteger, { default: 50_000, panel: true }),
-  max_blob_store_bytes: field(PositiveInteger, { default: 5 * 1024 ** 3, panel: true }),
   request_timeout_ms: field(PositiveNumber),
   allow_public_peers: field(z.boolean(), { panel: true }),
   allow_loopback_peers: field(z.boolean(), { panel: true }),

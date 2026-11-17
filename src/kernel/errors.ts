@@ -24,10 +24,6 @@ export const POD_ERROR_STATUS = {
   bad_echo_script: 400,
   unsupported: 400,
   workgroup_mismatch: 400,
-  blob_digest_mismatch: 400,
-  input_blob_missing: 400,
-  too_many_inputs: 400,
-  inputs_too_large: 400,
   /** A join whose declared endpoints are all forbidden by the screening policy (§7.7). */
   endpoint_refused: 400,
   // Unknown resources.
@@ -39,13 +35,11 @@ export const POD_ERROR_STATUS = {
   grant_invalid: 409,
   grant_expired: 409,
   escalation_required: 409,
-  duplicate_input_name: 409,
   // Gone.
   link_expired: 410,
   blob_expired: 410,
   blob_file_missing: 410,
   // Limits.
-  blob_too_large: 413,
   body_too_large: 413,
   orca_node_busy: 429,
   quota_exceeded: 507,

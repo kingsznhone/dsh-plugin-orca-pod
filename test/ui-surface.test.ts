@@ -184,7 +184,6 @@ describe("UI data surface", () => {
 
     const workspace = admin.workspace()!;
     expect(workspace.notes_files).toEqual(["STATUS.md"]);
-    expect(workspace.inputs_dirs).toEqual([]);
 
     const submitted = await a.sendTask(b.endpoints[0]!, {
       message: text("produce an artifact"),
@@ -253,7 +252,7 @@ describe("UI data surface", () => {
     expect(local.peer).toBe(b.endpoints[0]);
     expect(adminB.recent(10).filter((row) => row.id === submitted.id)).toHaveLength(1);
     const detail = await adminB.task(local.peer, local.id);
-    expect(detail).toMatchObject({ origin: a.self().display_name, dispatch: null, inputs: [] });
+    expect(detail).toMatchObject({ origin: a.self().display_name, dispatch: null });
     expect((await adminB.cancel(local.peer, local.id)).status.state).toBe("canceled");
     await waitFor(
       () => adminB.recent(10),
@@ -291,7 +290,6 @@ describe("UI data surface", () => {
     expect(detail.task.id).toBe(submitted.id);
     expect(detail.dispatch).toMatchObject({ task_id: submitted.id, peer: b.endpoints[0] });
     expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, url: null }]);
-    expect(detail.inputs).toEqual([]);
     expect(detail.origin).toBe(a.self().display_name);
   });
 

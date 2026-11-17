@@ -1,13 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { readFile } from "node:fs/promises";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { bodySha256 } from "../src/security/crypto.ts";
 import { errorMessage } from "../src/kernel/errors.ts";
 import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../src/node/config.ts";
-import { loadIdentity } from "../src/security/identity.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
-import { createPeerClient } from "../src/transport/peer-client.ts";
-import { BlobLinkResponseSchema, BlobUploadResponseSchema } from "../src/protocol/a2a.ts";
 import { DEFAULT_PORT } from "../src/protocol/constants.ts";
 import { WorkgroupIdSchema } from "../src/protocol/peer.ts";
 
@@ -38,12 +34,8 @@ const TASK = {
   "auto-resume": { type: "boolean" },
 } as const;
 
-const BLOB = {
-  config: { type: "string" },
-  peer: { type: "string" },
-  text: { type: "string" },
-  file: { type: "string" },
-  name: { type: "string" },
+const FETCH = {
+  url: { type: "string" },
 } as const;
 
 type Values<T extends ParseArgsOptionsConfig> = ReturnType<typeof parseArgs<{ options: T }>>["values"];
@@ -163,47 +155,17 @@ async function task(args: Values<typeof TASK>): Promise<void> {
   await orcaNode.stop();
 }
 
-async function blob(args: Values<typeof BLOB>): Promise<void> {
-  const configFile = required(args.config, "config");
-  const peer = required(args.peer, "peer").replace(/\/$/, "");
-  const config = await loadConfig(configFile);
-  const identity = loadIdentity(config.data_root);
-  if (identity === null) throw new Error("identity.json is missing");
-  const client = createPeerClient({
-    identity,
-    fetch: (url, init) => fetch(url, init),
-    timeoutMs: 30_000,
-    selfEndpoints: () => [],
-    roster: () => [],
-  });
-  // This tool is not a member: it names the receiver it wants to talk to, as `/health` reports it.
-  const health = (await (await fetch(`${peer}/health`)).json()) as { orca_node_id: string };
-  const target = { target: health.orca_node_id };
-  const content = args.file ? await readFile(args.file) : Buffer.from(args.text ?? "hello blob\n", "utf8");
-  const name = args.name ?? "blob.txt";
-
-  const stored = await client.upload(
-    peer,
-    {
-      path: `/blobs?name=${encodeURIComponent(name)}`,
-      body: new Blob([content]).stream(),
-      sha256: bodySha256(content),
-      reply: BlobUploadResponseSchema,
-    },
-    target,
-  );
-  console.log(`upload blob_id=${stored.blob_id} size=${stored.size} name=${stored.name}`);
-
-  const link = await client.call(
-    peer,
-    { method: "POST", path: `/blobs/${stored.blob_id}/link`, reply: BlobLinkResponseSchema },
-    target,
-  );
-  const viaLink = await fetch(link.url);
-  const linked = Buffer.from(await viaLink.arrayBuffer());
-  console.log(
-    `link status=${viaLink.status} bytes=${linked.length} sha_match=${bodySha256(linked) === stored.blob_id} url=${link.url}`,
-  );
+/**
+ * Fetch a published file across machines (§5.6): the link `orca-node publish`
+ * printed on the other node, downloaded without any key, and checked against
+ * the sha256 the link names.
+ */
+async function fetchBlob(args: Values<typeof FETCH>): Promise<void> {
+  const url = new URL(required(args.url, "url"));
+  const blobId = url.pathname.split("/").pop() ?? "";
+  const response = await fetch(url);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  console.log(`status=${response.status} bytes=${bytes.length} sha_match=${bodySha256(bytes) === blobId}`);
 }
 
 function printHelp(): void {
@@ -215,9 +177,7 @@ function printHelp(): void {
   console.log(
     "  node scripts/cross.ts task  --config <file> --peer <url> [--text hello] [--echo '<json>'] [--auto-resume]",
   );
-  console.log(
-    "  node scripts/cross.ts blob  --config <file> --peer <url> [--text hello] [--file path] [--name blob.txt]",
-  );
+  console.log("  node scripts/cross.ts fetch --url <link printed by orca-node publish>");
 }
 
 const [command = "help", ...rest] = process.argv.slice(2);
@@ -227,8 +187,8 @@ if (command === "serve") {
   await join(parseArgs({ args: rest, options: JOIN }).values);
 } else if (command === "task") {
   await task(parseArgs({ args: rest, options: TASK }).values);
-} else if (command === "blob") {
-  await blob(parseArgs({ args: rest, options: BLOB }).values);
+} else if (command === "fetch") {
+  await fetchBlob(parseArgs({ args: rest, options: FETCH }).values);
 } else {
   printHelp();
 }

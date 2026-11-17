@@ -71,19 +71,12 @@ export function controlMessage(taskId: string, control: ResumeControl, messageId
   return { role: "user", parts: [{ kind: "data", data: { ...control } }], taskId, messageId };
 }
 
-/** A task input is a content-addressed blob the target saves under a plain file name (§6.7). */
-export const TaskInputRefSchema = z.object({
-  blob_id: z.string(),
-  name: z.string(),
-});
-export type TaskInputRef = z.infer<typeof TaskInputRefSchema>;
-
 const NOT_NEGATIVE_INT = "must be a non-negative integer";
 
 /**
  * The `pod` block of a task's metadata (§5.1). Unknown keys are kept: another
- * node may be newer. Task lifetime and input refs are narrowed further where
- * the task is accepted (`tasks/meta.ts`).
+ * node may be newer. The task lifetime is narrowed further where the task is
+ * accepted (`tasks/meta.ts`).
  */
 export const PodTaskMetadataSchema = z.looseObject({
   hop: z.number(NOT_NEGATIVE_INT).int(NOT_NEGATIVE_INT).min(0, NOT_NEGATIVE_INT).optional(),
@@ -100,8 +93,6 @@ export const PodTaskMetadataSchema = z.looseObject({
   idempotency_key: z.string().optional(),
   task_ttl_s: z.number("must be a positive number").finite().positive("must be a positive number").optional(),
   grant_id: z.string().optional(),
-  /** Blobs the target materializes under `inputs/<task_id>/` before the run (§6.7). */
-  inputs: z.array(TaskInputRefSchema).optional(),
 });
 export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;
 

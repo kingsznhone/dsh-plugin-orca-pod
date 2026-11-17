@@ -3,7 +3,7 @@
 分布式 DSH 对等集群（DSH 插件形态）。设计文档入口：[docs/README.md](docs/README.md)。
 
 - 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
-- 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、内容寻址 blob 通道。
+- 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、按需拉取的文件链接（publish）。
 - 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，自研模块在 `src/`，随包发布的是编译后的 `lib/`（`npm run build`），安装时不需要本仓库的 `node_modules`。
 - 验收：`npm run check`（biome + tsc + vitest）。
 
@@ -25,9 +25,9 @@ orca-pod/
 │   ├── kernel/           # errors（PodError + 错误码表）、schema（isRecord、parseSchema）、events（事件总线与 NodeLogger）、entry（包内入口路径）
 │   ├── protocol/         # 线上协议（zod schema）：peer / cluster / a2a / task / grant / model / permission / client（PeerClient 契约）/ dispatch / events / constants
 │   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce、直链）、grants（grant 校验与转发）
-│   ├── storage/          # index（全部存储接口）；实现 memory / fs（blob，含配额与 GC）/ file-registry（publish）/ sqlite
+│   ├── storage/          # stores（全部存储接口）；实现 memory / file-registry（publish）/ sqlite
 │   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
-│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、inputs（任务书与输入）、workspace、delegation（发起侧派发、审批、上交、child-link；childPodMetadata；派发日志语义）
+│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、prompt（任务书）、workspace、delegation（发起侧派发、审批、上交、child-link；childPodMetadata；派发日志语义）
 │   ├── execution/        # executor 契约、echo、process（子进程公共件）、acp/（config / connection / session / permissions / executor）
 │   ├── transport/        # peer-client（唯一的出站客户端）、net（地址归一化、回环、端口）、gateway/（入站 HTTP 路由）
 │   ├── node/             # orca-node（组合根 createOrcaNode）、config（config.json）、settings（字段表）、harness（测试用多节点）
@@ -83,16 +83,14 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 | `display_name`         | 缩略的 orca node id                    | 显示名                                                                                                |
 | `bind_host` / `port`   | `127.0.0.1` / `11811`                  | 监听地址与端口（`port: 0` 自选）；`install` 默认写 `::`                                               |
 | `endpoints`            | `[]`（按监听地址推导）                 | 对外宣告的拨号地址，1–8 个，第一个是 primary                                                          |
-| `data_root`            | `$ORCA_POD_HOME`、`$DSH_PROFILE_DIR/orca-pod` 或 `$DSH_HOME/orca-pod` | `identity.json`、`config.json`、`tasks.db`、`blobs/`、工作区所在目录（插件内跟随当前 DSH profile；宿主不导出 `DSH_PROFILE_DIR` 时用 loader `baseUrl` 兜底。不读取、不迁移任何旧位置，如 `~/.orca-pod`）    |
+| `data_root`            | `$ORCA_POD_HOME`、`$DSH_PROFILE_DIR/orca-pod` 或 `$DSH_HOME/orca-pod` | `identity.json`、`config.json`、`tasks.db`、工作区所在目录（插件内跟随当前 DSH profile；宿主不导出 `DSH_PROFILE_DIR` 时用 loader `baseUrl` 兜底。不读取、不迁移任何旧位置，如 `~/.orca-pod`）    |
 | `peers`                | `[]`                                   | 启动时 join 的 peer（仅插件）                                                                          |
 | `executor`             | 插件与 `install` 为 `acp`，库/CLI 未设置时 `echo` | 本机执行器（origin 不能指定）；`acp` 对象配 `command`/`profile`/`extra_args`/`mcp_servers`  |
 | `permission_mode`      | 未设置（无本机上限）                   | 本机权限上限；生效模式 = 它与 origin 继承值中较窄的                                                    |
 | `task_timeout_s`       | `3600`                                 | 单任务硬上限，对外公布为 `max_task_ttl_s`                                                              |
 | `approval_timeout_s`   | 未设置（无限等待）                     | 挂起的权限请求到点自动拒绝（`failed(permission_timeout)`）                                             |
 | `result_max_bytes`     | 32 KiB                                 | 结论文本内联上限                                                                                      |
-| `max_input_files` / `max_input_bytes` | 32 / 512 MiB             | 单任务素材上限                                                                                        |
 | `max_workspace_bytes` / `max_workspace_files` | 5 GiB / 50 000    | 工作区配额；超出时新任务 `507 quota_exceeded`                                                          |
-| `max_blob_store_bytes` | 5 GiB                                  | blob 存储配额；超出的上传 `507`                                                                        |
 | `request_timeout_ms`   | `30000`                                | 单次出站调用的超时                                                                                    |
 | `allow_public_peers` / `allow_loopback_peers` | `false` / `true`  | 候选端点是否允许公网 / 回环地址                                                                        |
 | `models` / `default_model` / `default_reasoning_effort` | 空 | 节点自述的模型目录与默认值；插件从 DSH Host 采集，纯 CLI 节点可手填                                    |
@@ -122,7 +120,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 
 ```bash
 orca-node serve    --config <path> [--peer <url>] [--bind <host>] [--port <n>]   # 启动一个节点
-orca-node send     --peer <url> --text <text|-> [--file <path> ...] [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
+orca-node send     --peer <url> --text <text|-> [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
 orca-node status   --peer <url> --task <id> [--json]
 orca-node wait     --peer <url> --task <id> [--local-task <this task>] [--timeout <s>] [--json]
 orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]

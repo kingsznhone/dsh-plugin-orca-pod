@@ -31,9 +31,7 @@
 | GET    | `/health`                      | 进程存活探针，返回 `{status:"ok", orca_node_id}`           | public                          |
 | GET    | `/.well-known/agent-card.json` | A2A Agent Card（见 §4.6）                                  | public                          |
 | POST   | `/a2a`                         | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`、`tasks/escalate`（§4.7） | member                          |
-| POST   | `/blobs`                       | 上传文件（内容寻址，流式）                                 | member                          |
-| GET    | `/blobs/{blob_id}`             | 下载文件                                                   | link                            |
-| POST   | `/blobs/{blob_id}/link`        | 换一条直链（`?exp=&sig=`）                                 | member                          |
+| GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | link                            |
 | POST   | `/cluster/join`                | 引导/准入：返回自述 + 目录                                 | join + 密码证明                 |
 | POST   | `/cluster/heartbeat`           | 心跳 + 摘要 + 准入证明 + 完整自述；摘要不一致时响应回目录   | member + 密码证明               |
 | GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲）                           | member                          |
@@ -41,7 +39,7 @@
 | POST   | `/cluster/child-link`          | 本机 task 登记子任务，供自动上升（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） | local                           |
 | GET    | `/cluster/task?task=`          | 读本机任务视图，CLI 建子任务时据此继承 `hop/chain/root`    | local                           |
 
-`/blobs` 是 fs 内容寻址存储（去重、单 blob 256 MiB、直链 7 天；配额与 GC 见 [§5.6](05-tasks.md#56-文件交换blob-通道)）；本机文件的登记没有 HTTP 路由，由 `orca-node publish` 直写本机 SQLite。
+`/blobs/{blob_id}` 只读本节点 `publish` 登记的文件（字节留在原处、直链与登记同时过期，见 [§5.6](05-tasks.md#56-文件交换blob-通道)）；登记没有 HTTP 路由，由 `orca-node publish` 直写本机 SQLite；节点之间不推送文件。
 
 约定：
 
@@ -62,7 +60,7 @@
 | 410  | `link_expired`、`blob_expired`、`blob_file_missing`                                                                         |
 | 413  | `blob_too_large`、`body_too_large`                                                                                          |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |
-| 507  | `quota_exceeded`（工作区或 blob 存储超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                   |
+| 507  | `quota_exceeded`（工作区超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                                |
 | 500  | `internal`                                                                                                                  |
 
 `/a2a` 上同样的错误包成 JSON-RPC 错误：`{ jsonrpc, id, error: { code: -32000, message: <错误码>, data: { code, message, … } } }`。出站调用在本机抛出的 `unknown_peer`（404）、`peer_not_online`（503）、`peer_error`（502）不会出现在线上（§4.7）。
@@ -75,7 +73,7 @@
 | 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`local` 路由带任何转发头直接 `403 local_only`，所以代理不要转发 `/cluster/child-link` 与 `/cluster/task`                                                                           |
 | 对端地址 | 节点互通靠 **join 请求体里自报的 `endpoints`**（有序列表，可含 IPv6/IPv4、局域网与公网地址），不靠来源 IP：反代部署必须把公网 URL 配进 `endpoints`，否则对端会记下 loopback 地址、心跳发不过来；对端按顺序逐个尝试，一个地址不可达不代表 orca node 离线 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权                                                                                                                                                                                                         |
-| 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的（blob 上传需要放宽到 256 MiB）                                                                                                                                                                          |
+| 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的（orca node 一侧是 1 MiB，没有更大的请求体）                                                                                                                                                              |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放                                                                                                                                                                                                    |
 
 `endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、blob 直链、CLI 展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
@@ -132,7 +130,7 @@
 
 **出站调用只有一个客户端**（`src/transport/peer-client.ts`），CLI、心跳、tracker、child-link 轮询都走它：
 
-- 每次调用带 `AbortSignal.timeout`：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半，CLI 上传放宽到 10 分钟；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
+- 每次调用带 `AbortSignal.timeout`：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
 - 签名绑定接收方 `orca_node_id` 与 `path+query`（[§7.2](07-security.md#72-请求签名没有-session-token)）。接收方 id 来自：本机自己、本机拨过的 URL 记录、或成员表里自述了该 URL 的成员。
 - **不做隐式 join**：URL 不认识就是本机抛 `unknown_peer`，请求根本不发出。只有显式的 join/connect（插件 `connect`、CLI `serve --peer`、面板“连接”）才会向陌生地址发出准入证明。陌生地址是否可信，是调用者在 join 前该想清楚的事。
 - 只有 `sendTask` 会新建 origin 派发日志；`tasks/get`、`tasks/cancel`、审批等读写只刷新已存在的条目，避免面板和轮询把别人的任务记成本机派发。目标不是 `online` 时 `sendTask` 直接 `peer_not_online`。
@@ -156,7 +154,7 @@ submitted ──► working ──► input-required ──► working
                  └──► canceled
 ```
 
-- `submitted`：已接收，未开始（准备素材）。
+- `submitted`：已接收，未开始（组装任务书）。
 - `working`：LocalExecutor 正在执行。
 - `input-required`：需要发起 orca node **补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷是 task 的 `status.message.parts` 里 data part 的 `permission_request`，不依赖推送；恢复消息必须是签名 grant 或拒绝。没有“补输入”的挂起：任务不能继续时以 `completed` 结束，结论首行写 `BLOCKED: …`（[§6.14](06-execution.md#614-acpexecutor)）。
 - `input-required` **不占用执行槽**：任务挂起时槽位释放，恢复时重新竞争，不预留、不排队。槽被占就回 `429 orca_node_busy`，由 origin 决定重试还是放弃。

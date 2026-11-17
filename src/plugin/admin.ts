@@ -10,7 +10,6 @@
  */
 
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
 
 import { defaultDataRoot } from "../node/config.ts";
 import type { DispatchEntry } from "../storage/stores.ts";
@@ -83,19 +82,15 @@ export interface PodTaskDetail {
   origin: string;
   dispatch: DispatchEntry | null;
   artifacts: PodArtifact[];
-  inputs: string[];
 }
 
 /** Workspace directories plus a shallow listing for the UI browser. */
 export interface WorkspaceView {
   root: string;
   notes: string;
-  inputs: string;
   state: string;
   /** Top-level files a later task will see in its appendix (`notes/<name>`). */
   notes_files: string[];
-  /** The newest per-task input directories (bounded so a poll stays cheap) with their file counts. */
-  inputs_dirs: Array<{ task_id: string; files: number }>;
 }
 
 /** Advanced local controls the panel may edit; null means "not overridden". */
@@ -103,11 +98,8 @@ export interface PodAdvancedConfig {
   task_timeout_s: number | null;
   approval_timeout_s: number | null;
   result_max_bytes: number | null;
-  max_input_files: number | null;
-  max_input_bytes: number | null;
   max_workspace_bytes: number;
   max_workspace_files: number;
-  max_blob_store_bytes: number;
   allow_public_peers: boolean | null;
   allow_loopback_peers: boolean | null;
   permission_mode: PermissionMode | null;
@@ -170,8 +162,6 @@ export interface PodAdmin {
   subscribe(listener: () => void): () => void;
 }
 
-/** Newest input directories listed in the workspace summary. */
-const WORKSPACE_INPUT_DIRS = 10;
 const REQUESTED_PREVIEW_CHARS = 160;
 
 /** List regular entries of one directory, sorted; missing paths yield []. */
@@ -312,11 +302,8 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
         task_timeout_s: config.task_timeout_s ?? null,
         approval_timeout_s: config.approval_timeout_s ?? null,
         result_max_bytes: config.result_max_bytes ?? null,
-        max_input_files: config.max_input_files ?? null,
-        max_input_bytes: config.max_input_bytes ?? null,
         max_workspace_bytes: config.max_workspace_bytes,
         max_workspace_files: config.max_workspace_files,
-        max_blob_store_bytes: config.max_blob_store_bytes,
         allow_public_peers: config.allow_public_peers ?? null,
         allow_loopback_peers: config.allow_loopback_peers ?? null,
         permission_mode: config.permission_mode ?? null,
@@ -382,14 +369,13 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
     async task(peer, taskId) {
       const current = requireNode();
       const task = await current.getTask(peer, taskId);
-      // Only a task this node runs has artifacts and inputs here.
+      // Only a task this node runs has its artifacts here.
       const local = current.endpoints.includes(peer);
       return {
         task,
         origin: labeller(current)(podOf(task).root_origin),
         dispatch: current.listDispatches().find((entry) => entry.task_id === task.id) ?? null,
         artifacts: artifactsOf(current, task, local),
-        inputs: local ? entries(join(current.workspacePaths().inputs, task.id)).map((file) => file.name) : [],
       };
     },
     approve: (peer, taskId) => broker.approve(peer, taskId),
@@ -405,10 +391,6 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
         notes_files: entries(paths.notes)
           .filter((entry) => !entry.is_dir)
           .map((entry) => entry.name),
-        inputs_dirs: entries(paths.inputs)
-          .filter((entry) => entry.is_dir)
-          .slice(-WORKSPACE_INPUT_DIRS)
-          .map((entry) => ({ task_id: entry.name, files: entries(join(paths.inputs, entry.name)).length })),
       };
     },
     config: configView,

@@ -16,7 +16,7 @@ export type HttpMethod = "GET" | "POST";
 export type CallOptions = {
   /** Aborts the call; the deadline still applies. */
   signal?: AbortSignal;
-  /** Replaces the client's default deadline (heartbeats are shorter, uploads longer). */
+  /** Replaces the client's default deadline (heartbeats are shorter). */
   timeoutMs?: number;
   /**
    * Receiver id the signature is bound to (§7.1). Left out, it is the member
@@ -34,14 +34,6 @@ export type JsonRequest<S extends z.ZodType> = {
   reply: S;
 };
 
-/** A signed raw upload whose sha256 the caller computed first, so the body streams (§5.6). */
-export type UploadRequest<S extends z.ZodType> = {
-  path: string;
-  body: ReadableStream<Uint8Array>;
-  sha256: string;
-  reply: S;
-};
-
 export type PeerClient = {
   /** Node id behind a URL: this node, a URL it dialed, or a member that advertises it. */
   idOf(endpoint: string): OrcaNodeId | undefined;
@@ -54,5 +46,4 @@ export type PeerClient = {
   call<S extends z.ZodType>(endpoint: string, request: JsonRequest<S>, options?: CallOptions): Promise<z.output<S>>;
   /** Signed JSON-RPC call to `/a2a`; every method answers with a task view. */
   rpc<M extends A2AMethod>(endpoint: string, method: M, params: A2AParams<M>, options?: CallOptions): Promise<TaskView>;
-  upload<S extends z.ZodType>(endpoint: string, request: UploadRequest<S>, options?: CallOptions): Promise<z.output<S>>;
 };

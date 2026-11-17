@@ -11,7 +11,7 @@
 - 每台机器一个 orca node（DSH 插件，或无头的 `orca-node serve`）：对外是 A2A server + 控制面，对内驱动本地 DSH。
 - 拓扑只有 full mesh；成员关系只来自直接收到的心跳；身份是 Ed25519 公钥，入组靠 workgroup 密码派生的准入证明。
 - 任务面是 A2A（`message/send` / `tasks/get` / `tasks/cancel`），异步、轮询；单槽执行，忙时 429。
-- 文件走内容寻址 blob 通道；交接靠持久的 group 工作区与 `notes/`。
+- 文件走发布链接：节点只发布自己机器上的文件，谁需要谁来拉；交接靠持久的 group 工作区与 `notes/`。
 - 权限继承发起会话的模式；越界请求回到 origin 由人决定。
 
 ### 1.2 目标

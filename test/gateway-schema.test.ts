@@ -8,7 +8,7 @@ import type { SubmitTaskInput, TaskRunner } from "../src/protocol/task.ts";
 import { NonceCache, admissionProof, buildAuthHeader } from "../src/security/crypto.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
-import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage/memory.ts";
+import { createMemoryFileBlobStore } from "../src/storage/memory.ts";
 import { createGateway } from "../src/transport/gateway/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -60,7 +60,6 @@ function harness() {
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,
-    blobs: createMemoryBlobStore(),
     fileBlobs: createFileBlobRegistry(createMemoryFileBlobStore()),
   });
   const post = (signer: NodeIdentity, url: string, body: unknown) => {

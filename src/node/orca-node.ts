@@ -3,20 +3,8 @@ import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { createFileBlobRegistry } from "../storage/file-registry.ts";
-import {
-  createMemoryFileBlobStore,
-  createMemoryDispatchStore,
-  createMemoryBlobStore,
-  createMemoryTaskStore,
-} from "../storage/memory.ts";
-import {
-  type FileBlobStore,
-  type DispatchEntry,
-  type DispatchStore,
-  DEFAULT_BLOB_TTL_MS,
-  type BlobStore,
-  type TaskStore,
-} from "../storage/stores.ts";
+import { createMemoryFileBlobStore, createMemoryDispatchStore, createMemoryTaskStore } from "../storage/memory.ts";
+import type { FileBlobStore, DispatchEntry, DispatchStore, TaskStore } from "../storage/stores.ts";
 import { NonceCache, signedBlobUrl } from "../security/crypto.ts";
 import { loadOrCreateIdentity } from "../security/identity.ts";
 import {
@@ -29,7 +17,6 @@ import { EchoExecutor } from "../execution/echo.ts";
 import { createAcpExecutor } from "../execution/acp/executor.ts";
 import type { LocalExecutor } from "../execution/executor.ts";
 import { createEventBus } from "../kernel/events.ts";
-import { errorMessage } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
 import { detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/net.ts";
 import { createGateway } from "../transport/gateway/gateway.ts";
@@ -49,7 +36,6 @@ import type { PodEventInput, PodEventListener } from "../protocol/events.ts";
 import type { SubmitTaskInput, TaskView } from "../protocol/task.ts";
 import type { TaskRelay } from "../protocol/grant.ts";
 import { createSqliteDispatchStore, createSqliteFileBlobStore, createSqliteTaskStore } from "../storage/sqlite.ts";
-import { createFsBlobStore } from "../storage/fs.ts";
 import { createTaskRunner } from "../tasks/runner.ts";
 import { createWorkspaceManager, type WorkspacePaths } from "../tasks/workspace.ts";
 
@@ -81,7 +67,6 @@ function collectRuntime(): RuntimeInfo {
 /** Durable stores; absent => in-memory (tests, harness). */
 export type OrcaNodeStorage = {
   taskStore?: TaskStore;
-  blobStore?: BlobStore;
   /** Durable file-blob mapping; the CLI writes it, the gateway reads it. */
   fileBlobStore?: FileBlobStore;
   /** Origin-side dispatch log: what this node handed to peers (§8.3). */
@@ -89,17 +74,13 @@ export type OrcaNodeStorage = {
 };
 
 /**
- * Persistent defaults: SQLite task store and disk blobs under `<data_root>`
- * (§5.5, §5.6). The CLI and the DSH plugin opt in; tests do not, so they stay
+ * Persistent defaults: one SQLite database under `<data_root>` for tasks,
+ * published files and dispatches (§5.5, §5.6). The CLI and the DSH plugin opt in; tests do not, so they stay
  * isolated and fast.
  */
 export function createPersistentStorage(config: OrcaNodeConfig): OrcaNodeStorage {
   return {
     taskStore: createSqliteTaskStore(join(config.data_root, "tasks.db")),
-    blobStore: createFsBlobStore(join(config.data_root, "blobs"), {
-      ttlMs: DEFAULT_BLOB_TTL_MS,
-      maxBytes: config.max_blob_store_bytes,
-    }),
     fileBlobStore: createSqliteFileBlobStore(join(config.data_root, "tasks.db")),
     dispatchStore: createSqliteDispatchStore(join(config.data_root, "tasks.db")),
   };
@@ -187,7 +168,7 @@ export interface OrcaNode {
    * unsubscribe function; a throwing listener never reaches the node.
    */
   subscribe(listener: PodEventListener): () => void;
-  /** Short-lived download URL for one blob. */
+  /** Short-lived download URL for one file this node published. */
   blobLink(blobId: string, ttlS?: number): string;
   /** Workspace directories for UI browsing. */
   workspacePaths(): WorkspacePaths;
@@ -234,9 +215,6 @@ function endpointsFrom(config: OrcaNodeConfig, port: number): [string, ...string
 
 const SILENT: NodeLogger = { warn() {} };
 
-/** How often expired blobs and the temp files of crashed uploads are swept (§5.6). */
-export const BLOB_GC_INTERVAL_MS = 10 * 60 * 1000;
-
 /** Wires the node: stores and task runner, the workgroup, delegation and the gateway share one peer client. */
 export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const { config, storage } = options;
@@ -245,7 +223,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   if (identity.orcaNodeId !== config.orca_node_id) {
     throw new Error("identity.json does not match config.orca_node_id");
   }
-  const blobs = storage?.blobStore ?? createMemoryBlobStore();
   const taskStore = storage?.taskStore ?? createMemoryTaskStore();
   const fileBlobStore = storage?.fileBlobStore ?? createMemoryFileBlobStore();
   const fileBlobs = createFileBlobRegistry(fileBlobStore);
@@ -297,7 +274,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   });
   const tasks = createTaskRunner({
     executor,
-    blobs,
+    fileBlobs,
     store: taskStore,
     workspace,
     logger,
@@ -306,8 +283,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     permissionMode: config.permission_mode,
     permissionTtlS: config.approval_timeout_s,
     resultMaxBytes: config.result_max_bytes,
-    maxInputFiles: config.max_input_files,
-    maxInputBytes: config.max_input_bytes,
     maxWorkspaceBytes: config.max_workspace_bytes,
     maxWorkspaceFiles: config.max_workspace_files,
     taskTimeoutS: maxTaskTtlS,
@@ -343,11 +318,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,
-    blobs,
     fileBlobs,
   });
-
-  let gcTimer: NodeJS.Timeout | null = null;
 
   /** Port 0 would let the kernel hand out a port `fetch` refuses to dial (e.g. 6000); pick one it accepts. */
   async function listen(): Promise<string> {
@@ -378,17 +350,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     },
 
     async start() {
-      workspaceManager.purgeInputs();
-      blobs.gc();
-      gcTimer = setInterval(() => {
-        try {
-          blobs.gc();
-        } catch (error) {
-          // A file another process holds (Windows) must not end the node; the next sweep retries.
-          logger.warn(`blob sweep failed: ${errorMessage(error)}`);
-        }
-      }, BLOB_GC_INTERVAL_MS);
-      gcTimer.unref();
       tasks.recover();
       const address = await listen();
       const port = Number(new URL(address).port);
@@ -398,8 +359,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       return { url: endpoints[0], port };
     },
     async stop() {
-      if (gcTimer !== null) clearInterval(gcTimer);
-      gcTimer = null;
       group.stop();
       delegation.stop();
       await app.close();
@@ -427,11 +386,11 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     listTasks: (limit = 200) => tasks.list(limit),
     subscribe: events.subscribe,
     blobLink(blobId, ttlS = 300) {
-      // Same URL shape the gateway's `/blobs/:id/link` mints (§5.6).
+      // The same capability URL `orca-node publish` prints (§5.6).
       return signedBlobUrl(identity, endpoints[0], blobId, String(Math.floor(Date.now() / 1000) + ttlS));
     },
     workspacePaths() {
-      return { root: workspace.root, notes: workspace.notes, inputs: workspace.inputs, state: workspace.state };
+      return { root: workspace.root, notes: workspace.notes, state: workspace.state };
     },
   };
 }

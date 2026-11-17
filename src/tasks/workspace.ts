@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkgroupId } from "../protocol/peer.ts";
@@ -6,7 +6,7 @@ import type { WorkgroupId } from "../protocol/peer.ts";
 /**
  * One workspace per (data_root, workgroup) (§6.7). Created on join and kept
  * across tasks, sessions and restarts; its root is the agent's cwd, so project
- * files, `notes/` and a task's `inputs/<task_id>/` are all cwd-relative.
+ * files and `notes/` are cwd-relative.
  *
  * Gateway-owned state (session maps, per-task session dirs) must NOT live in
  * the workspace: the agent may write anywhere under cwd. It lives under
@@ -17,28 +17,16 @@ export type WorkspacePaths = {
   root: string;
   /** Cross-session notes; writable, never leaves this orcaNode. */
   notes: string;
-  /** Task inputs pulled from blobs, one directory per task; gateway-owned. */
-  inputs: string;
   /** Gateway-owned state outside the agent's reach. */
   state: string;
 };
 
-export type Workspace = WorkspacePaths & {
-  /** Materialization directory for one task's inputs; gateway-owned. */
-  inputDir(taskId: string): string;
-};
+export type Workspace = WorkspacePaths;
 
 type WorkspaceManager = {
   /** Create the directories if needed and return the workspace. */
   ensure(): Workspace;
-  /**
-   * Remove materialized inputs left behind by a previous process. Called once
-   * at startup: every task that owned them was failed by recovery (§8.3).
-   */
-  purgeInputs(): void;
 };
-
-const TASK_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function createWorkspaceManager(options: { dataRoot: string; workgroupId: WorkgroupId }): WorkspaceManager {
   const root = join(options.dataRoot, "workgroups", options.workgroupId);
@@ -46,18 +34,13 @@ export function createWorkspaceManager(options: { dataRoot: string; workgroupId:
   const workspace: Workspace = {
     root,
     notes: join(root, "notes"),
-    inputs: join(root, "inputs"),
     state,
-    inputDir(taskId: string): string {
-      if (!TASK_ID_PATTERN.test(taskId)) throw new Error(`invalid task id for workspace path: ${taskId}`);
-      return join(root, "inputs", taskId);
-    },
   };
 
   let ensured = false;
   function ensure(): Workspace {
     if (!ensured) {
-      for (const dir of [workspace.root, workspace.notes, workspace.inputs, join(workspace.state, "tasks")]) {
+      for (const dir of [workspace.root, workspace.notes, join(workspace.state, "tasks")]) {
         mkdirSync(dir, { recursive: true });
       }
       ensured = true;
@@ -65,12 +48,7 @@ export function createWorkspaceManager(options: { dataRoot: string; workgroupId:
     return workspace;
   }
 
-  function purgeInputs(): void {
-    rmSync(workspace.inputs, { recursive: true, force: true });
-    mkdirSync(workspace.inputs, { recursive: true });
-  }
-
-  return { ensure, purgeInputs };
+  return { ensure };
 }
 
 export type WorkspaceUsage = { bytes: number; files: number };

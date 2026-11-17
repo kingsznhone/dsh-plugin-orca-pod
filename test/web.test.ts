@@ -94,11 +94,8 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
         task_timeout_s: null,
         approval_timeout_s: null,
         result_max_bytes: null,
-        max_input_files: null,
-        max_input_bytes: null,
         max_workspace_bytes: 5368709120,
         max_workspace_files: 50000,
-        max_blob_store_bytes: 5368709120,
         allow_public_peers: null,
         allow_loopback_peers: null,
         permission_mode: null,
@@ -397,11 +394,8 @@ describe("panel HTTP bridge", () => {
         task_timeout_s: 120,
         approval_timeout_s: 45,
         result_max_bytes: 4096,
-        max_input_files: 4,
-        max_input_bytes: 1048576,
         max_workspace_bytes: 2147483648,
         max_workspace_files: 1000,
-        max_blob_store_bytes: 1073741824,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
@@ -412,7 +406,7 @@ describe("panel HTTP bridge", () => {
     expect(saved.status).toBe(200);
     expect(admin.calls).toEqual([
       // Keys come out in the settings table's order, not the body's.
-      'saveConfig:{"executor":"echo","permission_mode":"workspace-write","task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_input_files":4,"max_input_bytes":1048576,"max_workspace_bytes":2147483648,"max_workspace_files":1000,"max_blob_store_bytes":1073741824,"allow_public_peers":true,"allow_loopback_peers":false,"default_reasoning_effort":"max"}',
+      'saveConfig:{"executor":"echo","permission_mode":"workspace-write","task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_workspace_bytes":2147483648,"max_workspace_files":1000,"allow_public_peers":true,"allow_loopback_peers":false,"default_reasoning_effort":"max"}',
     ]);
 
     // Clearing a control sends null, so the override (and the persisted config

@@ -35,7 +35,6 @@
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`）；缺省按 `read-only`；本机 `permission_mode` 是上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。非法值 → `400 bad_request`。
 - `pod.model` / `pod.reasoning_effort`（可选）：origin 想用的模型与 effort；由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
 - `pod.task_ttl_s`（可选）：origin 期望的任务寿命；实际寿命取它与本机 `task_timeout_s`（默认 3600）的较小者。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
-- `pod.inputs`（可选）：随任务的素材清单，见 [§5.6](05-tasks.md#56-文件交换blob-通道)。
 - 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
 - 元数据是不可信输入：在 `submit` 时一次性解析成类型化的 `TaskMeta`，之后的代码不再读原始 metadata；类型不合法 → `400 bad_request`。
 
@@ -118,7 +117,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 
 - 任务每次状态变迁都写库；`tasks/get` 先查内存，再回落 SQLite，所以重启后仍可查。进程启动时所有非终态 task 标 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）。
 - 备份 = 拷贝 db（WAL 下先 checkpoint）；落盘失败只记 warning，任务继续留在内存里可读。
 - 内存 store 只用于协议单测与 harness。
-- blob 内容与元数据不在这里：fs 内容寻址目录 `<data_root>/blobs/`（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
+- `file_blobs` 只记“blob_id → 本机路径”的映射，字节留在原处、不复制（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
 
 **可见性**
 
@@ -129,50 +128,34 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 
 
 ### 5.6 文件交换（blob 通道）
 
-任务素材与产物不走 JSON 内联：base64 会膨胀 33%，而且没法流式、没法去重。单独一条内容寻址通道：
-
-```http
-POST /blobs?name=input.zip
-Authorization: Pod orca_node_id=<43-char public key>; target=<receiver orca_node_id>; ts=...; nonce=...; sig=<base64url>
-X-Pod-Body-SHA256: <hex>
-Content-Type: application/octet-stream
-
-<bytes>
-
-201 { "blob_id": "<sha256>", "size": 1048576, "name": "input.zip", "expires_at": "2026-11-21T..." }
-```
-
-```http
-GET /blobs/<blob_id>                       # 签名，或 ?exp=<unix>&sig=<base64url> 直链
-POST /blobs/<blob_id>/link                 # → 200 { "url": ".../blobs/<id>?exp=...&sig=...", "expires_at": "..." }
-```
+文件不走 JSON 内联（base64 会膨胀 33%，也没法流式），也不在节点之间推送：**节点只发布自己机器上的文件，谁需要谁来拉**。任务的产物由 target 发布、origin 拉取；origin 要交给任务的文件，由 origin 发布、target 上的 agent 拉取。
 
 ```text
-# 在本机登记一个已生成的文件（不经过网络，不需要节点在跑）
+# 在本机登记一个文件（不经过网络，不需要节点在跑）
 $ orca-node publish ./report.md --ttl 86400
 http://host.example/blobs/<sha256>?exp=...&sig=...
 ```
 
+```http
+GET /blobs/<blob_id>                       # 成员签名，或 ?exp=<unix>&sig=<base64url> 直链
+```
+
 规则：
 
-- `blob_id = sha256(bytes)`，内容寻址 → 天然去重；同内容重复上传返回 `200`、不占新空间，并把过期时间延长到“现在 + TTL”；首次返回 `201`。
-- 上传与下载都**流式**：客户端先算摘要再签名（签名覆盖 `X-Pod-Body-SHA256` 而不是 body 本身），服务端边收边算、写临时文件，内存里不攒整个文件；摘要与实际字节不符 → `400 blob_digest_mismatch`，字节直接丢弃，不以任何 id 保存。落盘顺序是“数据 rename 到位 → 写 sidecar（`<id>.json`）”，sidecar 就是提交标记：没有 sidecar 的数据文件不算 blob，GC 过了宽限期把它清掉；sidecar 在而数据丢了，同样不算 blob、由 GC 清理。`GET` 走流式响应。
-- 上限：单 blob 256 MiB（`413 blob_too_large`）；单个任务附带的 inputs 默认 32 个文件 / 512 MiB（`max_input_files`、`max_input_bytes` 可调）。
-- **存储配额**：`max_blob_store_bytes`（默认 5 GiB）限制 blob 存储总量（已落盘 + 正在上传的字节）；超出的上传 `507 quota_exceeded`。
-- 文件名只作提示（`name`），不参与寻址；存储路径由 blob_id 决定。上传时 `?name=` 必须是无路径分隔符、无 `..`、无盘符的纯文件名，否则 `400 bad_request`。下载响应不带文件名。
-- **生命周期**：上传的 blob 与 `publish` 登记的文件默认 **7 天**过期（`publish --ttl` 可改）。**GC 全自动**：节点启动时跑一次，之后每 10 分钟跑一次，清理过期 blob 及其元数据，以及超过 10 分钟没写入的残留 `.part` 临时文件；`publish` 登记行过期后不再提供下载但行不清理。过期未被 GC 的下载返回 `410 blob_expired`，GC 之后返回 `404 blob_not_found`。没人会去 B 的机器上清 blob；要保住某个产物，就在 7 天内下载它。
-- **直链**：任意同组 orca node 调 `POST /blobs/{id}/link` 拿一条直链，有效期 7 天（与 blob 默认保留期一致）；面板的产物链接默认 300 秒；`orca-node publish` 打印的链接 24 小时有效。直链的 `sig` 是**该 blob 所在节点自己的 Ed25519 签名**（签 `orca-pod/blob-link|<blob_id>|<exp>`），用它自己的公钥验证；篡改 `blob_id`/`exp` → `403 link_invalid`，过期 → `410 link_expired`。直链只是省掉请求签名头，不改变可读范围，浏览器/curl 不必拿长期密钥。
-- **本地文件按路径登记（文件不离开工作区也能给 URL）**：子节点在结论文本里要引用一个已生成的文件时，用 `orca-node publish <path> [--ttl <seconds>]`：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，打印一条带 `?exp&sig` 的直链。字节不复制，`GET` 时网关按映射从磁盘流式读出；映射跨重启保留；TTL 到期 → `410 blob_expired`，文件被删 → `410 blob_file_missing`。
-- **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥，任何成员都能让目标节点替它去读本机路径，“只有本机能登记”无法靠成员签名在网络层实现，所以登记只在本地发生：CLI 直写节点自己的数据库，网关没有 `POST /blobs/register`（访问它是 `404`）。这也让登记不依赖节点进程。
+- **登记**：`orca-node publish <path> [--ttl <seconds>]`：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，打印一条带 `?exp&sig` 的直链。字节不复制，`GET` 时网关按映射从磁盘流式读出；映射跨重启保留。同一文件重复登记得到同一个 `blob_id`，并刷新过期时间。
+- **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥，任何成员都能让目标节点替它去读本机路径，“只有本机能登记”无法靠成员签名在网络层实现，所以登记只在本地发生：CLI 直写节点自己的数据库。这也让登记不依赖节点进程。
+- **节点不接收别人的字节**：网关对外只有 `GET /blobs/{id}` 这一条文件路由，没有上传，所以也没有接收侧的配额、临时文件与垃圾回收。
+- **生命周期**：登记默认 **7 天**过期（`--ttl` 可改，`--ttl 0` 不过期）。过期 → `410 blob_expired`；文件被删或移走 → `410 blob_file_missing`；没登记过 → `404 blob_not_found`。文件本身属于工作区，节点不删；要保住某个产物，就在过期前下载它。
+- **直链**：`publish` 打印的链接与登记同时过期（不过期的登记，链接按 7 天）；面板里的产物链接 300 秒。直链的 `sig` 是**发布节点自己的 Ed25519 签名**（签 `orca-pod/blob-link|<blob_id>|<exp>`），用它自己的公钥验证；篡改 `blob_id`/`exp` → `403 link_invalid`，过期 → `410 link_expired`。直链只是省掉请求签名头，不改变可读范围：浏览器、curl 和远端 agent 不必拿长期密钥；同组成员也可以直接用签名请求 `GET`。
 - **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道 `blob_id` 就能 `GET`。跨 orca node 直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。id 泄露 = 内容泄露，按这个标准管理它。
-- 不做目录树、不做 rename、不做覆盖：要改内容就是新 blob。
+- 不做目录树、不做 rename、不做覆盖：要改内容就是新文件、新登记。
 
-**输入**：origin 先把素材 `POST /blobs` 到 target（`orca-node send --file <path>` 会自动做这一步，文件名取 basename），再在任务消息里带 `metadata.pod.inputs: [{blob_id, name}]`。`name` 必须匹配 `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`。target 在**建 task 之前**检查（blob 缺失 `400 input_blob_missing`、超上限 `400 too_many_inputs` / `400 inputs_too_large`、重名 `409 duplicate_input_name`、名字不安全 `400 bad_request`），任何失败都不建任务；通过后在任务开始前把 blob 物化到 `inputs/<task_id>/`（cwd 相对，见 [§6.7](06-execution.md#67-工作区一份持久)），任务书里列出相对清单，终态删除目录。
+**交给任务的文件**：origin（人通过插件工具，或上游任务里的 agent）先在本机 `publish`，把链接写进任务书；target 上的 agent 读到后自己下载到工作区（`curl -fL -o <name> <url>`），任务书的前言也这样提示（[§6.7](06-execution.md#67-工作区一份持久)）。节点不替 agent 下载、不物化、不清点数量与大小；下载是 agent 执行的命令，受本任务的权限模式约束（[§7.10](07-security.md#710-权限模式继承)）。这要求 **target 能连到 origin**：全互联 mesh 里两边互相在线即满足；origin 在对端看来是 `suspect(unreachable)`（例如在 NAT 后）时链接取不到，文件需要放到双方都能访问的地方。
 
-**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；大文件由子节点 `publish` 后把 URL 写进结论文本，origin 按需 `GET`，**不自动全量回传**，避免把网络当同步盘。只有 Echo 脚本会产生 `artifacts` 数组（`artifactId` 就是 `blob_id`）。
+**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；大文件由子节点 `publish` 后把 URL 写进结论文本，origin 按需 `GET`，**不自动全量回传**，避免把网络当同步盘。只有 Echo 脚本会产生 `artifacts` 数组：内容写进节点自己的 `state/<workgroup_id>/artifacts/<task_id>/`、按同样的方式登记，`artifactId` 就是 `blob_id`。
 
-方向始终是 origin → target 的请求（上传素材、下载产物），target 从不反向连 origin。NAT 下只需要 target 可达，与 [§3.2](03-membership.md#32-引导与加入) 的单向出站原则一致。
+**方向**：两类文件都由需要它的一方发起请求——产物是 origin 去 target 取，交给任务的文件是 target 去 origin 取；没有任何一方往对方推字节。
 
 ### 5.7 交接（工作区即态势）
 

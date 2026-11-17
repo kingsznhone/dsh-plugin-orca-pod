@@ -17,7 +17,6 @@ export const OPTIONS = {
   bind: { type: "string" },
   port: { type: "string" },
   text: { type: "string" },
-  file: { type: "string", multiple: true },
   "local-task": { type: "string" },
   context: { type: "string" },
   "permission-mode": { type: "string" },

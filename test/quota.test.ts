@@ -1,22 +1,13 @@
 /**
- * Quotas and sweeps (§6.13, §5.6): a task is refused while the group workspace
- * is over its quota, and the node sweeps its blob store on a timer.
+ * Workspace quota (§6.13): a task is refused while the group workspace is over
+ * its quota.
  */
 
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { PART_GRACE_MS, createFsBlobStore } from "../src/storage/fs.ts";
-import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { BLOB_GC_INTERVAL_MS, createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { createTestRunner, runnerDeps } from "./fixtures/runner.ts";
-import { wg } from "./fixtures/ids.ts";
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 const message = { role: "user" as const, parts: [{ kind: "text" as const, text: "go" }] };
 
@@ -99,50 +90,5 @@ describe("workspace quota", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(runner.submit({ message }).kind).toBe("task");
-  });
-});
-
-describe("blob sweep", () => {
-  it("runs on a timer owned by the node and stops with it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "orca-sweep-"));
-    try {
-      const config = createOrcaNodeConfig({
-        workgroup_id: wg("sweep-test"),
-        workgroup_password: "pw",
-        data_root: root,
-        port: 0,
-      });
-      const storage = createPersistentStorage(config);
-      const store = createFsBlobStore(join(root, "blobs"));
-      const orphan = join(root, "blobs", ".upload-orphan.part");
-      writeFileSync(orphan, "partial");
-      const old = new Date(Date.now() - PART_GRACE_MS - 60_000);
-      utimesSync(orphan, old, old);
-
-      const timers: Array<() => void> = [];
-      const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
-        timers.push(callback);
-        return { unref() {}, ref() {} } as unknown as NodeJS.Timeout;
-      }) as unknown as typeof setInterval);
-      const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(() => {});
-
-      const node = createOrcaNode({ config, storage: { ...storage, blobStore: store } });
-      await node.start();
-      // The startup sweep already removed the orphan; plant another and let the timer find it.
-      const second = join(root, "blobs", ".upload-second.part");
-      writeFileSync(second, "partial");
-      utimesSync(second, old, old);
-      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), BLOB_GC_INTERVAL_MS);
-      expect(existsSync(orphan)).toBe(false);
-      expect(existsSync(second)).toBe(true);
-
-      timers[0]!();
-      expect(existsSync(second)).toBe(false);
-
-      await node.stop();
-      expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    }
   });
 });

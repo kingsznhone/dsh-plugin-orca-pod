@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { BlobStore, TaskStore } from "../storage/stores.ts";
+import type { FileBlobRegistry, TaskStore } from "../storage/stores.ts";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
 import type { LocalExecutor } from "../execution/executor.ts";
@@ -18,16 +18,16 @@ import type { BusyState, OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 import type { PermissionMode } from "../protocol/permission.ts";
 import type { TaskRelay } from "../protocol/grant.ts";
 import { TaskRecord, type RecordHost } from "./record.ts";
-import { checkInputs, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_INPUT_FILES } from "./inputs.ts";
 import { parsePodMetadata } from "./meta.ts";
 import { measureWorkspace, type Workspace, type WorkspaceUsage } from "./workspace.ts";
 
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
-  blobs: BlobStore;
+  /** Where the files a task produces are published (§5.6). */
+  fileBlobs: FileBlobRegistry;
   /** Durable store (§5.5); every task change is written through it. */
   store: TaskStore;
-  /** Group workspace: the executor's cwd and the home of task inputs (§6.7). */
+  /** Group workspace: the executor's cwd (§6.7). */
   workspace: Workspace;
   logger: NodeLogger;
   selfOrcaNodeId: OrcaNodeId;
@@ -42,10 +42,6 @@ export type TaskRunnerDeps = {
   taskTimeoutS?: number;
   /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). Default 32 KiB. */
   resultMaxBytes?: number;
-  /** Max inputs one origin may attach in one task (§6.7). Default 32. */
-  maxInputFiles?: number;
-  /** Max total input bytes per task (§6.7). Default 512 MiB. */
-  maxInputBytes?: number;
   /** A new task is refused while the workspace holds more than this (§6.13). */
   maxWorkspaceBytes: number;
   maxWorkspaceFiles: number;
@@ -117,10 +113,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         `the group workspace holds ${usage.files} files / ${usage.bytes} bytes, over its quota`,
       );
     }
-    checkInputs(deps.blobs, meta.inputs, {
-      maxFiles: deps.maxInputFiles ?? DEFAULT_MAX_INPUT_FILES,
-      maxBytes: deps.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES,
-    });
     const id = newTaskId();
     const view: TaskView = {
       kind: "task",

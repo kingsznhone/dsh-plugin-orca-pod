@@ -6,7 +6,6 @@ import { buildAuthHeader } from "../security/crypto.ts";
 import { describeIssue, parseSchema } from "../kernel/schema.ts";
 import { isPodErrorCode, PodError } from "../kernel/errors.ts";
 import type { NodeIdentity } from "../security/identity.ts";
-import { BODY_SHA256_HEADER } from "../protocol/constants.ts";
 import { ErrorReplySchema, RpcResultSchema, type ErrorReply } from "../protocol/a2a.ts";
 import type { CallOptions, HttpMethod, PeerClient } from "../protocol/client.ts";
 import type { OrcaNodeId, PeerView } from "../protocol/peer.ts";
@@ -28,15 +27,14 @@ type PeerClientOptions = {
   roster: () => readonly PeerView[];
 };
 
-/** What one signed request is made of; `body` is JSON text, or a stream with the `sha256` the caller computed. */
+/** What one signed request is made of; `body` is JSON text. */
 type SignedRequest = {
   /** Names the call in error messages. */
   label: string;
   endpoint: string;
   path: string;
   method: HttpMethod;
-  body: string | ReadableStream<Uint8Array> | undefined;
-  sha256?: string;
+  body: string | undefined;
 };
 
 type Reply = { status: number; ok: boolean; contentType: string; text: string };
@@ -115,7 +113,7 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
   }
   /** Sign, send within the deadline, and read the capped body; interpreting it is the caller's job. */
   async function send(request: SignedRequest, call: CallOptions): Promise<Reply> {
-    const { label, endpoint, path, method, body, sha256 } = request;
+    const { label, endpoint, path, method, body } = request;
     const target = call.target ?? known(endpoint);
     const url = new URL(path, endpoint);
     const headers: Record<string, string> = {
@@ -124,15 +122,10 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
         method,
         url: `${url.pathname}${url.search}`,
         targetOrcaNodeId: target,
-        body: typeof body === "string" ? body : undefined,
-        bodySha256: sha256,
+        body,
       }),
     };
-    if (typeof body === "string") headers["content-type"] = "application/json";
-    if (sha256 !== undefined) {
-      headers["content-type"] = "application/octet-stream";
-      headers[BODY_SHA256_HEADER] = sha256;
-    }
+    if (body !== undefined) headers["content-type"] = "application/json";
     const deadline = AbortSignal.timeout(call.timeoutMs ?? options.timeoutMs);
     const init: RequestInit & { duplex: "half" } = {
       method,
@@ -194,11 +187,6 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
       const envelope = ErrorReplySchema.safeParse(json);
       if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, reply, envelope.data);
       return expectReply(method, reply, RpcResultSchema, json).result;
-    },
-
-    async upload(endpoint, { path, body, sha256, reply: schema }, call = {}) {
-      const reply = await send({ label: path, endpoint, path, method: "POST", body, sha256 }, call);
-      return expectReply(path, reply, schema, unwrap(path, reply));
     },
   };
 }

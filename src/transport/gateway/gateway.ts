@@ -1,11 +1,10 @@
-import type { Readable } from "node:stream";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import type { NonceCache } from "../../security/crypto.ts";
 import type { NodeIdentity } from "../../security/identity.ts";
 import type { SelfRecord, OrcaNodeId, WorkgroupId } from "../../protocol/peer.ts";
 import type { TaskRunner } from "../../protocol/task.ts";
-import type { FileBlobRegistry, BlobStore } from "../../storage/stores.ts";
+import type { FileBlobRegistry } from "../../storage/stores.ts";
 import type { PeerStore } from "../../membership/membership.ts";
 import { a2aRoutes } from "./a2a-routes.ts";
 import { installAccessPolicy } from "./auth.ts";
@@ -31,7 +30,6 @@ export type GatewayDeps = {
   /** When this gateway process started; requests older than this are replays (§7.1). */
   startedAt: number;
   tasks: TaskRunner;
-  blobs: BlobStore;
   /** Files a task published by path with a TTL (§5.6). */
   fileBlobs: FileBlobRegistry;
 };
@@ -43,26 +41,12 @@ export type GatewayDeps = {
  */
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
-/** The overload that accepts a stream parser is not part of Fastify's generic typings. */
-type StreamParserRegistration = (
-  contentType: string,
-  parser: (request: unknown, payload: Readable, done: (error: Error | null, body?: unknown) => void) => void,
-) => void;
-
 function installBodyParsers(app: FastifyInstance): void {
   // JSON keeps its bytes for signature verification as well as the parsed value.
   app.addContentTypeParser<Buffer>("application/json", { parseAs: "buffer" }, (request, body, done) => {
     request.rawBody = body;
     done(null, body.length === 0 ? undefined : (JSON.parse(body.toString("utf8")) as unknown));
   });
-  // Blob uploads (§5.6) stream raw bytes: the client signs the file digest in
-  // `x-pod-body-sha256`, so the body is never buffered in memory.
-  (app as unknown as { addContentTypeParser: StreamParserRegistration }).addContentTypeParser(
-    "application/octet-stream",
-    (_request, payload, done) => {
-      done(null, payload);
-    },
-  );
   // Any other media type: bytes for the signature, no parsed body.
   app.addContentTypeParser<Buffer>("*", { parseAs: "buffer" }, (request: FastifyRequest, body, done) => {
     request.rawBody = body;

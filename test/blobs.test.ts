@@ -1,19 +1,18 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
-import { createMemoryFileBlobStore, createMemoryBlobStore } from "../src/storage/memory.ts";
-import type { FileBlobRegistry, BlobStore } from "../src/storage/stores.ts";
+import { createMemoryFileBlobStore } from "../src/storage/memory.ts";
+import type { FileBlobRegistry } from "../src/storage/stores.ts";
 import { PodError } from "../src/kernel/errors.ts";
 import { runtimeDigest, type BusyState, type SelfRecord } from "../src/protocol/peer.ts";
 import type { TaskRunner } from "../src/protocol/task.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
 import { createSqliteFileBlobStore } from "../src/storage/sqlite.ts";
 import { createMembership } from "../src/membership/membership.ts";
-import { createFsBlobStore } from "../src/storage/fs.ts";
 import { bodySha256 } from "../src/security/crypto.ts";
 import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -69,13 +68,12 @@ type Harness = {
   key: Buffer;
   identity: NodeIdentity;
   orcaNodeId: string;
-  sign(method: string, path: string, body?: Uint8Array | string, bodySha256?: string): string;
+  sign(method: string, path: string, body?: Uint8Array | string): string;
 };
 
 function createHarness(
   tasks: TaskRunner = idleTasks,
   fileBlobs: FileBlobRegistry = createFileBlobRegistry(createMemoryFileBlobStore()),
-  blobs: BlobStore = createMemoryBlobStore(),
 ): Harness {
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
@@ -93,7 +91,6 @@ function createHarness(
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,
-    blobs,
     fileBlobs,
   };
   return {
@@ -101,125 +98,58 @@ function createHarness(
     key,
     identity,
     orcaNodeId,
-    sign: (method, url, body, bodySha256) =>
-      buildAuthHeader({
-        identity,
-        method,
-        url,
-        targetOrcaNodeId: orcaNodeId,
-        body,
-        ...(bodySha256 === undefined ? {} : { bodySha256 }),
-      }),
+    sign: (method, url, body) => buildAuthHeader({ identity, method, url, targetOrcaNodeId: orcaNodeId, body }),
   };
 }
 
-async function upload(harness: Harness, payload: Buffer, options: { name?: string; digest?: string } = {}) {
-  const url = options.name === undefined ? "/blobs" : `/blobs?name=${encodeURIComponent(options.name)}`;
-  const digest = options.digest ?? bodySha256(payload);
-  return harness.app.inject({
-    method: "POST",
-    url,
-    payload,
-    headers: {
-      "content-type": "application/octet-stream",
-      authorization: harness.sign("POST", url, payload, digest),
-      "x-pod-body-sha256": digest,
-    },
-  });
+/** A file published on the harness node, as `orca-node publish` would register it. */
+async function published(content: Buffer): Promise<{ harness: Harness; blobId: string; path: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "orca-blob-route-"));
+  const path = join(dir, "result.bin");
+  await writeFile(path, content);
+  const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
+  const { blob_id: blobId } = await fileBlobs.register(path, 120);
+  return { harness: createHarness(idleTasks, fileBlobs), blobId, path };
 }
 
-describe("blob store quota", () => {
-  it("answers 507 quota_exceeded to an upload that would overflow the store", async () => {
-    const root = await mkdtemp(join(tmpdir(), "orca-blob-quota-"));
-    const harness = createHarness(idleTasks, undefined, createFsBlobStore(root, { maxBytes: 16 }));
-
-    const fits = await upload(harness, Buffer.from("0123456789"));
-    expect(fits.statusCode).toBe(201);
-
-    const overflow = await upload(harness, Buffer.from("abcdefghij"));
-    expect(overflow.statusCode).toBe(507);
-    expect(overflow.json()).toMatchObject({ code: "quota_exceeded" });
-  });
-});
-
-describe("blob channel", () => {
-  it("rejects an unsigned upload with 401", async () => {
-    const harness = createHarness();
-    const payload = Buffer.from("unsigned bytes");
+describe("blob route", () => {
+  it("serves a published file to a member's signed request", async () => {
+    const content = Buffer.from("signed read");
+    const { harness, blobId } = await published(content);
     const response = await harness.app.inject({
-      method: "POST",
-      url: "/blobs",
-      payload,
-      headers: {
-        "content-type": "application/octet-stream",
-        "x-pod-body-sha256": bodySha256(payload),
-      },
+      method: "GET",
+      url: `/blobs/${blobId}`,
+      headers: { authorization: harness.sign("GET", `/blobs/${blobId}`) },
     });
+    expect(response.statusCode).toBe(200);
+    expect(response.rawPayload.equals(content)).toBe(true);
+  });
+
+  it("refuses a request that carries neither a signature nor a link", async () => {
+    const { harness, blobId } = await published(Buffer.from("private"));
+    const response = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}` });
     expect(response.statusCode).toBe(401);
   });
 
-  it("rejects a mismatched X-Pod-Body-SHA256 with 400 and keeps none of the bytes", async () => {
-    const blobs = createMemoryBlobStore();
-    const harness = createHarness(idleTasks, createFileBlobRegistry(createMemoryFileBlobStore()), blobs);
-    const payload = Buffer.from("payload");
-    const response = await upload(harness, payload, {
-      digest: bodySha256(Buffer.from("something else")),
-    });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: "blob_digest_mismatch" });
-    expect(blobs.has(bodySha256(payload))).toBe(false);
+  it("rejects an expired link with 410", async () => {
+    const { harness, blobId } = await published(Buffer.from("expired link"));
+    const exp = String(Math.floor(Date.now() / 1000) - 10);
+    const sig = blobLinkSignature(harness.identity, blobId, exp);
+    const response = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}?exp=${exp}&sig=${sig}` });
+    expect(response.statusCode).toBe(410);
+    expect(response.json()).toMatchObject({ code: "link_expired" });
   });
 
-  it("stores bytes and returns 201 with the blob metadata", async () => {
-    const harness = createHarness();
-    const payload = Buffer.from("hello blob");
-    const response = await upload(harness, payload, { name: "notes.txt" });
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toEqual({
-      blob_id: bodySha256(payload),
-      size: payload.length,
-      name: "notes.txt",
-      expires_at: null,
-    });
-  });
-
-  it("returns the original bytes from GET", async () => {
-    const harness = createHarness();
-    const payload = Buffer.from("roundtrip bytes");
-    const blobId = (await upload(harness, payload)).json<{ blob_id: string }>().blob_id;
+  it("answers 410 blob_file_missing once the published file is gone", async () => {
+    const { harness, blobId, path } = await published(Buffer.from("deleted later"));
+    await rm(path);
     const response = await harness.app.inject({
       method: "GET",
       url: `/blobs/${blobId}`,
       headers: { authorization: harness.sign("GET", `/blobs/${blobId}`) },
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["content-type"]).toBe("application/octet-stream");
-    expect(response.rawPayload.equals(payload)).toBe(true);
-  });
-
-  it("streams a large upload and download without buffering it", async () => {
-    const harness = createHarness();
-    const payload = Buffer.alloc(1024 * 1024, 7);
-    const uploaded = await upload(harness, payload, { name: "big.bin" });
-    expect(uploaded.statusCode).toBe(201);
-    const blobId = uploaded.json<{ blob_id: string; size: number }>().blob_id;
-    expect(uploaded.json<{ size: number }>().size).toBe(payload.length);
-    const response = await harness.app.inject({
-      method: "GET",
-      url: `/blobs/${blobId}`,
-      headers: { authorization: harness.sign("GET", `/blobs/${blobId}`) },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(Number(response.headers["content-length"])).toBe(payload.length);
-    expect(response.rawPayload.equals(payload)).toBe(true);
-  });
-
-  it("accepts an upload above the default request cap on the blob route", async () => {
-    const harness = createHarness();
-    const payload = Buffer.alloc(2 * 1024 * 1024, 9);
-    const uploaded = await upload(harness, payload, { name: "two-megabytes.bin" });
-    expect(uploaded.statusCode).toBe(201);
-    expect(uploaded.json<{ size: number }>().size).toBe(payload.length);
+    expect(response.statusCode).toBe(410);
+    expect(response.json()).toMatchObject({ code: "blob_file_missing" });
   });
 
   it("rejects an oversized JSON body before the route handler runs", async () => {
@@ -236,70 +166,6 @@ describe("blob channel", () => {
     });
     expect(response.statusCode).toBe(413);
     expect(response.json()).toMatchObject({ code: "body_too_large" });
-  });
-
-  it("rejects a malformed upload name or digest header with 400", async () => {
-    const harness = createHarness();
-    for (const name of ["../escape", "a/b", "a\\b", "C:evil"]) {
-      const response = await upload(harness, Buffer.from("x"), { name });
-      expect(response.statusCode, name).toBe(400);
-    }
-    const payload = Buffer.from("x");
-    const response = await harness.app.inject({
-      method: "POST",
-      url: "/blobs",
-      payload,
-      headers: {
-        "content-type": "application/octet-stream",
-        authorization: harness.sign("POST", "/blobs", payload, "not-a-digest"),
-        "x-pod-body-sha256": "not-a-digest",
-      },
-    });
-    expect(response.statusCode).toBe(400);
-  });
-
-  it("dedupes a repeated upload with 200 and the same blob_id", async () => {
-    const harness = createHarness();
-    const payload = Buffer.from("dedupe me");
-    const first = await upload(harness, payload);
-    const second = await upload(harness, payload);
-    expect(first.statusCode).toBe(201);
-    expect(second.statusCode).toBe(200);
-    expect(second.json<{ blob_id: string }>().blob_id).toBe(first.json<{ blob_id: string }>().blob_id);
-  });
-
-  it("serves a /link URL without signed headers", async () => {
-    const harness = createHarness();
-    const payload = Buffer.from("linked bytes");
-    const blobId = (await upload(harness, payload)).json<{ blob_id: string }>().blob_id;
-    const link = await harness.app.inject({
-      method: "POST",
-      url: `/blobs/${blobId}/link`,
-      headers: { authorization: harness.sign("POST", `/blobs/${blobId}/link`) },
-    });
-    expect(link.statusCode).toBe(200);
-    const linkUrl = new URL(link.json<{ url: string }>().url);
-    expect(linkUrl.origin).toBe(ENDPOINT);
-    const response = await harness.app.inject({
-      method: "GET",
-      url: `${linkUrl.pathname}${linkUrl.search}`,
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.rawPayload.equals(payload)).toBe(true);
-  });
-
-  it("rejects an expired link with 410", async () => {
-    const harness = createHarness();
-    const payload = Buffer.from("expired link");
-    const blobId = (await upload(harness, payload)).json<{ blob_id: string }>().blob_id;
-    const exp = String(Math.floor(Date.now() / 1000) - 10);
-    const sig = blobLinkSignature(harness.identity, blobId, exp);
-    const response = await harness.app.inject({
-      method: "GET",
-      url: `/blobs/${blobId}?exp=${exp}&sig=${sig}`,
-    });
-    expect(response.statusCode).toBe(410);
-    expect(response.json()).toMatchObject({ code: "link_expired" });
   });
 });
 

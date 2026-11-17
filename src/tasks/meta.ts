@@ -4,12 +4,10 @@
  * code uses; nothing downstream re-reads the raw metadata.
  */
 
-import { z } from "zod";
-
 import { parseEchoScript, type EchoScript } from "../execution/echo.ts";
 import { PodError } from "../kernel/errors.ts";
 import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
-import { PodTaskMetadataSchema, type A2AMessage, type TaskInputRef } from "../protocol/task.ts";
+import { PodTaskMetadataSchema, type A2AMessage } from "../protocol/task.ts";
 import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
 import type { PermissionMode } from "../protocol/permission.ts";
 import type { SignedGrant } from "../protocol/grant.ts";
@@ -28,27 +26,8 @@ export type TaskMeta = {
   effort: ReasoningEffort | undefined;
   /** Origin's requested lifetime in seconds; the local cap still applies. */
   taskTtlS: number | undefined;
-  inputs: TaskInputRef[];
   echo: EchoScript;
 };
-
-/** What this node accepts as an input: a sha256 blob id under a plain file name (§6.7). */
-const AcceptedInputSchema = z.object({
-  blob_id: z.string().regex(/^[0-9a-f]{64}$/, "must be a sha256 blob id"),
-  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "is not a safe file name"),
-});
-
-/** The wire `pod` block, with the one field this node narrows further. */
-const AcceptedPodSchema = PodTaskMetadataSchema.extend({ inputs: z.array(AcceptedInputSchema).optional() });
-
-function parseInputs(inputs: readonly TaskInputRef[]): TaskInputRef[] {
-  const seen = new Set<string>();
-  for (const { name } of inputs) {
-    if (seen.has(name)) throw new PodError("duplicate_input_name", `input name ${name} appears twice`);
-    seen.add(name);
-  }
-  return [...inputs];
-}
 
 /**
  * Validate the `pod` block and the echo script of an incoming task (§5.1, §6.3,
@@ -71,9 +50,9 @@ export function parsePodMetadata(
 ): TaskMeta {
   const raw = metadata?.pod ?? {};
   if (!isRecord(raw)) throw new PodError("bad_request", "metadata.pod must be an object");
-  const parsed = parseSchema(AcceptedPodSchema, raw);
+  const parsed = parseSchema(PodTaskMetadataSchema, raw);
   if (!parsed.ok) throw new PodError("bad_request", `pod.${describeIssue(parsed.issue)}`);
-  const { chain = [], root_origin, permission_mode, model, reasoning_effort, task_ttl_s, inputs } = parsed.value;
+  const { chain = [], root_origin, permission_mode, model, reasoning_effort, task_ttl_s } = parsed.value;
   if (chain.includes(selfOrcaNodeId)) {
     throw new PodError(
       "ancestor_call_forbidden",
@@ -93,7 +72,6 @@ export function parsePodMetadata(
     model,
     effort: reasoning_effort ?? model?.reasoning_effort,
     taskTtlS: task_ttl_s,
-    inputs: inputs === undefined ? [] : parseInputs(inputs),
     echo: parseEchoScript(metadata?.echo),
   };
 }

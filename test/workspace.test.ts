@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,7 +24,7 @@ describe("workspace manager", () => {
     const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") });
     const workspace = manager.ensure();
 
-    for (const dir of [workspace.root, workspace.notes, workspace.inputs, workspace.state]) {
+    for (const dir of [workspace.root, workspace.notes, workspace.state]) {
       expect(existsSync(dir)).toBe(true);
     }
     expect(existsSync(join(workspace.state, "tasks"))).toBe(true);
@@ -42,21 +42,5 @@ describe("workspace manager", () => {
     const first = createWorkspaceManager({ dataRoot, workgroupId: wg("group-a") });
     const second = createWorkspaceManager({ dataRoot, workgroupId: wg("group-b") });
     expect(first.ensure().root).not.toBe(second.ensure().root);
-  });
-
-  it("builds the input dir under the workspace root and rejects traversal", () => {
-    const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") }).ensure();
-    expect(workspace.inputDir("TASK01")).toBe(join(workspace.root, "inputs", "TASK01"));
-    expect(() => workspace.inputDir("a/b")).toThrow();
-    expect(() => workspace.inputDir("../escape")).toThrow();
-  });
-
-  it("purges leftover input dirs on startup", () => {
-    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") });
-    const workspace = manager.ensure();
-    writeFileSync(join(workspace.inputs, "stale"), "x");
-    manager.purgeInputs();
-    expect(existsSync(workspace.inputs)).toBe(true);
-    expect(existsSync(join(workspace.inputs, "stale"))).toBe(false);
   });
 });

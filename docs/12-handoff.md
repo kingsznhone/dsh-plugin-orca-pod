@@ -87,8 +87,10 @@ Hard constraints that must not be undone:
   task as failed(node_restart); do not re-dispatch and do not invent a resume.
   The origin's dispatch log marks tasks it can no longer see as unknown, never
   as failed.
-- Quotas are settings (max_workspace_bytes, max_workspace_files,
-  max_blob_store_bytes); over quota is 507 quota_exceeded.
+- Quotas are settings (max_workspace_bytes, max_workspace_files); over quota
+  is 507 quota_exceeded.
+- Files move by link only: a node publishes its own files (`orca-node publish`)
+  and whoever needs one pulls it; there is no upload route.
 - `npm run check` (biome + tsc + vitest) is the single acceptance command.
 ```
 
