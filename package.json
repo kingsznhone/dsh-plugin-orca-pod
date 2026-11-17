@@ -65,7 +65,8 @@
     "harness": "node --no-warnings scripts/harness_run.ts"
   },
   "dependencies": {
-    "fastify": "^5.12.8"
+    "fastify": "^5.12.8",
+    "ulid": "^3.0.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.8",

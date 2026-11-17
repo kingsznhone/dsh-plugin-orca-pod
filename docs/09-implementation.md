@@ -10,7 +10,7 @@
 
 ```text
 orca-pod/
-  package.json        唯一运行时依赖 fastify；dsh.bundle.patch -> cordis.patch.yml
+  package.json        运行时依赖见 §9.7；dsh.bundle.patch -> cordis.patch.yml
   cordis.patch.yml    DSH 行：id orca-pod、name 'orca-pod'
   client/             DSH 客户端（面板）的 TSX 源码；构建到 lib/client.js
   biome.json          lint + format（一个工具）
@@ -227,7 +227,8 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 
 | 依赖                                  | 类别 | 理由                                                                                                |
 | ------------------------------------- | ---- | --------------------------------------------------------------------------------------------------- |
-| `fastify`                             | 运行时 | 路由、body 解析与限额、schema 校验、错误处理；不手写 http server。**唯一的运行时依赖**             |
+| `fastify`                             | 运行时 | 路由、body 解析与限额、schema 校验、错误处理；不手写 http server                                     |
+| `ulid`                                | 运行时 | 任务 id（`kernel/ids.ts`）：规范实现、零依赖，随机部分取自 `crypto.getRandomValues`                 |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |
 | `esbuild`                             | 开发 | 把 `client/` 的 TSX 打成 `lib/client.js`（`scripts/build-client.ts`）                               |
 | `@types/react`                        | 开发 | 客户端 TSX 的类型；React 运行时由 DSH 壳提供，不随包发布                                           |
