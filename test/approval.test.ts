@@ -9,8 +9,10 @@ import type { OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf } from "../src/protocol/task.ts";
 import type { A2AMessage, TaskState, TaskView } from "../src/protocol/task.ts";
 import type { Grant, SignedGrant } from "../src/protocol/grant.ts";
+import { wg } from "./fixtures/ids.ts";
+import type { OrcaNodeId } from "../src/protocol/peer.ts";
 
-const WORKGROUP = "orca-approval";
+const WORKGROUP = wg("orca-approval");
 const PASSWORD = "approval-secret";
 
 let mesh: Mesh | null = null;
@@ -116,7 +118,7 @@ function resumeMessage(taskId: string, data: Record<string, unknown>): A2AMessag
   return { role: "user", parts: [{ kind: "data", data }], taskId, messageId: randomUUID() };
 }
 
-function grantFor(view: TaskView, originOrcaNode: string, tool = "write_file"): Grant {
+function grantFor(view: TaskView, originOrcaNode: OrcaNodeId, tool = "write_file"): Grant {
   const request = permissionRequestOf(view);
   if (request === null) throw new Error("view has no permission request");
   const issuedAt = new Date();

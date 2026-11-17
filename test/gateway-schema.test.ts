@@ -10,8 +10,9 @@ import { generateNodeIdentity, type NodeIdentity } from "../src/security/identit
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
 import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage/memory.ts";
 import { createGateway } from "../src/transport/gateway/gateway.ts";
+import { wg } from "./fixtures/ids.ts";
 
-const WORKGROUP = "orca-schema";
+const WORKGROUP = wg("orca-schema");
 
 const submitted: SubmitTaskInput[] = [];
 

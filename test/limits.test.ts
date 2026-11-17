@@ -13,8 +13,9 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { isTerminal, type TaskView } from "../src/protocol/task.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
+import { wg } from "./fixtures/ids.ts";
 
-const WORKGROUP = "orca-limits";
+const WORKGROUP = wg("orca-limits");
 
 function hangTask() {
   return {

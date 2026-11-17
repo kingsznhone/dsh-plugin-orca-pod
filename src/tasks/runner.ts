@@ -14,7 +14,7 @@ import {
   type TaskRunner,
   type TaskView,
 } from "../protocol/task.ts";
-import type { BusyState } from "../protocol/peer.ts";
+import type { BusyState, OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 import type { PermissionMode } from "../protocol/permission.ts";
 import type { TaskRelay } from "../protocol/grant.ts";
 import { TaskRecord, type RecordHost } from "./record.ts";
@@ -30,8 +30,8 @@ export type TaskRunnerDeps = {
   /** Group workspace: the executor's cwd and the home of task inputs (§6.7). */
   workspace: Workspace;
   logger: NodeLogger;
-  selfOrcaNodeId: string;
-  workgroupId: string;
+  selfOrcaNodeId: OrcaNodeId;
+  workgroupId: WorkgroupId;
   /** Data root, so the prompt can point an agent at the local CLI (§6.14). */
   dataRoot: string;
   /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
@@ -147,7 +147,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return live.get(taskId)?.snapshot() ?? store.load(taskId)?.view ?? null;
   }
 
-  function originOf(taskId: string): string | null {
+  function originOf(taskId: string): OrcaNodeId | null {
     return live.get(taskId)?.origin ?? store.load(taskId)?.origin_orca_node ?? null;
   }
 

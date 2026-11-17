@@ -29,6 +29,7 @@ import type { PermissionRequest, RequestedAccess, ResumeControl, SignedGrant, Ta
 import { composePrompt, listNotes, materializeInputs, removeInputs } from "./inputs.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
 import type { Workspace } from "./workspace.ts";
+import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 
 /** What a record needs from the node and the task runner. */
 export type RecordHost = {
@@ -38,8 +39,8 @@ export type RecordHost = {
   store: TaskStore;
   ledger: GrantLedger;
   logger: NodeLogger;
-  selfOrcaNodeId: string;
-  workgroupId: string;
+  selfOrcaNodeId: OrcaNodeId;
+  workgroupId: WorkgroupId;
   dataRoot: string;
   /** Local ceiling for the inherited mode; unset means the origin's mode applies as is (§7.10). */
   permissionMode: PermissionMode | undefined;
@@ -59,7 +60,7 @@ export type RecordHost = {
 
 type RecordInit = {
   view: TaskView;
-  origin: string;
+  origin: OrcaNodeId;
   meta: TaskMeta;
   /** Task lifetime in seconds, after the local cap; paused while the task waits for input. */
   ttlS: number;
@@ -96,7 +97,7 @@ function truncateMessage(message: A2AMessage, maxBytes: number): A2AMessage {
 
 export class TaskRecord {
   readonly id: string;
-  readonly origin: string;
+  readonly origin: OrcaNodeId;
   readonly createdAt: string;
   private readonly view: TaskView;
   private readonly meta: TaskMeta;

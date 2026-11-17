@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
+import { wg } from "./fixtures/ids.ts";
+import type { WorkgroupId } from "../src/protocol/peer.ts";
 
 const TIMINGS: Partial<MembershipTimings> = {
   intervalMs: 100,
@@ -20,8 +22,8 @@ const TIMINGS: Partial<MembershipTimings> = {
   heartbeatTimeoutMs: 400,
 };
 
-function newWorkgroupId(): string {
-  return `wg-${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+function newWorkgroupId(): WorkgroupId {
+  return wg(`wg-${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`);
 }
 
 async function closedPort(): Promise<number> {

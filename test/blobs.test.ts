@@ -16,6 +16,7 @@ import { createMembership } from "../src/membership/membership.ts";
 import { createFsBlobStore } from "../src/storage/fs.ts";
 import { bodySha256 } from "../src/security/crypto.ts";
 import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const ENDPOINT = "http://orca-node.test";
 
@@ -59,7 +60,7 @@ function selfRecord(identity: NodeIdentity): SelfRecord {
     state: "online",
     busy: null,
     last_recv_at: null,
-    workgroup_id: "orca-dev",
+    workgroup_id: wg("orca-dev"),
   };
 }
 
@@ -82,7 +83,7 @@ function createHarness(
   const deps: GatewayDeps = {
     orcaNode: {
       orca_node_id: orcaNodeId,
-      workgroup_id: "orca-dev",
+      workgroup_id: wg("orca-dev"),
       self: () => selfRecord(identity),
       linkChildTask: () => {},
     },

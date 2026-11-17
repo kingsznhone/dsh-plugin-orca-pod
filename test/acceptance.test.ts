@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createMesh } from "../src/node/harness.ts";
 import { createOrcaNode, createPersistentStorage, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
+import { wg } from "./fixtures/ids.ts";
 
-const WORKGROUP = "orca-accept";
+const WORKGROUP = wg("orca-accept");
 const PASSWORD = "correct horse";
 
 const FAST = {

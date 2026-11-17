@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath, createOrcaNodeConfig, loadConfig, saveConfig } from "../src/node/config.ts";
 import { ConfigValidationError, PanelPatchSchema, nodeSettings, parseSettings } from "../src/node/settings.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const roots: string[] = [];
 
@@ -36,7 +37,7 @@ describe("settings parser", () => {
       const { issues, message } = error as ConfigValidationError;
       expect(issues).toEqual([
         { path: ["port"], message: expect.stringMatching(/<=65535/) },
-        { path: ["executor"], message: expect.stringMatching(/"echo"\|"acp"/) },
+        { path: ["executor"], message: expect.stringMatching(/"acp"\|"echo"/) },
         { path: ["acp", "mcp_servers", "0", "command"], message: expect.stringMatching(/>=1 characters/) },
       ]);
       expect(message).toMatch(/acp\.mcp_servers\.0\.command: /);
@@ -85,7 +86,7 @@ describe("persisted config", () => {
     const root = await mkdtemp(join(tmpdir(), "orca-settings-"));
     roots.push(root);
     const config = createOrcaNodeConfig({
-      workgroup_id: "wg-a",
+      workgroup_id: wg("wg-a"),
       workgroup_password: "pw",
       data_root: root,
       port: 0,
@@ -98,7 +99,7 @@ describe("persisted config", () => {
   });
 
   it("refuses to create a config without a workgroup or password", () => {
-    expect(() => createOrcaNodeConfig({ workgroup_id: "wg-a" })).toThrow(/required/);
+    expect(() => createOrcaNodeConfig({ workgroup_id: wg("wg-a") })).toThrow(/required/);
     expect(() => createOrcaNodeConfig({ workgroup_password: "pw" })).toThrow(/required/);
   });
 });

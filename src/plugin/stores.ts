@@ -11,13 +11,21 @@ import { isDeepStrictEqual } from "node:util";
 
 import { errorMessage } from "../kernel/errors.ts";
 import { isRecord } from "../kernel/schema.ts";
-import { parseSettings } from "../node/settings.ts";
+import { parseSettings, type Settings } from "../node/settings.ts";
 import { normalizePeerUrl } from "../transport/net.ts";
 import type { HostContext, HostLogger } from "./dsh.ts";
 import type { PodHandle } from "./lifecycle.ts";
 
-/** A raw plugin config as stored in the profile: `null`/absent keys mean "default". */
-export type RawConfig = Record<string, unknown>;
+/** Settings as the profile stores them: every key optional, `null` or absent means "default". */
+export type ConfigFields = { [K in keyof Settings]?: Settings[K] | null };
+
+/**
+ * A raw plugin config as stored in the profile. The Loader has checked it
+ * against the plugin's `Config` schema, but it is not canonical yet (that is
+ * `parseSettings`' job), and keys this version does not know are kept as they
+ * are so a write never drops them.
+ */
+export type RawConfig = ConfigFields & { [key: string]: unknown };
 
 /**
  * Persistence the lifecycle needs from its host. In DSH these are the
@@ -60,7 +68,7 @@ export function createHostStores(ctx: Pick<HostContext, "credentials" | "configE
       const entry = ctx.fiber.entry;
       if (entry === undefined)
         throw new Error("orca-pod was not loaded from a profile entry; its config cannot be saved");
-      const current = structuredClone((entry.options.config ?? {}) as Record<string, unknown>);
+      const current = structuredClone((entry.options.config ?? {}) as RawConfig);
       if (isDeepStrictEqual(change(structuredClone(current)), current)) return false;
       await ctx.configEditor.edit(entry, (raw) => change(raw));
       return true;

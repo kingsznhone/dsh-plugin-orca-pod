@@ -258,7 +258,7 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
   }
 
   /** Drop a node that failed admission: it is not part of this mesh anymore. */
-  function dropPeer(nodeId: string, reason: string): void {
+  function dropPeer(nodeId: OrcaNodeId, reason: string): void {
     if (membership.get(nodeId) !== null) logger.warn(`orca-pod: dropping node ${nodeId} (${reason}, §7.1)`);
     membership.peers.remove(nodeId);
     forgetPeer(nodeId);

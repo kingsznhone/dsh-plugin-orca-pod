@@ -15,6 +15,7 @@ import {
   type SignedGrant,
   type TaskRelay,
 } from "../protocol/grant.ts";
+import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 
 /**
  * The child task a permission request is relayed to: its endpoint, id and the
@@ -38,12 +39,12 @@ export function parseSignedGrant(raw: unknown): SignedGrant {
 /** What a grant has to match: the task that waits and the request it is parked on. */
 export type GrantExpectation = {
   taskId: string;
-  selfOrcaNodeId: string;
-  workgroupId: string;
+  selfOrcaNodeId: OrcaNodeId;
+  workgroupId: WorkgroupId;
   /** Origin of the whole delegation tree: the only node whose decision counts (§7.11). */
-  rootOrigin: string;
+  rootOrigin: OrcaNodeId;
   /** Delegation chain of this task, origin first. */
-  chain: string[];
+  chain: OrcaNodeId[];
   pending: PermissionRequest;
 };
 
@@ -136,7 +137,7 @@ type DeriveChildGrantInput = {
   /** Permission request hanging off the child task. */
   request: PermissionRequest;
   /** This orca node, which must be the parent grant's target. */
-  selfOrcaNodeId: string;
+  selfOrcaNodeId: OrcaNodeId;
   now?: Date;
 };
 

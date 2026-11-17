@@ -12,6 +12,7 @@ import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
 import { connectAll } from "../src/node/harness.ts";
 import { parseEchoScript } from "../src/execution/echo.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { labelId, wg } from "./fixtures/ids.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const LIVE: OrcaNode[] = [];
@@ -22,7 +23,7 @@ afterEach(async () => {
 
 function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): OrcaNodeConfig {
   const config = createOrcaNodeConfig({
-    workgroup_id: "acp-test",
+    workgroup_id: wg("acp-test"),
     workgroup_password: "correct horse",
     data_root: root,
     port: 0,
@@ -41,7 +42,7 @@ function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig
 
 function echoConfigFor(root: string): OrcaNodeConfig {
   return createOrcaNodeConfig({
-    workgroup_id: "acp-test",
+    workgroup_id: wg("acp-test"),
     workgroup_password: "correct horse",
     data_root: root,
     port: 0,
@@ -335,8 +336,8 @@ describe("AcpExecutor", () => {
       taskId: "t1",
       contextId: "c1",
       prompt: "hi",
-      originOrcaNode: "ORIGIN",
-      selfOrcaNodeId: "SELF",
+      originOrcaNode: labelId("ORIGIN"),
+      selfOrcaNodeId: labelId("SELF"),
       workspaceDir: pod,
       podDir: join(pod, ".state"),
       permissionMode: "read-only",

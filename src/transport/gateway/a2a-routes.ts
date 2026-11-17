@@ -4,8 +4,9 @@ import { A2A_PARAMS, RpcRequestSchema, isA2AMethod } from "../../protocol/a2a.ts
 import type { TaskView } from "../../protocol/task.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import { parseInput } from "./input.ts";
+import type { OrcaNodeId } from "../../protocol/peer.ts";
 
-function dispatch(deps: GatewayDeps, method: string, raw: unknown, caller: string): TaskView {
+function dispatch(deps: GatewayDeps, method: string, raw: unknown, caller: OrcaNodeId): TaskView {
   if (!isA2AMethod(method)) throw new PodError("unsupported", `unsupported method ${method}`);
   switch (method) {
     case "message/send": {

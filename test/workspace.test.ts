@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createWorkspaceManager } from "../src/tasks/workspace.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const dirs: string[] = [];
 
@@ -20,7 +21,7 @@ afterEach(() => {
 
 describe("workspace manager", () => {
   it("creates the group layout once", () => {
-    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
+    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") });
     const workspace = manager.ensure();
 
     for (const dir of [workspace.root, workspace.notes, workspace.inputs, workspace.state]) {
@@ -32,26 +33,26 @@ describe("workspace manager", () => {
   });
 
   it("is idempotent and stable across calls", () => {
-    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
+    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") });
     expect(manager.ensure()).toBe(manager.ensure());
   });
 
   it("isolates workgroups", () => {
     const dataRoot = tempDir();
-    const first = createWorkspaceManager({ dataRoot, workgroupId: "group-a" });
-    const second = createWorkspaceManager({ dataRoot, workgroupId: "group-b" });
+    const first = createWorkspaceManager({ dataRoot, workgroupId: wg("group-a") });
+    const second = createWorkspaceManager({ dataRoot, workgroupId: wg("group-b") });
     expect(first.ensure().root).not.toBe(second.ensure().root);
   });
 
   it("builds the input dir under the workspace root and rejects traversal", () => {
-    const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" }).ensure();
+    const workspace = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") }).ensure();
     expect(workspace.inputDir("TASK01")).toBe(join(workspace.root, "inputs", "TASK01"));
     expect(() => workspace.inputDir("a/b")).toThrow();
     expect(() => workspace.inputDir("../escape")).toThrow();
   });
 
   it("purges leftover input dirs on startup", () => {
-    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: "orca-dev" });
+    const manager = createWorkspaceManager({ dataRoot: tempDir(), workgroupId: wg("orca-dev") });
     const workspace = manager.ensure();
     writeFileSync(join(workspace.inputs, "stale"), "x");
     manager.purgeInputs();

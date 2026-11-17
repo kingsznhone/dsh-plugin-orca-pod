@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteTaskStore } from "../src/storage/sqlite.ts";
 import type { PersistedTask } from "../src/storage/stores.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
+import { labelId } from "./fixtures/ids.ts";
 
 const dirs: string[] = [];
 
@@ -30,7 +31,7 @@ function storedTask(state: PersistedTask["view"]["status"]["state"], id = "TASK0
       status: { state, timestamp: at },
       metadata: {},
     },
-    origin_orca_node: "ORIGIN",
+    origin_orca_node: labelId("ORIGIN"),
     created_at: at,
     updated_at: at,
   };

@@ -14,6 +14,7 @@ import type { BlobStore } from "../storage/stores.ts";
 import { CLI_PATH } from "../kernel/entry.ts";
 import { PodError } from "../kernel/errors.ts";
 import type { TaskInputRef } from "../protocol/task.ts";
+import type { OrcaNodeId } from "../protocol/peer.ts";
 
 export const DEFAULT_MAX_INPUT_FILES = 32;
 export const DEFAULT_MAX_INPUT_BYTES = 512 * 1024 * 1024;
@@ -71,7 +72,7 @@ export async function listNotes(notesDir: string): Promise<string[]> {
 
 type PromptParts = {
   taskId: string;
-  selfOrcaNodeId: string;
+  selfOrcaNodeId: OrcaNodeId;
   dataRoot: string;
   /** The origin's text; untrusted. */
   text: string;

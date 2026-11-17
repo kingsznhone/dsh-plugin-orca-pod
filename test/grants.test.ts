@@ -11,7 +11,7 @@ import {
 import { generateNodeIdentity } from "../src/security/identity.ts";
 import type { Grant, PermissionRequest } from "../src/protocol/grant.ts";
 
-import { fakeNodeId } from "./fixtures/ids.ts";
+import { fakeNodeId, wg } from "./fixtures/ids.ts";
 
 const origin = generateNodeIdentity();
 const SELF = fakeNodeId("SELF");
@@ -28,7 +28,7 @@ const pending: PermissionRequest = {
 const expected: GrantExpectation = {
   taskId: "task-1",
   selfOrcaNodeId: SELF,
-  workgroupId: "wg",
+  workgroupId: wg("wg"),
   rootOrigin: origin.orcaNodeId,
   chain: [origin.orcaNodeId],
   pending,
@@ -37,7 +37,7 @@ const expected: GrantExpectation = {
 function grant(overrides: Partial<Grant> = {}) {
   return signGrant(origin, {
     grant_id: "g-1",
-    workgroup_id: "wg",
+    workgroup_id: wg("wg"),
     origin_orca_node: origin.orcaNodeId,
     task_id: "task-1",
     target_orca_node: SELF,
@@ -69,7 +69,7 @@ describe("checkGrant", () => {
     );
     expect(checkGrant(grant({ tool: "delete" }), expected, ledger)).toBe("grant_invalid");
     expect(checkGrant(grant({ request_id: "other" }), expected, ledger)).toBe("grant_invalid");
-    expect(checkGrant(grant({ workgroup_id: "elsewhere" }), expected, ledger)).toBe("grant_invalid");
+    expect(checkGrant(grant({ workgroup_id: wg("elsewhere") }), expected, ledger)).toBe("grant_invalid");
     expect(checkGrant(grant(), { ...expected, rootOrigin: fakeNodeId("SOMEONE-ELSE") }, ledger)).toBe("grant_invalid");
     expect(checkGrant({ ...grant(), sig: "forged" }, expected, ledger)).toBe("grant_invalid");
   });

@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
+import { wg } from "./fixtures/ids.ts";
 
-const WORKGROUP = "orca-outbound";
+const WORKGROUP = wg("orca-outbound");
 const PASSWORD = "outbound-secret";
 
 let nodes: OrcaNode[] = [];

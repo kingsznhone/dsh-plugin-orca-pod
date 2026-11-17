@@ -10,6 +10,8 @@ import { createMesh } from "../src/node/harness.ts";
 import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { TaskView } from "../src/protocol/task.ts";
+import { wg } from "./fixtures/ids.ts";
+import type { WorkgroupId } from "../src/protocol/peer.ts";
 
 /**
  * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，
@@ -68,12 +70,12 @@ function rewriteJson(
   };
 }
 
-function newWorkgroupId(): string {
-  return `wg-${randomBytes(6).toString("hex")}`;
+function newWorkgroupId(): WorkgroupId {
+  return wg(`wg-${randomBytes(6).toString("hex")}`);
 }
 
 function makeNode(
-  workgroupId: string,
+  workgroupId: WorkgroupId,
   password: string,
   options: { timings?: Partial<MembershipTimings>; fetch?: FetchLike; display_name?: string } = {},
 ): OrcaNode {

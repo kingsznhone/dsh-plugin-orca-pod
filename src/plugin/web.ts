@@ -17,13 +17,7 @@ import type { z } from "zod";
 
 import type { PodAdmin } from "./admin.ts";
 import type { HostContext } from "./dsh.ts";
-import {
-  ConnectBodySchema,
-  DenyBodySchema,
-  PeerTaskBodySchema,
-  type PodState,
-  type PodTasksResponse,
-} from "./panel-api.ts";
+import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads, type PodState } from "./panel-api.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
 import { isDirectLoopbackRequest } from "../transport/net.ts";
 import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
@@ -130,6 +124,9 @@ function podState(admin: PodAdmin): PodState {
 type Reply = { status: number; body: unknown };
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
+
+/** A GET route's answer, checked against the shape the panel reads for it. */
+const answer = <K extends keyof PodReads>(_route: K, body: PodReads[K]["response"]): Reply => ok(body);
 const NOT_FOUND: Reply = { status: 404, body: { error: "not_found" } };
 
 /** The first gate a request fails, as the answer to send; null when it may proceed. */
@@ -144,19 +141,18 @@ function rejection(request: IncomingMessage): Reply | null {
 async function handleGet(admin: PodAdmin, url: URL): Promise<Reply> {
   switch (url.pathname.slice(POD_API_PREFIX.length)) {
     case "/state":
-      return ok(podState(admin));
+      return answer("state", podState(admin));
     case "/task": {
       const peer = url.searchParams.get("peer");
       const taskId = url.searchParams.get("task");
       if (peer === null || taskId === null) return { status: 400, body: { error: "peer and task are required" } };
-      return ok(await admin.task(peer, taskId));
+      return answer("task", await admin.task(peer, taskId));
     }
     // Every task this node knows about, for the panel's "all tasks" view.
     case "/tasks": {
       const rawLimit = Number(url.searchParams.get("limit") ?? "500");
       const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
-      const response: PodTasksResponse = { recent: admin.recent(limit) };
-      return ok(response);
+      return answer("tasks", { recent: admin.recent(limit) });
     }
     default:
       return NOT_FOUND;

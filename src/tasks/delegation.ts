@@ -20,6 +20,7 @@ import type { A2AMethod, A2AParams } from "../protocol/a2a.ts";
 import type { Grant, GrantMode, PermissionRequest, ResumeControl, SignedGrant, TaskRelay } from "../protocol/grant.ts";
 import type { PeerClient } from "../protocol/client.ts";
 import type { PodEventInput } from "../protocol/events.ts";
+import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 
 export interface ApprovalOptions {
   mode?: GrantMode;
@@ -35,7 +36,7 @@ export interface ApprovalOptions {
 
 type DelegationDeps = {
   identity: NodeIdentity;
-  workgroupId: string;
+  workgroupId: WorkgroupId;
   client: PeerClient;
   membership: Membership;
   /** Local tasks: a delegating task is the parent of what it sends, and gets parked on escalation. */
@@ -88,7 +89,7 @@ export type Delegation = {
 export function childPodMetadata(
   parent: PodTaskMetadata | undefined,
   parentTaskId: string,
-  selfOrcaNodeId: string,
+  selfOrcaNodeId: OrcaNodeId,
 ): PodTaskMetadata {
   return {
     hop: (parent?.hop ?? 0) + 1,

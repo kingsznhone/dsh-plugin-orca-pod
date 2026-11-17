@@ -10,9 +10,9 @@ import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config
 import { connectAll } from "../src/node/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/task.ts";
-import { fakeNodeId } from "./fixtures/ids.ts";
+import { fakeNodeId, wg } from "./fixtures/ids.ts";
 
-const WORKGROUP = "orca-escalate";
+const WORKGROUP = wg("orca-escalate");
 const PASSWORD = "escalate-secret";
 
 let nodes: OrcaNode[] = [];

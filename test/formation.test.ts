@@ -14,6 +14,8 @@ import { generateNodeIdentity } from "../src/security/identity.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import type { TaskView } from "../src/protocol/task.ts";
+import { wg } from "./fixtures/ids.ts";
+import type { WorkgroupId } from "../src/protocol/peer.ts";
 
 const FAST: Partial<MembershipTimings> = {
   intervalMs: 50,
@@ -25,8 +27,8 @@ const FAST: Partial<MembershipTimings> = {
   tombstoneMs: 5000,
 };
 
-function newWorkgroupId(): string {
-  return `wg-${randomBytes(6).toString("hex")}`;
+function newWorkgroupId(): WorkgroupId {
+  return wg(`wg-${randomBytes(6).toString("hex")}`);
 }
 
 /**
@@ -53,7 +55,7 @@ function tempRoot(): string {
 }
 
 function makeNode(
-  workgroupId: string,
+  workgroupId: WorkgroupId,
   password: string,
   options: Partial<Pick<OrcaNodeConfig, "data_root" | "display_name">> & { timings?: Partial<MembershipTimings> } = {},
 ): OrcaNode {

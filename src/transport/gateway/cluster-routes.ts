@@ -18,6 +18,7 @@ import {
   type MembersResponse,
   type PeerView,
   type SelfRecord,
+  type OrcaNodeId,
 } from "../../protocol/peer.ts";
 import { DEFAULT_CLOCK_SKEW_MS, verifyAdmission } from "../../security/crypto.ts";
 import { PodError } from "../../kernel/errors.ts";
@@ -56,7 +57,7 @@ const TaskQuery = z.object({ task: NonEmpty });
  * Heartbeats repeat it so a node whose password changed drops out within a few
  * ticks.
  */
-function admit(deps: GatewayDeps, kind: AdmissionKind, caller: string, body: Admission): void {
+function admit(deps: GatewayDeps, kind: AdmissionKind, caller: OrcaNodeId, body: Admission): void {
   if (body.workgroup_id !== deps.orcaNode.workgroup_id) {
     throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
   }
@@ -110,7 +111,7 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   const screened = new Map<string, { key: string; allowed: string[]; atMs: number }>();
 
   async function profileOf(
-    caller: string,
+    caller: OrcaNodeId,
     described: SelfDescription,
     request: FastifyRequest,
     reuseScreening: boolean,

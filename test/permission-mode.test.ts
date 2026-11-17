@@ -13,6 +13,7 @@ import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { narrowPermissionMode, permissionModeRank } from "../src/protocol/permission.ts";
 import type { PodTaskMetadata } from "../src/protocol/task.ts";
+import { labelId, wg } from "./fixtures/ids.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 
@@ -33,8 +34,8 @@ function input(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInpu
     permissionMode: "read-only",
     taskId: "task-1",
     contextId: "context-1",
-    originOrcaNode: "ORIGIN",
-    selfOrcaNodeId: "SELF",
+    originOrcaNode: labelId("ORIGIN"),
+    selfOrcaNodeId: labelId("SELF"),
     prompt: "do it",
     workspaceDir: root,
     podDir: join(root, ".state"),
@@ -60,19 +61,21 @@ describe("permission modes", () => {
 
   it("validates and normalizes pod.permission_mode", () => {
     const metadata = { pod: { hop: 0, chain: [], permission_mode: "workspace-write" } };
-    expect(parsePodMetadata(metadata, "B", "A")).toMatchObject({ permissionMode: "workspace-write" });
-    expect(parsePodMetadata(undefined, "B", "A").permissionMode).toBe("read-only");
-    expect(() => parsePodMetadata({ pod: { permission_mode: "root" } }, "B", "A")).toThrowError(/permission_mode/);
+    expect(parsePodMetadata(metadata, labelId("B"), labelId("A"))).toMatchObject({ permissionMode: "workspace-write" });
+    expect(parsePodMetadata(undefined, labelId("B"), labelId("A")).permissionMode).toBe("read-only");
+    expect(() => parsePodMetadata({ pod: { permission_mode: "root" } }, labelId("B"), labelId("A"))).toThrowError(
+      /permission_mode/,
+    );
   });
 
   it("child tasks inherit the parent's permission mode", () => {
-    const parent: PodTaskMetadata = { hop: 0, chain: ["A"], root: "t_root", permission_mode: "read-only" };
-    expect(childPodMetadata(parent, "t_parent", "B")).toMatchObject({
+    const parent: PodTaskMetadata = { hop: 0, chain: [labelId("A")], root: "t_root", permission_mode: "read-only" };
+    expect(childPodMetadata(parent, "t_parent", labelId("B"))).toMatchObject({
       permission_mode: "read-only",
       hop: 1,
       chain: ["A", "B"],
     });
-    expect(childPodMetadata(undefined, "t_parent", "B")).toMatchObject({ hop: 1 });
+    expect(childPodMetadata(undefined, "t_parent", labelId("B"))).toMatchObject({ hop: 1 });
   });
 });
 
@@ -121,7 +124,7 @@ describe("permission mode execution", () => {
   it("runs a task that names no mode read-only", async () => {
     const root = await tempDir();
     const config = createOrcaNodeConfig({
-      workgroup_id: "orca-mode",
+      workgroup_id: wg("orca-mode"),
       workgroup_password: "correct horse",
       data_root: root,
       port: 0,
@@ -150,7 +153,7 @@ describe("permission mode execution", () => {
   it("narrows the origin mode by the local ceiling end to end", async () => {
     const root = await tempDir();
     const config = createOrcaNodeConfig({
-      workgroup_id: "orca-mode",
+      workgroup_id: wg("orca-mode"),
       workgroup_password: "correct horse",
       data_root: root,
       port: 0,

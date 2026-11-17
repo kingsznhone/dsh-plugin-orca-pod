@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const TIMINGS = {
   intervalMs: 30,
@@ -22,7 +23,7 @@ const orcaNodes: OrcaNode[] = [];
 function make(displayName: string): OrcaNode {
   const orcaNode = createOrcaNode({
     config: createOrcaNodeConfig({
-      workgroup_id: "orca-dev",
+      workgroup_id: wg("orca-dev"),
       workgroup_password: "secret",
       display_name: displayName,
       bind_host: "127.0.0.1",

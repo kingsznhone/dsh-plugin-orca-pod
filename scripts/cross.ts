@@ -9,6 +9,7 @@ import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { createPeerClient } from "../src/transport/peer-client.ts";
 import { BlobLinkResponseSchema, BlobUploadResponseSchema } from "../src/protocol/a2a.ts";
 import { DEFAULT_PORT } from "../src/protocol/constants.ts";
+import { WorkgroupIdSchema } from "../src/protocol/peer.ts";
 
 const SERVE = {
   workgroup: { type: "string" },
@@ -70,7 +71,7 @@ async function withNode(orcaNode: OrcaNode, keepAlive: boolean): Promise<void> {
 }
 
 async function serve(args: Values<typeof SERVE>): Promise<void> {
-  const workgroupId = required(args.workgroup, "workgroup");
+  const workgroupId = WorkgroupIdSchema.parse(required(args.workgroup, "workgroup"));
   const password = required(args.password, "password");
   const configFile = args.config ?? `${defaultDataRoot()}/config.json`;
   const exists = await loadConfig(configFile).catch(() => null);
@@ -93,7 +94,7 @@ async function serve(args: Values<typeof SERVE>): Promise<void> {
 
 async function join(args: Values<typeof JOIN>): Promise<void> {
   const peer = required(args.peer, "peer");
-  const workgroupId = required(args.workgroup, "workgroup");
+  const workgroupId = WorkgroupIdSchema.parse(required(args.workgroup, "workgroup"));
   const password = required(args.password, "password");
   const config = createOrcaNodeConfig({
     workgroup_id: workgroupId,

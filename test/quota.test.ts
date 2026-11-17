@@ -12,6 +12,7 @@ import { PART_GRACE_MS, createFsBlobStore } from "../src/storage/fs.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { BLOB_GC_INTERVAL_MS, createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { createTestRunner, runnerDeps } from "./fixtures/runner.ts";
+import { wg } from "./fixtures/ids.ts";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -106,7 +107,7 @@ describe("blob sweep", () => {
     const root = mkdtempSync(join(tmpdir(), "orca-sweep-"));
     try {
       const config = createOrcaNodeConfig({
-        workgroup_id: "sweep-test",
+        workgroup_id: wg("sweep-test"),
         workgroup_password: "pw",
         data_root: root,
         port: 0,

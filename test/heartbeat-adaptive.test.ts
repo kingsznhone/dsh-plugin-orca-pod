@@ -6,14 +6,15 @@ import {
   HEARTBEAT_INTERVAL_MIN_MS,
   heartbeatIntervalMsFor,
 } from "../src/membership/membership.ts";
-import type { PeerView } from "../src/protocol/peer.ts";
+import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
 import { createMesh, waitFor } from "../src/node/harness.ts";
+import { labelId } from "./fixtures/ids.ts";
 
 async function eventually(probe: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
   await waitFor(probe, (ok) => ok, { timeoutMs, label });
 }
 
-function peer(orcaNodeId: string): PeerView {
+function peer(orcaNodeId: OrcaNodeId): PeerView {
   return {
     orca_node_id: orcaNodeId,
     display_name: orcaNodeId,
@@ -42,13 +43,13 @@ describe("adaptive membership windows", () => {
   it("derives one-miss suspect and three-miss offline from the cadence", () => {
     let nowMs = 0;
     const membership = createMembership({
-      selfOrcaNodeId: "SELF",
+      selfOrcaNodeId: labelId("SELF"),
       timings: { intervalMs: 5000 },
       clock: { monotonicMs: () => nowMs, wallIso: () => new Date(0).toISOString() },
     });
-    membership.peers.upsert(peer("PEER01"));
+    membership.peers.upsert(peer(labelId("PEER01")));
     // The first inbound heartbeat is what makes the peer online.
-    membership.observeInbound("PEER01");
+    membership.observeInbound(labelId("PEER01"));
 
     membership.setIntervalMs(5000);
     expect(membership.timings.intervalMs).toBe(5000);

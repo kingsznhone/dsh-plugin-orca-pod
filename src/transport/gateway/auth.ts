@@ -7,6 +7,7 @@ import { parseSchema } from "../../kernel/schema.ts";
 import { BODY_SHA256_HEADER } from "../../protocol/constants.ts";
 import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./gateway.ts";
+import type { OrcaNodeId } from "../../protocol/peer.ts";
 
 /**
  * Who may call a route (§7.1). Every route declares one in `config.access`;
@@ -77,7 +78,7 @@ function authenticate(request: FastifyRequest, access: Access, deps: GatewayDeps
 }
 
 /** A valid signature only proves key possession: decide whether this caller may use the route. */
-function authorize(access: Access, caller: string, deps: GatewayDeps): void {
+function authorize(access: Access, caller: OrcaNodeId, deps: GatewayDeps): void {
   if (access === "join") return;
   const self = caller === deps.orcaNode.orca_node_id;
   if (access === "local") {

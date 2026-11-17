@@ -16,6 +16,7 @@ import {
 } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { bodySha256 } from "../src/security/crypto.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 
@@ -51,7 +52,7 @@ describe("orca-node CLI", () => {
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "orca-cli-test-"));
     config = createOrcaNodeConfig({
-      workgroup_id: "cli-test",
+      workgroup_id: wg("cli-test"),
       workgroup_password: "correct horse",
       data_root: root,
       port: 0,
@@ -314,7 +315,7 @@ describe("config validation", () => {
   it("rejects a config with a missing required field instead of filling a default", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-config-"));
     const created = createOrcaNodeConfig({
-      workgroup_id: "orca-kdf",
+      workgroup_id: wg("orca-kdf"),
       workgroup_password: "kdf-password-123",
       data_root: dir,
     });

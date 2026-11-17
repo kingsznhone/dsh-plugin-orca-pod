@@ -1,6 +1,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { WorkgroupId } from "../protocol/peer.ts";
 
 /**
  * One workspace per (data_root, workgroup) (§6.7). Created on join and kept
@@ -39,7 +40,7 @@ type WorkspaceManager = {
 
 const TASK_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-export function createWorkspaceManager(options: { dataRoot: string; workgroupId: string }): WorkspaceManager {
+export function createWorkspaceManager(options: { dataRoot: string; workgroupId: WorkgroupId }): WorkspaceManager {
   const root = join(options.dataRoot, "workgroups", options.workgroupId);
   const state = join(options.dataRoot, "state", options.workgroupId);
   const workspace: Workspace = {

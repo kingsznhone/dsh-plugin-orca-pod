@@ -10,9 +10,10 @@ import { createMemoryBlobStore, createMemoryFileBlobStore } from "../src/storage
 import { bodySha256 } from "../src/security/crypto.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
 import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const ENDPOINT = "http://orca-node.test";
-const WORKGROUP = "orca-dev";
+const WORKGROUP = wg("orca-dev");
 
 const idleTasks: TaskRunner = {
   submit() {

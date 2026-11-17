@@ -8,6 +8,7 @@ import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import type { Tracker } from "../src/plugin/tracker.ts";
 import type { PermissionRequest } from "../src/protocol/grant.ts";
 import type { TaskView } from "../src/protocol/task.ts";
+import { labelId } from "./fixtures/ids.ts";
 
 const PEER = "http://127.0.0.1:11812";
 const TASK = "TASK01";
@@ -17,8 +18,8 @@ const REQUEST: PermissionRequest = {
   task_id: TASK,
   tool: "write_file",
   requested: { path: "report.md" },
-  requested_by: "NODE02",
-  via: ["NODE01"],
+  requested_by: labelId("NODE02"),
+  via: [labelId("NODE01")],
 };
 
 function suspended(request: PermissionRequest = REQUEST): TaskView {

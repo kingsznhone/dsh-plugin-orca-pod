@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { childPodMetadata } from "../src/tasks/delegation.ts";
 import { deriveChildGrant, grantCovers } from "../src/security/grants.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { fakeNodeId } from "./fixtures/ids.ts";
+import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
 import { signGrant } from "../src/security/crypto.ts";
 import { generateNodeIdentity, loadIdentity } from "../src/security/identity.ts";
@@ -16,13 +16,14 @@ import { connectAll } from "../src/node/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type PodTaskMetadata, type TaskState, type TaskView } from "../src/protocol/task.ts";
 import type { Grant, SignedGrant } from "../src/protocol/grant.ts";
+import type { OrcaNodeId } from "../src/protocol/peer.ts";
 
 const NODE_A = fakeNodeId("A");
 const NODE_B = fakeNodeId("B");
 const NODE_C = fakeNodeId("C");
 const NODE_R = fakeNodeId("R");
 
-const WORKGROUP = "orca-chain";
+const WORKGROUP = wg("orca-chain");
 const PASSWORD = "chain-secret";
 
 let nodes: OrcaNode[] = [];
@@ -87,7 +88,7 @@ async function expectCode(run: () => Promise<unknown>, code: string): Promise<vo
   throw new Error(`expected ${code}, but the call succeeded`);
 }
 
-function podMetadata(hop: number, chain: string[], root = "t_root"): Record<string, unknown> {
+function podMetadata(hop: number, chain: OrcaNodeId[], root = "t_root"): Record<string, unknown> {
   return { pod: { hop, chain, root } satisfies PodTaskMetadata };
 }
 

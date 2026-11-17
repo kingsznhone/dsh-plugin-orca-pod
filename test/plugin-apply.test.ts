@@ -16,6 +16,7 @@ import type {
 } from "../src/plugin/dsh.ts";
 import type { Tracker } from "../src/plugin/tracker.ts";
 import { parseSettings, type Settings } from "../src/node/settings.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const trackers: Tracker[] = [];
 
@@ -294,7 +295,7 @@ describe("plugin apply", () => {
     await stores.clearSecret("ORCA_POD_PASSWORD_WG_A");
     expect(await stores.readSecret("ORCA_POD_PASSWORD_WG_A")).toBeUndefined();
 
-    expect(await stores.writeConfig((raw) => ({ ...raw, workgroup_id: "wg-a" }))).toBe(true);
+    expect(await stores.writeConfig((raw) => ({ ...raw, workgroup_id: wg("wg-a") }))).toBe(true);
     expect(host.entry.options.config).toEqual({ workgroup_id: "wg-a" });
     // An unchanged config is not written, so the Loader does not restart the plugin.
     expect(await stores.writeConfig((raw) => raw)).toBe(false);

@@ -28,7 +28,14 @@ import type { PanelPatch } from "../node/settings.ts";
 
 import type { Config } from "./config.ts";
 import type { HostLogger } from "./dsh.ts";
-import { loadRememberedPeers, peerStatePath, saveRememberedPeers, type PodStores, type RawConfig } from "./stores.ts";
+import {
+  type ConfigFields,
+  loadRememberedPeers,
+  peerStatePath,
+  saveRememberedPeers,
+  type PodStores,
+  type RawConfig,
+} from "./stores.ts";
 import { errorMessage } from "../kernel/errors.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
@@ -86,14 +93,15 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-/** Apply panel fields to a raw plugin config: a value sets the key, `null` removes it. */
-function applyPanelFields(raw: RawConfig, fields: RawConfig): RawConfig {
-  const next: RawConfig = { ...raw };
+/** Apply settings to a raw plugin config: a value sets the key, `null` removes it; other keys stay. */
+function applyPanelFields(raw: RawConfig, fields: ConfigFields): RawConfig {
+  const next: Record<string, unknown> = { ...raw };
   for (const [key, value] of Object.entries(fields)) {
     if (value === null) delete next[key];
-    else next[key] = value;
+    else if (value !== undefined) next[key] = value;
   }
-  return next;
+  // Every key written came from `fields`, so `next` still has the `RawConfig` shape.
+  return next as RawConfig;
 }
 
 /** The plugin config without the in-memory password: what may be persisted. */

@@ -36,7 +36,14 @@ import { createGateway } from "../transport/gateway/gateway.ts";
 import { createPeerClient, type FetchLike } from "../transport/peer-client.ts";
 import { createWorkgroup, type LeaveResult } from "../membership/mesh.ts";
 import { createMembership, type MembershipClock, type MembershipTimings } from "../membership/membership.ts";
-import type { HeartbeatResponse, JoinResponse, PeerView, RuntimeInfo, SelfRecord } from "../protocol/peer.ts";
+import type {
+  HeartbeatResponse,
+  JoinResponse,
+  PeerView,
+  RuntimeInfo,
+  SelfRecord,
+  OrcaNodeId,
+} from "../protocol/peer.ts";
 import type { ModelOffer, ModelSelection, ReasoningEffort } from "../protocol/model.ts";
 import type { PodEventInput, PodEventListener } from "../protocol/events.ts";
 import type { SubmitTaskInput, TaskView } from "../protocol/task.ts";
@@ -114,7 +121,7 @@ export type CreateNodeOptions = {
 };
 
 export interface OrcaNode {
-  readonly orcaNodeId: string;
+  readonly orcaNodeId: OrcaNodeId;
   readonly config: OrcaNodeConfig;
   /** Advertised dial URLs, best first (IPv4/IPv6/LAN/public); first is primary. */
   readonly endpoints: string[];

@@ -11,9 +11,10 @@ import type { LocalExecutor } from "../src/execution/executor.ts";
 import { connectAll } from "../src/node/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/task.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const WORKGROUP = "orca-relay-auto";
+const WORKGROUP = wg("orca-relay-auto");
 const PASSWORD = "relay-auto-secret";
 
 let nodes: OrcaNode[] = [];

@@ -8,16 +8,18 @@ import { describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode } from "../src/node/orca-node.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
+import { wg } from "./fixtures/ids.ts";
+import type { WorkgroupId } from "../src/protocol/peer.ts";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "orca-hb-"));
 }
 
-function newWorkgroupId(): string {
-  return `wg-${randomBytes(6).toString("hex")}`;
+function newWorkgroupId(): WorkgroupId {
+  return wg(`wg-${randomBytes(6).toString("hex")}`);
 }
 
-function makeNode(workgroupId: string, password: string, dataRoot: string, port = 0): OrcaNode {
+function makeNode(workgroupId: WorkgroupId, password: string, dataRoot: string, port = 0): OrcaNode {
   const config = createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,

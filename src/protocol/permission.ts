@@ -1,10 +1,8 @@
 import { z } from "zod";
 
-/** Modes in rank order: a later mode lets the agent do more. */
-const PERMISSION_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
+import { PERMISSION_MODES, type PermissionMode } from "./vocabulary.ts";
 
-/** How much an agent may do on the orca node running its task (§7.10). */
-export type PermissionMode = (typeof PERMISSION_MODES)[number];
+export type { PermissionMode };
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES);
 

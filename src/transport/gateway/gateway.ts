@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import type { NonceCache } from "../../security/crypto.ts";
 import type { NodeIdentity } from "../../security/identity.ts";
-import type { SelfRecord } from "../../protocol/peer.ts";
+import type { SelfRecord, OrcaNodeId, WorkgroupId } from "../../protocol/peer.ts";
 import type { TaskRunner } from "../../protocol/task.ts";
 import type { FileBlobRegistry, BlobStore } from "../../storage/stores.ts";
 import type { PeerStore } from "../../membership/membership.ts";
@@ -14,8 +14,8 @@ import { clusterRoutes } from "./cluster-routes.ts";
 import { installErrorHandler } from "./error-handler.ts";
 
 type GatewayOrcaNode = {
-  orca_node_id: string;
-  workgroup_id: string;
+  orca_node_id: OrcaNodeId;
+  workgroup_id: WorkgroupId;
   /** Live self record owned by the node: endpoints, model catalog, busy holder (§6.15). */
   self: () => SelfRecord;
   /** Local-only capability: register a child task for automatic relay (§7.12). */

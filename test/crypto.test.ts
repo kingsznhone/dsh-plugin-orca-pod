@@ -18,8 +18,9 @@ import {
   type VerifyAuthOptions,
 } from "../src/security/crypto.ts";
 import { PodError, type PodErrorCode } from "../src/kernel/errors.ts";
+import { wg, fakeNodeId } from "./fixtures/ids.ts";
 
-const WORKGROUP_ID = "orca-dev";
+const WORKGROUP_ID = wg("orca-dev");
 const PASSWORD = "correct horse battery staple";
 const METHOD = "POST";
 const PATH = "/a2a/message";
@@ -65,7 +66,7 @@ describe("deriveWorkgroupKey", () => {
   });
 
   it("differs by workgroup id", () => {
-    const other = deriveWorkgroupKey("orca-other", PASSWORD);
+    const other = deriveWorkgroupKey(wg("orca-other"), PASSWORD);
     expect(other.equals(freshKey())).toBe(false);
   });
 
@@ -283,7 +284,7 @@ describe("parseAuthHeader", () => {
 });
 
 describe("join admission proof", () => {
-  const fields = { workgroupId: WORKGROUP_ID, orcaNodeId: "x".repeat(43), ts: 1_700_000_000_000, nonce: "n1" };
+  const fields = { workgroupId: WORKGROUP_ID, orcaNodeId: fakeNodeId("x"), ts: 1_700_000_000_000, nonce: "n1" };
 
   it("verifies with the derived workgroup key", () => {
     const proof = admissionProof("join", freshKey(), fields);
@@ -303,7 +304,7 @@ describe("join admission proof", () => {
     const proof = admissionProof("join", freshKey(), fields);
     const wrongKey = deriveWorkgroupKey(WORKGROUP_ID, "different password");
     expect(verifyAdmissionProof("join", wrongKey, fields, proof)).toBe(false);
-    expect(verifyAdmissionProof("join", freshKey(), { ...fields, orcaNodeId: "y".repeat(43) }, proof)).toBe(false);
+    expect(verifyAdmissionProof("join", freshKey(), { ...fields, orcaNodeId: fakeNodeId("y") }, proof)).toBe(false);
     expect(verifyAdmissionProof("join", freshKey(), { ...fields, nonce: "n2" }, proof)).toBe(false);
   });
 });
@@ -315,7 +316,7 @@ describe("grants", () => {
     workgroup_id: WORKGROUP_ID,
     origin_orca_node: identity.orcaNodeId,
     task_id: "t-1",
-    target_orca_node: "z".repeat(43),
+    target_orca_node: fakeNodeId("z"),
     tool: "write_file",
     mode: "allow_once",
     chain: [identity.orcaNodeId],

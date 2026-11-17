@@ -31,28 +31,29 @@ type IdentityFile = z.infer<typeof IdentityFileSchema>;
 
 const RAW_KEY_BYTES = 32;
 
-/** Short label for UI/logs: first 6 and last 4 characters. */
-export function shortenNodeId(orcaNodeId: OrcaNodeId): string {
+/** Short label for UI/logs: first 6 and last 4 characters (any text works; labels also shorten unknown keys). */
+export function shortenNodeId(orcaNodeId: string): string {
   if (orcaNodeId.length <= 12) return orcaNodeId;
   return `${orcaNodeId.slice(0, 6)}…${orcaNodeId.slice(-4)}`;
 }
 
-function rawPublicKeyBase64(publicKey: KeyObject): string {
+/** The node id of a public key: its raw 32 bytes in base64url (§7.1). */
+function nodeIdOfPublicKey(publicKey: KeyObject): OrcaNodeId {
   const der = publicKey.export({ format: "der", type: "spki" });
   const raw = Buffer.from(der).subarray(-RAW_KEY_BYTES);
-  return raw.toString("base64url");
+  return OrcaNodeIdSchema.parse(raw.toString("base64url"));
 }
 
 function identityFromPrivateKeyPem(privateKeyPem: string): NodeIdentity {
   const publicKey = createPublicKey({ key: privateKeyPem, format: "pem" });
-  const orcaNodeId = rawPublicKeyBase64(publicKey);
+  const orcaNodeId = nodeIdOfPublicKey(publicKey);
   return { orcaNodeId, privateKeyPem };
 }
 
 export function generateNodeIdentity(): NodeIdentity {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
-  const orcaNodeId = rawPublicKeyBase64(publicKey);
+  const orcaNodeId = nodeIdOfPublicKey(publicKey);
   return { orcaNodeId, privateKeyPem };
 }
 

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const LIVE: OrcaNode[] = [];
 
@@ -14,7 +15,7 @@ afterEach(async () => {
 });
 
 async function pair(): Promise<[OrcaNode, OrcaNode]> {
-  const workgroupId = `wg-${randomBytes(6).toString("hex")}`;
+  const workgroupId = wg(`wg-${randomBytes(6).toString("hex")}`);
   const nodes = [0, 1].map(() =>
     createOrcaNode({
       config: createOrcaNodeConfig({

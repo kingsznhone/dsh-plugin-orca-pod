@@ -17,22 +17,23 @@ import {
   type ModelSelection,
 } from "../protocol/model.ts";
 import { PermissionModeSchema, type PermissionMode } from "../protocol/permission.ts";
-import { WorkgroupIdSchema, normalizeEndpoints } from "../protocol/peer.ts";
+import { WorkgroupIdSchema, normalizeEndpoints, type WorkgroupId } from "../protocol/peer.ts";
 import { errorMessage } from "../kernel/errors.ts";
 import { isRecord, parseSchema } from "../kernel/schema.ts";
+import { EXECUTOR_KINDS, type ExecutorKind } from "../execution/kinds.ts";
 import { AcpExecutorConfigSchema, type AcpExecutorConfig } from "../execution/acp/config.ts";
 
 const NonEmpty = z.string().min(1);
 const PositiveNumber = z.number().positive();
 const PositiveInteger = z.number().int().min(1);
 
-const ExecutorKindSchema = z.enum(["echo", "acp"]);
-export type ExecutorKind = z.infer<typeof ExecutorKindSchema>;
+const ExecutorKindSchema = z.enum(EXECUTOR_KINDS);
+export type { ExecutorKind };
 
 /** Everything a node can be configured with, after parsing (defaults applied). */
 export interface Settings {
   /** Unset until the panel wizard (or the CLI) picks one. */
-  workgroup_id?: string;
+  workgroup_id?: WorkgroupId;
   /**
    * Plaintext input only (CLI, install, and the in-memory effective config of
    * the plugin): it derives the workgroup key and is never persisted. Empty

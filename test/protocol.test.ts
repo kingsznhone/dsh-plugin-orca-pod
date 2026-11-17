@@ -9,8 +9,10 @@ import {
   runtimeDigest,
   type PeerView,
   type RuntimeInfo,
+  type OrcaNodeId,
 } from "../src/protocol/peer.ts";
 import { newTaskId } from "../src/protocol/task.ts";
+import { labelId } from "./fixtures/ids.ts";
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.
 const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -28,7 +30,7 @@ function makeRuntime(): RuntimeInfo {
 
 type DigestPeer = Pick<PeerView, "orca_node_id" | "endpoints" | "runtime_digest">;
 
-function makePeer(orcaNodeId: string, endpoints: string[], runtime: RuntimeInfo): DigestPeer {
+function makePeer(orcaNodeId: OrcaNodeId, endpoints: string[], runtime: RuntimeInfo): DigestPeer {
   return { orca_node_id: orcaNodeId, endpoints, runtime_digest: runtimeDigest(runtime) };
 }
 
@@ -140,15 +142,15 @@ describe("runtimeDigest", () => {
 
 describe("membersDigest", () => {
   const runtime = makeRuntime();
-  const alpha = makePeer("ABC123", ["http://127.0.0.1:11811"], runtime);
-  const beta = makePeer("XYZ789", ["http://127.0.0.1:11812"], runtime);
+  const alpha = makePeer(labelId("ABC123"), ["http://127.0.0.1:11811"], runtime);
+  const beta = makePeer(labelId("XYZ789"), ["http://127.0.0.1:11812"], runtime);
 
   it("is independent of input order", () => {
     expect(membersDigest([alpha, beta])).toBe(membersDigest([beta, alpha]));
   });
 
   it("changes when an orca node id changes", () => {
-    expect(membersDigest([{ ...alpha, orca_node_id: "ABC124" }, beta])).not.toBe(membersDigest([alpha, beta]));
+    expect(membersDigest([{ ...alpha, orca_node_id: labelId("ABC124") }, beta])).not.toBe(membersDigest([alpha, beta]));
   });
 
   it("changes when an endpoint changes", () => {

@@ -8,6 +8,7 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import type { TaskView } from "../src/protocol/task.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const dirs: string[] = [];
 const orcaNodes: OrcaNode[] = [];
@@ -25,7 +26,7 @@ afterEach(async () => {
 
 function nodeFor(dataRoot: string): OrcaNode {
   const config = createOrcaNodeConfig({
-    workgroup_id: "orca-persist",
+    workgroup_id: wg("orca-persist"),
     workgroup_password: "secret",
     data_root: dataRoot,
     port: 0,

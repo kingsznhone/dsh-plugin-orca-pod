@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import { createMembership } from "../src/membership/membership.ts";
 import { candidateEndpointAllowed } from "../src/membership/screening.ts";
 import { detectLocalEndpoints, isBlockedFetchPort, isLoopbackEndpoint, pickFreePort } from "../src/transport/net.ts";
-import type { PeerView } from "../src/protocol/peer.ts";
+import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
+import { labelId } from "./fixtures/ids.ts";
 
-function peer(orcaNodeId: string, endpoint: string): PeerView {
+function peer(orcaNodeId: OrcaNodeId, endpoint: string): PeerView {
   return {
     orca_node_id: orcaNodeId,
     display_name: orcaNodeId,
@@ -94,12 +95,12 @@ describe("candidate endpoint filtering (§7.7)", () => {
 
 describe("peer origin (§7.7)", () => {
   it("marks joined peers explicit and roster-only peers candidate", () => {
-    const membership = createMembership({ selfOrcaNodeId: "AAAAAA" });
-    membership.peers.upsert(peer("BBBBBB", "http://127.0.0.1:1"));
-    expect(membership.originOf("BBBBBB")).toBe("explicit");
-    membership.mergeRemote([peer("CCCCCC", "http://127.0.0.1:2")]);
-    expect(membership.originOf("CCCCCC")).toBe("candidate");
-    membership.peers.upsert(peer("CCCCCC", "http://127.0.0.1:2"));
-    expect(membership.originOf("CCCCCC")).toBe("explicit");
+    const membership = createMembership({ selfOrcaNodeId: labelId("AAAAAA") });
+    membership.peers.upsert(peer(labelId("BBBBBB"), "http://127.0.0.1:1"));
+    expect(membership.originOf(labelId("BBBBBB"))).toBe("explicit");
+    membership.mergeRemote([peer(labelId("CCCCCC"), "http://127.0.0.1:2")]);
+    expect(membership.originOf(labelId("CCCCCC"))).toBe("candidate");
+    membership.peers.upsert(peer(labelId("CCCCCC"), "http://127.0.0.1:2"));
+    expect(membership.originOf(labelId("CCCCCC"))).toBe("explicit");
   });
 });

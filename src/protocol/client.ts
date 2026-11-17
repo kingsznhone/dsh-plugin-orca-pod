@@ -9,6 +9,7 @@ import type { z } from "zod";
 
 import type { A2AMethod, A2AParams } from "./a2a.ts";
 import type { TaskView } from "./task.ts";
+import type { OrcaNodeId } from "./peer.ts";
 
 export type HttpMethod = "GET" | "POST";
 
@@ -43,12 +44,12 @@ export type UploadRequest<S extends z.ZodType> = {
 
 export type PeerClient = {
   /** Node id behind a URL: this node, a URL it dialed, or a member that advertises it. */
-  idOf(endpoint: string): string | undefined;
+  idOf(endpoint: string): OrcaNodeId | undefined;
   /** `idOf`, or an `unknown_peer` error: only an explicit join may reach a stranger. */
-  known(endpoint: string): string;
+  known(endpoint: string): OrcaNodeId;
   /** Remember that `endpoint` was answered by `nodeId` (a URL it does not advertise). */
-  learn(endpoint: string, nodeId: string): void;
-  forget(nodeId: string): void;
+  learn(endpoint: string, nodeId: OrcaNodeId): void;
+  forget(nodeId: OrcaNodeId): void;
   /** Signed JSON request; resolves with the 2xx body, parsed by `request.reply`. */
   call<S extends z.ZodType>(endpoint: string, request: JsonRequest<S>, options?: CallOptions): Promise<z.output<S>>;
   /** Signed JSON-RPC call to `/a2a`; every method answers with a task view. */

@@ -9,7 +9,7 @@ import type { NodeIdentity } from "../security/identity.ts";
 import { BODY_SHA256_HEADER } from "../protocol/constants.ts";
 import { ErrorReplySchema, RpcResultSchema, type ErrorReply } from "../protocol/a2a.ts";
 import type { CallOptions, HttpMethod, PeerClient } from "../protocol/client.ts";
-import type { PeerView } from "../protocol/peer.ts";
+import type { OrcaNodeId, PeerView } from "../protocol/peer.ts";
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
@@ -95,9 +95,9 @@ function remoteError(label: string, reply: Reply, body: ErrorReply | undefined):
 export function createPeerClient(options: PeerClientOptions): PeerClient {
   const selfId = options.identity.orcaNodeId;
   /** URLs this node dialed, which a peer need not advertise (`localhost` vs its LAN address). */
-  const dialed = new Map<string, string>();
+  const dialed = new Map<string, OrcaNodeId>();
 
-  function idOf(endpoint: string): string | undefined {
+  function idOf(endpoint: string): OrcaNodeId | undefined {
     const key = trimSlash(endpoint);
     if (options.selfEndpoints().some((own) => trimSlash(own) === key)) return selfId;
     return (
@@ -106,7 +106,7 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
     );
   }
 
-  function known(endpoint: string): string {
+  function known(endpoint: string): OrcaNodeId {
     const id = idOf(endpoint);
     if (id === undefined) {
       throw new PodError("unknown_peer", `${endpoint} is not a known member; connect to it first`);

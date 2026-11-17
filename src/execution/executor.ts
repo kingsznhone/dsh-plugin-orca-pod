@@ -7,6 +7,7 @@ import type { EchoScript } from "./echo.ts";
 import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
 import type { PermissionMode } from "../protocol/permission.ts";
 import type { RequestedAccess, TaskRelay } from "../protocol/grant.ts";
+import type { OrcaNodeId } from "../protocol/peer.ts";
 
 /**
  * Why a running task stops to wait for someone else. The only reason is a
@@ -32,9 +33,9 @@ export type ExecuteInput = {
   /** The full prompt: trusted preamble, input and notes lists, then the origin's text as untrusted data. */
   prompt: string;
   /** Origin orca node; part of the session binding key (§6.10). */
-  originOrcaNode: string;
+  originOrcaNode: OrcaNodeId;
   /** This orca node (the executor's host). */
-  selfOrcaNodeId: string;
+  selfOrcaNodeId: OrcaNodeId;
   /** Group workspace `work/` dir; the executor's cwd (§6.7). */
   workspaceDir: string;
   /** Group workspace `.pod/` dir; executors keep their own state here. */

@@ -9,8 +9,9 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import type { DispatchEntry } from "../src/storage/stores.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { createSqliteDispatchStore } from "../src/storage/sqlite.ts";
+import { wg } from "./fixtures/ids.ts";
 
-const WORKGROUP = "orca-dispatches";
+const WORKGROUP = wg("orca-dispatches");
 const PASSWORD = "dispatch-secret";
 
 let nodes: OrcaNode[] = [];

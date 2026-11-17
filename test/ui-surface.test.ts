@@ -24,7 +24,8 @@ import type { PodTaskRow } from "../src/plugin/admin.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
-import { fakeNodeId } from "./fixtures/ids.ts";
+import { fakeNodeId, wg } from "./fixtures/ids.ts";
+import type { WorkgroupId } from "../src/protocol/peer.ts";
 
 const LEAF = fakeNodeId("orca-node-leaf");
 
@@ -54,7 +55,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function makeNode(workgroupId: string, password: string): OrcaNode {
+function makeNode(workgroupId: WorkgroupId, password: string): OrcaNode {
   const config = createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,
@@ -72,7 +73,7 @@ function text(body: string) {
 
 /** Two joined persistent orca nodes; `b` is the target of dispatches. */
 async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
-  const workgroupId = `wg-ui-${Math.random().toString(16).slice(2, 8)}`;
+  const workgroupId = wg(`wg-ui-${Math.random().toString(16).slice(2, 8)}`);
   const password = "ui-surface-password";
   const a = makeNode(workgroupId, password);
   const b = makeNode(workgroupId, password);

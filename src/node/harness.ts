@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createOrcaNodeConfig } from "./config.ts";
+import { WorkgroupIdSchema } from "../protocol/peer.ts";
 import type { MembershipTimings } from "../membership/membership.ts";
 import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "./orca-node.ts";
 
@@ -24,6 +25,15 @@ type MeshOptions = {
 export type Mesh = {
   orcaNodes: OrcaNode[];
   urls: string[];
+  /** Root holding every orca node's data. Removed by the caller, never by `stop()`. */
+  dataRoot: string;
+  /**
+   * True when `createMesh` invented `dataRoot` under the OS temp directory because the
+   * caller supplied none. Such a root has no other owner, so a test fixture may delete it
+   * after `stop()`; a caller-supplied root is never disposable.
+   */
+  ownsDataRoot: boolean;
+  /** Stops the mesh's nodes. Idempotent; leaves `dataRoot` untouched so it can be inspected or reused. */
   stop(): Promise<void>;
 };
 
@@ -33,11 +43,13 @@ const DEFAULT_WORKGROUP_ID = "orca-dev";
 /** Boot `orcaNodes` in-process orca nodes and converge them on the first orcaNode. */
 export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
   const count = options.orcaNodes ?? DEFAULT_NODES;
-  const workgroupId = options.workgroupId ?? DEFAULT_WORKGROUP_ID;
+  const workgroupId = WorkgroupIdSchema.parse(options.workgroupId ?? DEFAULT_WORKGROUP_ID);
   const password = options.password ?? randomBytes(8).toString("hex");
+  const ownsDataRoot = options.dataRoot === undefined;
   const dataRoot = options.dataRoot ?? join(tmpdir(), `orca-pod-mesh-${randomBytes(8).toString("hex")}`);
   const orcaNodes: OrcaNode[] = [];
   const urls: string[] = [];
+  let stopped = false;
 
   try {
     for (let index = 0; index < count; index += 1) {
@@ -72,7 +84,11 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
     return {
       orcaNodes,
       urls,
+      dataRoot,
+      ownsDataRoot,
       async stop(): Promise<void> {
+        if (stopped) return;
+        stopped = true;
         await Promise.all(orcaNodes.map((orcaNode) => orcaNode.stop()));
       },
     };

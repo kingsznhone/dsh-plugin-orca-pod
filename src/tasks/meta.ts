@@ -14,12 +14,13 @@ import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
 import type { PermissionMode } from "../protocol/permission.ts";
 import type { SignedGrant } from "../protocol/grant.ts";
 import { parseSignedGrant } from "../security/grants.ts";
+import type { OrcaNodeId } from "../protocol/peer.ts";
 
 export type TaskMeta = {
   /** Orca nodes this task was delegated through, origin first. */
-  chain: string[];
+  chain: OrcaNodeId[];
   /** Origin of the whole delegation tree; a root task is its own tree's origin (§7.11). */
-  rootOrigin: string;
+  rootOrigin: OrcaNodeId;
   /** What the origin session allows; a task that names no mode runs read-only (§7.10). */
   permissionMode: PermissionMode;
   model: ModelSelection | undefined;
@@ -65,8 +66,8 @@ function parseInputs(inputs: readonly TaskInputRef[]): TaskInputRef[] {
 export function parsePodMetadata(
   /** Untrusted: it is whatever the caller sent, so it is typed as nothing more than an object. */
   metadata: Record<string, unknown> | undefined,
-  selfOrcaNodeId: string,
-  originOrcaNode: string,
+  selfOrcaNodeId: OrcaNodeId,
+  originOrcaNode: OrcaNodeId,
 ): TaskMeta {
   const raw = metadata?.pod ?? {};
   if (!isRecord(raw)) throw new PodError("bad_request", "metadata.pod must be an object");

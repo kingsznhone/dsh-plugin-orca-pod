@@ -22,6 +22,7 @@ import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import { PanelPatchSchema, parseSettings } from "../src/node/settings.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const logger: HostLogger = { info: () => {}, warn: () => {}, error: () => {} };
 const roots: string[] = [];
@@ -276,7 +277,7 @@ describe("panel configuration lifecycle", () => {
       expect(stores.secrets.has(REF)).toBe(false);
       await expect(readFile(configPath(root), "utf8")).rejects.toThrow();
 
-      const view = await adminFor(handle).saveConfig({ workgroup_id: "wg-panel", workgroup_password: PASSWORD });
+      const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-panel"), workgroup_password: PASSWORD });
       expect(view.running).toBe(true);
       expect(handle.runtime.orcaNode!.self().orca_node_id).not.toBe(before);
     } finally {
@@ -385,7 +386,7 @@ describe("panel admin configuration", () => {
     try {
       const firstId = handle.runtime.orcaNode!.self().orca_node_id;
 
-      const view = await adminFor(handle).saveConfig({ workgroup_id: "wg-other" });
+      const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-other") });
 
       expect(view.workgroup_id).toBe("wg-other");
       expect(view.password_set).toBe(true);
@@ -469,7 +470,7 @@ describe("panel admin configuration", () => {
       expect(admin.config().configured).toBe(false);
       expect(admin.config().running).toBe(false);
 
-      await admin.saveConfig({ workgroup_id: "wg-fresh", workgroup_password: "pw-fresh" });
+      await admin.saveConfig({ workgroup_id: wg("wg-fresh"), workgroup_password: "pw-fresh" });
 
       expect(handle.runtime.orcaNode).not.toBeNull();
       expect(handle.runtime.error).toBeNull();

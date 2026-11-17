@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { PanelPatch } from "../node/settings.ts";
 import type { TaskView } from "../protocol/task.ts";
-import type { PodAdmin, PodTaskRow } from "./admin.ts";
+import type { PodAdmin, PodTaskDetail, PodTaskRow } from "./admin.ts";
 
 const Text = z.string().min(1, "must be a non-empty string");
 
@@ -49,6 +49,13 @@ export interface PodState {
 
 /** `GET /orca-api/tasks`: every task this node knows about, for the "all tasks" view. */
 export type PodTasksResponse = { recent: PodTaskRow[] };
+
+/** The GET routes: the query string each reads and the body it answers with. */
+export type PodReads = {
+  state: { query: Record<string, never>; response: PodState };
+  tasks: { query: { limit?: number }; response: PodTasksResponse };
+  task: { query: { peer: string; task: string }; response: PodTaskDetail };
+};
 
 /** What `approve`, `deny` and `cancel` answer with: the task as its peer reports it now. */
 export type PodTaskResponse = { task: TaskView };

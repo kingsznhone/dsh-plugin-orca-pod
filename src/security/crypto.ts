@@ -1,11 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
-import { isOrcaNodeId } from "../protocol/peer.ts";
+import { isOrcaNodeId, type OrcaNodeId, type WorkgroupId } from "../protocol/peer.ts";
 import type { Admission, AdmissionKind } from "../protocol/cluster.ts";
 import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
 import { PodError } from "../kernel/errors.ts";
 import type { Grant, SignedGrant } from "../protocol/grant.ts";
-import type { OrcaNodeId } from "../protocol/peer.ts";
 
 const AUTH_SCHEME = "Pod";
 /**
@@ -36,7 +35,7 @@ const DEFAULT_NONCE_CAPACITY = 10_000;
  * salt binds the derivation to the workgroup id so the same password yields a
  * different key in another group.
  */
-export function deriveWorkgroupKey(workgroupId: string, password: string): Buffer {
+export function deriveWorkgroupKey(workgroupId: WorkgroupId, password: string): Buffer {
   const salt = Buffer.concat([
     Buffer.from(KEY_DERIVATION_SALT, "utf8"),
     Buffer.from([0]),
@@ -120,7 +119,7 @@ export function buildAuthHeader(options: AuthHeaderOptions): string {
 }
 
 type ParsedAuthHeader = {
-  orcaNodeId: string;
+  orcaNodeId: OrcaNodeId;
   target: string;
   ts: number;
   nonce: string;
@@ -142,7 +141,8 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
   const ts = fields.get("ts");
   const nonce = fields.get("nonce");
   const signature = fields.get("sig");
-  if (!orcaNodeId || !ts || !nonce || !signature) return null;
+  // A key id that is not a node id can never verify; reject the header as malformed.
+  if (!orcaNodeId || !isOrcaNodeId(orcaNodeId) || !ts || !nonce || !signature) return null;
   const tsValue = Number(ts);
   if (!Number.isSafeInteger(tsValue)) return null;
   return { orcaNodeId, target: fields.get("target") ?? "", ts: tsValue, nonce, signature };
@@ -252,8 +252,8 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
 // ---------------------------------------------------------------------------
 
 type AdmissionFields = {
-  workgroupId: string;
-  orcaNodeId: string;
+  workgroupId: WorkgroupId;
+  orcaNodeId: OrcaNodeId;
   ts: number;
   nonce: string;
 };
@@ -286,7 +286,7 @@ export function verifyAdmissionProof(
 export function createAdmission(
   kind: AdmissionKind,
   key: Buffer,
-  ids: { workgroupId: string; orcaNodeId: string },
+  ids: { workgroupId: WorkgroupId; orcaNodeId: OrcaNodeId },
 ): Admission {
   const ts = Date.now();
   const nonce = randomUUID();
@@ -333,7 +333,7 @@ export function signGrant(identity: NodeIdentity, grant: Grant): SignedGrant {
 }
 
 /** Verify a grant against the origin node that signed it (chain[0]). */
-export function verifyGrant(originOrcaNodeId: string, grant: SignedGrant): boolean {
+export function verifyGrant(originOrcaNodeId: OrcaNodeId, grant: SignedGrant): boolean {
   if (typeof grant.sig !== "string" || grant.sig.length === 0) return false;
   return verifyWithNodeId(originOrcaNodeId, grantSignatureInput(grant), grant.sig);
 }
@@ -352,6 +352,6 @@ export function signedBlobUrl(identity: NodeIdentity, endpoint: string, blobId: 
   return `${endpoint.replace(/\/+$/, "")}/blobs/${blobId}?exp=${exp}&sig=${blobLinkSignature(identity, blobId, exp)}`;
 }
 
-export function verifyBlobLinkSignature(orcaNodeId: string, blobId: string, exp: string, sig: string): boolean {
+export function verifyBlobLinkSignature(orcaNodeId: OrcaNodeId, blobId: string, exp: string, sig: string): boolean {
   return verifyWithNodeId(orcaNodeId, `${BLOB_LINK_DOMAIN}|${blobId}|${exp}`, sig);
 }

@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config.ts";
 import { waitFor } from "../src/node/harness.ts";
 import { isTerminal, type TaskView } from "../src/protocol/task.ts";
-import type { MembersResponse } from "../src/protocol/peer.ts";
+import { type MembersResponse, WorkgroupIdSchema } from "../src/protocol/peer.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
@@ -109,7 +109,7 @@ function textOf(view: TaskView): string {
 
 async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "orca-pod-harness-"));
-  const workgroupId = "harness";
+  const workgroupId = WorkgroupIdSchema.parse("harness");
   const password = randomBytes(8).toString("hex");
   const running: RunningNode[] = [];
   try {
@@ -168,9 +168,12 @@ async function main(): Promise<void> {
   } finally {
     for (const node of running.reverse()) await node.stop();
     try {
-      rmSync(root, { recursive: true, force: true });
-    } catch {
-      // Windows may hold a WAL handle briefly; the temp root is disposable.
+      rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    } catch (error) {
+      // Windows may hold a WAL handle briefly; report it so a leak is visible rather than silent.
+      console.warn(
+        `could not remove harness temp root ${root}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 }

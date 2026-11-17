@@ -9,6 +9,7 @@ import { parseSchema } from "../src/kernel/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/catalog.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const LIVE: OrcaNode[] = [];
 const ROOTS: string[] = [];
@@ -22,7 +23,7 @@ async function startNode(options: Partial<Settings>): Promise<OrcaNode> {
   const root = await mkdtemp(join(tmpdir(), "orca-model-"));
   ROOTS.push(root);
   const config = createOrcaNodeConfig({
-    workgroup_id: "model-test",
+    workgroup_id: wg("model-test"),
     workgroup_password: "correct horse",
     data_root: root,
     port: 0,
@@ -83,7 +84,7 @@ describe("model catalog", () => {
     expect(parseModelSelection("p/m")).toBeNull();
     expect(parseModelSelection(null)).toBeNull();
     const configured = createOrcaNodeConfig({
-      workgroup_id: "wg",
+      workgroup_id: wg("wg"),
       workgroup_password: "pw",
       data_root: join(tmpdir(), "orca-model-config"),
       default_reasoning_effort: "max",
@@ -91,7 +92,7 @@ describe("model catalog", () => {
     expect(configured.default_reasoning_effort).toBe("max");
     expect(() =>
       createOrcaNodeConfig({
-        workgroup_id: "wg",
+        workgroup_id: wg("wg"),
         workgroup_password: "pw",
         data_root: join(tmpdir(), "orca-model-config"),
         default_reasoning_effort: "",

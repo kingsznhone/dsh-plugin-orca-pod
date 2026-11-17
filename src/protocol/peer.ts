@@ -11,17 +11,27 @@ import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "
  * the id, and no shared workgroup secret can stand in for it. 43 characters
  * always decode to exactly 32 bytes.
  */
+/** A checked orca node id; only `OrcaNodeIdSchema` (or `isOrcaNodeId`) makes one from a plain string. */
+export type OrcaNodeId = string & { readonly [ORCA_NODE_ID]: true };
+declare const ORCA_NODE_ID: unique symbol;
+
 export const OrcaNodeIdSchema = z
   .string()
-  .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)");
-export type OrcaNodeId = string;
+  .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)")
+  .transform((id) => id as OrcaNodeId);
 
 export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
   return OrcaNodeIdSchema.safeParse(value).success;
 }
 
-export const WorkgroupIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}");
-export type WorkgroupId = string;
+/** A checked workgroup id; only `WorkgroupIdSchema` (or `isWorkgroupId`) makes one from a plain string. */
+export type WorkgroupId = string & { readonly [WORKGROUP_ID]: true };
+declare const WORKGROUP_ID: unique symbol;
+
+export const WorkgroupIdSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}")
+  .transform((id) => id as WorkgroupId);
 
 export function isWorkgroupId(value: unknown): value is WorkgroupId {
   return WorkgroupIdSchema.safeParse(value).success;
