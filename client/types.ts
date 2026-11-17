@@ -22,7 +22,7 @@ export type {
   WorkspaceView,
 } from "../src/plugin/admin.ts";
 export type { PodState } from "../src/plugin/web.ts";
-export type { ModelOffer, ModelSelection, PeerView, PermissionMode, RuntimeInfo } from "../src/protocol.ts";
+export type { ModelOffer, ModelSelection, PeerView, PermissionMode, RuntimeInfo } from "../src/protocol/protocol.ts";
 
 /** One namespace's strings for one language. */
 export type LocaleDict = Record<string, string>;

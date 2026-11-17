@@ -1,13 +1,13 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import { bodySha256 } from "../src/crypto.ts";
-import { errorMessage } from "../src/errors.ts";
-import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../src/config.ts";
-import { loadIdentity } from "../src/identity.ts";
-import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
-import { createPeerClient } from "../src/peer_client.ts";
-import { DEFAULT_PORT } from "../src/protocol.ts";
+import { bodySha256 } from "../src/security/crypto.ts";
+import { errorMessage } from "../src/kernel/errors.ts";
+import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../src/node/config.ts";
+import { loadIdentity } from "../src/security/identity.ts";
+import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { createPeerClient } from "../src/transport/peer-client.ts";
+import { DEFAULT_PORT } from "../src/protocol/protocol.ts";
 
 const SERVE = {
   workgroup: { type: "string" },

@@ -10,11 +10,11 @@ export { Config, apply, inject } from "./plugin/index.ts";
 export type { Config as PodConfig } from "./plugin/index.ts";
 
 /** Embeddable node API. */
-export { createOrcaNodeConfig } from "./config.ts";
-export type { OrcaNodeConfig } from "./config.ts";
-export { PodError } from "./errors.ts";
-export type { PodErrorCode } from "./errors.ts";
-export { createOrcaNode, createPersistentStorage } from "./orca_node.ts";
+export { createOrcaNodeConfig } from "./node/index.ts";
+export type { OrcaNodeConfig } from "./node/index.ts";
+export { PodError } from "./kernel/index.ts";
+export type { PodErrorCode } from "./kernel/index.ts";
+export { createOrcaNode, createPersistentStorage } from "./node/index.ts";
 export type {
   ApprovalOptions,
   CreateNodeOptions,
@@ -22,6 +22,6 @@ export type {
   NodeLogger,
   OrcaNode,
   OrcaNodeStorage,
-} from "./orca_node.ts";
-export { ConfigValidationError, parseSettings, safeParseSettings } from "./settings.ts";
-export type { Settings, SettingsIssue } from "./settings.ts";
+} from "./node/index.ts";
+export { ConfigValidationError, parseSettings, safeParseSettings } from "./node/index.ts";
+export type { Settings, SettingsIssue } from "./node/index.ts";

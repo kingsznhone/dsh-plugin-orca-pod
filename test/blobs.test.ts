@@ -3,15 +3,15 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/crypto.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore, type FileBlobRegistry } from "../src/blob_files.ts";
-import { PodError } from "../src/errors.ts";
-import { runtimeDigest, type BusyState, type SelfRecord, type TaskRunner } from "../src/protocol.ts";
-import { generateNodeIdentity, type NodeIdentity } from "../src/identity.ts";
-import { createSqliteFileBlobStore } from "../src/sqlite.ts";
-import { createMembership } from "../src/membership.ts";
-import { createFsBlobStore, createMemoryBlobStore, sha256Hex, type BlobStore } from "../src/storage.ts";
-import { createGateway, type GatewayDeps } from "../src/gateway/index.ts";
+import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
+import { createFileBlobRegistry, createMemoryFileBlobStore, type FileBlobRegistry } from "../src/storage/blob-files.ts";
+import { PodError } from "../src/kernel/errors.ts";
+import { runtimeDigest, type BusyState, type SelfRecord, type TaskRunner } from "../src/protocol/protocol.ts";
+import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
+import { createSqliteFileBlobStore } from "../src/storage/sqlite.ts";
+import { createMembership } from "../src/membership/membership.ts";
+import { createFsBlobStore, createMemoryBlobStore, sha256Hex, type BlobStore } from "../src/storage/index.ts";
+import { createGateway, type GatewayDeps } from "../src/transport/gateway/index.ts";
 
 const ENDPOINT = "http://orca-node.test";
 

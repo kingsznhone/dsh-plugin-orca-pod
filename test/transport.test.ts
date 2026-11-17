@@ -5,11 +5,11 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createMesh } from "../src/harness.ts";
-import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
-import type { MembershipTimings } from "../src/membership.ts";
-import type { TaskView } from "../src/protocol.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createMesh } from "../src/node/harness.ts";
+import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
+import type { MembershipTimings } from "../src/membership/membership.ts";
+import type { TaskView } from "../src/protocol/protocol.ts";
 
 /**
  * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，

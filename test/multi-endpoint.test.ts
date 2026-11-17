@@ -5,9 +5,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
-import type { MembershipTimings } from "../src/membership.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
+import type { MembershipTimings } from "../src/membership/membership.ts";
 
 const TIMINGS: Partial<MembershipTimings> = {
   intervalMs: 100,

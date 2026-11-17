@@ -20,9 +20,9 @@ import {
   type InstallEnvironment,
   type InstallOptions,
   type PromptQuestion,
-} from "../src/install.ts";
-import { parseSettings } from "../src/settings.ts";
-import { isInteractiveInvocation, main, parseArguments } from "../src/orca_pod.ts";
+} from "../src/cli/install.ts";
+import { parseSettings } from "../src/node/settings.ts";
+import { isInteractiveInvocation, main, parseArguments } from "../src/cli/orca-pod.ts";
 
 const roots: string[] = [];
 
@@ -42,7 +42,7 @@ function environment(root: string): InstallEnvironment {
   return {
     home: join(root, "home"),
     nodeBin: "/usr/bin/node",
-    packageEntry: "/opt/orca-pod/src/cli.ts",
+    packageEntry: "/opt/orca-pod/src/cli/main.ts",
     dshBin: "/usr/local/bin/dsh",
   };
 }
@@ -82,7 +82,7 @@ describe("install plan", () => {
     expect(plan.configPath).toBe(join("/srv/orca-pod", "config.json"));
     expect(plan.execStart).toEqual([
       "/usr/bin/node",
-      "/opt/orca-pod/src/cli.ts",
+      "/opt/orca-pod/src/cli/main.ts",
       "serve",
       "--config",
       join("/srv/orca-pod", "config.json"),
@@ -107,7 +107,7 @@ describe("install plan", () => {
     );
     expect(plan.execStart).toEqual([
       "/usr/bin/node",
-      "/opt/orca-pod/src/cli.ts",
+      "/opt/orca-pod/src/cli/main.ts",
       "serve",
       "--config",
       join(dataRoot, "config.json"),

@@ -50,12 +50,9 @@ const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
  * allowed: a fixed edge must leave this list, and a new violation fails.
  */
 const ALLOWED_VIOLATIONS: string[] = [
-  "acp/executor.ts -> entry.ts",
-  "gateway/blob_routes.ts -> blobs.ts",
-  "gateway/cluster_routes.ts -> settings.ts",
-  "mesh.ts -> net.ts",
-  "protocol.ts -> identity.ts",
-  "task_inputs.ts -> entry.ts",
+  "membership/mesh.ts -> transport/net.ts",
+  "protocol/protocol.ts -> security/identity.ts",
+  "transport/gateway/cluster-routes.ts -> node/settings.ts",
 ];
 
 function sourceFiles(directory: string): string[] {
@@ -85,54 +82,9 @@ function runtimeImports(file: string): string[] {
   return targets;
 }
 
-/**
- * Contexts of the modules that have not moved into their directory yet. The
- * index rule applies only to a module that lives in its context directory.
- */
-const LEGACY_CONTEXT: Record<string, string> = {
-  "errors.ts": "kernel",
-  "events.ts": "kernel",
-  // Resolves the CLI entry as its sibling, so it belongs to the CLI until it moves.
-  "entry.ts": "cli",
-  "protocol.ts": "protocol",
-  "identity.ts": "security",
-  "crypto.ts": "security",
-  "grants.ts": "security",
-  "chain.ts": "security",
-  "storage.ts": "storage",
-  "blobs.ts": "storage",
-  "blob_files.ts": "storage",
-  "dispatches.ts": "storage",
-  "sqlite.ts": "storage",
-  "membership.ts": "membership",
-  "mesh.ts": "membership",
-  "tasks.ts": "tasks",
-  "task_record.ts": "tasks",
-  "task_meta.ts": "tasks",
-  "task_inputs.ts": "tasks",
-  "workspace.ts": "tasks",
-  "executor.ts": "execution",
-  "echo.ts": "execution",
-  "process.ts": "execution",
-  "session_store.ts": "execution",
-  acp: "execution",
-  "delegation.ts": "delegation",
-  "net.ts": "transport",
-  "peer_client.ts": "transport",
-  gateway: "transport",
-  "orca_node.ts": "node",
-  "config.ts": "node",
-  "settings.ts": "node",
-  "harness.ts": "node",
-  "cli.ts": "cli",
-  "orca_pod.ts": "cli",
-  "install.ts": "cli",
-};
-
 function contextOf(key: string): string {
   const slash = key.indexOf("/");
-  const head = slash === -1 ? key : key.slice(0, slash);
-  return LEGACY_CONTEXT[head] ?? (slash === -1 ? "root" : head);
+  return slash === -1 ? "root" : key.slice(0, slash);
 }
 
 /** Tarjan's strongly connected components; every component of size > 1 (or a self loop) is a cycle. */
@@ -183,12 +135,11 @@ function violation(from: string, to: string): string | null {
   if (targetLayer > sourceLayer || (targetLayer === sourceLayer && sourceLayer !== PEER_LAYER)) {
     return `${source} (layer ${sourceLayer}) must not import ${target} (layer ${targetLayer})`;
   }
-  const isIndex = to === `${target}/index.ts` || to === "storage.ts";
+  const isIndex = to === `${target}/index.ts`;
   if (target === "storage" && !isIndex && !ASSEMBLY.has(source)) {
     return "storage implementations are wired only by node/, plugin/ and cli/";
   }
-  const settled = to.startsWith(`${target}/`);
-  if (settled && !isIndex && !ASSEMBLY.has(source)) return `cross-context imports go through ${target}/index.ts`;
+  if (!isIndex && !ASSEMBLY.has(source)) return `cross-context imports go through ${target}/index.ts`;
   return null;
 }
 

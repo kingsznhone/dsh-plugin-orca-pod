@@ -7,11 +7,17 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { configPath, createOrcaNodeConfig, saveConfig, validateConfig, type OrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
-import { sha256Hex } from "../src/storage.ts";
+import {
+  configPath,
+  createOrcaNodeConfig,
+  saveConfig,
+  validateConfig,
+  type OrcaNodeConfig,
+} from "../src/node/config.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { sha256Hex } from "../src/storage/index.ts";
 
-const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 
 type CliResult = { code: number; stdout: string; stderr: string };
 

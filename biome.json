@@ -37,7 +37,7 @@
   },
   "overrides": [
     {
-      "includes": ["src/gateway/a2a_routes.ts"],
+      "includes": ["src/transport/gateway/a2a-routes.ts"],
       "linter": {
         "rules": {
           "suspicious": { "noThenProperty": "off" }

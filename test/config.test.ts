@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { defaultDataRoot } from "../src/config.ts";
+import { defaultDataRoot } from "../src/node/config.ts";
 
 const profile = resolve(homedir(), ".dsh", "profiles", "desktop");
 

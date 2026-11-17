@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createWorkspaceManager } from "../src/workspace.ts";
+import { createWorkspaceManager } from "../src/tasks/workspace.ts";
 
 const dirs: string[] = [];
 

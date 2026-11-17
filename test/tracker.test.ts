@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { TaskState, TaskView } from "../src/protocol.ts";
+import type { TaskState, TaskView } from "../src/protocol/protocol.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { AgentNotice, HostLogger, ToolAgent } from "../src/plugin/dsh.ts";
-import type { DispatchEntry } from "../src/dispatches.ts";
+import type { DispatchEntry } from "../src/storage/dispatches.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
 import type { TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
 

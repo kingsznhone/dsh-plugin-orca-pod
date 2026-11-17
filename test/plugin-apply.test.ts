@@ -15,7 +15,7 @@ import type {
   WebServerRoute,
 } from "../src/plugin/dsh.ts";
 import type { Tracker } from "../src/plugin/tracker.ts";
-import { parseSettings, type Settings } from "../src/settings.ts";
+import { parseSettings, type Settings } from "../src/node/settings.ts";
 
 const trackers: Tracker[] = [];
 

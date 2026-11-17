@@ -4,21 +4,21 @@
  * model through a tool round-trip.
  */
 
-import { parseSettings } from "../src/settings.ts";
+import { parseSettings } from "../src/node/settings.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
-import type { OrcaNode } from "../src/orca_node.ts";
-import type { PodEvent } from "../src/events.ts";
-import type { MembershipTimings } from "../src/membership.ts";
-import type { TaskView } from "../src/protocol.ts";
-import { isTerminal } from "../src/protocol.ts";
-import { shortenNodeId } from "../src/identity.ts";
-import { waitFor } from "../src/harness.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import type { OrcaNode } from "../src/node/orca-node.ts";
+import type { PodEvent } from "../src/kernel/events.ts";
+import type { MembershipTimings } from "../src/membership/membership.ts";
+import type { TaskView } from "../src/protocol/protocol.ts";
+import { isTerminal } from "../src/protocol/protocol.ts";
+import { shortenNodeId } from "../src/security/identity.ts";
+import { waitFor } from "../src/node/harness.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodTaskRow } from "../src/plugin/admin.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";

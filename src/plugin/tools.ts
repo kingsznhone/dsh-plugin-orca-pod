@@ -7,10 +7,10 @@
  * and callers poll `status` for the result.
  */
 
-import { normalizePeerUrl } from "../net.ts";
-import { DEFAULT_PORT, isPermissionMode, isRecord, isTerminal, parseModelSpec } from "../protocol.ts";
-import type { PeerView, PermissionMode, SubmitTaskInput } from "../protocol.ts";
-import type { OrcaNode } from "../orca_node.ts";
+import { normalizePeerUrl } from "../transport/index.ts";
+import { DEFAULT_PORT, isPermissionMode, isRecord, isTerminal, parseModelSpec } from "../protocol/index.ts";
+import type { PeerView, PermissionMode, SubmitTaskInput } from "../protocol/index.ts";
+import type { OrcaNode } from "../node/index.ts";
 
 import type {
   ContentBlock,

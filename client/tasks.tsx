@@ -2,7 +2,7 @@
 
 import React, { type ReactNode } from "react";
 import { t } from "./i18n.ts";
-import type { PodTaskMetadata } from "../src/protocol.ts";
+import type { PodTaskMetadata } from "../src/protocol/protocol.ts";
 import type { PodTaskDetail, PodTaskRow } from "./types.ts";
 import { Button, Fact, Modal, Row, Table, stop } from "./primitives.tsx";
 import { store, useApi, useStore } from "./store.ts";

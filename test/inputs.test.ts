@@ -9,8 +9,8 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/executor.ts";
-import { isTerminal, type TaskRunner, type TaskView } from "../src/protocol.ts";
+import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/execution/executor.ts";
+import { isTerminal, type TaskRunner, type TaskView } from "../src/protocol/protocol.ts";
 import { runnerDeps, createTestRunner } from "./fixtures/runner.ts";
 
 function message(text = "use the files") {

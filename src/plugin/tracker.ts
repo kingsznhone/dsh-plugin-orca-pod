@@ -16,12 +16,12 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { DispatchEntry } from "../dispatches.ts";
-import { isTerminal, permissionRequestOf } from "../protocol.ts";
-import type { PermissionRequest, TaskView } from "../protocol.ts";
+import type { DispatchEntry } from "../storage/dispatches.ts";
+import { isTerminal, permissionRequestOf } from "../protocol/index.ts";
+import type { PermissionRequest, TaskView } from "../protocol/index.ts";
 import type { ApprovalBroker } from "./broker.ts";
 import type { AgentNotice, HostLogger, ToolAgent } from "./dsh.ts";
-import { errorMessage } from "../errors.ts";
+import { errorMessage } from "../kernel/index.ts";
 
 /** The DSH Agent surface used to return a notice to the dispatching session. */
 export type TrackerAgent = ToolAgent;

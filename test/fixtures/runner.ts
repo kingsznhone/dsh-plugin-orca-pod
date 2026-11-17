@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
 
-import { EchoExecutor } from "../../src/echo.ts";
-import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/protocol.ts";
-import { createMemoryBlobStore, createMemoryTaskStore } from "../../src/storage.ts";
-import { createTaskRunner, type TaskRunnerDeps } from "../../src/tasks.ts";
-import { createWorkspaceManager } from "../../src/workspace.ts";
+import { EchoExecutor } from "../../src/execution/echo.ts";
+import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/protocol/protocol.ts";
+import { createMemoryBlobStore, createMemoryTaskStore } from "../../src/storage/index.ts";
+import { createTaskRunner, type TaskRunnerDeps } from "../../src/tasks/runner.ts";
+import { createWorkspaceManager } from "../../src/tasks/workspace.ts";
 
 const dirs: string[] = [];
 

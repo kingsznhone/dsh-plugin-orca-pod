@@ -4,10 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import type { DispatchEntry } from "../src/dispatches.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
-import { createSqliteDispatchStore } from "../src/sqlite.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import type { DispatchEntry } from "../src/storage/dispatches.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { createSqliteDispatchStore } from "../src/storage/sqlite.ts";
 
 const WORKGROUP = "orca-dispatches";
 const PASSWORD = "dispatch-secret";

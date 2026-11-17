@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateNodeIdentity, shortenNodeId } from "../src/identity.ts";
+import { generateNodeIdentity, shortenNodeId } from "../src/security/identity.ts";
 import {
   isHttpEndpoint,
   isOrcaNodeId,
@@ -11,7 +11,7 @@ import {
   runtimeDigest,
   type PeerView,
   type RuntimeInfo,
-} from "../src/protocol.ts";
+} from "../src/protocol/protocol.ts";
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.
 const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

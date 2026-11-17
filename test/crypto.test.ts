@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { generateNodeIdentity } from "../src/identity.ts";
-import type { Grant } from "../src/protocol.ts";
+import { generateNodeIdentity } from "../src/security/identity.ts";
+import type { Grant } from "../src/protocol/protocol.ts";
 import {
   DEFAULT_CLOCK_SKEW_MS,
   NonceCache,
@@ -16,8 +16,8 @@ import {
   verifyBlobLinkSignature,
   verifyGrant,
   type VerifyAuthOptions,
-} from "../src/crypto.ts";
-import { PodError, type PodErrorCode } from "../src/errors.ts";
+} from "../src/security/crypto.ts";
+import { PodError, type PodErrorCode } from "../src/kernel/errors.ts";
 
 const WORKGROUP_ID = "orca-dev";
 const PASSWORD = "correct horse battery staple";

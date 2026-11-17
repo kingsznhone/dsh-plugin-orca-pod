@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { signGrant } from "../src/crypto.ts";
+import { signGrant } from "../src/security/crypto.ts";
 import {
   checkGrant,
   createGrantLedger,
   parseSignedGrant,
   parseTaskRelay,
   type GrantExpectation,
-} from "../src/grants.ts";
-import { generateNodeIdentity } from "../src/identity.ts";
-import type { Grant, PermissionRequest } from "../src/protocol.ts";
+} from "../src/security/grants.ts";
+import { generateNodeIdentity } from "../src/security/identity.ts";
+import type { Grant, PermissionRequest } from "../src/protocol/protocol.ts";
 
 const origin = generateNodeIdentity();
 const SELF = "SELF";

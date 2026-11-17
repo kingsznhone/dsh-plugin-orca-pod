@@ -10,8 +10,8 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { OrcaNode } from "../orca_node.ts";
-import type { PermissionRequest, TaskView } from "../protocol.ts";
+import type { OrcaNode } from "../node/index.ts";
+import type { PermissionRequest, TaskView } from "../protocol/index.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
 interface ApprovalPrompt {

@@ -20,12 +20,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { configPath, createOrcaNodeConfig, saveConfig } from "../src/config.ts";
-import { waitFor } from "../src/harness.ts";
-import { isTerminal, type MembersResponse, type TaskView } from "../src/protocol.ts";
+import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config.ts";
+import { waitFor } from "../src/node/harness.ts";
+import { isTerminal, type MembersResponse, type TaskView } from "../src/protocol/protocol.ts";
 
 const execFileAsync = promisify(execFile);
-const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 const NODE = process.execPath;
 const START_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 30_000;

@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { validateModelOffers, validateModelSelection, type Settings } from "../src/settings.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { validateModelOffers, validateModelSelection, type Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/models.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 
 const LIVE: OrcaNode[] = [];
 const ROOTS: string[] = [];

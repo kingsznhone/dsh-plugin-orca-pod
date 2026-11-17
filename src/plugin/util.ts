@@ -1,6 +1,6 @@
 /** Shared helpers for the Orca pod DSH bundle. */
 
-import { errorMessage, PodError } from "../errors.ts";
+import { errorMessage, PodError } from "../kernel/index.ts";
 
 /**
  * Wrap an error with the operation that failed, keeping the pod error code (and

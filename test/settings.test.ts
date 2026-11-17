@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { configPath, createOrcaNodeConfig, loadConfig, saveConfig } from "../src/config.ts";
-import { ConfigValidationError, nodeSettings, parseSettings, pickPanelFields } from "../src/settings.ts";
+import { configPath, createOrcaNodeConfig, loadConfig, saveConfig } from "../src/node/config.ts";
+import { ConfigValidationError, nodeSettings, parseSettings, pickPanelFields } from "../src/node/settings.ts";
 
 const roots: string[] = [];
 

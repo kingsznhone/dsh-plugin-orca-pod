@@ -5,13 +5,13 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { childPodMetadata, deriveChildGrant, grantCovers } from "../src/chain.ts";
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { parsePodMetadata } from "../src/task_meta.ts";
-import { signGrant } from "../src/crypto.ts";
-import { generateNodeIdentity, loadIdentity } from "../src/identity.ts";
-import { connectAll } from "../src/harness.ts";
-import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
+import { childPodMetadata, deriveChildGrant, grantCovers } from "../src/delegation/chain.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { parsePodMetadata } from "../src/tasks/meta.ts";
+import { signGrant } from "../src/security/crypto.ts";
+import { generateNodeIdentity, loadIdentity } from "../src/security/identity.ts";
+import { connectAll } from "../src/node/harness.ts";
+import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import {
   permissionRequestOf,
   type PodTaskMetadata,
@@ -19,7 +19,7 @@ import {
   type SignedGrant,
   type TaskState,
   type TaskView,
-} from "../src/protocol.ts";
+} from "../src/protocol/protocol.ts";
 
 const WORKGROUP = "orca-chain";
 const PASSWORD = "chain-secret";

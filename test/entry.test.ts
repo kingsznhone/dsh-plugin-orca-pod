@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { CLI_PATH, siblingEntry } from "../src/entry.ts";
+import { CLI_PATH, siblingEntry } from "../src/kernel/entry.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
@@ -19,8 +19,9 @@ function sourceFiles(directory: string): string[] {
 describe("package entries", () => {
   it("resolves a sibling entry with the extension of the asking module", () => {
     const root = join(fileURLToPath(new URL("../", import.meta.url)), "pkg");
-    expect(siblingEntry("cli", pathToFileURL(join(root, "src", "entry.ts")).href)).toBe(join(root, "src", "cli.ts"));
-    expect(siblingEntry("cli", pathToFileURL(join(root, "lib", "entry.js")).href)).toBe(join(root, "lib", "cli.js"));
+    const from = (dir: string, file: string): string => pathToFileURL(join(root, dir, "kernel", file)).href;
+    expect(siblingEntry("../cli/main", from("src", "entry.ts"))).toBe(join(root, "src", "cli", "main.ts"));
+    expect(siblingEntry("../cli/main", from("lib", "entry.js"))).toBe(join(root, "lib", "cli", "main.js"));
   });
 
   it("points the CLI path at an existing file", () => {

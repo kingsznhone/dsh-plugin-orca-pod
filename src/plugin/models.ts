@@ -13,9 +13,9 @@
  * passes whatever appeared.
  */
 
-import { isRecord, type ModelOffer, type ModelSelection } from "../protocol.ts";
+import { isRecord, type ModelOffer, type ModelSelection } from "../protocol/index.ts";
 import type { AgentDefaultModelService, HostLogger, LlmCatalogService } from "./dsh.ts";
-import { errorMessage } from "../errors.ts";
+import { errorMessage } from "../kernel/index.ts";
 
 /** Hard cap mirrored from `config.ts`; duplicated here to avoid a cycle. */
 const MAX_MODEL_OFFERS = 128;

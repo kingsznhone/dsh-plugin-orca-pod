@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createMesh } from "../src/harness.ts";
-import { createOrcaNode, createPersistentStorage, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createMesh } from "../src/node/harness.ts";
+import { createOrcaNode, createPersistentStorage, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
 
 const WORKGROUP = "orca-accept";
 const PASSWORD = "correct horse";

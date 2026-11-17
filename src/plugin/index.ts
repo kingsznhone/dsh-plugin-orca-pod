@@ -17,7 +17,7 @@ import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
 import type { Config as PodConfig } from "./config.ts";
-import { defaultDataRoot } from "../config.ts";
+import { defaultDataRoot } from "../node/index.ts";
 import type { AgentsService, HostContext, PermissionPresetsService, StandardSchemaV1, ToolAgent } from "./dsh.ts";
 import { createPodRuntime, stopPod } from "./lifecycle.ts";
 import type { PodStores } from "./lifecycle.ts";

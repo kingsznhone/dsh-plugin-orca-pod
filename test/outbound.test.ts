@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/orca_node.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
 
 const WORKGROUP = "orca-outbound";
 const PASSWORD = "outbound-secret";

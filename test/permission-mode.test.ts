@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createAcpExecutor } from "../src/acp/executor.ts";
-import { childPodMetadata } from "../src/chain.ts";
-import { parseEchoScript } from "../src/echo.ts";
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { parsePodMetadata } from "../src/task_meta.ts";
-import type { ExecuteInput, ExecutorEvent } from "../src/executor.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
-import { narrowPermissionMode, permissionModeRank, type PodTaskMetadata } from "../src/protocol.ts";
+import { createAcpExecutor } from "../src/execution/acp/executor.ts";
+import { childPodMetadata } from "../src/delegation/chain.ts";
+import { parseEchoScript } from "../src/execution/echo.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { parsePodMetadata } from "../src/tasks/meta.ts";
+import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
+import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { narrowPermissionMode, permissionModeRank, type PodTaskMetadata } from "../src/protocol/protocol.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 

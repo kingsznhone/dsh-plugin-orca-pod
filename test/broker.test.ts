@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSettings } from "../src/settings.ts";
+import { parseSettings } from "../src/node/settings.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { BrokerNode } from "../src/plugin/broker.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import type { Tracker } from "../src/plugin/tracker.ts";
-import type { PermissionRequest, TaskView } from "../src/protocol.ts";
+import type { PermissionRequest, TaskView } from "../src/protocol/protocol.ts";
 
 const PEER = "http://127.0.0.1:11812";
 const TASK = "TASK01";

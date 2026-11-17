@@ -5,9 +5,9 @@ import {
   HEARTBEAT_INTERVAL_MAX_MS,
   HEARTBEAT_INTERVAL_MIN_MS,
   heartbeatIntervalMsFor,
-} from "../src/membership.ts";
-import type { PeerView } from "../src/protocol.ts";
-import { createMesh, waitFor } from "../src/harness.ts";
+} from "../src/membership/membership.ts";
+import type { PeerView } from "../src/protocol/protocol.ts";
+import { createMesh, waitFor } from "../src/node/harness.ts";
 
 async function eventually(probe: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
   await waitFor(probe, (ok) => ok, { timeoutMs, label });

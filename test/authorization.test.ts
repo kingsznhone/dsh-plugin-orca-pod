@@ -1,13 +1,19 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { NonceCache, admissionProof, blobLinkSignature, buildAuthHeader } from "../src/crypto.ts";
-import { runtimeDigest, type BusyState, type PeerView, type SelfRecord, type TaskRunner } from "../src/protocol.ts";
-import { generateNodeIdentity, type NodeIdentity } from "../src/identity.ts";
-import { createMembership } from "../src/membership.ts";
-import type { PeerStore } from "../src/membership.ts";
-import { createMemoryBlobStore, sha256Hex } from "../src/storage.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore } from "../src/blob_files.ts";
-import { createGateway, type GatewayDeps } from "../src/gateway/index.ts";
+import { NonceCache, admissionProof, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
+import {
+  runtimeDigest,
+  type BusyState,
+  type PeerView,
+  type SelfRecord,
+  type TaskRunner,
+} from "../src/protocol/protocol.ts";
+import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
+import { createMembership } from "../src/membership/membership.ts";
+import type { PeerStore } from "../src/membership/membership.ts";
+import { createMemoryBlobStore, sha256Hex } from "../src/storage/index.ts";
+import { createFileBlobRegistry, createMemoryFileBlobStore } from "../src/storage/blob-files.ts";
+import { createGateway, type GatewayDeps } from "../src/transport/gateway/index.ts";
 
 const ENDPOINT = "http://orca-node.test";
 const WORKGROUP = "orca-dev";

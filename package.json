@@ -24,8 +24,8 @@
       "default": "./lib/index.js"
     },
     "./testing": {
-      "types": "./lib/harness.d.ts",
-      "default": "./lib/harness.js"
+      "types": "./lib/node/harness.d.ts",
+      "default": "./lib/node/harness.js"
     },
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
@@ -42,8 +42,8 @@
     "README.md"
   ],
   "bin": {
-    "orca-node": "./lib/cli.js",
-    "orca-pod": "./lib/orca_pod.js"
+    "orca-node": "./lib/cli/main.js",
+    "orca-pod": "./lib/cli/orca-pod.js"
   },
   "dsh": {
     "bundle": {

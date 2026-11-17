@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig, endpointWriteback, validateConfig } from "../src/config.ts";
+import { createOrcaNodeConfig, endpointWriteback, validateConfig } from "../src/node/config.ts";
 
 // A scratch data root per test file: the identity file must never land in the
 // repository (it used to leave an untracked `endpoint-test-root/` behind).

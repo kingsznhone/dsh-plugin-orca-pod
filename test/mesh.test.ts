@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMesh } from "../src/harness.ts";
+import { createMesh } from "../src/node/harness.ts";
 
 describe("createMesh", () => {
   it("joins three orca nodes into one converged mesh", async () => {

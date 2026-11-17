@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
-import { isTerminal, type TaskView } from "../src/protocol.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { isTerminal, type TaskView } from "../src/protocol/protocol.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 
 const WORKGROUP = "orca-limits";

@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Readable } from "node:stream";
 
-import { PART_GRACE_MS } from "../src/blobs.ts";
-import { createFsBlobStore, sha256Hex } from "../src/storage.ts";
+import { PART_GRACE_MS } from "../src/storage/blobs.ts";
+import { createFsBlobStore, sha256Hex } from "../src/storage/index.ts";
 
 const dirs: string[] = [];
 

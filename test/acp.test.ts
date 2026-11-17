@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/config.ts";
-import { permissionRequestOf, type PermissionMode, type TaskView } from "../src/protocol.ts";
-import { createAcpExecutor } from "../src/acp/executor.ts";
-import type { ExecuteInput, ExecutorEvent } from "../src/executor.ts";
-import { connectAll } from "../src/harness.ts";
-import { parseEchoScript } from "../src/echo.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/orca_node.ts";
+import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
+import { permissionRequestOf, type PermissionMode, type TaskView } from "../src/protocol/protocol.ts";
+import { createAcpExecutor } from "../src/execution/acp/executor.ts";
+import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
+import { connectAll } from "../src/node/harness.ts";
+import { parseEchoScript } from "../src/execution/echo.ts";
+import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const LIVE: OrcaNode[] = [];

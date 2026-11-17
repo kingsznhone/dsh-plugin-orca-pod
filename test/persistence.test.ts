@@ -4,10 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/orca_node.ts";
-import type { OrcaNode } from "../src/orca_node.ts";
-import type { TaskView } from "../src/protocol.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import type { OrcaNode } from "../src/node/orca-node.ts";
+import type { TaskView } from "../src/protocol/protocol.ts";
 
 const dirs: string[] = [];
 const orcaNodes: OrcaNode[] = [];

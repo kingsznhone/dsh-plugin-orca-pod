@@ -12,11 +12,11 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { defaultDataRoot } from "../config.ts";
-import type { DispatchEntry } from "../dispatches.ts";
-import { shortenNodeId } from "../identity.ts";
-import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../net.ts";
-import { isTerminal } from "../protocol.ts";
+import { defaultDataRoot } from "../node/index.ts";
+import type { DispatchEntry } from "../storage/dispatches.ts";
+import { shortenNodeId } from "../security/index.ts";
+import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/index.ts";
+import { isTerminal } from "../protocol/index.ts";
 import type {
   PeerView,
   PermissionMode,
@@ -24,8 +24,8 @@ import type {
   PodTaskMetadata,
   SelfRecord,
   TaskView,
-} from "../protocol.ts";
-import type { OrcaNode } from "../orca_node.ts";
+} from "../protocol/index.ts";
+import type { OrcaNode } from "../node/index.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
 import type { ApprovalBroker } from "./broker.ts";

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSettings } from "../src/settings.ts";
-import type { DispatchEntry } from "../src/dispatches.ts";
+import { parseSettings } from "../src/node/settings.ts";
+import type { DispatchEntry } from "../src/storage/dispatches.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { HostLogger, PermissionPresetsService } from "../src/plugin/dsh.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import type { TaskView } from "../src/protocol.ts";
+import type { TaskView } from "../src/protocol/protocol.ts";
 import { createPodTools, sessionSandboxMode } from "../src/plugin/tools.ts";
 import type { TrackerAgent } from "../src/plugin/tracker.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";
@@ -189,7 +189,7 @@ describe("orca_pod tool", () => {
         sent.push(input);
         return { id: "task-1", status: { state: "submitted" } };
       },
-    } as unknown as import("../src/orca_node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
       ready: Promise.resolve(),
       runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
@@ -242,7 +242,7 @@ describe("orca_pod tool", () => {
         cancelled.push(taskId);
         return { id: taskId, status: { state: "canceled" } };
       },
-    } as unknown as import("../src/orca_node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
       ready: Promise.resolve(),
       runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
@@ -271,7 +271,7 @@ describe("orca_pod tool", () => {
         sent += 1;
         return { id: "never", status: { state: "submitted" } };
       },
-    } as unknown as import("../src/orca_node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
       ready: Promise.resolve(),
       runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
@@ -311,7 +311,7 @@ describe("orca_pod tool", () => {
     const fakeNode = {
       members: () => [],
       membersDigest: () => "digest",
-    } as unknown as import("../src/orca_node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForConnect = {
       ready: Promise.resolve(),
       runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },

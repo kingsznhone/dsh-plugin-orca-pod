@@ -5,9 +5,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/config.ts";
-import { createOrcaNode } from "../src/orca_node.ts";
-import type { OrcaNode } from "../src/orca_node.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { createOrcaNode } from "../src/node/orca-node.ts";
+import type { OrcaNode } from "../src/node/orca-node.ts";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "orca-hb-"));

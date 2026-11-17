@@ -10,15 +10,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { configPath } from "../src/config.ts";
-import { shortenNodeId } from "../src/identity.ts";
-import { normalizePeerUrl } from "../src/net.ts";
+import { configPath } from "../src/node/config.ts";
+import { shortenNodeId } from "../src/security/identity.ts";
+import { normalizePeerUrl } from "../src/transport/net.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodAdmin } from "../src/plugin/admin.ts";
 import type { HostLogger } from "../src/plugin/dsh.ts";
 import { createMemoryStores, peerStatePath, startPod, stopPod } from "../src/plugin/lifecycle.ts";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import { parseSettings } from "../src/settings.ts";
+import { parseSettings } from "../src/node/settings.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import { createTracker } from "../src/plugin/tracker.ts";
 

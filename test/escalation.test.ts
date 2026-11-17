@@ -6,10 +6,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { configPath, createOrcaNodeConfig, saveConfig } from "../src/config.ts";
-import { connectAll } from "../src/harness.ts";
-import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
-import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol.ts";
+import { configPath, createOrcaNodeConfig, saveConfig } from "../src/node/config.ts";
+import { connectAll } from "../src/node/harness.ts";
+import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/protocol.ts";
 
 const WORKGROUP = "orca-escalate";
 const PASSWORD = "escalate-secret";
@@ -176,7 +176,7 @@ describe("escalating a child permission to the task origin (§7.12)", () => {
     const { a, b, c, parentId, childId } = await scenario();
     await saveConfig(configPath(b.config.data_root), { ...b.config, endpoints: [b.endpoints[0]!] });
     const run = promisify(execFile);
-    const cli = join(import.meta.dirname, "..", "src", "cli.ts");
+    const cli = join(import.meta.dirname, "..", "src", "cli", "main.ts");
     const waiting = run(process.execPath, [
       cli,
       "wait",

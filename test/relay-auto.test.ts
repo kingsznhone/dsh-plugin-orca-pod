@@ -5,12 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createAcpExecutor } from "../src/acp/executor.ts";
-import { createOrcaNodeConfig } from "../src/config.ts";
-import type { LocalExecutor } from "../src/executor.ts";
-import { connectAll } from "../src/harness.ts";
-import { createOrcaNode, type OrcaNode } from "../src/orca_node.ts";
-import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol.ts";
+import { createAcpExecutor } from "../src/execution/acp/executor.ts";
+import { createOrcaNodeConfig } from "../src/node/config.ts";
+import type { LocalExecutor } from "../src/execution/executor.ts";
+import { connectAll } from "../src/node/harness.ts";
+import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { permissionRequestOf, type TaskState, type TaskView } from "../src/protocol/protocol.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const WORKGROUP = "orca-relay-auto";
