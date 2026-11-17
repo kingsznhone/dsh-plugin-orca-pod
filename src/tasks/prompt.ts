@@ -8,6 +8,7 @@
 import { readdir } from "node:fs/promises";
 
 import { CLI_PATH } from "../kernel/entry.ts";
+import { isMissingFile } from "../kernel/errors.ts";
 import type { OrcaNodeId } from "../protocol/peer.ts";
 
 const MAX_NOTES = 20;
@@ -16,8 +17,8 @@ const SAFE_NOTE_NAME = /^[^\p{C}<>]{1,128}$/u;
 
 /** Top-level files in the workgroup `notes/` directory, capped for the prompt (§6.7). */
 export async function listNotes(notesDir: string): Promise<string[]> {
-  const entries = await readdir(notesDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return [];
+  const entries = await readdir(notesDir, { withFileTypes: true }).catch((error: unknown) => {
+    if (isMissingFile(error)) return [];
     throw error;
   });
   return entries

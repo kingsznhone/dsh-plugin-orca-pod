@@ -24,18 +24,10 @@ import { parseSettings, passwordRefFor } from "../node/settings.ts";
 import { identityPath } from "../security/identity.ts";
 import { isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
-import type { PanelPatch } from "../node/settings.ts";
+import type { ConfigFields, PanelPatch, Settings } from "../node/settings.ts";
 
-import type { Config } from "./config.ts";
 import type { Logger } from "@deepseek-ai/cordis";
-import {
-  type ConfigFields,
-  loadRememberedPeers,
-  peerStatePath,
-  saveRememberedPeers,
-  type PodStores,
-  type RawConfig,
-} from "./stores.ts";
+import { loadRememberedPeers, peerStatePath, saveRememberedPeers, type PodStores, type RawConfig } from "./stores.ts";
 import { errorMessage } from "../kernel/errors.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
@@ -56,7 +48,7 @@ interface PodRuntime {
 export interface PodHandle {
   runtime: PodRuntime;
   /** Effective config: the plugin config plus the resolved password (in memory only). */
-  config: Config;
+  config: Settings;
   /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
   configured: boolean;
   /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
@@ -85,7 +77,7 @@ export interface PodHandle {
    * Take a config the host persisted, as a plugin restart would: stop the node
    * and start again from `config`. Only the in-memory stores call it.
    */
-  adopt(config: Config): Promise<void>;
+  adopt(config: Settings): Promise<void>;
 }
 
 /** Anything thrown, as an `Error`. */
@@ -105,7 +97,7 @@ function applyPanelFields(raw: RawConfig, fields: ConfigFields): RawConfig {
 }
 
 /** The plugin config without the in-memory password: what may be persisted. */
-function withoutSecret(config: Config): RawConfig {
+function withoutSecret(config: Settings): RawConfig {
   const { workgroup_password: _password, ...rest } = config;
   return rest;
 }
@@ -115,12 +107,12 @@ function withoutSecret(config: Config): RawConfig {
  * values mean "not configured yet" and keep the node idle instead of opening a
  * passwordless mesh; the first-run wizard fills them in.
  */
-function needsSetup(config: Config): boolean {
+function needsSetup(config: Settings): boolean {
   return !config.workgroup_id || !config.workgroup_password;
 }
 
 async function startNode(
-  config: Config,
+  config: Settings,
   remembered: readonly string[],
   runtime: PodRuntime,
   logger: Logger,
@@ -219,7 +211,7 @@ export interface StartPodHooks {
  * never rejects; inspect `runtime.error` for the failure cause.
  */
 export function startPod(
-  bundleConfig: Config,
+  bundleConfig: Settings,
   logger: Logger,
   stores: PodStores,
   hooks: StartPodHooks = {},
@@ -230,7 +222,7 @@ export function startPod(
   // host-provided default (the DSH profile directory), else the process default.
   // Every later read (peer state, node config, panel) then sees the same path.
   const dataRoot = bundleConfig.data_root ?? defaultRoot ?? defaultDataRoot();
-  const rooted = (config: Config): Config => ({
+  const rooted = (config: Settings): Settings => ({
     ...config,
     data_root: config.data_root ?? dataRoot,
     workgroup_password: "",
@@ -287,7 +279,7 @@ export function startPod(
   }
 
   /** The stored workgroup password, or undefined when there is none or the store cannot be read. */
-  async function readPassword(config: Config): Promise<string | undefined> {
+  async function readPassword(config: Settings): Promise<string | undefined> {
     const ref = passwordRefFor(config);
     if (ref === undefined) return undefined;
     try {

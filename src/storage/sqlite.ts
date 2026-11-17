@@ -1,8 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { FileBlob, FileBlobStore, DispatchEntry, DispatchStore, PersistedTask, TaskStore } from "./stores.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
+import type { FileBlob, FileBlobStore, DispatchStore, PersistedTask, TaskStore } from "./stores.ts";
 
 /**
  * One SQLite file holds all node state (§5.5): WAL mode, one process writing.
@@ -70,6 +71,11 @@ function jsonTable<T>(
 }
 
 /** Durable task store (§5.5). */
+/** The one SQLite file of a data root: tasks, published files and the dispatch log share it. */
+export function storeDbPath(dataRoot: string): string {
+  return join(dataRoot, "tasks.db");
+}
+
 export function createSqliteTaskStore(path: string): TaskStore {
   const handle = openDb(path);
   const table = jsonTable<PersistedTask>(

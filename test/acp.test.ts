@@ -1,3 +1,4 @@
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -272,7 +273,7 @@ describe("AcpExecutor", () => {
 
   it("uses the node default reasoning effort when the task does not ask", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: "max" }));
+    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("max") }));
     const submitted = await send(node, "use the node default effort");
     await waitForState(node, submitted.id, ["completed"]);
     const entries = await logEntries(join(root, "acp.log"));
@@ -287,10 +288,10 @@ describe("AcpExecutor", () => {
 
   it("lets the task override the node default reasoning effort", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: "high" }));
+    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("high") }));
     const submitted = await node.sendTask(node.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "use the requested effort" }], contextId: "ctx-effort" },
-      metadata: { pod: { reasoning_effort: "max" } },
+      metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
     });
     await waitForState(node, submitted.id, ["completed"]);
     const entries = await logEntries(join(root, "acp.log"));

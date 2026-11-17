@@ -13,7 +13,7 @@ import { parseSchema } from "../kernel/schema.ts";
 import { RequestedAccessSchema } from "../protocol/grant.ts";
 import { describeModelRequest } from "../protocol/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
-import { abortError } from "./process.ts";
+import { abortError } from "../kernel/errors.ts";
 
 const ECHO_LIMITS = {
   max_steps: 8,

@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,6 +21,7 @@ import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from ".
 import { parseSettings, type Settings } from "../node/settings.ts";
 import { bindChoices } from "../transport/net.ts";
 import { errorMessage } from "../kernel/errors.ts";
+import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
 
 /** A service listens on all interfaces unless told otherwise (the plugin defaults to loopback). */
 export const INSTALL_BIND_HOST = "::";
@@ -322,7 +323,8 @@ export async function installService(
   deps: InstallDeps = {},
 ): Promise<InstallResult> {
   const mkdirp = deps.mkdir ?? mkdir;
-  const write = deps.writeFile ?? writeFile;
+  // The unit can carry `--env` values: owner-only, and replaced in one step.
+  const write = deps.writeFile ?? ((path: string, text: string) => writeFileAtomic(path, text, { mode: 0o600 }));
   await mkdirp(dirname(plan.unitPath), { recursive: true });
   const unit = renderUnit(plan);
   await write(plan.unitPath, unit);

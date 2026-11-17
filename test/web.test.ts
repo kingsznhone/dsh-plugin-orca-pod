@@ -85,6 +85,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       suggested_endpoints: ["http://192.168.1.5:11811"],
       bind_choices: ["127.0.0.1", "::", "192.168.1.5"],
       permission_modes: ["read-only", "workspace-write", "danger-full-access"],
+      reasoning_efforts: [],
       bind_host: "127.0.0.1",
       peers: [],
       data_root: "/data",

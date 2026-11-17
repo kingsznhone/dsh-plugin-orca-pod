@@ -1,15 +1,14 @@
 /**
- * The task's `metadata` is untrusted input from another node. It is parsed once,
- * when the task is submitted, into the typed `TaskMeta` the rest of the task
- * code uses; nothing downstream re-reads the raw metadata.
+ * The task's `metadata` is untrusted input from another node. The gateway checks
+ * it against `TaskMetadataSchema`; on submit it becomes the `TaskMeta` the rest
+ * of the task code uses, and nothing downstream re-reads the raw metadata.
  */
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { parseEchoScript, type EchoScript } from "../execution/echo.ts";
-import { PodError } from "../kernel/errors.ts";
-import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
-import { PodTaskMetadataSchema, type A2AMessage } from "../protocol/task.ts";
-import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { A2AMessage, TaskMetadata } from "../protocol/task.ts";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { SignedGrant } from "../protocol/grant.ts";
 import { parseSignedGrant } from "../security/grants.ts";
 
@@ -18,26 +17,23 @@ export type TaskMeta = {
   permissionMode: SandboxMode;
   model: ModelSelection | undefined;
   /** The `reasoning_effort` field, else the effort pinned in `model` (§6.15). */
-  effort: ReasoningEffort | undefined;
+  effort: ReasoningEffortId | undefined;
   /** Origin's requested lifetime in seconds; the local cap still applies. */
   taskTtlS: number | undefined;
   echo: EchoScript;
 };
 
-/** Validate the `pod` block and the echo script of an incoming task (§5.1, §6.3, §8.6). */
-export function parsePodMetadata(
-  /** Untrusted: it is whatever the caller sent, so it is typed as nothing more than an object. */
-  metadata: Record<string, unknown> | undefined,
-): TaskMeta {
-  const raw = metadata?.pod ?? {};
-  if (!isRecord(raw)) throw new PodError("bad_request", "metadata.pod must be an object");
-  const parsed = parseSchema(PodTaskMetadataSchema, raw);
-  if (!parsed.ok) throw new PodError("bad_request", `pod.${describeIssue(parsed.issue)}`);
-  const { permission_mode, model, reasoning_effort, task_ttl_s } = parsed.value;
+/**
+ * Read the `pod` block and the echo script of an incoming task (§5.1, §6.3,
+ * §8.6). The gateway has already checked the metadata against
+ * `TaskMetadataSchema`; the echo script is checked here, by its executor's parser.
+ */
+export function parsePodMetadata(metadata: TaskMetadata | undefined): TaskMeta {
+  const { permission_mode, model, reasoning_effort, task_ttl_s } = metadata?.pod ?? {};
   return {
     permissionMode: permission_mode ?? "read-only",
     model,
-    effort: reasoning_effort ?? model?.reasoning_effort,
+    effort: reasoning_effort ?? model?.reasoningEffort,
     taskTtlS: task_ttl_s,
     echo: parseEchoScript(metadata?.echo),
   };

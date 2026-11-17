@@ -16,24 +16,39 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { PodError } from "../kernel/errors.ts";
 
 import { DEFAULT_BLOB_TTL_S, type FileBlob, type FileBlobRegistry, type FileBlobStore } from "./stores.ts";
 
-async function hashFile(path: string): Promise<{ sha: string; size: number }> {
+/**
+ * A pass-through that hashes (sha256) and counts what flows through it: a file
+ * is named by this digest when it is published and checked against it when it
+ * is fetched (§5.6).
+ */
+export function sha256Tap(): { stream: Transform; digest(): { sha: string; size: number } } {
   const hash = createHash("sha256");
   let size = 0;
-  await new Promise<void>((settle, reject) => {
-    const stream = createReadStream(path);
-    stream.on("data", (chunk: Buffer) => {
-      size += chunk.length;
+  const stream = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
       hash.update(chunk);
-    });
-    stream.on("error", reject);
-    stream.on("end", () => settle());
+      size += chunk.length;
+      done(null, chunk);
+    },
   });
-  return { sha: hash.digest("hex"), size };
+  return { stream, digest: () => ({ sha: hash.digest("hex"), size }) };
+}
+
+async function hashFile(path: string): Promise<{ sha: string; size: number }> {
+  const tap = sha256Tap();
+  await pipeline(createReadStream(path), tap.stream, async (source: AsyncIterable<Buffer>) => {
+    for await (const _chunk of source) {
+      // Only the digest is wanted; the bytes are dropped.
+    }
+  });
+  return tap.digest();
 }
 
 export function createFileBlobRegistry(store: FileBlobStore): FileBlobRegistry {

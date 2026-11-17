@@ -18,7 +18,9 @@ import {
 } from "../protocol/peer.ts";
 import { AckSchema } from "../protocol/a2a.ts";
 import type { HeartbeatRequest, JoinRequest, SelfDescription } from "../protocol/cluster.ts";
-import type { ModelDefaults, ModelOffer, ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import type { ModelDefaults, ModelOffer } from "../protocol/model.ts";
 import type { PeerClient } from "../protocol/client.ts";
 import type { PodEventInput } from "../protocol/events.ts";
 import { candidateEndpointAllowed } from "./screening.ts";
@@ -31,7 +33,7 @@ export type WorkgroupConfig = {
   /** A model catalog pinned in config.json; it wins over what the host reports (§6.15). */
   models?: ModelOffer[];
   default_model?: ModelSelection;
-  default_reasoning_effort?: ReasoningEffort;
+  default_reasoning_effort?: ReasoningEffortId;
   allow_public_peers?: boolean;
   allow_loopback_peers?: boolean;
 };
@@ -65,7 +67,7 @@ export type Workgroup = {
   setModelCatalog(
     models: ModelOffer[],
     defaultModel: ModelSelection | null,
-    reasoningEffort?: ReasoningEffort | null,
+    reasoningEffort?: ReasoningEffortId | null,
   ): void;
   /** What a local ACP session uses when a task names no model. */
   modelDefaults(): ModelDefaults;
@@ -101,23 +103,23 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
   // A local pin in config.json wins over whatever the DSH host reports, which
   // keeps per-node defaults reproducible across UI changes (§6.15).
   const pinnedModel = config.default_model ?? null;
-  const pinnedEffort = config.default_reasoning_effort ?? config.default_model?.reasoning_effort ?? null;
+  const pinnedEffort = config.default_reasoning_effort ?? config.default_model?.reasoningEffort ?? null;
   let defaultModel: ModelSelection | null = pinnedModel;
-  let defaultEffort: ReasoningEffort | null = pinnedEffort;
+  let defaultEffort: ReasoningEffortId | null = pinnedEffort;
 
   function setModelCatalog(
     models: ModelOffer[],
     nextDefault: ModelSelection | null,
-    nextEffort?: ReasoningEffort | null,
+    nextEffort?: ReasoningEffortId | null,
   ): void {
-    const routeOf = (offer: ModelOffer): string => `${offer.provider}/${offer.model}`;
+    const routeOf = (offer: ModelOffer): string => `${offer.provider}/${offer.id}`;
     modelCatalog = models.filter(
       (offer, index) => models.findIndex((other) => routeOf(other) === routeOf(offer)) === index,
     );
-    defaultEffort = pinnedEffort ?? nextEffort ?? nextDefault?.reasoning_effort ?? null;
+    defaultEffort = pinnedEffort ?? nextEffort ?? nextDefault?.reasoningEffort ?? null;
     const fallback = pinnedModel ?? nextDefault;
     defaultModel =
-      fallback !== null && defaultEffort !== null ? { ...fallback, reasoning_effort: defaultEffort } : fallback;
+      fallback !== null && defaultEffort !== null ? { ...fallback, reasoningEffort: defaultEffort } : fallback;
     emitMembersIfChanged();
   }
 

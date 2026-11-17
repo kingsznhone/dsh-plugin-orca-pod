@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { brandString } from "@deepseek-ai/dsh-brand";
+
 import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId, WorkgroupIdSchema } from "../../src/protocol/peer.ts";
 
 /** A well-formed orca node id (43 base64url characters) for a label, for tests that need ids but no keys. */
@@ -12,7 +14,7 @@ export function fakeNodeId(label: string): OrcaNodeId {
  * the wire (membership, task metadata, the runner) that never check an id's
  * form. Anything that crosses the wire or verifies a signature needs `fakeNodeId`.
  */
-export const labelId = (label: string): OrcaNodeId => label as OrcaNodeId;
+export const labelId = (label: string): OrcaNodeId => brandString<OrcaNodeId>(label);
 
 /** A workgroup id from a literal, checked by the real schema. */
 export const wg = (id: string): WorkgroupId => WorkgroupIdSchema.parse(id);

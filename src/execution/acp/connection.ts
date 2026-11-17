@@ -6,6 +6,7 @@
  * session. A failure of any kind closes the connection and terminates the child.
  */
 
+import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import {
@@ -92,17 +93,8 @@ function childInput(child: AcpChild): WritableStream<Uint8Array> {
   });
 }
 
-/** Settle with `promise`, or reject after `timeoutMs`; the late result is dropped. */
-function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs: number | undefined): Promise<T> {
-  if (timeoutMs === undefined) return promise;
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`acp ${label} timed out after ${timeoutMs} ms`)), timeoutMs);
-    timer.unref();
-  });
-  promise.catch(() => {});
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
+/** The code DSH's `deadline` stamps on a request the child did not answer in time. */
+const ACP_TIMEOUT = "ACP_TIMEOUT";
 
 export class AcpConnection {
   /** Settles when `initialize` succeeded; rejects, with the connection closed, when it did not. */
@@ -178,15 +170,33 @@ export class AcpConnection {
     return this.routes.get(sessionId) === route;
   }
 
-  /** A typed agent request; rejects with the SDK's `RequestError` when the child answers with an error. */
-  request<Method extends AgentRequestMethod>(
+  /**
+   * A typed agent request; rejects with the SDK's `RequestError` when the child
+   * answers with an error. With `timeoutMs`, an unanswered request is cancelled
+   * the SDK's way (`$/cancel_request`) once DSH's `deadline` elapses.
+   */
+  async request<Method extends AgentRequestMethod>(
     method: Method,
     params: AgentRequestParamsByMethod[Method],
     timeoutMs?: number,
     options?: SendRequestOptions,
   ): Promise<AgentRequestResponsesByMethod[Method]> {
-    if (this.state.status === "closed") return Promise.reject(this.state.error);
-    return withTimeout(this.rpc.agent.request(method, params, options), method, timeoutMs);
+    if (this.state.status === "closed") throw this.state.error;
+    if (timeoutMs === undefined) return this.rpc.agent.request(method, params, options);
+    const limit = deadline(options?.cancellationSignal, timeoutMs, ACP_TIMEOUT);
+    try {
+      return await this.rpc.agent.request(method, params, {
+        ...options,
+        cancellationSignal: limit.signal,
+        stopWaitingOnCancel: true,
+      });
+    } catch (error) {
+      if (timeoutOf(limit.signal, ACP_TIMEOUT) !== undefined)
+        throw new Error(`acp ${method} timed out after ${timeoutMs} ms`);
+      throw error;
+    } finally {
+      limit[Symbol.dispose]();
+    }
   }
 
   /** Tell the child to stop the session's current prompt; it answers the prompt with `cancelled`. */

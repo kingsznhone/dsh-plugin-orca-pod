@@ -1,13 +1,13 @@
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
-import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import { BLOB_ID_PATTERN } from "../protocol/blob.ts";
 import { createFileBlobRegistry } from "../storage/file-registry.ts";
 import { createMemoryFileBlobStore, createMemoryDispatchStore, createMemoryTaskStore } from "../storage/memory.ts";
-import type { FileBlobStore, DispatchEntry, DispatchStore, OpenedBlob, TaskStore } from "../storage/stores.ts";
+import type { FileBlobStore, DispatchStore, OpenedBlob, TaskStore } from "../storage/stores.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
 import { NonceCache } from "../security/crypto.ts";
 import { loadOrCreateIdentity } from "../security/identity.ts";
 import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../tasks/delegation.ts";
@@ -30,16 +30,19 @@ import type {
   SelfRecord,
   OrcaNodeId,
 } from "../protocol/peer.ts";
-import type { ModelOffer, ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import type { ModelOffer } from "../protocol/model.ts";
 import type { PodEventInput, PodEventListener } from "../protocol/events.ts";
 import type { SubmitTaskInput, TaskView } from "../protocol/task.ts";
-import { createSqliteDispatchStore, createSqliteFileBlobStore, createSqliteTaskStore } from "../storage/sqlite.ts";
+import {
+  createSqliteDispatchStore,
+  createSqliteFileBlobStore,
+  createSqliteTaskStore,
+  storeDbPath,
+} from "../storage/sqlite.ts";
 import { createTaskRunner } from "../tasks/runner.ts";
 import { createWorkspaceManager, type WorkspacePaths } from "../tasks/workspace.ts";
-
-export type { ApprovalOptions, TaskCallOptions } from "../tasks/delegation.ts";
-export type { NodeLogger } from "../kernel/events.ts";
-export type { FetchLike } from "../transport/peer-client.ts";
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
 function collectRuntime(): RuntimeInfo {
@@ -78,9 +81,9 @@ export type OrcaNodeStorage = {
  */
 export function createPersistentStorage(config: OrcaNodeConfig): OrcaNodeStorage {
   return {
-    taskStore: createSqliteTaskStore(join(config.data_root, "tasks.db")),
-    fileBlobStore: createSqliteFileBlobStore(join(config.data_root, "tasks.db")),
-    dispatchStore: createSqliteDispatchStore(join(config.data_root, "tasks.db")),
+    taskStore: createSqliteTaskStore(storeDbPath(config.data_root)),
+    fileBlobStore: createSqliteFileBlobStore(storeDbPath(config.data_root)),
+    dispatchStore: createSqliteDispatchStore(storeDbPath(config.data_root)),
   };
 }
 
@@ -121,7 +124,7 @@ export interface OrcaNode {
   setModelCatalog(
     models: ModelOffer[],
     defaultModel: ModelSelection | null,
-    defaultReasoningEffort?: ReasoningEffort | null,
+    defaultReasoningEffort?: ReasoningEffortId | null,
   ): void;
   /**
    * Admit this node at `peerUrl` with the workgroup password. This is the only

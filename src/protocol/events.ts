@@ -1,5 +1,6 @@
 /** What an orca node tells an in-process listener (the UI panel) about (§9.2). */
 
+import type { Stamped } from "../kernel/events.ts";
 import type { DispatchEntry } from "./dispatch.ts";
 import type { PeerView } from "./peer.ts";
 import type { TaskView } from "./task.ts";
@@ -11,6 +12,6 @@ export type PodEventInput =
   | { type: "dispatch"; entry: DispatchEntry };
 
 /** Emitted event with the wall-clock time it happened. */
-export type PodEvent = PodEventInput & { at: string };
+export type PodEvent = Stamped<PodEventInput>;
 
 export type PodEventListener = (event: PodEvent) => void;

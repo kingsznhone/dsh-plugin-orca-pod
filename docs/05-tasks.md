@@ -12,7 +12,7 @@
 {
   "pod": {
     "permission_mode": "workspace-write",
-    "model": { "provider": "deepseek", "model": "deepseek-flash", "reasoning_effort": "high" },
+    "model": { "provider": "deepseek", "model": "deepseek-flash", "reasoningEffort": "high" },
     "reasoning_effort": "high",
     "task_ttl_s": 1800
   }

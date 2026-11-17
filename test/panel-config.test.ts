@@ -5,6 +5,7 @@
  * exposes the password.
  */
 
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,7 +213,7 @@ describe("panel configuration lifecycle", () => {
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
-        default_reasoning_effort: "max",
+        default_reasoning_effort: ReasoningEffortId("max"),
         executor: "echo",
       });
 
@@ -225,7 +226,7 @@ describe("panel configuration lifecycle", () => {
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
-        default_reasoning_effort: "max",
+        default_reasoning_effort: ReasoningEffortId("max"),
         executor: "echo",
       });
       expect(handle.runtime.error).toBeNull();

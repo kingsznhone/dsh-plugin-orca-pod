@@ -61,7 +61,7 @@
 | 507  | `quota_exceeded`（工作区超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                                |
 | 500  | `internal`                                                                                                                  |
 
-`/a2a` 上同样的错误包成 JSON-RPC 错误：`{ jsonrpc, id, error: { code: -32000, message: <错误码>, data: { code, message, … } } }`。出站调用在本机抛出的 `unknown_peer`（404）、`peer_not_online`（503）、`peer_error`（502）不会出现在线上（§4.7）。
+`/a2a` 上同样的错误包成 JSON-RPC 错误：`{ jsonrpc, id, error: { code: -32000, message: <错误码>, data: { code, message, … } } }`。出站调用在本机抛出的 `unknown_peer`（404）、`peer_not_online`（503）、`peer_error`（502）、`peer_timeout`（504，DSH 的 `deadline` 到点）不会出现在线上（§4.7）。
 
 ### 4.3 反向代理注意事项
 

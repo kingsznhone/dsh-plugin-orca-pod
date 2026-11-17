@@ -1,5 +1,6 @@
 /** The one shared snapshot of `/orca-api/state`, its poll timer and the action helper. */
 
+import { errorMessage } from "../src/kernel/errors.ts";
 import React from "react";
 import { POLL_MS } from "./constants.ts";
 import type { LocaleService, PodActions, PodReads, PodState } from "./types.ts";
@@ -41,7 +42,6 @@ export async function read<K extends keyof PodReads>(
   const search = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)])).toString();
   return (await call(search ? `${route}?${search}` : route)) as PodReads[K]["response"];
 }
-export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
  * Save a file a member published (§5.6). It comes through this node's bridge,
@@ -91,7 +91,7 @@ export function createStore() {
         set({ error: null });
       }
     } catch (err) {
-      if (snap.error !== messageOf(err)) set({ error: messageOf(err) });
+      if (snap.error !== errorMessage(err)) set({ error: errorMessage(err) });
     }
   }
   /** POST one action and refresh; resolves false (error kept in `actionError`) when the host refused. */
@@ -102,7 +102,7 @@ export function createStore() {
       await refresh();
       return true;
     } catch (err) {
-      set({ actionError: messageOf(err) });
+      set({ actionError: errorMessage(err) });
       return false;
     } finally {
       set({ busy: false });
@@ -160,7 +160,7 @@ export function useRead<K extends keyof PodReads>(
     let live = true;
     read(route, query).then(
       (data) => live && setResult({ data, error: null }),
-      (err) => live && setResult({ data: null, error: messageOf(err) }),
+      (err) => live && setResult({ data: null, error: errorMessage(err) }),
     );
     return () => {
       live = false;

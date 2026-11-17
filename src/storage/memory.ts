@@ -1,6 +1,7 @@
 /** In-memory stores: unit tests, harness nodes and any node created without persistent storage. */
 
-import type { DispatchEntry, DispatchStore, FileBlob, FileBlobStore, PersistedTask, TaskStore } from "./stores.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
+import type { DispatchStore, FileBlob, FileBlobStore, PersistedTask, TaskStore } from "./stores.ts";
 
 function cloneTask(task: PersistedTask): PersistedTask {
   return structuredClone(task);

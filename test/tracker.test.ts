@@ -6,7 +6,7 @@ import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import type { DispatchEntry } from "../src/storage/stores.ts";
+import type { DispatchEntry } from "../src/protocol/dispatch.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
 import type { TrackerAgent, TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";

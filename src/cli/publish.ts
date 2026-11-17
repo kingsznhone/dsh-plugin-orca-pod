@@ -1,12 +1,11 @@
 /** `orca-node publish`: make a file of this node fetchable by any member, under `<node id>/<sha256>`. */
 
-import { join } from "node:path";
 import process from "node:process";
 
 import { errorMessage } from "../kernel/errors.ts";
 import { blobRefText } from "../protocol/blob.ts";
 import { createFileBlobRegistry } from "../storage/file-registry.ts";
-import { createSqliteFileBlobStore } from "../storage/sqlite.ts";
+import { createSqliteFileBlobStore, storeDbPath } from "../storage/sqlite.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,
@@ -32,7 +31,7 @@ export const maxPositionals = 1;
 export async function run({ flags, positionals }: CommandArgs): Promise<number> {
   const config = await loadNodeConfig(flags);
   const path = positionals[0] ?? required(flags.path, "path");
-  const store = createSqliteFileBlobStore(join(config.data_root, "tasks.db"));
+  const store = createSqliteFileBlobStore(storeDbPath(config.data_root));
   const blob = await createFileBlobRegistry(store)
     .register(path, positiveSeconds(flags.ttl, "ttl"))
     .catch((error: unknown) => {

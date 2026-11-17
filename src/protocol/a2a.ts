@@ -33,14 +33,6 @@ export const RpcRequestSchema = z.object({
 /** The success envelope of an A2A call. */
 export const RpcResultSchema = z.object({ result: TaskViewSchema });
 
-/** What a failed call answers: a code from `PodErrorCode` and a message, plus a busy node's hint. */
-export type ErrorBody = {
-  code: string;
-  message: string;
-  retry_after_s?: number;
-  holder?: unknown;
-};
-
 /**
  * Read a peer's error leniently: a body we cannot make sense of keeps the
  * generic code. The gateway's `{code, message}` and the same inside a JSON-RPC

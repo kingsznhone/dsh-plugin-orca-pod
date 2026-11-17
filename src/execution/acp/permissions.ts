@@ -2,6 +2,7 @@
 
 import type {
   PermissionOption,
+  PermissionOptionKind,
   RequestPermissionRequest,
   RequestPermissionResponse,
   ToolKind,
@@ -44,10 +45,17 @@ export function autoDecision(mode: SandboxMode, kind: ToolKind | undefined): Per
   return readable || writable ? "allow" : null;
 }
 
+/** The ACP option kinds that carry each decision, the single-use one preferred. */
+const OPTION_KINDS = {
+  allow: ["allow_once", "allow_always"],
+  reject: ["reject_once", "reject_always"],
+} as const satisfies Record<PermissionDecision, readonly PermissionOptionKind[]>;
+
 /** The ACP outcome for a decision; cancelled when the child offered no option of that kind. */
 export function outcomeFor(options: PermissionOption[], decision: PermissionDecision): RequestPermissionResponse {
-  const chosen =
-    options.find((option) => option.kind === `${decision}_once`) ??
-    options.find((option) => option.kind.startsWith(decision));
-  return chosen === undefined ? CANCELLED : { outcome: { outcome: "selected", optionId: chosen.optionId } };
+  for (const kind of OPTION_KINDS[decision]) {
+    const chosen = options.find((option) => option.kind === kind);
+    if (chosen !== undefined) return { outcome: { outcome: "selected", optionId: chosen.optionId } };
+  }
+  return CANCELLED;
 }

@@ -4,16 +4,16 @@
  * binding when the child still knows it.
  */
 
-import { randomUUID } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { RequestError, type McpServer } from "@agentclientprotocol/sdk";
+import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
+import { RequestError, type McpServer, type SessionConfigOption } from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
 import type { ExecuteInput } from "../executor.ts";
 import { describeIssue, parseSchema } from "../../kernel/schema.ts";
-import { errorMessage } from "../../kernel/errors.ts";
+import { errorMessage, isMissingFile } from "../../kernel/errors.ts";
 import type { NodeLogger } from "../../kernel/events.ts";
 import type { AcpMcpServer } from "./config.ts";
 import { AcpConnection, HANDSHAKE_TIMEOUT_MS, spawnAcpChild, type AcpSpawnSpec } from "./connection.ts";
@@ -35,7 +35,7 @@ async function readSessions(podDir: string): Promise<SessionBindings> {
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if (isMissingFile(error)) return {};
     throw error;
   }
   const parsed = parseSchema(SessionBindingsSchema, JSON.parse(text));
@@ -44,10 +44,7 @@ async function readSessions(podDir: string): Promise<SessionBindings> {
 }
 
 async function writeSessions(podDir: string, sessions: SessionBindings): Promise<void> {
-  const path = join(podDir, "sessions.json");
-  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(sessions, null, 2)}\n`, "utf8");
-  await rename(tmp, path);
+  await writeFileAtomic(join(podDir, "sessions.json"), `${JSON.stringify(sessions, null, 2)}\n`, { mode: 0o600 });
 }
 
 type AcpSessionsOptions = {
@@ -56,7 +53,12 @@ type AcpSessionsOptions = {
   logger: NodeLogger;
 };
 
-type OpenSession = { connection: AcpConnection; sessionId: string };
+/**
+ * An open session and the config options the agent last reported for it
+ * (model, reasoning effort): selecting a model can change which efforts exist,
+ * so the executor replaces them with what each `set_config_option` returns.
+ */
+export type OpenSession = { connection: AcpConnection; sessionId: string; configOptions: SessionConfigOption[] };
 
 type AcpSessions = {
   open(input: ExecuteInput): Promise<OpenSession>;
@@ -77,9 +79,9 @@ function toAcpMcpServers(servers: AcpMcpServer[]): McpServer[] {
 export function createAcpSessions({ spawn, mcpServers: configured, logger }: AcpSessionsOptions): AcpSessions {
   const mcpServers = toAcpMcpServers(configured);
   /** Session ids belong to one connection: a fresh child cannot resume ids cached for the old one. */
-  let current: { connection: AcpConnection; sessions: Map<string, string> } | null = null;
+  let current: { connection: AcpConnection; sessions: Map<string, OpenSession> } | null = null;
 
-  async function connect(cwd: string): Promise<{ connection: AcpConnection; sessions: Map<string, string> }> {
+  async function connect(cwd: string): Promise<{ connection: AcpConnection; sessions: Map<string, OpenSession> }> {
     if (current === null || current.connection.isClosed()) {
       current = { connection: new AcpConnection(spawnAcpChild({ ...spawn, cwd })), sessions: new Map() };
     }
@@ -88,15 +90,20 @@ export function createAcpSessions({ spawn, mcpServers: configured, logger }: Acp
     return joined;
   }
 
-  async function resume(connection: AcpConnection, sessionId: string, cwd: string): Promise<boolean> {
+  /** The session's config options after a resume; null when the agent no longer knows it. */
+  async function resume(
+    connection: AcpConnection,
+    sessionId: string,
+    cwd: string,
+  ): Promise<SessionConfigOption[] | null> {
     try {
-      await connection.request("session/resume", { sessionId, cwd, mcpServers }, HANDSHAKE_TIMEOUT_MS);
-      return true;
+      const resumed = await connection.request("session/resume", { sessionId, cwd, mcpServers }, HANDSHAKE_TIMEOUT_MS);
+      return resumed?.configOptions ?? [];
     } catch (error) {
       if (!(error instanceof RequestError && error.code === RESOURCE_NOT_FOUND)) {
         logger.warn(`acp session/resume failed, starting a new session: ${errorMessage(error)}`);
       }
-      return false;
+      return null;
     }
   }
 
@@ -105,21 +112,24 @@ export function createAcpSessions({ spawn, mcpServers: configured, logger }: Acp
     const { connection, sessions } = await connect(cwd);
     const key = `acp|${input.originOrcaNode}|${input.contextId}`;
     const active = sessions.get(key);
-    if (active !== undefined) return { connection, sessionId: active };
+    if (active !== undefined) return active;
 
     const bindings = await readSessions(input.podDir);
     const bound = bindings[key];
-    if (bound !== undefined && (await resume(connection, bound, cwd))) {
-      sessions.set(key, bound);
-      return { connection, sessionId: bound };
+    const resumed = bound === undefined ? null : await resume(connection, bound, cwd);
+    if (bound !== undefined && resumed !== null) {
+      const session = { connection, sessionId: bound, configOptions: resumed };
+      sessions.set(key, session);
+      return session;
     }
     const created = await connection.request("session/new", { cwd, mcpServers }, HANDSHAKE_TIMEOUT_MS);
     // Responses are typed, not validated: a broken server must not bind `undefined`.
     if (typeof created?.sessionId !== "string") throw new Error("acp server returned no session id");
-    sessions.set(key, created.sessionId);
+    const session = { connection, sessionId: created.sessionId, configOptions: created.configOptions ?? [] };
+    sessions.set(key, session);
     bindings[key] = created.sessionId;
     await writeSessions(input.podDir, bindings);
-    return { connection, sessionId: created.sessionId };
+    return session;
   }
 
   async function close(): Promise<void> {

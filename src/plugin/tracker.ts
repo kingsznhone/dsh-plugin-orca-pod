@@ -10,17 +10,15 @@
  *   without waking it;
  * - agent idle: `agent.followup()` starts a new turn with the notice.
  *
- * The notice is a normal user-role message created by this bundle, because the
- * host-side plugin cannot import `@deepseek-ai/dsh-llm`.
+ * The notice is a user-role message built with DSH's own `createUserMessage`,
+ * with the source kind this bundle registers.
  */
 
 import type { Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { ContextFormed, MessageId, UserMessage } from "@deepseek-ai/dsh-llm";
+import { boundContextSummary, createUserMessage, type ContextFormed, type UserMessage } from "@deepseek-ai/dsh-llm";
 
-import { randomUUID } from "node:crypto";
-
-import type { DispatchEntry } from "../storage/stores.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
 import { isTerminal, permissionRequestOf } from "../protocol/task.ts";
 import type { PermissionRequest } from "../protocol/grant.ts";
 import type { TaskView } from "../protocol/task.ts";
@@ -162,13 +160,6 @@ export function taskNoticeLine(view: TaskView, peer: string, node?: string): str
     line += `\n<untrusted-remote-result>\n${denyUntrustedBlockBreak(clipped)}\n</untrusted-remote-result>`;
   }
   return line;
-}
-
-/** Match DSH's `CONTEXT_SUMMARY_MAX_CHARS` for a `notice` summary. */
-const NOTICE_SUMMARY_MAX_CHARS = 120;
-
-function boundNoticeSummary(text: string): string {
-  return text.length <= NOTICE_SUMMARY_MAX_CHARS ? text : `${text.slice(0, NOTICE_SUMMARY_MAX_CHARS - 1)}…`;
 }
 
 /**
@@ -358,15 +349,10 @@ export function createTracker(
   function deliver(agent: TrackerAgent, lines: string[]): void {
     const text = lines.map((line) => `[orca-pod] ${line}`).join("\n");
     const summary = lines.length === 1 ? (lines[0] ?? "") : `${lines.length} background tasks need attention`;
-    // DSH folds a `notice` summary to 120 characters (`CONTEXT_SUMMARY_MAX_CHARS`
-    // in `@deepseek-ai/dsh-llm`); the bundle declares host packages as types only,
-    // so the same bound is applied here instead of importing the host runtime.
-    const message: UserMessage = {
-      id: randomUUID() as MessageId,
-      role: "user",
+    const message = createUserMessage({
       content: [{ type: "text", text }],
-      source: { kind: "orca-pod", form: "notice", summary: boundNoticeSummary(summary) },
-    };
+      source: { kind: "orca-pod", form: "notice", summary: boundContextSummary(summary) },
+    });
     try {
       wake(agent, message);
     } catch (error) {

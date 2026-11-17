@@ -10,7 +10,7 @@ function dispatch(deps: GatewayDeps, method: string, raw: unknown, caller: OrcaN
   if (!isA2AMethod(method)) throw new PodError("unsupported", `unsupported method ${method}`);
   switch (method) {
     case "message/send": {
-      // The runner validates the parts and metadata.pod; the gateway only checked the outline.
+      // The schema checked the message parts and metadata.pod; the runner reads them as typed.
       const { message, metadata } = parseInput(A2A_PARAMS[method], raw, "params");
       return message.taskId
         ? deps.tasks.resume(message.taskId, message, caller)

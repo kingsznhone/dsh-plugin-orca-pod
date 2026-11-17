@@ -14,13 +14,12 @@
  */
 
 import type { Context, Logger } from "@deepseek-ai/cordis";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
-import type { LlmModelInfo, LlmProviderInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
+import type { LlmModelInfo, LlmProviderInfo, LlmReasoningEffortInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
 
-import { isRecord } from "../kernel/schema.ts";
 import { errorMessage } from "../kernel/errors.ts";
-import type { ModelOffer, ModelSelection } from "../protocol/model.ts";
-import { MAX_MODEL_OFFERS, parseModelSelection } from "../protocol/model.ts";
+import { MAX_MODEL_OFFERS, type ModelOffer } from "../protocol/model.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import { optionalService } from "./services.ts";
@@ -34,21 +33,9 @@ export interface CatalogServices {
 export type ModelCatalog = {
   models: ModelOffer[];
   defaultModel: ModelSelection | null;
+  /** The efforts the default model offers, least to most; the panel picks the node default from them. */
+  reasoningEfforts: readonly LlmReasoningEffortInfo[];
 };
-
-function nonEmpty(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-/** The host reports its default route in either casing; blank parts count as absent. */
-function selectionOf(raw: unknown): ModelSelection | null {
-  if (!isRecord(raw)) return null;
-  return parseModelSelection({
-    provider: nonEmpty(raw.provider),
-    model: nonEmpty(raw.model),
-    reasoning_effort: nonEmpty(raw.reasoning_effort ?? raw.reasoningEffort),
-  });
-}
 
 async function listProviders(llm: LlmRuntime, logger: Logger): Promise<LlmProviderInfo[]> {
   try {
@@ -74,19 +61,12 @@ async function discoverOffers(llm: LlmRuntime, logger: Logger): Promise<ModelOff
   const seen = new Set<string>();
   for (const entry of await listProviders(llm, logger)) {
     if (models.length >= MAX_MODEL_OFFERS) break;
-    const provider = nonEmpty(entry.id);
-    if (provider === undefined) continue;
-    for (const entryModel of await listModels(llm, provider, logger)) {
+    const provider = entry.id;
+    for (const { id, name, description } of await listModels(llm, provider, logger)) {
       if (models.length >= MAX_MODEL_OFFERS) break;
-      const model = nonEmpty(entryModel.id);
-      if (model === undefined || seen.has(`${provider}/${model}`)) continue;
-      seen.add(`${provider}/${model}`);
-      models.push({
-        provider,
-        model,
-        name: nonEmpty(entryModel.name),
-        description: nonEmpty(entryModel.description),
-      });
+      if (seen.has(`${provider}/${id}`)) continue;
+      seen.add(`${provider}/${id}`);
+      models.push({ provider, id, name, ...(description === undefined ? {} : { description }) });
     }
   }
   return models;
@@ -95,11 +75,27 @@ async function discoverOffers(llm: LlmRuntime, logger: Logger): Promise<ModelOff
 /** What a fresh session starts with, when the host says. */
 function defaultSelection(service: AgentDefaultModelConfig | undefined, logger: Logger): ModelSelection | null {
   try {
-    const raw: unknown = service?.currentSelection();
-    return selectionOf(raw);
+    return service?.currentSelection() ?? null;
   } catch (error) {
     logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);
     return null;
+  }
+}
+
+/** The efforts the default model offers; empty when the host has no `llm` or the adapter exposes none. */
+async function defaultEfforts(
+  llm: LlmRuntime | undefined,
+  selection: ModelSelection | null,
+  logger: Logger,
+): Promise<readonly LlmReasoningEffortInfo[]> {
+  if (llm === undefined || selection === null) return [];
+  try {
+    return (await llm.resolveModelInfo(selection.provider, selection.model)).reasoning?.efforts ?? [];
+  } catch (error) {
+    logger.warn(
+      `orca-pod: could not read the efforts of ${selection.provider}/${selection.model}: ${errorMessage(error)}`,
+    );
+    return [];
   }
 }
 
@@ -109,7 +105,8 @@ function defaultSelection(service: AgentDefaultModelConfig | undefined, logger: 
  */
 export async function discoverModelCatalog(services: CatalogServices, logger: Logger): Promise<ModelCatalog> {
   const models = services.llm === undefined ? [] : await discoverOffers(services.llm, logger);
-  return { models, defaultModel: defaultSelection(services.agentDefaultModel, logger) };
+  const defaultModel = defaultSelection(services.agentDefaultModel, logger);
+  return { models, defaultModel, reasoningEfforts: await defaultEfforts(services.llm, defaultModel, logger) };
 }
 
 /** Feeds the host's model catalog to whichever node the pod runs. */
@@ -121,6 +118,8 @@ export interface ModelCatalogFeed {
   advertise(orcaNode: OrcaNode): void;
   /** Follow the host's catalog services for this pod and re-advertise on change. */
   watch(handle: PodHandle): void;
+  /** The efforts the host's default model offers, for the panel's node-default choice. */
+  reasoningEfforts(): readonly LlmReasoningEffortInfo[];
 }
 
 /**
@@ -129,12 +128,12 @@ export interface ModelCatalogFeed {
  * on every later panel restart, before its first join).
  */
 export function createModelCatalogFeed(ctx: Pick<Context, "inject">, logger: Logger): ModelCatalogFeed {
-  const catalog: ModelCatalog = { models: [], defaultModel: null };
+  const catalog: ModelCatalog = { models: [], defaultModel: null, reasoningEfforts: [] };
   /** Whatever `llm`/`agent-default-model` the host exposes; empty on CLI-only hosts. */
   let services: CatalogServices = {};
   let pod: PodHandle | null = null;
   const advertise = (orcaNode: OrcaNode): void =>
-    orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoning_effort ?? null);
+    orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoningEffort ?? null);
   /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
   let generation = 0;
   const refresh = async (): Promise<void> => {
@@ -148,6 +147,7 @@ export function createModelCatalogFeed(ctx: Pick<Context, "inject">, logger: Log
   };
   return {
     advertise,
+    reasoningEfforts: () => catalog.reasoningEfforts,
     watch(handle) {
       pod = handle;
       // The two catalog services are optional and independent: follow each one

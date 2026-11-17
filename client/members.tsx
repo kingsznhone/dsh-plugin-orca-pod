@@ -1,7 +1,6 @@
 /** Mesh members, the node detail dialog and the workspace summary. */
 
-import { IconChevronRightOutlineRegular, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
-import { GIB } from "./constants.ts";
+import { IconChevronRightOutlineRegular, StateDot, Tag, fileSizeText } from "@deepseek-ai/dsh-client-ui-primitives";
 import { age, short, stateDot, stateLabel } from "./format.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
@@ -41,7 +40,7 @@ export function Members({ members, onOpen }: { members: PodPeer[]; onOpen: (memb
 const runtimeRows = (runtime: RuntimeInfo): Array<[string, string]> => [
   [t("colOs"), `${[runtime.os.name, runtime.os.version].join(" ")} · ${runtime.os.family}`],
   ["cpu", `${runtime.cpu.model} · ${runtime.cpu.logical_cores} ${t("ndCores")}`],
-  [t("ndMemory"), `${(runtime.memory.total_bytes / GIB).toFixed(1)} GiB`],
+  [t("ndMemory"), fileSizeText(runtime.memory.total_bytes)],
   ["node", `node ${runtime.node.version} · ${runtime.arch}`],
 ];
 
@@ -77,7 +76,7 @@ export function NodeDetail({ member, onClose }: { member: PodPeer; onClose: () =
             t("colBusy"),
             member.busy ? `${short(member.busy.task_id)} · ${t("busyOrigin")}${member.busy_from}` : t("idle"),
           ],
-          [t("ndLastSeen"), member.last_recv_at ? age(member.last_recv_at) + t("updatedSuffix") : "-"],
+          [t("ndLastSeen"), member.last_recv_at ? age(member.last_recv_at) : "-"],
           [t("ndBudget"), member.max_task_ttl_s ? `${member.max_task_ttl_s} s` : "-"],
         ]}
       />

@@ -78,7 +78,7 @@ join（凭 workgroup_id + 密码）→ 双方登记 → 拿到 target 自述 + �
   "busy": null,
   "last_recv_at": "2026-11-14T04:36:33Z",
   "max_task_ttl_s": 3600,
-  "models": [{ "provider": "deepseek", "model": "deepseek-flash", "name": "DeepSeek Flash" }],
+  "models": [{ "provider": "deepseek", "id": "deepseek-flash", "name": "DeepSeek Flash" }],
   "default_model": { "provider": "deepseek", "model": "deepseek-flash" },
   "default_reasoning_effort": "max"
 }

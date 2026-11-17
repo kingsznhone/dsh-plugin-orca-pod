@@ -15,7 +15,7 @@ import {
 import type { BusyState, OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 import { TaskRecord, type RecordHost } from "./record.ts";
 import { parsePodMetadata } from "./meta.ts";
-import { measureWorkspace, type Workspace, type WorkspaceUsage } from "./workspace.ts";
+import { measureWorkspace, type WorkspacePaths, type WorkspaceUsage } from "./workspace.ts";
 
 export type TaskRunnerDeps = {
   executor: LocalExecutor;
@@ -24,7 +24,7 @@ export type TaskRunnerDeps = {
   /** Durable store (§5.5); every task change is written through it. */
   store: TaskStore;
   /** Group workspace: the executor's cwd (§6.7). */
-  workspace: Workspace;
+  workspace: WorkspacePaths;
   logger: NodeLogger;
   selfOrcaNodeId: OrcaNodeId;
   workgroupId: WorkgroupId;

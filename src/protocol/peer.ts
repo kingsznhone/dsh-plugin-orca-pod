@@ -3,6 +3,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { brandString, type Branded } from "@deepseek-ai/dsh-brand";
+
 import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "./model.ts";
 
 /**
@@ -12,26 +14,24 @@ import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "
  * always decode to exactly 32 bytes.
  */
 /** A checked orca node id; only `OrcaNodeIdSchema` (or `isOrcaNodeId`) makes one from a plain string. */
-export type OrcaNodeId = string & { readonly [ORCA_NODE_ID]: true };
-declare const ORCA_NODE_ID: unique symbol;
+export type OrcaNodeId = Branded<"OrcaNodeId">;
 
 export const OrcaNodeIdSchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)")
-  .transform((id) => id as OrcaNodeId);
+  .transform((id) => brandString<OrcaNodeId>(id));
 
 export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
   return OrcaNodeIdSchema.safeParse(value).success;
 }
 
 /** A checked workgroup id; only `WorkgroupIdSchema` (or `isWorkgroupId`) makes one from a plain string. */
-export type WorkgroupId = string & { readonly [WORKGROUP_ID]: true };
-declare const WORKGROUP_ID: unique symbol;
+export type WorkgroupId = Branded<"WorkgroupId">;
 
 export const WorkgroupIdSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}")
-  .transform((id) => id as WorkgroupId);
+  .transform((id) => brandString<WorkgroupId>(id));
 
 export function isWorkgroupId(value: unknown): value is WorkgroupId {
   return WorkgroupIdSchema.safeParse(value).success;

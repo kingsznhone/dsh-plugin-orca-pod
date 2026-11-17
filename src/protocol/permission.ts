@@ -5,10 +5,6 @@ import { z } from "zod";
 /** The permission modes this DSH accepts and their rank, read from DSH's own sandbox policy. */
 export const SandboxModeSchema = z.enum(SANDBOX_MODES as readonly [SandboxMode, ...SandboxMode[]]);
 
-export function isPermissionMode(value: unknown): value is SandboxMode {
-  return SandboxModeSchema.safeParse(value).success;
-}
-
 /** Rank of a mode; a higher rank lets the agent do more. */
 export function permissionModeRank(mode: SandboxMode): number {
   return SANDBOX_MODES.indexOf(mode);

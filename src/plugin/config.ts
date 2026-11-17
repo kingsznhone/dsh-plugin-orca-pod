@@ -18,9 +18,6 @@ import { isRecord } from "../kernel/schema.ts";
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 
-/** Validated configuration accepted by the ORCA pod bundle. */
-export type Config = Settings;
-
 /** Parse a plugin config: the shared settings parser, minus the plaintext password. */
 export function validatePluginConfig(input: unknown): ReturnType<typeof safeParseSettings> {
   if (isRecord(input) && typeof input.workgroup_password === "string" && input.workgroup_password.length > 0) {
@@ -38,6 +35,6 @@ export function validatePluginConfig(input: unknown): ReturnType<typeof safePars
 }
 
 /** Create the Standard Schema validator Cordis consumes as the plugin `Config`. */
-export function createConfigSchema(): StandardSchemaV1<unknown, Config> {
+export function createConfigSchema(): StandardSchemaV1<unknown, Settings> {
   return { "~standard": { version: 1, vendor: "orca-pod", validate: validatePluginConfig } };
 }

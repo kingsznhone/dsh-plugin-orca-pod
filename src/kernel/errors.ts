@@ -1,3 +1,5 @@
+import { HarnessError } from "@deepseek-ai/dsh-error";
+
 /**
  * Every stable error code this node emits, with the HTTP status it maps to.
  * One table: a code cannot exist without a status, and `PodErrorCode` is derived
@@ -44,23 +46,23 @@ export const POD_ERROR_STATUS = {
   unknown_peer: 404,
   peer_not_online: 503,
   peer_error: 502,
+  peer_timeout: 504,
 } as const satisfies Record<string, number>;
 
 export type PodErrorCode = keyof typeof POD_ERROR_STATUS;
 
 /**
- * The one error type of this node: the gateway turns it into an HTTP response
+ * The one error type of this node, a DSH `HarnessError` whose code is one of
+ * ours: the gateway turns it into an HTTP response
  * (see transport/gateway/error-handler.ts), and the peer client raises it for a failed
  * outbound call, with the status the peer answered with.
  */
-export class PodError extends Error {
-  readonly code: PodErrorCode;
+export class PodError extends HarnessError {
+  declare readonly code: PodErrorCode;
   readonly status: number;
 
   constructor(code: PodErrorCode, message: string = code, status: number = POD_ERROR_STATUS[code]) {
-    super(message);
-    this.name = "PodError";
-    this.code = code;
+    super(message, code);
     this.status = status;
   }
 }
@@ -69,9 +71,16 @@ export function isPodErrorCode(value: unknown): value is PodErrorCode {
   return typeof value === "string" && Object.hasOwn(POD_ERROR_STATUS, value);
 }
 
-/** Compile-time proof that a `switch` handled every variant. */
-export function assertNever(value: never): never {
-  throw new Error(`unhandled variant: ${JSON.stringify(value)}`);
+/** True when a filesystem call failed because the path does not exist (no `instanceof`: errors may cross realms). */
+export function isMissingFile(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT";
+}
+
+/** The error a cancelled operation rejects with; callers tell it apart by `name`. */
+export function abortError(message = "aborted"): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
 }
 
 /** A printable message for an arbitrary thrown value. */

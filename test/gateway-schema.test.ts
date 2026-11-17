@@ -152,7 +152,11 @@ describe("gateway body schemas", () => {
     const noBody = await post(self, "/a2a", "not an object");
     expect(noBody.json()).toMatchObject({ error: { data: { message: expect.stringMatching(/^body Invalid input/) } } });
     const joiner = generateNodeIdentity();
-    const bad = await post(joiner, "/cluster/join", joinBody(joiner, { models: [{ provider: "", model: "m" }] }));
+    const bad = await post(
+      joiner,
+      "/cluster/join",
+      joinBody(joiner, { models: [{ provider: "", id: "m", name: "M" }] }),
+    );
     expect(bad.json()).toMatchObject({
       code: "bad_request",
       message: expect.stringMatching(/^body\.models\.0\.provider /),
@@ -166,23 +170,23 @@ describe("gateway body schemas", () => {
       joiner,
       "/cluster/join",
       joinBody(joiner, {
-        models: [{ provider: "p", model: "m", tier: "gold" }],
-        default_model: { provider: "p", model: "m", reasoning_effort: "high", note: "x" },
+        models: [{ provider: "p", id: "m", name: "M", tier: "gold" }],
+        default_model: { provider: "p", model: "m", reasoningEffort: "high", note: "x" },
         default_reasoning_effort: null,
         runtime: null,
       }),
     );
     expect(response.statusCode).toBe(200);
     const stored = peers.get(joiner.orcaNodeId);
-    expect(stored?.models).toEqual([{ provider: "p", model: "m" }]);
-    expect(stored?.default_model).toEqual({ provider: "p", model: "m", reasoning_effort: "high" });
+    expect(stored?.models).toEqual([{ provider: "p", id: "m", name: "M" }]);
+    expect(stored?.default_model).toEqual({ provider: "p", model: "m", reasoningEffort: "high" });
   });
 
   it("rejects malformed join fields before admission", async () => {
     const { post, joinBody } = harness();
     const joiner = generateNodeIdentity();
     const cases: Record<string, unknown>[] = [
-      { models: [{ provider: "", model: "m" }] },
+      { models: [{ provider: "", id: "m", name: "M" }] },
       { models: Array.from({ length: 129 }, (_, index) => ({ provider: "p", model: `m${index}` })) },
       { default_model: { provider: "p" } },
       { default_reasoning_effort: "   " },
@@ -205,14 +209,14 @@ describe("gateway body schemas", () => {
     const self = {
       display_name: "renamed",
       endpoints: ["http://127.0.0.1:2/"],
-      models: [{ provider: "p", model: "m" }],
+      models: [{ provider: "p", id: "m", name: "M" }],
     };
     const ok = await post(member, "/cluster/heartbeat", heartbeatBody(member, { self }));
     expect(ok.statusCode).toBe(200);
     expect(peers.get(member.orcaNodeId)).toMatchObject({
       display_name: "renamed",
       endpoints: ["http://127.0.0.1:2"],
-      models: [{ provider: "p", model: "m" }],
+      models: [{ provider: "p", id: "m", name: "M" }],
     });
 
     // Link-local (cloud metadata) is refused here exactly as at join (§7.7).

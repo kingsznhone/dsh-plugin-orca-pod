@@ -1,19 +1,21 @@
 /** Panel building blocks on top of DSH's shared primitives: cards, tables, fact lists, dialogs. */
 
-import { Modal, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Modal, StateDot, Tag, fileSizeText } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
-import { ageOf, stateDot, stateLabel } from "./format.ts";
+import { ageOf, stateDot, stateLabel, type ShownState } from "./format.ts";
 import { t } from "./i18n.ts";
-import { downloadBlob, messageOf, store } from "./store.ts";
+import { errorMessage } from "../src/kernel/errors.ts";
+import { downloadBlob, store } from "./store.ts";
 import type { ModelOffer, ModelSelection, PodArtifact } from "./types.ts";
 import ui from "./ui.module.css";
 
 /** `provider/model`: how a model route is written everywhere in the panel. */
-export const modelId = (model: ModelSelection | ModelOffer): string => `${model.provider}/${model.model}`;
+export const modelId = (model: ModelSelection | ModelOffer): string =>
+  `${model.provider}/${"id" in model ? model.id : model.model}`;
 
 /** A model route with its reasoning effort, when it carries one. */
 export const modelText = (model: ModelSelection): string =>
-  `${modelId(model)}${model.reasoning_effort ? ` · ${model.reasoning_effort}` : ""}`;
+  `${modelId(model)}${model.reasoningEffort ? ` · ${model.reasoningEffort}` : ""}`;
 
 export const stop = (handler: () => void) => (event: React.SyntheticEvent) => {
   event.stopPropagation();
@@ -81,7 +83,7 @@ export function Section({
 export const Empty = ({ children }: { children?: ReactNode }) => <p className={ui.empty}>{children}</p>;
 
 /** A state as a DSH status dot and its label. */
-export const StateText = ({ state }: { state: string }) => (
+export const StateText = ({ state }: { state: ShownState }) => (
   <span className={ui.inline}>
     <StateDot state={stateDot(state)} size={stateDot(state) === "ongoing" ? 12 : 10} />
     {stateLabel(state)}
@@ -148,7 +150,7 @@ export function ArtifactLinks({ artifacts }: { artifacts: PodArtifact[] }) {
   const save = (artifact: PodArtifact, node: string) => {
     setFailed(null);
     downloadBlob(node, artifact.blob_id, artifact.name).catch((error: unknown) =>
-      setFailed(`${artifact.name}: ${messageOf(error)}`),
+      setFailed(`${artifact.name}: ${errorMessage(error)}`),
     );
   };
   return (
@@ -164,7 +166,7 @@ export function ArtifactLinks({ artifacts }: { artifacts: PodArtifact[] }) {
             key={artifact.blob_id}
             type={"button"}
             className={ui.linkButton}
-            title={`${artifact.bytes} bytes · ${artifact.blob_id}`}
+            title={`${fileSizeText(artifact.bytes)} · ${artifact.blob_id}`}
             onClick={stop(() => save(artifact, node))}
           >
             {artifact.name}

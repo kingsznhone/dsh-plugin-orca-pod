@@ -28,30 +28,29 @@ export function isTerminal(state: string): boolean {
   return TERMINAL_STATES.has(state);
 }
 
-export type MessagePart =
-  | { kind: "text"; text: string }
-  | { kind: "data"; data: Record<string, unknown> }
-  | { kind: "file"; file: { name: string; mimeType?: string; bytes?: string } };
-
-export type A2AMessage = {
-  role: "user" | "agent";
-  parts: MessagePart[];
-  messageId?: string;
-  /** Set when this message continues an input-required task (§4.8). */
-  taskId?: string;
-  contextId?: string;
-};
-
 /**
- * Only the outline of a message is checked on the wire: loose objects keep the
- * fields the gateway does not look at. The task runner validates the parts, so
- * its error says which part is wrong; the schema is typed as the message the
- * runner then works with.
+ * One part of an A2A message. Loose objects keep the fields this node does not
+ * read, so a newer peer's extras survive; the kinds themselves are closed.
  */
+export const MessagePartSchema = z.discriminatedUnion("kind", [
+  z.looseObject({ kind: z.literal("text"), text: z.string() }),
+  z.looseObject({ kind: z.literal("data"), data: z.record(z.string(), z.unknown()) }),
+  z.looseObject({
+    kind: z.literal("file"),
+    file: z.looseObject({ name: z.string(), mimeType: z.string().optional(), bytes: z.string().optional() }),
+  }),
+]);
+export type MessagePart = z.infer<typeof MessagePartSchema>;
+
 export const A2AMessageSchema = z.looseObject({
-  parts: z.array(z.unknown()),
+  role: z.enum(["user", "agent"]),
+  parts: z.array(MessagePartSchema),
+  messageId: z.string().optional(),
+  /** Set when this message continues an input-required task (§4.8). */
   taskId: z.string().optional(),
-}) as unknown as z.ZodType<A2AMessage, A2AMessage>;
+  contextId: z.string().optional(),
+});
+export type A2AMessage = z.infer<typeof A2AMessageSchema>;
 
 /** A message of plain text from this node's side (task results and failure texts). */
 export function textMessage(text: string): A2AMessage {
@@ -91,13 +90,18 @@ export const PodTaskMetadataSchema = z.looseObject({
   reasoning_effort: ReasoningEffortSchema.optional(),
   idempotency_key: z.string().optional(),
   task_ttl_s: z.number("must be a positive number").finite().positive("must be a positive number").optional(),
-  grant_id: z.string().optional(),
 });
 export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;
 
-/** Task metadata on the wire: the `pod` block, an echo script, and whatever else a caller attaches. */
-export type TaskMetadata = { pod?: PodTaskMetadata; echo?: unknown } & Record<string, unknown>;
-export const TaskMetadataSchema = z.record(z.string(), z.unknown()) as unknown as z.ZodType<TaskMetadata, TaskMetadata>;
+/**
+ * Task metadata on the wire: the `pod` block, an echo script (checked by the
+ * echo executor's own parser), and whatever else a caller attaches.
+ */
+export const TaskMetadataSchema = z.looseObject({
+  pod: PodTaskMetadataSchema.optional(),
+  echo: z.unknown().optional(),
+});
+export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
 
 const TaskStatusSchema = z.object({
   state: TaskStateSchema,

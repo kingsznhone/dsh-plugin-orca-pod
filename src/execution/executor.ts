@@ -5,7 +5,8 @@
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { EchoScript } from "./echo.ts";
-import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { RequestedAccess } from "../protocol/grant.ts";
 import type { OrcaNodeId } from "../protocol/peer.ts";
 
@@ -41,7 +42,7 @@ export type ExecuteInput = {
   /** Model route the origin asks for; an executor that cannot select one fails the task (§6.15). */
   model: ModelSelection | undefined;
   /** Reasoning effort for that route, same rule. */
-  reasoningEffort: ReasoningEffort | undefined;
+  reasoningEffort: ReasoningEffortId | undefined;
   /** The task's echo script (§6.3); only the echo executor reads it. */
   echo: EchoScript;
 };

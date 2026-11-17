@@ -10,7 +10,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { EXECUTOR_KINDS } from "../src/execution/kinds.ts";
-import { KNOWN_REASONING_EFFORTS } from "../src/protocol/vocabulary.ts";
+import { DEFAULT_PORT } from "../src/protocol/constants.ts";
 import { DEFAULT_WORKGROUP, GIB } from "./constants.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
@@ -67,7 +67,10 @@ export const LIMITS: Limit[] = [
 ];
 export const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
 
-export function selectFields(permissionModes: readonly string[]): SelectField[] {
+/** What the choices are built from: the host's mode list, its default model's efforts, the current values. */
+type ChoiceSource = Pick<PodConfigView, "permission_modes" | "reasoning_efforts" | "advanced">;
+
+export function selectFields(config: ChoiceSource): SelectField[] {
   const tri: Array<[string, string]> = [
     ["", t("cfgDefaultOption")],
     ["allow", t("cfgAllowOption")],
@@ -77,11 +80,15 @@ export function selectFields(permissionModes: readonly string[]): SelectField[] 
     ["", t("cfgDefaultOption")],
     ...values.map((value): [string, string] => [value, value]),
   ];
+  // The efforts belong to the host's default model; a saved effort it no longer offers stays selectable.
+  const saved = config.advanced.default_reasoning_effort;
+  const efforts: Array<[string, string]> = config.reasoning_efforts.map(({ id, name }) => [id, name]);
+  if (saved !== null && !efforts.some(([id]) => id === saved)) efforts.push([saved, saved]);
   return [
-    ["permission_mode", "cfgPermissionMode", literal(permissionModes)],
+    ["permission_mode", "cfgPermissionMode", literal(config.permission_modes)],
     ["allow_public_peers", "cfgAllowPublicPeers", tri],
     ["allow_loopback_peers", "cfgAllowLoopbackPeers", tri],
-    ["default_reasoning_effort", "cfgDefaultEffort", literal(KNOWN_REASONING_EFFORTS), "cfgDefaultEffortHint"],
+    ["default_reasoning_effort", "cfgDefaultEffort", [["", t("cfgDefaultOption")], ...efforts], "cfgDefaultEffortHint"],
     ["executor", "cfgExecutor", literal(EXECUTOR_KINDS), "cfgExecutorHint"],
   ];
 }
@@ -98,16 +105,14 @@ function limitTexts(advanced: PodAdvancedConfig): Record<LimitKey, string> {
 }
 
 /** The choices as form text: booleans become allow/deny, unset is blank. */
-function choiceTexts(advanced: PodAdvancedConfig, permissionModes: readonly string[]): Record<SelectKey, string> {
+function choiceTexts(config: ChoiceSource): Record<SelectKey, string> {
+  const { advanced } = config;
   const text = (key: SelectKey): string => {
     const value = advanced[key];
     if (BOOLEANS.includes(key)) return value === null ? "" : value ? "allow" : "deny";
     return String(value ?? "");
   };
-  return Object.fromEntries(selectFields(permissionModes).map(([key]) => [key, text(key)])) as Record<
-    SelectKey,
-    string
-  >;
+  return Object.fromEntries(selectFields(config).map(([key]) => [key, text(key)])) as Record<SelectKey, string>;
 }
 
 export function initialForm(config: PodConfigView, wizard: boolean): FormState {
@@ -120,7 +125,7 @@ export function initialForm(config: PodConfigView, wizard: boolean): FormState {
     port: String(config.port),
     endpoints: config.suggested_endpoints.length > 0 ? config.suggested_endpoints : [""],
     ...limitTexts(config.advanced),
-    ...choiceTexts(config.advanced, config.permission_modes),
+    ...choiceTexts(config),
   };
 }
 
@@ -151,12 +156,9 @@ function limitValues(
 }
 
 /** The choices as the host takes them: allow/deny become booleans, blank clears. */
-function choiceValues(
-  form: FormState,
-  permissionModes: readonly string[],
-): Partial<Record<SelectKey, string | boolean | null>> {
+function choiceValues(form: FormState, config: ChoiceSource): Partial<Record<SelectKey, string | boolean | null>> {
   const values: Partial<Record<SelectKey, string | boolean | null>> = {};
-  for (const [key] of selectFields(permissionModes)) {
+  for (const [key] of selectFields(config)) {
     values[key] = BOOLEANS.includes(key) ? (form[key] === "" ? null : form[key] === "allow") : form[key] || null;
   }
   return values;
@@ -184,7 +186,7 @@ export function buildPatch(
     endpoints: addresses.length > 0 ? addresses : null,
     ...(form.password.length > 0 ? { workgroup_password: form.password } : {}),
     ...limits.values,
-    ...choiceValues(form, config.permission_modes),
+    ...choiceValues(form, config),
   } as PanelPatch;
   return { patch };
 }
@@ -318,7 +320,7 @@ export function NetworkSection({
                 value={row}
                 aria-label={`${t("cfgAdvertised")} ${index + 1}`}
                 onChange={(event) => edit(index, event.target.value)}
-                placeholder={"http://192.168.1.11:11811"}
+                placeholder={`http://192.168.1.11:${DEFAULT_PORT}`}
               />
               <Button
                 variant={"ghost"}
@@ -347,7 +349,7 @@ export function NetworkSection({
   );
 }
 
-export function AdvancedSection({ bind, permissionModes }: { bind: Bind; permissionModes: readonly string[] }) {
+export function AdvancedSection({ bind, config }: { bind: Bind; config: ChoiceSource }) {
   const [open, setOpen] = React.useState(false);
   return (
     <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
@@ -363,7 +365,7 @@ export function AdvancedSection({ bind, permissionModes }: { bind: Bind; permiss
               <Input className={css.input} inputMode={"decimal"} {...bind(limit.key)} />
             </SettingRow>
           ))}
-          {selectFields(permissionModes).map(([key, label, options, hint]) => (
+          {selectFields(config).map(([key, label, options, hint]) => (
             <SettingRow key={key} label={t(label)} hint={hint && t(hint)}>
               <Select options={options} {...bind(key)} />
             </SettingRow>
@@ -485,7 +487,7 @@ export function ConfigForm({
       {wizard ? <p className={css.intro}>{t("cfgWizardIntro")}</p> : null}
       <IdentitySection bind={bind} wizard={wizard} config={config} />
       <NetworkSection form={form} set={set} bind={bind} config={config} busy={busy} />
-      <AdvancedSection bind={bind} permissionModes={config.permission_modes} />
+      <AdvancedSection bind={bind} config={config} />
       {wizard ? null : <ResetGroup busy={busy} onReset={() => run("reset", {})} />}
     </form>
   );

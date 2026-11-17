@@ -28,8 +28,10 @@ export type {
 } from "../src/plugin/admin.ts";
 export type { PodActions, PodReads, PodState } from "../src/plugin/panel-api.ts";
 export type { PanelPatch } from "../src/node/settings.ts";
-export type { ModelOffer, ModelSelection } from "../src/protocol/model.ts";
-export type { PeerView, RuntimeInfo } from "../src/protocol/peer.ts";
+export type { ModelSelection } from "@deepseek-ai/dsh-agent";
+export type { ModelOffer } from "../src/protocol/model.ts";
+export type { PeerState, PeerView, RuntimeInfo } from "../src/protocol/peer.ts";
+export type { TaskState } from "../src/protocol/task.ts";
 
 /** One namespace's strings for one language. */
 export type LocaleDict = Record<string, string>;

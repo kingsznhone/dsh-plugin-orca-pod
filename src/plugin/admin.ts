@@ -14,15 +14,17 @@ import { readdirSync } from "node:fs";
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { defaultDataRoot } from "../node/config.ts";
-import type { DispatchEntry, OpenedBlob } from "../storage/stores.ts";
+import type { OpenedBlob } from "../storage/stores.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
 import { shortenNodeId } from "../security/identity.ts";
 import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
 import { isTerminal } from "../protocol/task.ts";
 import type { OrcaNodeId, PeerView, SelfRecord } from "../protocol/peer.ts";
 import type { PermissionRequest } from "../protocol/grant.ts";
 import type { PodTaskMetadata, TaskState, TaskView } from "../protocol/task.ts";
-import type { ReasoningEffort } from "../protocol/model.ts";
-import type { ExecutorKind, PanelPatch } from "../node/settings.ts";
+import type { LlmReasoningEffortInfo, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import type { ExecutorKind } from "../execution/kinds.ts";
+import type { PanelPatch } from "../node/settings.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
@@ -96,7 +98,7 @@ export interface PodAdvancedConfig {
   allow_public_peers: boolean | null;
   allow_loopback_peers: boolean | null;
   permission_mode: SandboxMode | null;
-  default_reasoning_effort: ReasoningEffort | null;
+  default_reasoning_effort: ReasoningEffortId | null;
   executor: ExecutorKind | null;
 }
 
@@ -117,6 +119,8 @@ export interface PodConfigView {
   suggested_endpoints: string[];
   /** The permission modes this DSH accepts, in rank order (read from DSH itself). */
   permission_modes: readonly SandboxMode[];
+  /** The efforts the host's default model offers, least to most (read from DSH's `llm`). */
+  reasoning_efforts: readonly LlmReasoningEffortInfo[];
   /** Listen addresses the form offers. */
   bind_choices: string[];
   peers: string[];
@@ -196,7 +200,13 @@ function labeller(current: OrcaNode | null): (key: string | undefined) => string
 /** A permission request waiting for the human, whoever saw it first. */
 type PendingApproval = { peer: string; taskId: string; request: PermissionRequest; agentId: string | null };
 
-export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: ApprovalBroker): PodAdmin {
+export function createPodAdmin(
+  handle: PodHandle,
+  tracker: Tracker,
+  broker: ApprovalBroker,
+  /** The host's model catalog; without one the panel offers no effort to pick. */
+  reasoningEfforts: () => readonly LlmReasoningEffortInfo[] = () => [],
+): PodAdmin {
   /** The node, or null while startup failed / has not completed yet. */
   function node(): OrcaNode | null {
     return handle.runtime.orcaNode;
@@ -283,6 +293,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       endpoints,
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
       permission_modes: SANDBOX_MODES,
+      reasoning_efforts: reasoningEfforts(),
       bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
       peers: [...new Set([...config.peers, ...handle.rememberedPeers])],
       data_root: config.data_root ?? defaultDataRoot(),

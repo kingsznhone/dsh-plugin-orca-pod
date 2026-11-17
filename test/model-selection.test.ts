@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { ModelOffersSchema, parseModelSelection } from "../src/protocol/model.ts";
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import { ModelOffersSchema, ModelSelectionSchema } from "../src/protocol/model.ts";
 import { parseSchema } from "../src/kernel/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/catalog.ts";
@@ -51,43 +52,48 @@ function offers(raw: unknown) {
   return result.ok ? result.value : `${result.issue.path.join(".")} ${result.issue.message}`;
 }
 
+/** A checked selection, or null. */
+function selection(raw: unknown) {
+  const result = parseSchema(ModelSelectionSchema, raw);
+  return result.ok ? result.value : null;
+}
+
 describe("model catalog", () => {
   it("validates offers and selections", () => {
-    expect(offers([{ provider: "deepseek", model: "deepseek-flash" }])).toHaveLength(1);
-    expect(typeof offers([{ provider: "", model: "x" }])).toBe("string");
+    expect(offers([{ provider: "deepseek", id: "deepseek-flash", name: "Flash" }])).toHaveLength(1);
+    expect(typeof offers([{ provider: "", id: "x", name: "X" }])).toBe("string");
     expect(typeof offers([{ provider: "p" }])).toBe("string");
-    expect(typeof offers(Array.from({ length: 129 }, () => ({ provider: "p", model: "m" })))).toBe("string");
-    expect(parseModelSelection({ provider: "p", model: "m", reasoning_effort: "high" })).toEqual({
+    expect(typeof offers(Array.from({ length: 129 }, () => ({ provider: "p", id: "m", name: "M" })))).toBe("string");
+    // DSH's ModelSelection shape: camelCase `reasoningEffort`.
+    expect(selection({ provider: "p", model: "m", reasoningEffort: "high" })).toEqual({
       provider: "p",
       model: "m",
-      reasoning_effort: "high",
+      reasoningEffort: "high",
     });
-    expect(parseModelSelection({ provider: "p" })).toBeNull();
-    expect(parseModelSelection({ provider: "p", model: "m", reasoning_effort: "" })).toBeNull();
+    expect(selection({ provider: "p" })).toBeNull();
+    expect(selection({ provider: "p", model: "m", reasoningEffort: "" })).toBeNull();
     // One blank-effort rule for the selection and for the standalone value.
-    expect(parseModelSelection({ provider: "p", model: "m", reasoning_effort: "  " })).toBeNull();
+    expect(selection({ provider: "p", model: "m", reasoningEffort: "  " })).toBeNull();
     expect(
       offers([
-        { provider: "p", model: "m" },
-        { provider: "p", model: "" },
+        { provider: "p", id: "m", name: "M" },
+        { provider: "p", id: "", name: "M" },
       ]),
-    ).toMatch(/^1\.model /);
+    ).toMatch(/^1\.id /);
   });
 
   it("drops unknown keys from a copy instead of rejecting them", () => {
     const raw = { provider: "p", model: "m", tier: "gold" };
-    expect(parseModelSelection(raw)).toEqual({ provider: "p", model: "m" });
+    expect(selection(raw)).toEqual({ provider: "p", model: "m" });
     expect(raw).toHaveProperty("tier", "gold");
-    expect(offers([{ provider: "p", model: "m", name: "M", extra: 1 }])).toEqual([
-      { provider: "p", model: "m", name: "M" },
-    ]);
-    expect(parseModelSelection("p/m")).toBeNull();
-    expect(parseModelSelection(null)).toBeNull();
+    expect(offers([{ provider: "p", id: "m", name: "M", extra: 1 }])).toEqual([{ provider: "p", id: "m", name: "M" }]);
+    expect(selection("p/m")).toBeNull();
+    expect(selection(null)).toBeNull();
     const configured = createOrcaNodeConfig({
       workgroup_id: wg("wg"),
       workgroup_password: "pw",
       data_root: join(tmpdir(), "orca-model-config"),
-      default_reasoning_effort: "max",
+      default_reasoning_effort: ReasoningEffortId("max"),
     });
     expect(configured.default_reasoning_effort).toBe("max");
     expect(() =>
@@ -95,26 +101,26 @@ describe("model catalog", () => {
         workgroup_id: wg("wg"),
         workgroup_password: "pw",
         data_root: join(tmpdir(), "orca-model-config"),
-        default_reasoning_effort: "",
+        default_reasoning_effort: ReasoningEffortId(""),
       }),
     ).toThrow();
   });
 
   it("advertises the catalog on join and in the peer directory", async () => {
     const models = [
-      { provider: "deepseek", model: "deepseek-flash", name: "Flash" },
-      { provider: "deepseek", model: "deepseek-v4-pro", name: "Pro" },
+      { provider: "deepseek", id: "deepseek-flash", name: "Flash" },
+      { provider: "deepseek", id: "deepseek-v4-pro", name: "Pro" },
     ];
     const a = await startNode({ models });
     const b = await startNode({
-      models: [{ provider: "deepseek", model: "deepseek-flash" }],
+      models: [{ provider: "deepseek", id: "deepseek-flash", name: "Flash" }],
       default_model: { provider: "deepseek", model: "deepseek-flash" },
-      default_reasoning_effort: "max",
+      default_reasoning_effort: ReasoningEffortId("max"),
     });
     await b.join(a.endpoints[0]!);
     const peer = await until(() => a.members().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
     expect(peer.models).toHaveLength(1);
-    expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
+    expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", id: "deepseek-flash" });
     expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash" });
     expect(peer.default_reasoning_effort).toBe("max");
     // The join response carries the directory, so b sees a's catalog too.
@@ -143,7 +149,7 @@ describe("model catalog", () => {
     const node = await startNode({});
     const submitted = await node.sendTask(node.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "select an effort" }] },
-      metadata: { pod: { reasoning_effort: "max" } },
+      metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
     });
     const deadline = Date.now() + 5_000;
     let task = await node.getTask(node.endpoints[0]!, submitted.id);
@@ -165,10 +171,21 @@ describe("model catalog", () => {
         listModels: async (provider: string) => {
           if (provider === "broken") throw new Error("no adapter");
           return [
-            { id: "deepseek-flash", name: "Flash", description: "fast" },
-            { id: "deepseek-v4-pro", name: "Pro" },
+            { provider, id: "deepseek-flash", name: "Flash", description: "fast" },
+            { provider, id: "deepseek-v4-pro", name: "Pro" },
           ];
         },
+        resolveModelInfo: async (provider: string, id: string) => ({
+          provider,
+          id,
+          name: "Flash",
+          reasoning: {
+            efforts: [
+              { id: "high", name: "High" },
+              { id: "max", name: "Max" },
+            ],
+          },
+        }),
       },
       agentDefaultModel: { currentSelection: () => ({ provider: "deepseek", model: "deepseek-flash" }) },
     };
@@ -181,8 +198,10 @@ describe("model catalog", () => {
         debug() {},
       } as unknown as import("@deepseek-ai/cordis").Logger,
     );
-    expect(catalog.models.map((model) => model.model)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(catalog.models.map((model) => model.id)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(catalog.models[0]?.description).toBe("fast");
     expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });
+    // The panel offers the efforts the host's default model reports, not a list of its own.
+    expect(catalog.reasoningEfforts.map((effort) => effort.id)).toEqual(["high", "max"]);
   });
 });

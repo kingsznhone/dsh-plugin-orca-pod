@@ -21,22 +21,19 @@ import type {} from "@deepseek-ai/dsh-settings";
 import { createApprovalBroker } from "./broker.ts";
 import { createPodAdmin } from "./admin.ts";
 import { createConfigSchema } from "./config.ts";
-import type { Config as PodConfig } from "./config.ts";
 import { defaultDataRoot } from "../node/config.ts";
 import { createModelCatalogFeed } from "./catalog.ts";
 import { startPod, stopPod } from "./lifecycle.ts";
 import { createHostStores } from "./stores.ts";
+import type { Settings } from "../node/settings.ts";
 import { optionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
 import { createPodTools } from "./tools.ts";
 import { createTracker, restoreTrackedDispatches } from "./tracker.ts";
 import { registerPodWeb } from "./web.ts";
 
-/** Validated plugin configuration. */
-export type Config = PodConfig;
-
-/** Standard Schema config consumed by Cordis before `apply` runs. */
-export const Config: StandardSchemaV1<unknown, Config> = createConfigSchema();
+/** Standard Schema config consumed by Cordis before `apply` runs: the node `Settings`, without the password. */
+export const Config: StandardSchemaV1<unknown, Settings> = createConfigSchema();
 
 /**
  * Hard dependencies: the tool registry, the credential store that holds the
@@ -52,7 +49,7 @@ export const inject: string[] = ["tools", "credentials", "configEditor"];
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  */
-export function apply(ctx: Context, config: Config): void {
+export function apply(ctx: Context, config: Settings): void {
   // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
   // baseUrl is the profile hint that keeps two profiles apart.
   const logger = ctx.logger("orca-pod");
@@ -117,7 +114,7 @@ export function apply(ctx: Context, config: Config): void {
   for (const tool of createPodTools(handle, tracker, sandbox.current)) {
     ctx.tools.register(tool, { when: () => handle.configured });
   }
-  registerPodWeb(ctx, createPodAdmin(handle, tracker, broker));
+  registerPodWeb(ctx, createPodAdmin(handle, tracker, broker, catalog.reasoningEfforts));
 
   // The skill ships inside the package and is registered in memory; no copy is
   // written to a user skill root. The ACP executor's `dsh` subprocess cannot see

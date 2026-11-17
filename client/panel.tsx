@@ -14,7 +14,8 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
 import { ApprovalList } from "./approvals.tsx";
-import { ACTIVE_STATES, short } from "./format.ts";
+import { short } from "./format.ts";
+import { DEFAULT_PORT } from "../src/protocol/constants.ts";
 import { t, useLocale } from "./i18n.ts";
 import { Members, NodeDetail, Workspace } from "./members.tsx";
 import css from "./panel.module.css";
@@ -36,7 +37,7 @@ function ConnectCard({ busy }: { busy: boolean }) {
     <form className={`${ui.card} ${css.connect}`} onSubmit={connect}>
       <div className={css.connectText}>
         <h3 className={ui.cardTitle}>{t("connectPeer")}</h3>
-        <span className={ui.caption}>{t("notJoined")}</span>
+        <span className={ui.caption}>{t("notJoined").replace("{port}", String(DEFAULT_PORT))}</span>
       </div>
       <div className={css.connectRow}>
         <Input
@@ -44,7 +45,7 @@ function ConnectCard({ busy }: { busy: boolean }) {
           value={host}
           aria-label={t("host")}
           onChange={(event) => setHost(event.target.value)}
-          placeholder={"192.168.1.12 / peer.example.com / http://host:11811"}
+          placeholder={`192.168.1.12 / peer.example.com / http://host:${DEFAULT_PORT}`}
         />
         <Button type={"submit"} variant={"primary"} disabled={busy || host.trim() === ""}>
           {t("connect")}
@@ -68,7 +69,8 @@ function Stat({ label, tone, children }: { label: string; tone?: "warning"; chil
 /** The four numbers that say how this node is doing. */
 function Stats({ state }: { state: PodState }) {
   const { self, members, mesh, approvals, recent } = state;
-  const active = recent.filter((row) => ACTIVE_STATES.includes(row.state)).length;
+  // The host marks the tasks still holding a slot: they are the ones that can be cancelled.
+  const active = recent.filter((row) => row.cancellable).length;
   return (
     <div className={css.stats}>
       <Stat label={t("statPeers")}>

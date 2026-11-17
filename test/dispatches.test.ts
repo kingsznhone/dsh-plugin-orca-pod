@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { markInFlightUnknown } from "../src/tasks/delegation.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import type { DispatchEntry } from "../src/storage/stores.ts";
+import type { DispatchEntry } from "../src/protocol/dispatch.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { createSqliteDispatchStore } from "../src/storage/sqlite.ts";
 import { wg } from "./fixtures/ids.ts";

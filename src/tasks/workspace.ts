@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkgroupId } from "../protocol/peer.ts";
+import { isMissingFile } from "../kernel/errors.ts";
 
 /**
  * One workspace per (data_root, workgroup) (§6.7). Created on join and kept
@@ -21,24 +22,22 @@ export type WorkspacePaths = {
   state: string;
 };
 
-export type Workspace = WorkspacePaths;
-
 type WorkspaceManager = {
   /** Create the directories if needed and return the workspace. */
-  ensure(): Workspace;
+  ensure(): WorkspacePaths;
 };
 
 export function createWorkspaceManager(options: { dataRoot: string; workgroupId: WorkgroupId }): WorkspaceManager {
   const root = join(options.dataRoot, "workgroups", options.workgroupId);
   const state = join(options.dataRoot, "state", options.workgroupId);
-  const workspace: Workspace = {
+  const workspace: WorkspacePaths = {
     root,
     notes: join(root, "notes"),
     state,
   };
 
   let ensured = false;
-  function ensure(): Workspace {
+  function ensure(): WorkspacePaths {
     if (!ensured) {
       for (const dir of [workspace.root, workspace.notes, join(workspace.state, "tasks")]) {
         mkdirSync(dir, { recursive: true });
@@ -54,8 +53,8 @@ export function createWorkspaceManager(options: { dataRoot: string; workgroupId:
 export type WorkspaceUsage = { bytes: number; files: number };
 
 /** `undefined` when the path vanished meanwhile (an agent may delete files under us); other errors surface. */
-function ifMissing(error: NodeJS.ErrnoException): undefined {
-  if (error.code === "ENOENT") return undefined;
+function ifMissing(error: unknown): undefined {
+  if (isMissingFile(error)) return undefined;
   throw error;
 }
 

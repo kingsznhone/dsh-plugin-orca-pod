@@ -1,3 +1,4 @@
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,13 +46,17 @@ describe("self-description after join (G13)", () => {
     expect(seenBy(a, b)?.models).toBeUndefined();
 
     // The host catalog arrives after the node joined.
-    b.setModelCatalog([{ provider: "p", model: "m", name: "M" }], { provider: "p", model: "m" }, "high");
+    b.setModelCatalog(
+      [{ provider: "p", id: "m", name: "M" }],
+      { provider: "p", model: "m" },
+      ReasoningEffortId("high"),
+    );
     expect(seenBy(a, b)?.models).toBeUndefined();
 
     await b.heartbeat(a.endpoints[0]!);
     expect(seenBy(a, b)).toMatchObject({
-      models: [{ provider: "p", model: "m", name: "M" }],
-      default_model: { provider: "p", model: "m", reasoning_effort: "high" },
+      models: [{ provider: "p", id: "m", name: "M" }],
+      default_model: { provider: "p", model: "m", reasoningEffort: "high" },
       default_reasoning_effort: "high",
     });
 
@@ -64,12 +69,12 @@ describe("self-description after join (G13)", () => {
 
   it("is replaced by a repeated join, in both directions", async () => {
     const [a, b] = await pair();
-    a.setModelCatalog([{ provider: "pa", model: "ma" }], null);
-    b.setModelCatalog([{ provider: "pb", model: "mb" }], null);
+    a.setModelCatalog([{ provider: "pa", id: "ma", name: "MA" }], null);
+    b.setModelCatalog([{ provider: "pb", id: "mb", name: "MB" }], null);
 
     await b.join(a.endpoints[0]!);
     // A records B's join body; B records the self record in A's answer.
-    expect(seenBy(a, b)?.models).toEqual([{ provider: "pb", model: "mb" }]);
-    expect(seenBy(b, a)?.models).toEqual([{ provider: "pa", model: "ma" }]);
+    expect(seenBy(a, b)?.models).toEqual([{ provider: "pb", id: "mb", name: "MB" }]);
+    expect(seenBy(b, a)?.models).toEqual([{ provider: "pa", id: "ma", name: "MA" }]);
   }, 15_000);
 });

@@ -17,7 +17,7 @@
 export type NodeLogger = { warn(message: string): void };
 
 /** An emitted event with the wall-clock time it happened. */
-type Stamped<E> = E & { at: string };
+export type Stamped<E> = E & { at: string };
 
 export type EventBus<E extends object> = {
   emit(event: E): void;

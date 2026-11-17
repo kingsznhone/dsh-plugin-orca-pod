@@ -1,3 +1,4 @@
+import type { FetchLike } from "../../src/transport/peer-client.ts";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createOrcaNodeConfig } from "../../src/node/config.ts";
 import { WorkgroupIdSchema } from "../../src/protocol/peer.ts";
 import type { MembershipTimings } from "../../src/membership/membership.ts";
-import { createOrcaNode, joinRoster, type FetchLike, type OrcaNode } from "../../src/node/orca-node.ts";
+import { createOrcaNode, joinRoster, type OrcaNode } from "../../src/node/orca-node.ts";
 
 type MeshOptions = {
   orcaNodes?: number;

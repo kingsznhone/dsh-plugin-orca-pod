@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import type { z } from "zod";
 
+import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
+
 import { buildAuthHeader } from "../security/crypto.ts";
 import { describeIssue, parseSchema } from "../kernel/schema.ts";
 import { isPodErrorCode, PodError } from "../kernel/errors.ts";
@@ -15,6 +17,8 @@ export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
 
 /** A hostile or broken peer must not be able to make us buffer unbounded JSON (§4.7). */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+/** The code DSH's `deadline` stamps on an outbound call that ran out of time. */
+const PEER_TIMEOUT = "PEER_TIMEOUT";
 
 type PeerClientOptions = {
   identity: NodeIdentity;
@@ -126,36 +130,56 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
       }),
     };
     if (body !== undefined) headers["content-type"] = "application/json";
-    const deadline = AbortSignal.timeout(call.timeoutMs ?? options.timeoutMs);
-    const init: RequestInit & { duplex: "half" } = {
-      method,
-      headers,
-      body,
-      duplex: "half",
-      // A redirect would carry a signed request to an address nobody vetted.
-      redirect: "manual",
-      signal: call.signal === undefined ? deadline : AbortSignal.any([deadline, call.signal]),
-    };
-    const response = await options.fetch(url, init);
-    return {
-      status: response.status,
-      ok: response.ok,
-      contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
-      text: await readCapped(label, response),
-    };
+    // The deadline covers the whole answer, body included.
+    return withDeadline(label, call, async (signal) => {
+      const init: RequestInit & { duplex: "half" } = {
+        method,
+        headers,
+        body,
+        duplex: "half",
+        // A redirect would carry a signed request to an address nobody vetted.
+        redirect: "manual",
+        signal,
+      };
+      const response = await options.fetch(url, init);
+      return {
+        status: response.status,
+        ok: response.ok,
+        contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
+        text: await readCapped(label, response),
+      };
+    });
+  }
+
+  /**
+   * Run one outbound exchange under the call's deadline, fused with the
+   * caller's own cancellation (DSH's `deadline`). A deadline that elapses is
+   * reported as `peer_timeout`; a caller's abort keeps its own error.
+   */
+  async function withDeadline<T>(
+    label: string,
+    call: CallOptions,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const limit = deadline(call.signal, call.timeoutMs ?? options.timeoutMs, PEER_TIMEOUT);
+    try {
+      return await work(limit.signal);
+    } catch (error) {
+      const timeout = timeoutOf(limit.signal, PEER_TIMEOUT);
+      if (timeout !== undefined)
+        throw new PodError("peer_timeout", `${label}: no answer within ${timeout.timeoutMs} ms`);
+      throw error;
+    } finally {
+      limit[Symbol.dispose]();
+    }
   }
 
   /** A file, streamed: signed like any call, but neither buffered nor capped. */
   async function download(endpoint: string, path: string, call: CallOptions) {
     const target = call.target ?? known(endpoint);
     const url = new URL(path, endpoint);
-    const answered = new AbortController();
     // The deadline covers the answer, not the transfer: a large file may stream for long.
-    const timer = setTimeout(
-      () => answered.abort(new DOMException("download timed out", "TimeoutError")),
-      call.timeoutMs ?? options.timeoutMs,
-    );
-    try {
+    return withDeadline(path, call, async (signal) => {
       const response = await options.fetch(url, {
         method: "GET",
         headers: {
@@ -167,7 +191,7 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
           }),
         },
         redirect: "manual",
-        signal: call.signal === undefined ? answered.signal : AbortSignal.any([answered.signal, call.signal]),
+        signal,
       });
       if (!response.ok || response.body === null) {
         const reply: Reply = {
@@ -180,9 +204,7 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
       }
       const length = response.headers.get("content-length");
       return { body: response.body, size: length === null ? undefined : Number(length) };
-    } finally {
-      clearTimeout(timer);
-    }
+    });
   }
 
   /** The typed error of a failed reply. */

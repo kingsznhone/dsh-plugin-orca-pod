@@ -73,8 +73,6 @@ export type FileBlobRegistry = {
 
 // Origin-side dispatch log (§8.3); what the entries mean is decided in `tasks/delegation.ts` (`markInFlightUnknown`).
 
-export type { DispatchEntry };
-
 export type DispatchStore = {
   save(entry: DispatchEntry): void;
   get(taskId: string): DispatchEntry | undefined;

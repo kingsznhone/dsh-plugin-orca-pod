@@ -5,18 +5,27 @@
  * task's resume message answers the prompt.
  */
 
-import type { PromptResponse, RequestPermissionResponse, SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
+import type {
+  PromptResponse,
+  RequestPermissionResponse,
+  SessionConfigOptionCategory,
+  SessionUpdate,
+  StopReason,
+} from "@agentclientprotocol/sdk";
 
 import { CLI_PATH, IN_TASK_ENV } from "../../kernel/entry.ts";
 import { errorMessage } from "../../kernel/errors.ts";
 import type { NodeLogger } from "../../kernel/events.ts";
-import { describeModelRequest, type ModelDefaults, type ModelSelection } from "../../protocol/model.ts";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import { describeModelRequest, type ModelDefaults } from "../../protocol/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
-import { KILL_GRACE_MS, abortError } from "../process.ts";
+import { KILL_GRACE_MS } from "../process.ts";
+import { abortError } from "../../kernel/errors.ts";
 import type { AcpConnection, SessionRoute } from "./connection.ts";
 import { CANCELLED, autoDecision, outcomeFor, parsePermissionRequest, type AcpPermissionAsk } from "./permissions.ts";
 import type { AcpExecutorConfig } from "./config.ts";
-import { createAcpSessions } from "./session.ts";
+import { createAcpSessions, type OpenSession } from "./session.ts";
 
 /** Extra executor-local options not part of the DSH-facing config. */
 type AcpExecutorOptions = AcpExecutorConfig & {
@@ -70,33 +79,30 @@ function stopReasonOf(result: PromptResponse | undefined): StopReason {
 }
 
 /**
- * ACP selects the model per session (§6.15). The option value is the catalog's
- * opaque choice value; the ACP server rejects unknown values. The effort is
+ * ACP selects the model per session (§6.15) through the session's config
+ * options, found by their ACP category (`model`, `thought_level`) rather than
+ * by id; the ACP server rejects unknown values. The effort is
  * written only when the task (or the node default) supplies one: DeepSeek
  * models expose a fixed default effort, and dsh-acp rejects the empty
  * "provider default" value for them. Returns why it failed, or null.
  */
 async function selectModel(
-  connection: AcpConnection,
-  sessionId: string,
+  session: OpenSession,
   model: ModelSelection | undefined,
-  reasoningEffort: string | undefined,
+  reasoningEffort: ReasoningEffortId | undefined,
 ): Promise<string | null> {
+  const { connection, sessionId } = session;
+  /** Set the option the agent files under `category`; the agent answers with its options as they are now. */
+  const set = async (category: SessionConfigOptionCategory, value: string): Promise<void> => {
+    const option = session.configOptions.find((candidate) => candidate.category === category);
+    if (option === undefined) throw new Error(`the agent offers no "${category}" option`);
+    const answer = await connection.request("session/set_config_option", { sessionId, configId: option.id, value });
+    session.configOptions = answer?.configOptions ?? session.configOptions;
+  };
   try {
-    if (model !== undefined) {
-      await connection.request("session/set_config_option", {
-        sessionId,
-        configId: "model",
-        value: JSON.stringify([model.provider, model.model]),
-      });
-    }
-    if (reasoningEffort !== undefined) {
-      await connection.request("session/set_config_option", {
-        sessionId,
-        configId: "reasoning_effort",
-        value: reasoningEffort,
-      });
-    }
+    // dsh-acp names a model option by its route, `[provider, model]` as JSON.
+    if (model !== undefined) await set("model", JSON.stringify([model.provider, model.model]));
+    if (reasoningEffort !== undefined) await set("thought_level", reasoningEffort);
     return null;
   } catch (error) {
     return `cannot select ${describeModelRequest(model, reasoningEffort)}: ${errorMessage(error)}`;
@@ -204,11 +210,11 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
     close: sessions.close,
 
     async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, void> {
-      const { connection, sessionId } = await sessions.open(input);
+      const session = await sessions.open(input);
+      const { connection, sessionId } = session;
       const defaults = options.modelDefaults?.();
       const failure = await selectModel(
-        connection,
-        sessionId,
+        session,
         input.model ?? defaults?.model ?? undefined,
         input.reasoningEffort ?? defaults?.reasoningEffort ?? undefined,
       );

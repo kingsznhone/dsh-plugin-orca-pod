@@ -26,6 +26,19 @@ const permissionOptions = [
   { optionId: "reject-once", name: "Reject", kind: "reject_once" },
 ];
 
+/** The options dsh-acp reports, filed under the ACP categories the executor looks up. */
+const CONFIG_OPTIONS = [
+  { id: "model", name: "Model", category: "model", type: "select", currentValue: "", options: [] },
+  {
+    id: "reasoning_effort",
+    name: "Reasoning effort",
+    category: "thought_level",
+    type: "select",
+    currentValue: "",
+    options: [],
+  },
+];
+
 function log(record) {
   if (logFile !== null) appendFileSync(logFile, `${JSON.stringify(record)}\n`);
 }
@@ -144,7 +157,7 @@ function onRequest(message) {
       cwd: params.cwd,
       mcpServers: params?.mcpServers ?? [],
     });
-    respond(id, { sessionId });
+    respond(id, { sessionId, configOptions: CONFIG_OPTIONS });
     return;
   }
   if (method === "session/resume") {
@@ -158,7 +171,7 @@ function onRequest(message) {
       return;
     }
     log({ method: "session/resume", sessionId: params?.sessionId });
-    respond(id, { sessionId: params?.sessionId });
+    respond(id, { configOptions: CONFIG_OPTIONS });
     return;
   }
   if (method === "session/set_config_option") {
@@ -172,7 +185,7 @@ function onRequest(message) {
       fail(id, `unknown model option: ${String(params?.value)}`);
       return;
     }
-    respond(id, { configOptions: [] });
+    respond(id, { configOptions: CONFIG_OPTIONS });
     return;
   }
   if (method === "session/prompt") {

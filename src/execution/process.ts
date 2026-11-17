@@ -42,9 +42,3 @@ export function terminateChild(child: ChildProcess): Promise<void> {
     killTree(child, "SIGTERM");
   });
 }
-
-export function abortError(): Error {
-  const error = new Error("aborted");
-  error.name = "AbortError";
-  return error;
-}

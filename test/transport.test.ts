@@ -1,3 +1,4 @@
+import type { FetchLike } from "../src/transport/peer-client.ts";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createMesh } from "./support/harness.ts";
-import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
+import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import type { MembershipTimings } from "../src/membership/membership.ts";
 import type { TaskView } from "../src/protocol/task.ts";
 import { wg } from "./fixtures/ids.ts";

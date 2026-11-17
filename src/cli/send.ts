@@ -15,6 +15,7 @@ import {
   type PodTaskMetadata,
   type TaskMetadata,
 } from "../protocol/task.ts";
+import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { parseModelSpec } from "../protocol/model.ts";
 import { normalizePeerUrl } from "../transport/net.ts";
 import {
@@ -85,7 +86,7 @@ function modelFields(flags: Flags): Pick<PodTaskMetadata, "model" | "reasoning_e
     return { model: selection };
   }
   // Effort-only override: the target keeps its local model and changes only the reasoning effort.
-  return reasoningFlag === undefined ? {} : { reasoning_effort: reasoningFlag };
+  return reasoningFlag === undefined ? {} : { reasoning_effort: ReasoningEffortId(reasoningFlag) };
 }
 
 export async function run({ flags }: CommandArgs): Promise<number> {

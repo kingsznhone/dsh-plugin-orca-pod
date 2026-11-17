@@ -7,23 +7,27 @@
  * and callers poll `status` for the result.
  */
 
-import { z } from "zod";
-
 import { normalizePeerUrl } from "../transport/net.ts";
 import { DEFAULT_PORT } from "../protocol/constants.ts";
-import { SandboxModeSchema, isPermissionMode } from "../protocol/permission.ts";
 import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../protocol/task.ts";
 import { parseModelSpec } from "../protocol/model.ts";
 import type { PeerView } from "../protocol/peer.ts";
-import { describeIssue, parseSchema } from "../kernel/schema.ts";
 import { runningInTask } from "../kernel/entry.ts";
-import { errorMessage, PodError } from "../kernel/errors.ts";
+import { abortError, errorMessage, PodError } from "../kernel/errors.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import type { ContentBlock } from "@deepseek-ai/dsh-llm";
-import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
-import type { JsonSchemaNode, ToolDefinition, ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
+import { ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
+import { SANDBOX_MODES, type SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
+import { snapshotJsonValue, type JsonValue } from "@deepseek-ai/dsh-util-values";
+import {
+  defineTool,
+  type InferArgs,
+  type ParameterSchemaSpec,
+  type ToolDefinition,
+  type ToolExecution,
+  type ToolRunContext,
+} from "@deepseek-ai/dsh-tools";
 import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
 
@@ -41,62 +45,114 @@ const METHODS_HELP =
   "members (no arguments) lists this node and its peers; " +
   `connect (peer; bare host or host:port defaults to ${DEFAULT_PORT}) joins a peer into the mesh.`;
 
-/**
- * Output values differ per method (send/status/cancel return task views,
- * members returns a roster), so the canonical output schema is the unconstrained
- * JSON form. The executor accepts an annotation-only schema for exactly this case.
- */
-const OUTPUT_SCHEMA: JsonSchemaNode = { description: "JSON payload rendered as text." };
-
 function renderJson(_args: unknown, value: unknown): ContentBlock[] {
   return [{ type: "text", text: JSON.stringify(value, null, 2) }];
 }
 
 // ---- what a call carries ----
 
-const Text = z.string("must be a non-empty string").trim().min(1, "must be a non-empty string");
-
-const PeerArgs = z.object({ peer: Text });
-const TaskArgs = PeerArgs.extend({ task_id: Text });
-const SendArgs = PeerArgs.extend({
-  text: Text,
-  echo: z.record(z.string(), z.unknown(), "must be an object holding a deterministic echo script").optional(),
-  permission_mode: SandboxModeSchema.optional(),
-  model: z.string("must be a provider/model string").optional(),
-  // A value that is not text means "no effort"; a blank one is refused.
-  reasoning_effort: z.preprocess((value) => (typeof value === "string" ? value : undefined), Text.optional()),
-});
-
 const METHOD_NAMES = ["send", "status", "cancel", "members", "connect"] as const;
 
-/** `method` is checked first, so its error names the choices. */
-const MethodSchema = z.object({
-  method: z.enum(METHOD_NAMES, `must be one of ${METHOD_NAMES.map((name) => `"${name}"`).join(", ")}`),
-});
+/**
+ * Every argument of every method, declared once in DSH's tool schema DSL: DSH
+ * compiles it to the JSON Schema the model sees and checks types and enums
+ * before `execute` runs. Which method needs which argument is checked below.
+ */
+const PARAMETERS = {
+  method: {
+    type: "string",
+    enum: METHOD_NAMES,
+    required: true,
+    description: "Operation to perform. See the tool description for each method's arguments.",
+  },
+  peer: {
+    type: "string",
+    description: `Target peer: http://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}). Required by send, status, cancel and connect.`,
+  },
+  text: { type: "string", description: "send: task text sent as an A2A user message part." },
+  task_id: { type: "string", description: 'status/cancel: task id returned by method "send".' },
+  echo: {
+    type: "object",
+    additionalProperties: true,
+    description:
+      "send: optional deterministic echo script forwarded as metadata.echo for tests: " +
+      "{steps:[{at_ms,suspend:{kind,reason|tool,...}}],final:{state,text},artifacts:[{name,content}]}.",
+  },
+  permission_mode: {
+    type: "string",
+    enum: SANDBOX_MODES,
+    description:
+      "send: explicit permission mode; when omitted the dispatching session's sandbox mode is inherited. The target caps it by its own policy and never runs above it.",
+  },
+  model: {
+    type: "string",
+    description:
+      "send: optional model for the target task as provider/model. The target must advertise it and run the ACP executor.",
+  },
+  reasoning_effort: {
+    type: "string",
+    description: "send: optional reasoning effort for the selected model; only meaningful together with model.",
+  },
+} as const satisfies ParameterSchemaSpec;
+
+type ToolArgs = InferArgs<typeof PARAMETERS>;
+type TextKey = "peer" | "text" | "task_id" | "reasoning_effort";
+
+/** A text argument with its whitespace trimmed; blank counts as absent. */
+function optional(args: ToolArgs, key: TextKey): string | undefined {
+  const value = args[key]?.trim();
+  return value === undefined || value.length === 0 ? undefined : value;
+}
+
+/** A text argument the method needs. */
+function need(args: ToolArgs, key: TextKey): string {
+  const value = optional(args, key);
+  if (value === undefined) throw new Error(`${key} must be a non-empty string`);
+  return value;
+}
+
+type PeerArgs = { peer: string };
+type TaskArgs = PeerArgs & { task_id: string };
+type SendArgs = PeerArgs & {
+  text: string;
+  echo: ToolArgs["echo"];
+  permission_mode: SandboxMode | undefined;
+  model: string | undefined;
+  reasoning_effort: ReasoningEffortId | undefined;
+};
 
 /** One call of the tool: its method and the arguments that method takes. */
 type PodCall =
-  | { method: "send"; args: z.output<typeof SendArgs> }
-  | { method: "status" | "cancel"; args: z.output<typeof TaskArgs> }
-  | { method: "connect"; args: z.output<typeof PeerArgs> }
+  | { method: "send"; args: SendArgs }
+  | { method: "status" | "cancel"; args: TaskArgs }
+  | { method: "connect"; args: PeerArgs }
   | { method: "members" };
 
-function parseArgs<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
-  const parsed = parseSchema(schema, raw);
-  if (!parsed.ok) throw new Error(describeIssue(parsed.issue));
-  return parsed.value;
-}
-
-function parseCall(raw: unknown): PodCall {
-  const { method } = parseArgs(MethodSchema, raw);
+function parseCall(args: ToolArgs): PodCall {
+  const { method } = args;
   switch (method) {
-    case "send":
-      return { method, args: parseArgs(SendArgs, raw) };
+    case "send": {
+      if (args.reasoning_effort !== undefined && optional(args, "reasoning_effort") === undefined) {
+        throw new Error("reasoning_effort must not be blank");
+      }
+      const effort = optional(args, "reasoning_effort");
+      return {
+        method,
+        args: {
+          peer: need(args, "peer"),
+          text: need(args, "text"),
+          echo: args.echo,
+          permission_mode: args.permission_mode,
+          model: args.model,
+          reasoning_effort: effort === undefined ? undefined : ReasoningEffortId(effort),
+        },
+      };
+    }
     case "status":
     case "cancel":
-      return { method, args: parseArgs(TaskArgs, raw) };
+      return { method, args: { peer: need(args, "peer"), task_id: need(args, "task_id") } };
     case "connect":
-      return { method, args: parseArgs(PeerArgs, raw) };
+      return { method, args: { peer: need(args, "peer") } };
     case "members":
       return { method };
   }
@@ -155,14 +211,13 @@ export function sessionSandboxMode(
 ): SandboxMode | undefined {
   const session = exec?.agent?.session;
   if (policy === undefined || session === undefined) return undefined;
-  const mode = policy.resolve({ session }).mode;
-  return isPermissionMode(mode) ? mode : undefined;
+  return policy.resolve({ session }).mode;
 }
 
 async function runSend(
   handle: PodHandle,
   tracker: Tracker,
-  args: z.output<typeof SendArgs>,
+  args: SendArgs,
   exec: ToolRunContext | undefined,
   policy: SandboxReader | undefined,
 ): Promise<SendResult> {
@@ -198,7 +253,7 @@ async function runSend(
     // caller never learns its id, so it must not keep running unobserved.
     // Best effort; the dispatch log still lists it for the panel.
     orcaNode.cancelTask(peer, view.id).catch(() => {});
-    throw abortError();
+    throw abortError("cancelled by the caller");
   }
   // Track the task so the dispatching agent is told when it finishes, even
   // after its turn ends.
@@ -206,22 +261,14 @@ async function runSend(
   return { task_id: view.id, state: view.status.state, peer };
 }
 
-async function runStatus(
-  handle: PodHandle,
-  args: z.output<typeof TaskArgs>,
-  signal?: AbortSignal,
-): Promise<TaskStatusResult> {
+async function runStatus(handle: PodHandle, args: TaskArgs, signal?: AbortSignal): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle);
   return taskStatus(
     await orcaNode.getTask(normalizePeerUrl(args.peer), args.task_id, signal === undefined ? {} : { signal }),
   );
 }
 
-async function runCancel(
-  handle: PodHandle,
-  args: z.output<typeof TaskArgs>,
-  signal?: AbortSignal,
-): Promise<TaskStatusResult> {
+async function runCancel(handle: PodHandle, args: TaskArgs, signal?: AbortSignal): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle);
   return taskStatus(
     await orcaNode.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal === undefined ? {} : { signal }),
@@ -237,11 +284,7 @@ async function runMembers(handle: PodHandle): Promise<MembersResult> {
   };
 }
 
-async function runConnect(
-  handle: PodHandle,
-  args: z.output<typeof PeerArgs>,
-  signal?: AbortSignal,
-): Promise<ConnectResult> {
+async function runConnect(handle: PodHandle, args: PeerArgs, signal?: AbortSignal): Promise<ConnectResult> {
   const peer = normalizePeerUrl(args.peer);
   await requireNode(handle);
   // Joining persists the peer; do not start it for a turn that is already gone.
@@ -255,15 +298,8 @@ async function runConnect(
   };
 }
 
-/** Rejection used when the caller's turn is cancelled mid-call. */
-function abortError(): Error {
-  const error = new Error("cancelled by the caller");
-  error.name = "AbortError";
-  return error;
-}
-
 function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) throw abortError();
+  if (signal?.aborted === true) throw abortError("cancelled by the caller");
 }
 
 /**
@@ -277,10 +313,10 @@ function withSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promi
   if (signal.aborted) {
     // Nobody waits for the abandoned work any more; keep its rejection handled.
     work.catch(() => {});
-    return Promise.reject(abortError());
+    return Promise.reject(abortError("cancelled by the caller"));
   }
   return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(abortError());
+    const onAbort = (): void => reject(abortError("cancelled by the caller"));
     signal.addEventListener("abort", onAbort, { once: true });
     work.then(
       (value) => {
@@ -328,69 +364,38 @@ function runCall(
   }
 }
 
+/** A result as the lossless JSON DSH stores; every method answers with data read from JSON. */
+function json(value: unknown): JsonValue {
+  const snapshot = snapshotJsonValue(value);
+  if (snapshot === undefined) throw new Error("the result is not lossless JSON");
+  return snapshot as JsonValue;
+}
+
 /** Build the single `orca_pod` tool definition bound to one running pod handle. */
 export function createPodTools(
   handle: PodHandle,
   tracker: Tracker,
   policy?: () => SandboxReader | undefined,
 ): ToolDefinition[] {
-  const tool: ToolDefinition = {
+  const tool = defineTool({
     name: "orca_pod",
     description:
       "Operate the Orca Pod mesh from this session: dispatch and inspect tasks on other orca nodes, list members, or join a new peer. " +
       METHODS_HELP +
       " " +
       ASYNC_NOTE,
-    parameters: {
-      type: "object",
-      properties: {
-        method: {
-          type: "string",
-          enum: [...METHOD_NAMES],
-          description: "Operation to perform. See the tool description for each method's arguments.",
-        },
-        peer: {
-          type: "string",
-          description: `Target peer: http://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}). Required by send, status, cancel and connect.`,
-        },
-        text: { type: "string", description: "send: task text sent as an A2A user message part." },
-        task_id: { type: "string", description: 'status/cancel: task id returned by method "send".' },
-        echo: {
-          type: "object",
-          description:
-            "send: optional deterministic echo script forwarded as metadata.echo for tests: " +
-            "{steps:[{at_ms,suspend:{kind,reason|tool,...}}],final:{state,text},artifacts:[{name,content}]}.",
-          additionalProperties: true,
-        },
-        permission_mode: {
-          type: "string",
-          enum: [...SandboxModeSchema.options],
-          description:
-            "send: explicit permission mode; when omitted the dispatching session's sandbox mode is inherited. The target caps it by its own policy and never runs above it.",
-        },
-        model: {
-          type: "string",
-          description:
-            "send: optional model for the target task as provider/model. The target must advertise it and run the ACP executor.",
-        },
-        reasoning_effort: {
-          type: "string",
-          description: "send: optional reasoning effort for the selected model; only meaningful together with model.",
-        },
-      },
-      required: ["method"],
-      additionalProperties: false,
-    },
-    output: { schema: OUTPUT_SCHEMA, render: renderJson },
-    async execute(args, exec: ToolRunContext | undefined) {
+    parameters: PARAMETERS,
+    // Output differs per method (task views, a roster): unconstrained JSON.
+    output: { schema: { type: "json", description: "JSON payload rendered as text." }, render: renderJson },
+    async execute(args, exec) {
       const call = parseCall(args);
       try {
         throwIfAborted(exec?.signal);
-        return await withSignal(runCall(handle, tracker, call, exec, policy?.()), exec?.signal);
+        return json(await withSignal(runCall(handle, tracker, call, exec, policy?.()), exec?.signal));
       } catch (error) {
         throw describeError("orca_pod", error);
       }
     },
-  };
+  });
   return [tool];
 }

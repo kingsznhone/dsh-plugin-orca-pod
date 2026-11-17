@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import { signGrant } from "../security/crypto.ts";
-import type { DispatchEntry, DispatchStore } from "../storage/stores.ts";
+import type { DispatchStore } from "../storage/stores.ts";
+import type { DispatchEntry } from "../protocol/dispatch.ts";
 import { PodError } from "../kernel/errors.ts";
 
 import type { NodeIdentity } from "../security/identity.ts";

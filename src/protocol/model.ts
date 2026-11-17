@@ -1,52 +1,56 @@
-/** Model routes a node offers and a task selects (§6.15). */
+/**
+ * Model routes a node offers and a task selects (§6.15). The shapes are DSH's:
+ * a selection is `ModelSelection` (`@deepseek-ai/dsh-agent`), an offer is the
+ * part of `LlmModelInfo` (`@deepseek-ai/dsh-llm`) a peer needs, and an effort
+ * is the adapter-owned `ReasoningEffortId`. Only the wire schemas are ours.
+ */
 
 import { z } from "zod";
 
-import { parseSchema } from "../kernel/schema.ts";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import { ReasoningEffortId, type LlmModelInfo } from "@deepseek-ai/dsh-llm";
 
 export const MAX_MODEL_OFFERS = 128;
 
 const NonEmptyString = z.string().min(1);
 
+/** One model route an orca node advertises: what a peer needs of the host's `LlmModelInfo`. */
+export type ModelOffer = Pick<LlmModelInfo, "provider" | "id" | "name" | "description">;
+
 /**
- * One model route an orca node advertises for tasks (§6.15). Unknown keys are
- * dropped: a peer's catalog is stored and re-broadcast, so they are not carried along.
+ * One advertised model route (§6.15). Unknown keys are dropped: a peer's
+ * catalog is stored and re-broadcast, so they are not carried along.
  */
 export const ModelOfferSchema = z.object({
   provider: NonEmptyString,
-  model: NonEmptyString,
-  /** Human-readable model name, when the provider catalog publishes one. */
-  name: z.string().optional(),
+  id: NonEmptyString,
+  name: z.string(),
   description: z.string().optional(),
-});
-export type ModelOffer = z.infer<typeof ModelOfferSchema>;
+}) satisfies z.ZodType<ModelOffer>;
 
 /** The catalog a node advertises, at most `MAX_MODEL_OFFERS` routes. */
 export const ModelOffersSchema = z.array(ModelOfferSchema).max(MAX_MODEL_OFFERS);
 
 /**
- * One reasoning-effort value a provider offers (`off`, `low`, `high`, `max`
- * today; treated as an opaque string so a provider can add values). It must
- * hold something other than whitespace.
+ * A reasoning effort as the wire carries it: an adapter-owned id, opaque to
+ * the node, that must hold something other than whitespace.
  */
-export const ReasoningEffortSchema = z.string().regex(/\S/, "must not be blank");
-export type ReasoningEffort = string;
+export const ReasoningEffortSchema = z.string().trim().min(1, "must not be blank").transform(ReasoningEffortId);
 
-/** A provider/model route, optionally pinned to one reasoning effort. */
+/** A provider/model route, optionally pinned to one reasoning effort: DSH's `ModelSelection`. */
 export const ModelSelectionSchema = z.object({
   provider: NonEmptyString,
   model: NonEmptyString,
-  reasoning_effort: ReasoningEffortSchema.optional(),
-});
-export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
+  reasoningEffort: ReasoningEffortSchema.optional(),
+}) satisfies z.ZodType<ModelSelection>;
 
 /** What a node uses when a task names no model: the route and, separately, the reasoning effort (§6.15). */
-export type ModelDefaults = { model: ModelSelection | null; reasoningEffort: ReasoningEffort | null };
+export type ModelDefaults = { model: ModelSelection | null; reasoningEffort: ReasoningEffortId | null };
 
 /** "model p/m and reasoning effort "e"": how an executor names what a task asked for in its failure text. */
 export function describeModelRequest(
   model: ModelSelection | undefined,
-  reasoningEffort: ReasoningEffort | undefined,
+  reasoningEffort: ReasoningEffortId | undefined,
 ): string {
   return [
     model === undefined ? "" : `model ${model.provider}/${model.model}`,
@@ -67,21 +71,6 @@ export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSel
   return {
     provider,
     model,
-    ...(reasoning !== undefined && reasoning.length > 0 ? { reasoning_effort: reasoning } : {}),
+    ...(reasoning !== undefined && reasoning.length > 0 ? { reasoningEffort: ReasoningEffortId(reasoning) } : {}),
   };
-}
-
-/** True when `value` is a usable reasoning-effort selector (§6.15). */
-export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return ReasoningEffortSchema.safeParse(value).success;
-}
-
-/**
- * A model route from untrusted input (task metadata, config): unknown keys are
- * dropped, as the gateway drops them from a joining node's catalog. Null when
- * it does not name a provider and model.
- */
-export function parseModelSelection(raw: unknown): ModelSelection | null {
-  const result = parseSchema(ModelSelectionSchema, raw);
-  return result.ok ? result.value : null;
 }

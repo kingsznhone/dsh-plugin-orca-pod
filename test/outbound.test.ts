@@ -1,3 +1,4 @@
+import type { FetchLike } from "../src/transport/peer-client.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, type FetchLike, type OrcaNode } from "../src/node/orca-node.ts";
+import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const WORKGROUP = wg("orca-outbound");

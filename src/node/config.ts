@@ -1,8 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
+import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 
 import { deriveWorkgroupKey } from "../security/crypto.ts";
 import { loadOrCreateIdentity, shortenNodeId } from "../security/identity.ts";
@@ -34,7 +36,7 @@ export function defaultDataRoot(env: NodeJS.ProcessEnv = process.env, baseUrl?: 
   if (explicit !== undefined) return resolve(explicit);
   const profile = nonEmpty(env.DSH_PROFILE_DIR) ?? profileDirFrom(baseUrl);
   if (profile !== undefined) return resolve(profile, "orca-pod");
-  return resolve(nonEmpty(env.DSH_HOME) ?? join(homedir(), ".dsh"), "orca-pod");
+  return resolve(resolveDshHome(undefined, env), "orca-pod");
 }
 
 /** A trimmed environment value, or undefined when unset or blank. */
@@ -121,10 +123,7 @@ export function validateConfig(value: unknown): OrcaNodeConfig {
 
 /** Write atomically; the file holds the workgroup key, so it is owner-only from the start. */
 export async function saveConfig(path: string, config: OrcaNodeConfig): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  await rename(tmp, path);
+  await writeFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 });
 }
 
 export function workgroupKey(config: OrcaNodeConfig): Buffer {

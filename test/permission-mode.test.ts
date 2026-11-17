@@ -8,6 +8,8 @@ import { createAcpExecutor } from "../src/execution/acp/executor.ts";
 import { parseEchoScript } from "../src/execution/echo.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
+import { parseSchema } from "../src/kernel/schema.ts";
+import { TaskMetadataSchema } from "../src/protocol/task.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { narrowPermissionMode, permissionModeRank } from "../src/protocol/permission.ts";
@@ -58,10 +60,12 @@ describe("permission modes", () => {
   });
 
   it("validates and normalizes pod.permission_mode", () => {
-    const metadata = { pod: { permission_mode: "workspace-write" } };
-    expect(parsePodMetadata(metadata)).toMatchObject({ permissionMode: "workspace-write" });
+    const metadata = parseSchema(TaskMetadataSchema, { pod: { permission_mode: "workspace-write" } });
+    expect(metadata.ok && parsePodMetadata(metadata.value)).toMatchObject({ permissionMode: "workspace-write" });
     expect(parsePodMetadata(undefined).permissionMode).toBe("read-only");
-    expect(() => parsePodMetadata({ pod: { permission_mode: "root" } })).toThrowError(/permission_mode/);
+    // An unknown mode never reaches the runner: the wire schema refuses it.
+    const refused = parseSchema(TaskMetadataSchema, { pod: { permission_mode: "root" } });
+    expect(refused.ok ? "" : refused.issue.path.join(".")).toBe("pod.permission_mode");
   });
 });
 

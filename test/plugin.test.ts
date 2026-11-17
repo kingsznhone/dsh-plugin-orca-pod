@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
-import type { DispatchEntry } from "../src/storage/stores.ts";
+import type { DispatchEntry } from "../src/protocol/dispatch.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session";
@@ -160,7 +160,7 @@ describe("orca_pod tool", () => {
 
   it("requires a known method", async () => {
     await expect(run(tools, {})).rejects.toThrow(/method/);
-    await expect(run(tools, { method: "nope" })).rejects.toThrow(/method must be one of/);
+    await expect(run(tools, { method: "nope" })).rejects.toThrow(/"method" must be one of/);
   });
 
   it("validates each method's arguments before touching the orca node", async () => {

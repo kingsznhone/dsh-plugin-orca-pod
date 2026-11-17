@@ -16,7 +16,8 @@ import { randomUUID } from "node:crypto";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { checkGrant, type GrantLedger } from "../security/grants.ts";
 import type { FileBlobRegistry, TaskStore } from "../storage/stores.ts";
-import { assertNever, errorMessage, PodError } from "../kernel/errors.ts";
+import { assertNever } from "@deepseek-ai/dsh-util-values";
+import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../execution/executor.ts";
 import {
@@ -31,7 +32,7 @@ import { narrowPermissionMode } from "../protocol/permission.ts";
 import type { PermissionRequest, RequestedAccess } from "../protocol/grant.ts";
 import { composePrompt, listNotes } from "./prompt.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
-import type { Workspace } from "./workspace.ts";
+import type { WorkspacePaths } from "./workspace.ts";
 import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
 
 /** What a record needs from the node and the task runner. */
@@ -39,7 +40,7 @@ export type RecordHost = {
   executor: LocalExecutor;
   /** Where the files a task produces are published (§5.6). */
   fileBlobs: FileBlobRegistry;
-  workspace: Workspace;
+  workspace: WorkspacePaths;
   store: TaskStore;
   ledger: GrantLedger;
   logger: NodeLogger;

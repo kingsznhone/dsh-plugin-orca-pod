@@ -1,15 +1,15 @@
 /** `orca-node fetch`: download a file a member published, by `<node id>/<sha256>`. */
 
-import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { rename, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
-import { Readable, Transform } from "node:stream";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import { parseBlobRef } from "../protocol/blob.ts";
+import { sha256Tap } from "../storage/file-registry.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,
@@ -42,22 +42,16 @@ export async function run({ flags, positionals }: CommandArgs): Promise<number> 
     target: config.orca_node_id,
   });
 
-  const hash = createHash("sha256");
-  let size = 0;
-  const hashing = new Transform({
-    transform(chunk: Buffer, _encoding, done) {
-      hash.update(chunk);
-      size += chunk.length;
-      done(null, chunk);
-    },
-  });
+  const tap = sha256Tap();
   const partial = `${output}.part`;
+  let size: number;
   try {
-    await pipeline(Readable.fromWeb(body as WebReadableStream<Uint8Array>), hashing, createWriteStream(partial));
-    const digest = hash.digest("hex");
-    if (digest !== ref.blob)
-      throw new Error(`the file fetched as ${ref.blob} hashes to ${digest}; nothing was written`);
+    await pipeline(Readable.fromWeb(body as WebReadableStream<Uint8Array>), tap.stream, createWriteStream(partial));
+    const digest = tap.digest();
+    if (digest.sha !== ref.blob)
+      throw new Error(`the file fetched as ${ref.blob} hashes to ${digest.sha}; nothing was written`);
     await rename(partial, output);
+    size = digest.size;
   } catch (error) {
     await rm(partial, { force: true });
     throw error;
