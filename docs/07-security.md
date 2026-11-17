@@ -93,7 +93,7 @@ sig = Ed25519(identity.private_key,
 
 - 任务 prompt、结论文本、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
-- **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义），inputs/notes 清单在块外、notes 文件名 JSON 转义（`src/task_inputs.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；
+- **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义），inputs/notes 清单在块外、notes 文件名 JSON 转义（`src/tasks/inputs.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；
 - **origin 侧**：tracker 通知只给状态/原因/产物名，远端结论放进 `<untrusted-remote-result>` 块并截断到 800 字符（结束标签转义），并提示 agent 用 `orca_pod` 的 `status` 自己拉全文；权限请求不进对话，面板卡片只显示 `requested` 的 160 字符预览（`src/plugin/tracker.ts`、`admin.ts`）；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
 - 可观测：谁（origin_orca_node）、何时、对哪个任务、用了什么 mode——留在任务记录与派发日志里（`tasks/get`、`orca-node log`），不另落一份审计文件。
@@ -125,7 +125,7 @@ sig = Ed25519(identity.private_key,
 - **不跟随重定向**：出站请求带 `redirect: "manual"`，3xx 按失败处理，签名请求不会被弹到别的地址；
 - 已知残余：校验与 `fetch` 各自解析一次 DNS，两次之间改答案（DNS rebinding）的窗口仍在。
 
-实现：`membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/net.ts` 的 `candidateEndpointAllowed`；入站 join 走 `screenEndpoint`。
+实现：`membership/membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate），心跳循环在拨号 candidate 前调用 `src/membership/screening.ts` 的 `candidateEndpointAllowed`；入站 join 走 `screenEndpoint`。
 
 ### 7.8 审计
 
@@ -280,7 +280,7 @@ C 校验 grant（delegated：target 在 C 的 chain 里）→ 恢复执行
 
 ### 7.14 ACP `request_permission` 映射
 
-AcpExecutor 收到 `session/request_permission` 时，先用生效模式（[§7.10](07-security.md#710-权限模式继承)）和请求里的工具类别 `kind` 做自动应答（`src/acp/permissions.ts`）：
+AcpExecutor 收到 `session/request_permission` 时，先用生效模式（[§7.10](07-security.md#710-权限模式继承)）和请求里的工具类别 `kind` 做自动应答（`src/execution/acp/permissions.ts`）：
 
 | 生效模式             | 请求的 `kind`                                          | 结论                                                    |
 | -------------------- | ------------------------------------------------------ | ------------------------------------------------------- |

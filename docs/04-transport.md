@@ -11,7 +11,7 @@
 - 不开 HTTP/2：peer 调用都是短请求，HTTP/1.1 keep-alive 足够；TLS 由前置代理负责，代理到上游也走 HTTP/1.1。
 - 不监听 UNIX socket：跨机没有意义，跨用户也没必要。
 - 端口冲突：固定端口被占就启动失败并报错，不静默改端口。Windows 上 Hyper-V / WSL 会预留大段端口（`netstat` 也看不到持有者），所以 11811 只是默认值，不是可假设的常量。
-- 端口 0：进程自己挑一个空闲端口，但会避开 WHATWG fetch 规定的禁用端口（`6000`、`6665–6669` 等，见 `src/net.ts`）——这些端口内核能 bind，对端 `fetch` 却直接 `bad port`，等于节点永久 offline。显式配置到禁用端口时启动直接拒绝。`orca-node serve` 会把学到的实际地址与端口写回 `config.json`（已有的显式 `endpoints` 不覆盖）。
+- 端口 0：进程自己挑一个空闲端口，但会避开 WHATWG fetch 规定的禁用端口（`6000`、`6665–6669` 等，见 `src/transport/net.ts`）——这些端口内核能 bind，对端 `fetch` 却直接 `bad port`，等于节点永久 offline。显式配置到禁用端口时启动直接拒绝。`orca-node serve` 会把学到的实际地址与端口写回 `config.json`（已有的显式 `endpoints` 不覆盖）。
 - TLS 不内建：证书轮换不该成为集群协议的一部分，交给成熟的代理（[§7.4](07-security.md#74-tls-部署矩阵)）。
 
 ### 4.2 路由表
@@ -50,7 +50,7 @@
 - 不提供 WebSocket、SSE：一条连接一种语义。任务进度靠 `tasks/get` 轮询，成员变化靠心跳周期（自适应 `N` 秒，[§3.3](03-membership.md#33-心跳与双向看门狗)）。
 - 请求体上限：全局 `bodyLimit` **1 MiB**（签名需要 body 字节，认证发生在 body 解析之后、schema 校验之前，所以未认证请求能缓冲的上限必须小）；只有 `POST /blobs` 单独放宽到 **256 MiB**，且流式落盘、签名覆盖 `X-Pod-Body-SHA256`。读超时与连接数上限没有显式配置。
 
-**错误形态**统一为 `{ "code", "message" }`，HTTP 状态来自 `src/errors.ts` 里的 `code → 状态` 表（一个错误码不在表里就编译不过）：
+**错误形态**统一为 `{ "code", "message" }`，HTTP 状态来自 `src/kernel/errors.ts` 里的 `code → 状态` 表（一个错误码不在表里就编译不过）：
 
 | 状态 | 错误码                                                                                                                      |
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -130,7 +130,7 @@
 
 用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。方法面只取其中必要的子集。
 
-**出站调用只有一个客户端**（`src/peer_client.ts`），CLI、心跳、tracker、child-link 轮询都走它：
+**出站调用只有一个客户端**（`src/transport/peer-client.ts`），CLI、心跳、tracker、child-link 轮询都走它：
 
 - 每次调用带 `AbortSignal.timeout`：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半，CLI 上传放宽到 10 分钟；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
 - 签名绑定接收方 `orca_node_id` 与 `path+query`（[§7.2](07-security.md#72-请求签名没有-session-token)）。接收方 id 来自：本机自己、本机拨过的 URL 记录、或成员表里自述了该 URL 的成员。

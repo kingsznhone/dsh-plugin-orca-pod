@@ -20,45 +20,20 @@ orca-pod/
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
 ├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、sync-guest.ps1
 ├── skills/orca-node/     # 标准 skill bundle（随包发布）
-├── src/                  # TypeScript 源码（tsc 构建到 lib/）
+├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按限界上下文分目录，依赖只能向下
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
-│   ├── orca_node.ts      # 组合根：createOrcaNode
-│   ├── protocol.ts       # 线上类型、id/digest、任务视图
-│   ├── errors.ts         # PodError + 错误码 → HTTP 状态表
-│   ├── identity.ts       # Ed25519 密钥对、orca_node_id=公钥
-│   ├── crypto.ts         # 请求签名、准入证明、nonce、grant 与直链签名
-│   ├── settings.ts       # 设置字段表与解析器（config.json / 插件 / 面板 / install / CLI 共用）
-│   ├── config.ts         # config.json 读写
-│   ├── membership.ts     # 成员记录、心跳看门狗、墓碑与修剪
-│   ├── mesh.ts           # join、心跳循环、leave、自述记录
-│   ├── peer_client.ts    # 唯一的出站签名客户端（不隐式 join）
-│   ├── delegation.ts     # 发起侧：派发、审批、上交、派发日志、child-link
-│   ├── gateway/          # HTTP：index / auth / error_handler / cluster_routes / a2a_routes / blob_routes
-│   ├── tasks.ts          # 单槽任务运行器
-│   ├── task_record.ts    # 一个任务的状态机
-│   ├── task_meta.ts      # 任务元数据解析
-│   ├── task_inputs.ts    # 任务书与输入物化
-│   ├── grants.ts         # grant 解析与校验
-│   ├── chain.ts          # 子任务元数据与 grant 转发
-│   ├── executor.ts       # LocalExecutor 契约
-│   ├── echo.ts           # EchoExecutor
-│   ├── acp/              # AcpExecutor：connection / session / permissions / executor
-│   ├── workspace.ts      # 工作区与配额测量
-│   ├── session_store.ts  # state/<workgroup_id>/sessions.json
-│   ├── storage.ts        # task store 接口 + 内存实现
-│   ├── sqlite.ts         # node:sqlite 实现（tasks / dispatches / file_blobs）
-│   ├── blobs.ts          # 内容寻址 blob store（含配额与 GC）
-│   ├── blob_files.ts     # publish 的本机文件映射
-│   ├── dispatches.ts     # origin 派发日志
-│   ├── events.ts         # 进程内事件总线
-│   ├── net.ts            # 端点筛查、端口、回环判定
-│   ├── process.ts        # 子进程公共件
-│   ├── harness.ts        # 测试用进程内多 orca node
-│   ├── cli.ts            # `orca-node` CLI
-│   ├── orca_pod.ts       # `orca-pod` bin：install（systemd 安装）
-│   ├── install.ts        # install 计划与 unit 渲染
-│   ├── entry.ts          # 包内入口路径（src/cli.ts 或 lib/cli.js）
-│   └── plugin/           # DSH bundle：index / lifecycle / broker / tracker / tools / admin / web / models / skill / config / dsh / util
+│   ├── kernel/           # errors（PodError + 错误码表）、ids（任务 id）、guards、events（事件总线）、entry（包内入口路径）
+│   ├── protocol/         # 线上协议：peer / task / grant / model / permission / constants
+│   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce、直链）、grants（grant 校验与转发）
+│   ├── storage/          # index（全部存储接口）；实现 memory / fs（blob，含配额与 GC）/ file-registry（publish）/ sqlite
+│   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
+│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、inputs（任务书与输入）、workspace
+│   ├── execution/        # executor 契约、echo、process（子进程公共件）、acp/（connection / session / session-store / permissions / executor）
+│   ├── delegation/       # 发起侧派发、审批、上交、child-link；chain（子任务元数据）；dispatch-log（派发日志语义）
+│   ├── transport/        # peer-client（唯一的出站客户端）、net（地址归一化、回环、端口）、gateway/（入站 HTTP 路由）
+│   ├── node/             # orca-node（组合根 createOrcaNode）、config（config.json）、settings（字段表）、harness（测试用多节点）
+│   ├── cli/              # main（orca-node 分派）+ 每个子命令一个文件、shared；orca-pod（install bin）、install
+│   └── plugin/           # DSH bundle：index / lifecycle / stores / catalog / broker / tracker / tools / admin / web / skill / config / dsh
 └── test/                 # vitest 套件
 ```
 
@@ -99,7 +74,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 
 ## 配置
 
-所有设置只在 `src/settings.ts` 的字段表里声明一次；`config.json`、插件 `Config`、面板、`install` 与 CLI 都走同一个解析器。插件模式下，设置就是 profile 里的插件配置（面板经 DSH `configEditor` 写回），密码在 DSH 凭据库，运行期记住的 peer 在 `<data_root>/peers.json`。常用字段：
+所有设置只在 `src/node/settings.ts` 的字段表里声明一次；`config.json`、插件 `Config`、面板、`install` 与 CLI 都走同一个解析器。插件模式下，设置就是 profile 里的插件配置（面板经 DSH `configEditor` 写回），密码在 DSH 凭据库，运行期记住的 peer 在 `<data_root>/peers.json`。常用字段：
 
 | 字段                   | 默认                                   | 含义                                                                                                  |
 | ---------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -163,7 +138,7 @@ orca-node members  [--peer <url>] [--json]
 
 ```bash
 npm install         # 同时触发 prepare -> npm run build，产出 lib/
-npm run build       # tsc -p tsconfig.build.json + 客户端 esbuild，产出 lib/（已进 .gitignore）
+npm run build       # tsc -p tsconfig.build.json + 客户端 esbuild，产出 lib/（已进 .gitignore；不会清理旧产物，搬过文件后先删 lib/）
 npm run check       # biome check + tsc --noEmit + vitest run（唯一的验收入口）
 npm run format      # biome format --write
 npm run harness     # 两个真实 orca-node 进程的 smoke
@@ -172,5 +147,5 @@ npm run harness     # 两个真实 orca-node 进程的 smoke
 维护注意：
 
 - 包导出编译产物（`"exports"` 指向 `./lib/index.js` 与 `./lib/index.d.ts`），并导出 `./locale/*.json` 与 `./icon`；TypeScript 源码只用于开发与类型检查，`src/` 里的 .ts 导入由 `rewriteRelativeImportExtensions` 在构建时改写。
-- `src/` 的依赖方向靠 review 维持：`gateway/` 不 import 执行器或任务实现，只有 `orca_node.ts` 负责装配（[§9.1](docs/09-implementation.md#91-单包内的模块划分)）。
+- `src/` 的依赖方向由 `test/architecture.test.ts` 固化：运行期 import 无环、只能向下、跨上下文只经对方 `index.ts`，存储实现只由装配点（`node/`、`plugin/`、`cli/`）引用（[§9.1](docs/09-implementation.md#91-单包内的模块划分)）。
 - 抖动/超时类测试的窗口按心跳间隔的倍数给，不按绝对毫秒。
