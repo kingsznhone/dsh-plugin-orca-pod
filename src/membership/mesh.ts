@@ -72,6 +72,8 @@ export type Workgroup = {
   /** Admit this node at `peerUrl` with the workgroup password; the only call that may reach a stranger. */
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
+  /** URLs a member can be dialed at, screened, the last one that worked first; empty for a non-member. */
+  endpointsOf(nodeId: OrcaNodeId): Promise<string[]>;
   leave(): Promise<LeaveResult>;
   /** Emit a `members` event if something a panel would render changed (§9.2). */
   emitMembersIfChanged(): void;
@@ -412,6 +414,10 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
     join,
     async heartbeat(peerUrl) {
       return pulse(peerUrl, client.known(peerUrl), true);
+    },
+    async endpointsOf(nodeId) {
+      const peer = membership.get(nodeId);
+      return peer === null ? [] : dialOrder(peer);
     },
     leave,
     emitMembersIfChanged,

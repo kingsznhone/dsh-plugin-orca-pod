@@ -3,7 +3,7 @@
 分布式 DSH 对等集群（DSH 插件形态）。设计文档入口：[docs/README.md](docs/README.md)。
 
 - 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
-- 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、按需拉取的文件链接（publish）。
+- 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、按名字（`<节点 id>/<sha256>`）拉取的文件。
 - 代码：单包 `orca-pod`，库与 DSH host bundle 共用一个入口；运行时只依赖 `fastify`，自研模块在 `src/`，随包发布的是编译后的 `lib/`（`npm run build`），安装时不需要本仓库的 `node_modules`。
 - 验收：`npm run check`（biome + tsc + vitest）。
 
@@ -24,7 +24,7 @@ orca-pod/
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject
 │   ├── kernel/           # errors（PodError + 错误码表）、schema（isRecord、parseSchema）、events（事件总线与 NodeLogger）、entry（包内入口路径）
 │   ├── protocol/         # 线上协议（zod schema）：peer / cluster / a2a / task / grant / model / permission / client（PeerClient 契约）/ dispatch / events / constants
-│   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce、直链）、grants（grant 校验与转发）
+│   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce）、grants（grant 校验与转发）
 │   ├── storage/          # stores（全部存储接口）；实现 memory / file-registry（publish）/ sqlite
 │   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
 │   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、prompt（任务书）、workspace、delegation（发起侧派发、审批、上交、child-link；childPodMetadata；派发日志语义）
@@ -124,7 +124,8 @@ orca-node send     --peer <url> --text <text|-> [--local-task <this task>] [--co
 orca-node status   --peer <url> --task <id> [--json]
 orca-node wait     --peer <url> --task <id> [--local-task <this task>] [--timeout <s>] [--json]
 orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
-orca-node publish  <path> [--ttl <s>] [--json]       # 把产出文件登记成 blob 直链（写本机 SQLite，无 HTTP 路由）
+orca-node publish  <path> [--ttl <s>] [--json]       # 登记本机文件，打印 <节点 id>/<sha256>（写本机 SQLite，无 HTTP 路由）
+orca-node fetch    <节点 id>/<sha256> [--output <path>] [--json]   # 由本机节点找到发布方并拉取，校验 sha256 后落盘
 orca-node log      [--json]                          # 本节点派发过的任务（读派发日志）
 orca-node members  [--peer <url>] [--json]
 ```

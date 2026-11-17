@@ -1,34 +1,37 @@
-import { createReadStream, existsSync } from "node:fs";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { PodError } from "../../kernel/errors.ts";
+import { BlobIdSchema } from "../../protocol/blob.ts";
+import { OrcaNodeIdSchema } from "../../protocol/peer.ts";
+import type { OpenedBlob } from "../../storage/stores.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import { parseInput } from "./input.ts";
 
-const BlobParams = z.object({ blob_id: z.string() });
+const BlobParams = z.object({ blob_id: BlobIdSchema });
+const FetchQuery = z.object({ node: OrcaNodeIdSchema, blob: BlobIdSchema });
 
-function isExpired(expiresAt: string | null): boolean {
-  return expiresAt !== null && Date.parse(expiresAt) <= Date.now();
+function send(reply: FastifyReply, { stream, size }: OpenedBlob): FastifyReply {
+  reply.header("content-type", "application/octet-stream");
+  if (size !== undefined) reply.header("content-length", String(size));
+  return reply.send(stream);
 }
 
 /**
- * `GET /blobs/:blob_id` (§5.6): a file this node published, streamed from where
- * it lies. A node never receives bytes from another one: an origin that wants
- * to hand a file to a task publishes it on its own gateway and puts the link in
- * the task text, and the target fetches it, the same way an origin fetches a
- * target's results.
+ * Files move by name, never by URL (§5.6): a file is the sha256 a member
+ * published, and whoever needs it asks its own node, which finds that member's
+ * address the way its heartbeat does. A node never receives bytes from another
+ * one.
  */
 export function blobRoutes(app: FastifyInstance, deps: GatewayDeps): void {
-  app.get("/blobs/:blob_id", { config: { access: "link" } }, async (request, reply) => {
+  // A file this node published, for a member's signed request.
+  app.get("/blobs/:blob_id", { config: { access: "member" } }, async (request, reply) => {
     const { blob_id: blobId } = parseInput(BlobParams, request.params, "params");
-    const file = deps.fileBlobs.get(blobId);
-    if (!file) throw new PodError("blob_not_found");
-    if (isExpired(file.expires_at)) throw new PodError("blob_expired");
-    if (!existsSync(file.path)) throw new PodError("blob_file_missing");
-    return reply
-      .header("content-type", "application/octet-stream")
-      .header("content-length", String(file.size))
-      .send(createReadStream(file.path));
+    return send(reply, deps.fileBlobs.open(blobId));
+  });
+
+  // Local control for the CLI: any member's file, fetched by this node (§5.6).
+  app.get("/cluster/blob", { config: { access: "local" } }, async (request, reply) => {
+    const { node, blob } = parseInput(FetchQuery, request.query, "querystring");
+    return send(reply, await deps.orcaNode.fetchBlob(node, blob));
   });
 }

@@ -53,7 +53,15 @@ function harness() {
     workgroup_id: WORKGROUP,
   };
   const app = createGateway({
-    orcaNode: { orca_node_id: self.orcaNodeId, workgroup_id: WORKGROUP, self: () => record, linkChildTask: () => {} },
+    orcaNode: {
+      orca_node_id: self.orcaNodeId,
+      workgroup_id: WORKGROUP,
+      self: () => record,
+      linkChildTask: () => {},
+      fetchBlob: async () => {
+        throw new Error("not used");
+      },
+    },
     identity: self,
     workgroupKey: key,
     peers: membership.peers,

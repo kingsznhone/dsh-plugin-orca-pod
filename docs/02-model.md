@@ -13,7 +13,7 @@ Origin
   → POST target /a2a  message/send          （带继承的权限模式；审批后带 grant）
   → target task store (SQLite): submitted → working
   → origin 轮询 tasks/get
-  → completed（结论文本内联；产物是 blob 直链）
+  → completed（结论文本内联；产物以 `<节点 id>/<sha256>` 命名，按需 `fetch`）
 ```
 
 **控制面（cluster）**
@@ -91,7 +91,7 @@ join（凭 workgroup_id + 密码）→ 双方登记 → 拿到 target 自述 + �
 - `busy` 为 `null` 或 `{ "task_id", "origin_orca_node", "since" }`，由本人写、随心跳刷新；origin 的 UI 据此显示“B 正在跑 X”。
 - `max_task_ttl_s` 是本机单任务硬预算（`task_timeout_s`，默认 3600），随 self record 与 Agent Card 公布；origin 据此拆解任务，超时的任务会被目标机直接终止（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
 - `models` 与 `default_model` 是本机可执行模型的目录与默认选择：`models` 是 `[{provider, model, name?, description?}]`（去重、上限 128），`default_model` 是 `{provider, model, reasoning_effort?}` 或 `null`；`default_reasoning_effort` 是默认 effort（`null` 表示由 provider 决定）。它们只出现在同组成员可见的记录里（**不进公开 Agent Card**）；调用方用 `metadata.pod.model` / `metadata.pod.reasoning_effort` 选择（[§6.15](06-execution.md#615-按任务选择模型)）。
-- `endpoints` 是有序列表（1–8 个 http(s) URL，去重去尾斜杠），第一个是 primary：Agent Card 的 `url`、blob 直链、CLI 展示都用它。顺序即拨号优先级，覆盖 IPv6/IPv4 双栈与“局域网直连 + 公网反代”矩阵；对端逐地址尝试，一个地址不可达不等于 orca node 离线，上次成功的地址会排到最前（[§4.3](04-transport.md#43-反向代理注意事项)）。列表只影响“别人怎么拨我”，监听地址由 `bind_host` 决定。
+- `endpoints` 是有序列表（1–8 个 http(s) URL，去重去尾斜杠），第一个是 primary：Agent Card 的 `url`、CLI 展示都用它。顺序即拨号优先级，覆盖 IPv6/IPv4 双栈与“局域网直连 + 公网反代”矩阵；对端逐地址尝试，一个地址不可达不等于 orca node 离线，上次成功的地址会排到最前（[§4.3](04-transport.md#43-反向代理注意事项)）。列表只影响“别人怎么拨我”，监听地址由 `bind_host` 决定。
 - 配置里 `endpoints` 为空时按监听地址推导：绑 `0.0.0.0`/`::` 时枚举本机非 internal 的 IPv4/IPv6 地址（IPv4 在前，跳过 `fe80::/10`），识别不到才回退 loopback；绑具体地址就用该地址。
 - 记录里**没有**工作区用量、GPU、DSH 版本、能力标签；需要这些信息就问对方的 agent。
 

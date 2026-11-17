@@ -26,7 +26,7 @@
 - context → session 绑定；`session/update` → 结论文本；thought 过滤。
 - 取消（`session/cancel` + 进程树）；`input-required` 透传。
 - 工作区持久化（根即 cwd）、`notes/`；工作区配额；单槽 busy（`429 orca_node_busy`）。
-- 文件交换（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`publish` 登记、带签名的直链、谁需要谁来拉；结论文本内联回传。
+- 文件交换（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`publish` 登记、`<节点 id>/<sha256>` 命名、`fetch` 由本机节点找到发布方拉取；结论文本内联回传。
 - 权限模式继承（[§7.10](07-security.md#710-权限模式继承)）：origin 会话模式写进 `pod.permission_mode`，本机 `permission_mode` 为上限取较窄，ACP 权限请求按模式自动应答。
 - 验收：真实任务完成；跨任务续跑能看到上次的文件与 notes；失联的任务不被悄悄重发，origin 的追踪放弃时告知 agent；取消生效；重启后非终态任务标 `failed(node_restart)`；发布 → 任务书引用 → 对端下载、产物发布 → origin 下载两个方向都通过；orca node 忙时第二个任务返回 429 且 UI 显示持有者。
 
@@ -106,10 +106,10 @@
 
 #### 文件交换
 
-- [x] `publish` 登记的文件可凭直链下载，`blob_id == sha256(bytes)`
-- [x] `X-Pod-Body-SHA256` 与实际字节不符 → `400 blob_digest_mismatch`
-- [x] 过期直链 `410 link_expired`，文件被删 `410 blob_file_missing`
-- [x] 直链过期后不可用；篡改 blob_id/exp 或换 blob 被拒
+- [x] `publish` 打印 `<节点 id>/<sha256>`，`fetch` 经本机节点取回，内容与 sha256 一致
+- [x] 取别的成员的文件按它宣告的地址拨号；它作答的错误（如 `404 blob_not_found`）不再换地址重试
+- [x] 登记过期 `410 blob_expired`，文件被删 `410 blob_file_missing`
+- [x] `/blobs/{id}` 只认成员签名；`/cluster/blob` 只认本机
 
 #### agent 侧（插件接线）
 

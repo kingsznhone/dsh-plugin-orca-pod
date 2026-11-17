@@ -16,14 +16,13 @@
 
 ### 4.2 路由表
 
-每条路由都在注册时声明 `config.access`，缺了启动即失败；一个 `preValidation` 钩子统一做“验签 → 授权”，所有错误由同一个错误处理器输出。`access` 有五类：
+每条路由都在注册时声明 `config.access`，缺了启动即失败；一个 `preValidation` 钩子统一做“验签 → 授权”，所有错误由同一个错误处理器输出。`access` 有四类：
 
 | access   | 谁能调用                                                                                  |
 | -------- | ----------------------------------------------------------------------------------------- |
 | `public` | 任何人                                                                                    |
 | `join`   | 任何持有 Ed25519 密钥的人（签名可以不带接收方 id，因为首次 join 还不知道它）              |
 | `member` | 本机，或成员表里的 peer。验签只证明“持有私钥”，陌生人也能生成密钥，所以还要过成员闸门     |
-| `link`   | `member`，或带本节点签发的 `?exp=&sig=` 的无签名直链                                      |
 | `local`  | 仅本机：回环 socket、无转发头，且签名身份就是本机自己                                     |
 
 | Method | Path                           | 用途                                                       | access                          |
@@ -31,33 +30,34 @@
 | GET    | `/health`                      | 进程存活探针，返回 `{status:"ok", orca_node_id}`           | public                          |
 | GET    | `/.well-known/agent-card.json` | A2A Agent Card（见 §4.6）                                  | public                          |
 | POST   | `/a2a`                         | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`、`tasks/escalate`（§4.7） | member                          |
-| GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | link                            |
+| GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | member                          |
 | POST   | `/cluster/join`                | 引导/准入：返回自述 + 目录                                 | join + 密码证明                 |
 | POST   | `/cluster/heartbeat`           | 心跳 + 摘要 + 准入证明 + 完整自述；摘要不一致时响应回目录   | member + 密码证明               |
 | GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲）                           | member                          |
 | POST   | `/cluster/leave`               | 主动离开（不是安全操作）                                   | member                          |
 | POST   | `/cluster/child-link`          | 本机 task 登记子任务，供自动上升（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） | local                           |
 | GET    | `/cluster/task?task=`          | 读本机任务视图，CLI 建子任务时据此继承 `hop/chain/root`    | local                           |
+| GET    | `/cluster/blob?node=&blob=`    | 本节点替 CLI 去取任一成员发布的文件（`orca-node fetch`）    | local                           |
 
-`/blobs/{blob_id}` 只读本节点 `publish` 登记的文件（字节留在原处、直链与登记同时过期，见 [§5.6](05-tasks.md#56-文件交换blob-通道)）；登记没有 HTTP 路由，由 `orca-node publish` 直写本机 SQLite；节点之间不推送文件。
+文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点 `publish` 登记的文件；取别的成员的文件由本机节点按对方宣告的地址去拨（`/cluster/blob`），所以发布方在反代后面也照样取得到。登记没有 HTTP 路由，由 `orca-node publish` 直写本机 SQLite；节点之间不推送文件。
 
 约定：
 
 - `/health` 不暴露成员数、工作区、忙闲、错误栈；`orca_node_id` 是公开信息，用来让脚本在首次接触前确认接收方身份。
 - **Agent Card 公开可读，但不含敏感信息**：只有名字、端点 URL、单任务预算（§4.6）。runtime、忙闲、模型目录、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
 - 不提供 WebSocket、SSE：一条连接一种语义。任务进度靠 `tasks/get` 轮询，成员变化靠心跳周期（自适应 `N` 秒，[§3.3](03-membership.md#33-心跳与双向看门狗)）。
-- 请求体上限：全局 `bodyLimit` **1 MiB**（签名需要 body 字节，认证发生在 body 解析之后、schema 校验之前，所以未认证请求能缓冲的上限必须小）；只有 `POST /blobs` 单独放宽到 **256 MiB**，且流式落盘、签名覆盖 `X-Pod-Body-SHA256`。读超时与连接数上限没有显式配置。
+- 请求体上限：全局 `bodyLimit` **1 MiB**（签名需要 body 字节，认证发生在 body 解析之后、schema 校验之前，所以未认证请求能缓冲的上限必须小），没有任何路由放宽；文件只经 `GET` 流式下发。读超时与连接数上限没有显式配置。
 
 **错误形态**统一为 `{ "code", "message" }`，HTTP 状态来自 `src/kernel/errors.ts` 里的 `code → 状态` 表（一个错误码不在表里就编译不过）：
 
 | 状态 | 错误码                                                                                                                      |
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
-| 403  | `not_a_member`、`local_only`、`link_invalid`、`not_task_origin`、`ancestor_call_forbidden`                                  |
+| 403  | `not_a_member`、`local_only`、`not_task_origin`、`ancestor_call_forbidden`                                                  |
 | 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`blob_digest_mismatch`、`input_blob_missing`、`too_many_inputs`、`inputs_too_large`、`endpoint_refused` |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
 | 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`escalation_required`、`duplicate_input_name`                        |
-| 410  | `link_expired`、`blob_expired`、`blob_file_missing`                                                                         |
+| 410  | `blob_expired`、`blob_file_missing`                                                                                         |
 | 413  | `blob_too_large`、`body_too_large`                                                                                          |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |
 | 507  | `quota_exceeded`（工作区超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                                |
@@ -76,7 +76,7 @@
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的（orca node 一侧是 1 MiB，没有更大的请求体）                                                                                                                                                              |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放                                                                                                                                                                                                    |
 
-`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、blob 直链、CLI 展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
+`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、CLI 展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
 
 ```json
 {

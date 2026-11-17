@@ -4,7 +4,7 @@ import { Modal, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
 import { ageOf, stateDot, stateLabel } from "./format.ts";
 import { t } from "./i18n.ts";
-import { store } from "./store.ts";
+import { downloadBlob, messageOf, store } from "./store.ts";
 import type { ModelOffer, ModelSelection, PodArtifact } from "./types.ts";
 import ui from "./ui.module.css";
 
@@ -142,17 +142,36 @@ export function Updated() {
   return <span className={ui.caption}>{t("updated") + ageOf(store.polledAt()) + t("updatedSuffix")}</span>;
 }
 
-/** Links to a task's artifacts; one this node cannot sign for is shown as plain text. */
+/** A task's artifacts, each saved through this node on click; one whose publisher is unknown is plain text. */
 export function ArtifactLinks({ artifacts }: { artifacts: PodArtifact[] }) {
-  return artifacts.map((link) =>
-    link.url ? (
-      <a key={link.blob_id} href={link.url} target={"_blank"} rel={"noreferrer"} className={ui.link}>
-        {link.name}
-      </a>
-    ) : (
-      <span key={link.blob_id} className={ui.tertiary}>
-        {link.name}
-      </span>
-    ),
+  const [failed, setFailed] = React.useState<string | null>(null);
+  const save = (artifact: PodArtifact, node: string) => {
+    setFailed(null);
+    downloadBlob(node, artifact.blob_id, artifact.name).catch((error: unknown) =>
+      setFailed(`${artifact.name}: ${messageOf(error)}`),
+    );
+  };
+  return (
+    <>
+      {artifacts.map((artifact) => {
+        const { node } = artifact;
+        return node === null ? (
+          <span key={artifact.blob_id} className={ui.tertiary}>
+            {artifact.name}
+          </span>
+        ) : (
+          <button
+            key={artifact.blob_id}
+            type={"button"}
+            className={ui.linkButton}
+            title={`${artifact.bytes} bytes · ${artifact.blob_id}`}
+            onClick={stop(() => save(artifact, node))}
+          >
+            {artifact.name}
+          </button>
+        );
+      })}
+      {failed ? <span className={ui.error}>{failed}</span> : null}
+    </>
   );
 }

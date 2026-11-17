@@ -3,7 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NonceCache, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
+import { Readable } from "node:stream";
+import { NonceCache, buildAuthHeader } from "../src/security/crypto.ts";
 import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
 import { createMemoryFileBlobStore } from "../src/storage/memory.ts";
 import type { FileBlobRegistry } from "../src/storage/stores.ts";
@@ -15,7 +16,7 @@ import { createSqliteFileBlobStore } from "../src/storage/sqlite.ts";
 import { createMembership } from "../src/membership/membership.ts";
 import { bodySha256 } from "../src/security/crypto.ts";
 import { createGateway, type GatewayDeps } from "../src/transport/gateway/gateway.ts";
-import { wg } from "./fixtures/ids.ts";
+import { fakeNodeId, wg } from "./fixtures/ids.ts";
 
 const ENDPOINT = "http://orca-node.test";
 
@@ -71,9 +72,17 @@ type Harness = {
   sign(method: string, path: string, body?: Uint8Array | string): string;
 };
 
+/** What the node does when its CLI asks for a member's file; the gateway only relays it. */
+type FetchBlob = GatewayDeps["orcaNode"]["fetchBlob"];
+
+const noFetch: FetchBlob = async () => {
+  throw new Error("not used");
+};
+
 function createHarness(
   tasks: TaskRunner = idleTasks,
   fileBlobs: FileBlobRegistry = createFileBlobRegistry(createMemoryFileBlobStore()),
+  fetchBlob: FetchBlob = noFetch,
 ): Harness {
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
@@ -84,6 +93,7 @@ function createHarness(
       workgroup_id: wg("orca-dev"),
       self: () => selfRecord(identity),
       linkChildTask: () => {},
+      fetchBlob,
     },
     identity,
     workgroupKey: key,
@@ -125,19 +135,10 @@ describe("blob route", () => {
     expect(response.rawPayload.equals(content)).toBe(true);
   });
 
-  it("refuses a request that carries neither a signature nor a link", async () => {
+  it("refuses an unsigned request", async () => {
     const { harness, blobId } = await published(Buffer.from("private"));
     const response = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}` });
     expect(response.statusCode).toBe(401);
-  });
-
-  it("rejects an expired link with 410", async () => {
-    const { harness, blobId } = await published(Buffer.from("expired link"));
-    const exp = String(Math.floor(Date.now() / 1000) - 10);
-    const sig = blobLinkSignature(harness.identity, blobId, exp);
-    const response = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}?exp=${exp}&sig=${sig}` });
-    expect(response.statusCode).toBe(410);
-    expect(response.json()).toMatchObject({ code: "link_expired" });
   });
 
   it("answers 410 blob_file_missing once the published file is gone", async () => {
@@ -150,6 +151,45 @@ describe("blob route", () => {
     });
     expect(response.statusCode).toBe(410);
     expect(response.json()).toMatchObject({ code: "blob_file_missing" });
+  });
+
+  it("relays a member's file the node fetched to its own CLI", async () => {
+    const asked: string[] = [];
+    const node = fakeNodeId("publisher");
+    const blobId = "b".repeat(64);
+    const harness = createHarness(idleTasks, undefined, async (from, blob) => {
+      asked.push(`${from}/${blob}`);
+      return { stream: Readable.from([Buffer.from("fetched bytes")]), size: 13 };
+    });
+    const url = `/cluster/blob?node=${node}&blob=${blobId}`;
+    const response = await harness.app.inject({
+      method: "GET",
+      url,
+      headers: { authorization: harness.sign("GET", url) },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("fetched bytes");
+    expect(asked).toEqual([`${node}/${blobId}`]);
+  });
+
+  it("keeps the CLI route to this node itself", async () => {
+    const harness = createHarness();
+    const stranger = generateNodeIdentity();
+    const url = `/cluster/blob?node=${fakeNodeId("publisher")}&blob=${"b".repeat(64)}`;
+    const response = await harness.app.inject({
+      method: "GET",
+      url,
+      headers: {
+        authorization: buildAuthHeader({
+          identity: stranger,
+          method: "GET",
+          url,
+          targetOrcaNodeId: harness.orcaNodeId,
+        }),
+      },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "local_only" });
   });
 
   it("rejects an oversized JSON body before the route handler runs", async () => {
@@ -170,7 +210,7 @@ describe("blob route", () => {
 });
 
 describe("file blobs registered by the local CLI", () => {
-  it("serves a registered file through a signed URL without a request signature", async () => {
+  it("serves a registered file to a member under its sha256", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
     const filePath = join(dir, "report.md");
     const content = Buffer.from("# findings\n");
@@ -183,11 +223,10 @@ describe("file blobs registered by the local CLI", () => {
     expect(blob.expires_at).not.toBeNull();
 
     const harness = createHarness(idleTasks, fileBlobs);
-    const exp = String(Math.floor(Date.now() / 1000) + 60);
-    const sig = blobLinkSignature(harness.identity, blob.blob_id, exp);
     const response = await harness.app.inject({
       method: "GET",
-      url: `/blobs/${blob.blob_id}?exp=${exp}&sig=${sig}`,
+      url: `/blobs/${blob.blob_id}`,
+      headers: { authorization: harness.sign("GET", `/blobs/${blob.blob_id}`) },
     });
     expect(response.statusCode).toBe(200);
     expect(response.rawPayload.equals(content)).toBe(true);

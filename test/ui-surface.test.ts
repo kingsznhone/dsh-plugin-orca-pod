@@ -67,6 +67,17 @@ function makeNode(workgroupId: WorkgroupId, password: string): OrcaNode {
   return node;
 }
 
+/** An echo script that finishes with one text artifact. */
+const ARTIFACT = {
+  echo: { steps: [], final: { state: "completed", text: "done" }, artifacts: [{ name: "out.txt", content: "hello" }] },
+};
+
+async function readAll(stream: AsyncIterable<Buffer | string>): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function text(body: string) {
   return { role: "user" as const, parts: [{ kind: "text" as const, text: body }] };
 }
@@ -156,20 +167,20 @@ describe("UI data surface", () => {
     expect(eventsOnA.length).toBe(before);
   });
 
-  it("mints signed blob links that the gateway accepts", async () => {
-    const { b } = await startPair();
-    const blobId = "a".repeat(64);
-    const url = b.blobLink(blobId);
-    expect(url).not.toBeNull();
-    expect(url).toContain(`/blobs/${blobId}?exp=`);
+  it("fetches a member's file by who published it and its sha256", async () => {
+    const { a, b } = await startPair();
+    const submitted = await a.sendTask(b.endpoints[0]!, { message: text("produce an artifact"), metadata: ARTIFACT });
+    const view = await waitFor(
+      () => a.getTask(b.endpoints[0]!, submitted.id),
+      (current: TaskView) => isTerminal(current.status.state),
+      { label: "artifact task completes" },
+    );
+    const blobId = view.artifacts![0]!.artifactId;
 
-    // A valid signature reaches blob lookup, which reports "not found".
-    expect((await fetch(url!)).status).toBe(404);
-    // Tampering with the signature is rejected before lookup.
-    const tampered = url!.replace(/sig=[^&]+$/, "sig=tampered");
-    expect((await fetch(tampered)).status).toBe(403);
-    // An already-expired link is rejected.
-    expect((await fetch(b.blobLink(blobId, -10)!)).status).toBe(410);
+    // a dials b where b answers; the reference carries no address.
+    expect(await readAll((await a.fetchBlob(b.orcaNodeId, blobId)).stream)).toBe("hello");
+    // b answered: its 404 stands, no other address is tried.
+    await expect(a.fetchBlob(b.orcaNodeId, "0".repeat(64))).rejects.toMatchObject({ code: "blob_not_found" });
   });
 
   it("exposes workspace paths, notes and artifact links through the admin surface", async () => {
@@ -185,16 +196,7 @@ describe("UI data surface", () => {
     const workspace = admin.workspace()!;
     expect(workspace.notes_files).toEqual(["STATUS.md"]);
 
-    const submitted = await a.sendTask(b.endpoints[0]!, {
-      message: text("produce an artifact"),
-      metadata: {
-        echo: {
-          steps: [],
-          final: { state: "completed", text: "done" },
-          artifacts: [{ name: "out.txt", content: "hello" }],
-        },
-      },
-    });
+    const submitted = await a.sendTask(b.endpoints[0]!, { message: text("produce an artifact"), metadata: ARTIFACT });
     const rows = await waitFor(
       () => admin.recent(10),
       (list: PodTaskRow[]) => list.some((row) => row.id === submitted.id && isTerminal(row.state)),
@@ -202,13 +204,10 @@ describe("UI data surface", () => {
     );
     const row = rows.find((entry) => entry.id === submitted.id)!;
     expect(row).toMatchObject({ peer: b.endpoints[0], cancellable: false, who: a.self().display_name });
-    expect(row.artifacts).toHaveLength(1);
-    expect(row.artifacts[0]!.name).toBe("out.txt");
-    expect(row.artifacts[0]!.url).toContain("/blobs/");
-    // The signed link serves the artifact bytes.
-    const response = await fetch(row.artifacts[0]!.url!);
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("hello");
+    expect(row.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
+    // The panel saves it through this node.
+    const artifact = row.artifacts[0]!;
+    expect(await readAll((await admin.blob(b.orcaNodeId, artifact.blob_id)).stream)).toBe("hello");
 
     expect(admin.members().map((peer) => peer.orca_node_id)).toContain(a.self().orca_node_id);
   });
@@ -270,16 +269,7 @@ describe("UI data surface", () => {
       createTracker(() => a, broker, logger),
       broker,
     );
-    const submitted = await a.sendTask(b.endpoints[0]!, {
-      message: text("produce an artifact"),
-      metadata: {
-        echo: {
-          steps: [],
-          final: { state: "completed", text: "done" },
-          artifacts: [{ name: "out.txt", content: "hello" }],
-        },
-      },
-    });
+    const submitted = await a.sendTask(b.endpoints[0]!, { message: text("produce an artifact"), metadata: ARTIFACT });
     await waitFor(
       () => b.listTasks(),
       (tasks) => tasks.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
@@ -289,7 +279,7 @@ describe("UI data surface", () => {
     const detail = await adminA.task(b.endpoints[0]!, submitted.id);
     expect(detail.task.id).toBe(submitted.id);
     expect(detail.dispatch).toMatchObject({ task_id: submitted.id, peer: b.endpoints[0] });
-    expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, url: null }]);
+    expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
     expect(detail.origin).toBe(a.self().display_name);
   });
 
@@ -323,9 +313,14 @@ describe("UI data surface", () => {
       },
     };
     const broker = createApprovalBroker(() => b);
-    const tracker = createTracker(() => ({ getTask: async () => suspended, annotateDispatch() {} }), broker, logger, {
-      intervalMs: 20,
-    });
+    const tracker = createTracker(
+      () => ({ getTask: async () => suspended, annotateDispatch() {}, nodeIdOf: () => undefined }),
+      broker,
+      logger,
+      {
+        intervalMs: 20,
+      },
+    );
     const admin = createPodAdmin(handleFor(b), tracker, broker);
     let notified = 0;
     const offAdmin = admin.subscribe(() => {

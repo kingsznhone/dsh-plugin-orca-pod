@@ -1,11 +1,14 @@
+import { Readable } from "node:stream";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 import { join } from "node:path";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
+import { BLOB_ID_PATTERN } from "../protocol/blob.ts";
 import { createFileBlobRegistry } from "../storage/file-registry.ts";
 import { createMemoryFileBlobStore, createMemoryDispatchStore, createMemoryTaskStore } from "../storage/memory.ts";
-import type { FileBlobStore, DispatchEntry, DispatchStore, TaskStore } from "../storage/stores.ts";
-import { NonceCache, signedBlobUrl } from "../security/crypto.ts";
+import type { FileBlobStore, DispatchEntry, DispatchStore, OpenedBlob, TaskStore } from "../storage/stores.ts";
+import { NonceCache } from "../security/crypto.ts";
 import { loadOrCreateIdentity } from "../security/identity.ts";
 import {
   createDelegation,
@@ -17,6 +20,7 @@ import { EchoExecutor } from "../execution/echo.ts";
 import { createAcpExecutor } from "../execution/acp/executor.ts";
 import type { LocalExecutor } from "../execution/executor.ts";
 import { createEventBus } from "../kernel/events.ts";
+import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
 import { detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/net.ts";
 import { createGateway } from "../transport/gateway/gateway.ts";
@@ -168,8 +172,14 @@ export interface OrcaNode {
    * unsubscribe function; a throwing listener never reaches the node.
    */
   subscribe(listener: PodEventListener): () => void;
-  /** Short-lived download URL for one file this node published. */
-  blobLink(blobId: string, ttlS?: number): string;
+  /**
+   * A file a member published, streamed (§5.6): this node's own from disk,
+   * another member's fetched from the first of its addresses that answers. A
+   * file is named by who published it and its sha256, never by a URL.
+   */
+  fetchBlob(nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal): Promise<OpenedBlob>;
+  /** The member behind a URL (this node included), when it is known. */
+  nodeIdOf(endpoint: string): OrcaNodeId | undefined;
   /** Workspace directories for UI browsing. */
   workspacePaths(): WorkspacePaths;
 }
@@ -311,6 +321,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       workgroup_id: config.workgroup_id,
       self: group.self,
       linkChildTask: delegation.linkChildTask,
+      fetchBlob,
     },
     identity,
     workgroupKey: key,
@@ -320,6 +331,25 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     tasks,
     fileBlobs,
   });
+
+  async function fetchBlob(nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal): Promise<OpenedBlob> {
+    if (!BLOB_ID_PATTERN.test(blobId)) throw new PodError("bad_request", "a blob id is a lowercase sha256 hex digest");
+    if (nodeId === config.orca_node_id) return fileBlobs.open(blobId);
+    const addresses = await group.endpointsOf(nodeId);
+    if (addresses.length === 0) throw new PodError("unknown_orca_node", `${nodeId} is not a member of this workgroup`);
+    let unreachable: unknown;
+    for (const endpoint of addresses) {
+      try {
+        const { body, size } = await client.download(endpoint, `/blobs/${blobId}`, { target: nodeId, signal });
+        return { stream: Readable.fromWeb(body as WebReadableStream<Uint8Array>), size };
+      } catch (error) {
+        // The node answered: its answer stands. Only an address that does not answer moves on to the next.
+        if (error instanceof Error && error.name === "PodError") throw error;
+        unreachable = error;
+      }
+    }
+    throw new PodError("peer_not_online", `${nodeId} did not answer at any address: ${errorMessage(unreachable)}`);
+  }
 
   /** Port 0 would let the kernel hand out a port `fetch` refuses to dial (e.g. 6000); pick one it accepts. */
   async function listen(): Promise<string> {
@@ -385,10 +415,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     annotateDispatch: delegation.annotateDispatch,
     listTasks: (limit = 200) => tasks.list(limit),
     subscribe: events.subscribe,
-    blobLink(blobId, ttlS = 300) {
-      // The same capability URL `orca-node publish` prints (§5.6).
-      return signedBlobUrl(identity, endpoints[0], blobId, String(Math.floor(Date.now() / 1000) + ttlS));
-    },
+    fetchBlob,
+    nodeIdOf: (endpoint) => client.idOf(endpoint),
     workspacePaths() {
       return { root: workspace.root, notes: workspace.notes, state: workspace.state };
     },

@@ -4,6 +4,8 @@
  * file are wired by the assembly points (`node/`, `plugin/`, `cli/`).
  */
 
+import type { Readable } from "node:stream";
+
 import type { DispatchEntry } from "../protocol/dispatch.ts";
 import type { OrcaNodeId } from "../protocol/peer.ts";
 import type { TaskView } from "../protocol/task.ts";
@@ -58,10 +60,15 @@ export type FileBlobStore = {
   close(): void;
 };
 
+/** A published file, open for streaming. */
+export type OpenedBlob = { stream: Readable; size: number | undefined };
+
 export type FileBlobRegistry = {
   register(path: string, ttlS?: number): Promise<FileBlob>;
   get(blobId: string): FileBlob | undefined;
   has(blobId: string): boolean;
+  /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (§5.6). */
+  open(blobId: string): OpenedBlob;
 };
 
 // Origin-side dispatch log (§8.3); what the entries mean is decided in `tasks/delegation.ts` (`markInFlightUnknown`).

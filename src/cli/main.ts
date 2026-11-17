@@ -5,6 +5,7 @@ import process from "node:process";
 
 import { errorMessage } from "../kernel/errors.ts";
 import * as escalate from "./escalate.ts";
+import * as fetch from "./fetch.ts";
 import * as log from "./log.ts";
 import * as members from "./members.ts";
 import * as publish from "./publish.ts";
@@ -22,7 +23,8 @@ Usage:
   orca-node status  --peer <url> --task <id> [--json]
   orca-node wait    --peer <url> --task <id> [--local-task <this task>] [--timeout <seconds>] [--json]
   orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
-  orca-node publish <path> [--ttl <seconds>] [--json]  expose a produced file as a blob URL
+  orca-node publish <path> [--ttl <seconds>] [--json]  let members fetch a file of this node; prints <node id>/<sha256>
+  orca-node fetch   <node id>/<sha256> [--output <path>] [--json]  download a file a member published
   orca-node log [--json]                               tasks this node dispatched
   orca-node members [--peer <url>] [--json]
   orca-node --help                                      show this help
@@ -52,7 +54,10 @@ ${USAGE}`);
 }
 
 /** Every subcommand with the options it accepts; anything else is a usage error. */
-const COMMANDS = { serve, send, status, wait, escalate, publish, log, members } satisfies Record<string, Command>;
+const COMMANDS = { serve, send, status, wait, escalate, publish, fetch, log, members } satisfies Record<
+  string,
+  Command
+>;
 
 type CommandName = keyof typeof COMMANDS;
 

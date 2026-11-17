@@ -26,14 +26,14 @@ orca-pod/
 | ------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `kernel/`     | `errors` / `schema` / `events` / `entry`                                                                | `PodError` 与错误码 → HTTP 状态表（唯一一张）；`isRecord` 与 `parseSchema`（不可信输入的唯一入口）；与载荷无关的进程内事件总线与 `NodeLogger`；包内入口路径（按当前模块扩展名解析 `cli/main.ts`/`cli/main.js`，`ORCA_POD_CLI` 与 `ExecStart` 都用它） |
 | `protocol/`   | `peer` / `cluster` / `a2a` / `task` / `grant` / `model` / `permission` / `client` / `dispatch` / `events` / `constants` | 线上形状全部是 zod schema，类型用 `z.infer`：成员目录与 digest、orca node id 格式；join / 心跳请求体（`cluster`）；A2A 方法参数与错误体（`a2a`）；任务视图与元数据、`TaskRunner` 接口；权限请求、grant、relay；模型路由；权限模式；出站客户端契约 `PeerClient`（`client`）；派发日志条目与进程内事件载荷；默认端口与 `BODY_SHA256_HEADER` |
-| `security/`   | `identity` / `crypto` / `grants`                                                                         | Ed25519 身份；请求签名、准入证明（`createAdmission` / `verifyAdmission`）、nonce、grant 与直链签名（`signedBlobUrl`）、scrypt 派生；grant 解析、校验与向子任务转发（`deriveChildGrant`） |
+| `security/`   | `identity` / `crypto` / `grants`                                                                         | Ed25519 身份；请求签名、准入证明（`createAdmission` / `verifyAdmission`）、nonce、grant 签名、scrypt 派生；grant 解析、校验与向子任务转发（`deriveChildGrant`） |
 | `storage/`    | `stores`；实现 `memory` / `file-registry` / `sqlite`                                                     | `stores` 声明全部存储接口（task、publish 映射、派发日志）；内存实现；`publish` 的文件哈希与登记；`node:sqlite` 实现（tasks / dispatches / file_blobs） |
 | `membership/` | `membership` / `mesh` / `screening`                                                                      | 成员记录与看门狗；join、心跳循环、leave、自述记录与模型目录；端点筛查（候选拨号前、入站 join 登记前）与地址分类 |
 | `tasks/`      | `runner` / `record` / `meta` / `inputs` / `workspace` / `delegation`                                    | 单槽运行器与查找；一个任务的状态机与计时器；元数据一次性解析；任务书（可信前言在前、远端文本在最后的不可信块）与输入物化；工作区与配额测量；发起侧（`delegation`）：`sendTask`/`getTask`/`cancelTask`/审批/上交、child-link 轮询、`childPodMetadata`（与 `meta` 解析的是同一块 `pod` 元数据）、派发日志语义（`markInFlightUnknown`，重启后在途条目记为 `unknown`） |
 | `execution/`  | `executor` / `echo` / `process` / `acp/`                                                                 | 执行器契约；Echo；子进程公共件（Windows shim、杀进程树）；ACP（`config` 配置类型、`connection` 按 sessionId 路由、`session` 绑定与 `sessions.json`、`permissions` 自动应答、`executor`） |
 | `transport/`  | `peer-client` / `net` / `gateway/`                                                                       | **唯一的出站客户端**（签名、超时、响应上限；陌生 URL 抛 `unknown_peer`，不隐式 join）；地址归一化、回环判定、端口；入站 HTTP：`gateway`（装配、body 解析）、`auth`（`access` 声明与唯一的 preValidation 钩子）、`error-handler`（唯一的错误出口）、`cluster-routes`、`a2a-routes`、`blob-routes` |
 | `node/`       | `orca-node` / `config` / `settings` / `harness`                                                          | **组合根**：一个进程 = 一个 orca node，只装配；**唯一的设置字段表与解析器**（`config.json`、插件 `Config`、面板覆盖、install、CLI 都走它）；`config.json` 读写（身份 + 派生密钥，0600）；测试用进程内多 orca node |
-| `cli/`        | `main` + 每个子命令一个文件（`serve`/`send`/`status`/`wait`/`escalate`/`publish`/`log`/`members`）、`shared`；`orca-pod` / `install` | `orca-node` CLI（`main` 只做参数分派）；`orca-pod install`；install 计划与 systemd unit 渲染 |
+| `cli/`        | `main` + 每个子命令一个文件（`serve`/`send`/`status`/`wait`/`escalate`/`publish`/`fetch`/`log`/`members`）、`shared`；`orca-pod` / `install` | `orca-node` CLI（`main` 只做参数分派）；`orca-pod install`；install 计划与 systemd unit 渲染 |
 | `plugin/`     | 见 §9.5                                                                                                  | DSH bundle                                                                                   |
 
 模块依赖单向向下，由 `test/architecture.test.ts` 固化（解析 `src/` 的运行期 import，`import type` 不计）：
@@ -58,10 +58,10 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
 | `listTasks(limit?)`       | `node/orca-node.ts`          | 本机任务（inbound），内存记录在前，持久 store 回填历史                               |
 | `subscribe(listener)`     | `node/orca-node.ts` → `protocol/events.ts` | `task`（每次状态/权限变化）、`members`（名单、state、busy、endpoints、模型目录变化，按签名去重）、`dispatch`（origin 侧派发落库） |
-| `blobLink(blobId, ttlS?)` | `node/orca-node.ts`          | 签名直链（`?exp&sig`），默认 300 秒，面板直接 `<a href>` 下载产物                    |
+| `fetchBlob(node, blobId)` | `node/orca-node.ts`          | 取任一成员发布的文件（自己的读盘，别人的按拨号顺序拉取），面板经 `/orca-api/blob` 下载产物 |
 | `workspacePaths()`        | `node/orca-node.ts`          | workgroup 根、`notes/`、`state/` 路径                                                |
 
-`createPodAdmin(handle, tracker, broker)` 组合出面板 API：`self()`、`members()`（不含 offline）、`recent(limit)`（本机任务与派发到 peer 的任务合并）、`approvals()`（broker 与 tracker 里挂着的权限请求）、`task(peer, id)`、`approve/deny/cancel`、`workspace()`（路径 + notes 文件名 + 最近的 inputs 目录）、`config()`（去敏视图，**永不返回密码**，只给 `password_set`）、`saveConfig(patch)`、`connect(peer)`、`disconnect()`、`reset()`、`subscribe()`。审批只有一个 `ApprovalBroker`（`plugin/broker.ts`）：tracker 把看到的权限请求 park 进去，UI 三个落点读它、答复它，答复直接调 `OrcaNode.approveTask/denyTask`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+`createPodAdmin(handle, tracker, broker)` 组合出面板 API：`self()`、`members()`（不含 offline）、`recent(limit)`（本机任务与派发到 peer 的任务合并）、`approvals()`（broker 与 tracker 里挂着的权限请求）、`task(peer, id)`、`approve/deny/cancel`、`workspace()`（路径 + notes 文件名）、`blob(node, blobId)`、`config()`（去敏视图，**永不返回密码**，只给 `password_set`）、`saveConfig(patch)`、`connect(peer)`、`disconnect()`、`reset()`、`subscribe()`。审批只有一个 `ApprovalBroker`（`plugin/broker.ts`）：tracker 把看到的权限请求 park 进去，UI 三个落点读它、答复它，答复直接调 `OrcaNode.approveTask/denyTask`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
 **UI 改配置与连接 peer**（`plugin/lifecycle.ts`，存放见 `plugin/stores.ts`）：
 
@@ -79,8 +79,9 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | 路由                                    | 方法       | 内容                                                                                                                  |
 | --------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
 | `/orca-api/state`                       | GET        | 一次轮询拿全量：`self`、`config`、`members`、`mesh`、`approvals`、`approval_count`、`recent`（最近 5 条）、`workspace` |
-| `/orca-api/task?peer=&task=`            | GET        | 单任务详情（任务视图、origin 标签、派发日志条目、产物直链、本任务 inputs 文件名）                                     |
+| `/orca-api/task?peer=&task=`            | GET        | 单任务详情（任务视图、origin 标签、派发日志条目、产物及其发布节点）                                                   |
 | `/orca-api/tasks?limit=`                | GET        | `{recent}`：全部任务视图（`limit` 默认 500、钳 1–1000）                                                               |
+| `/orca-api/blob?node=&blob=`            | GET        | 本节点取来的文件，流式返回；面板用带 `X-Orca-Pod` 头的 `fetch` 读出再交给浏览器保存                                   |
 | `/orca-api/config`                      | POST       | `saveConfig`：密码进凭据库、设置写回插件配置，插件随之重启                                                            |
 | `/orca-api/connect` / `disconnect` / `reset` | POST  | `{peer}` / `{}` / `{}`                                                                                                |
 | `/orca-api/approve` / `deny` / `cancel` | POST       | `{peer, task_id, reason?}`，直接调 `PodAdmin`，不经模型                                                               |
@@ -124,7 +125,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 
 ### 9.4 进程内多 orca node
 
-`node/orca-node.ts` 的 `createOrcaNode({ config })` 返回 handle：`start()`/`stop()`、`self()`/`members()`/`membersDigest()`、`join`/`heartbeat`/`leave`、`sendTask`/`getTask`/`cancelTask`/`approveTask`/`denyTask`/`escalateTask`、`listDispatches`、`listTasks`、`subscribe`、`blobLink`、`workspacePaths`、`setModelCatalog`。
+`node/orca-node.ts` 的 `createOrcaNode({ config })` 返回 handle：`start()`/`stop()`、`self()`/`members()`/`membersDigest()`、`join`/`heartbeat`/`leave`、`sendTask`/`getTask`/`cancelTask`/`approveTask`/`denyTask`/`escalateTask`、`listDispatches`、`listTasks`、`subscribe`、`fetchBlob`、`nodeIdOf`、`workspacePaths`、`setModelCatalog`。
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
 - harness 的 `createMesh({ orcaNodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, approvalTimeoutS, fetch })` 返回 `{ orcaNodes, urls, stop() }`：启动后让每个 orca node join 第一个、用 `joinRoster` 按返回目录补 join，再对 bootstrap 发一轮心跳。手工拼节点的测试用 `connectAll` 互相 join（出站调用只到成员，陌生 URL 是 `unknown_peer`）。
@@ -195,7 +196,7 @@ export function apply(ctx, config) {
 - 唯一的工具 `orca_pod`（`method` 分派 `send`/`status`/`cancel`/`members`/`connect`，没有 approve）；工具注册用 `inject: ['tools']`。
 - 硬依赖 `inject: ['tools', 'credentials', 'configEditor']`（都在 DSH base 组合里）：密码只在凭据库，插件配置拒绝明文 `workgroup_password`（[§7.1](07-security.md#71-workgroup-与密码)）。
 
-CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个文件）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`escalate`/`publish`/`log`/`members`——`serve` 加载配置 → `createOrcaNode` → `start()`（`--peer` 启动即 join，`--bind`/`--port` 一次性覆盖）；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，经 `transport/peer-client.ts` 打本机或成员的 `/a2a`；`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限，`escalate` 的 0/1/2 表示已批准/被拒绝/超时。`orca-pod install` 见 §9.6。`scripts/cross.ts` 提供 serve/join/task/blob 跨进程、跨机联调命令；`scripts/sync-guest.ps1` 把当前提交（`git archive HEAD` + `scp`）同步到 Hyper-V guest 并在远端 `npm install`，保证跨机验证的两端代码一致（只同步已提交内容）。两者都复用同一个 `createOrcaNode`，不依赖 DSH。
+CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个文件）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`escalate`/`publish`/`fetch`/`log`/`members`——`serve` 加载配置 → `createOrcaNode` → `start()`（`--peer` 启动即 join，`--bind`/`--port` 一次性覆盖）；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，经 `transport/peer-client.ts` 打本机或成员的 `/a2a`；`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限，`escalate` 的 0/1/2 表示已批准/被拒绝/超时。`orca-pod install` 见 §9.6。`scripts/cross.ts` 提供 serve/join/task 跨进程、跨机联调命令；`scripts/sync-guest.ps1` 把当前提交（`git archive HEAD` + `scp`）同步到 Hyper-V guest 并在远端 `npm install`，保证跨机验证的两端代码一致（只同步已提交内容）。两者都复用同一个 `createOrcaNode`，不依赖 DSH。
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createOrcaNode()`。**
 

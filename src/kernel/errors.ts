@@ -16,7 +16,6 @@ export const POD_ERROR_STATUS = {
   // Authorization.
   not_a_member: 403,
   local_only: 403,
-  link_invalid: 403,
   not_task_origin: 403,
   ancestor_call_forbidden: 403,
   // Malformed or unsupported requests.
@@ -36,7 +35,6 @@ export const POD_ERROR_STATUS = {
   grant_expired: 409,
   escalation_required: 409,
   // Gone.
-  link_expired: 410,
   blob_expired: 410,
   blob_file_missing: 410,
   // Limits.

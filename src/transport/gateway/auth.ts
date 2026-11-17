@@ -1,9 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { z } from "zod";
 
-import { verifyAuth, verifyBlobLinkSignature, type VerifiedAuth } from "../../security/crypto.ts";
+import { verifyAuth, type VerifiedAuth } from "../../security/crypto.ts";
 import { PodError } from "../../kernel/errors.ts";
-import { parseSchema } from "../../kernel/schema.ts";
 import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import type { OrcaNodeId } from "../../protocol/peer.ts";
@@ -17,11 +15,10 @@ import type { OrcaNodeId } from "../../protocol/peer.ts";
  *             because a first join cannot know it yet.
  * - `member`: signed by this node or by a peer still in the roster. A valid
  *             signature only proves key possession: anyone can generate a key.
- * - `link`:   `member`, or an unsigned capability link signed by this node.
  * - `local`:  this node itself, over loopback with no proxy headers; "local" is a
  *             transport fact plus the node's own signature, never a claim.
  */
-type Access = "public" | "join" | "member" | "link" | "local";
+type Access = "public" | "join" | "member" | "local";
 
 declare module "fastify" {
   interface FastifyContextConfig {
@@ -35,23 +32,6 @@ declare module "fastify" {
     /** Raw body bytes, kept for signature verification. */
     rawBody?: Buffer;
   }
-}
-
-/** Check a capability link (§5.6); returns true when the request carries one. */
-const LinkQuery = z.object({ exp: z.string(), sig: z.string() });
-const LinkParams = z.object({ blob_id: z.string() });
-
-function acceptLink(request: FastifyRequest, deps: GatewayDeps): boolean {
-  const query = parseSchema(LinkQuery, request.query);
-  if (!query.ok) return false;
-  const params = parseSchema(LinkParams, request.params);
-  if (!params.ok) return false;
-  const { exp, sig } = query.value;
-  if (!verifyBlobLinkSignature(deps.orcaNode.orca_node_id, params.value.blob_id, exp, sig)) {
-    throw new PodError("link_invalid");
-  }
-  if (Number(exp) * 1000 <= Date.now()) throw new PodError("link_expired");
-  return true;
 }
 
 /** Verify the signature of a request and return who signed it. */
@@ -105,7 +85,6 @@ export function installAccessPolicy(app: FastifyInstance, deps: GatewayDeps): vo
     if (access === "local" && !isDirectLoopbackRequest(request)) {
       throw new PodError("local_only", "this route is a local control");
     }
-    if (access === "link" && acceptLink(request, deps)) return;
     request.auth = authenticate(request, access, deps);
     authorize(access, request.auth.orcaNodeId, deps);
   });

@@ -12,6 +12,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { pipeline } from "node:stream/promises";
 
 import type { z } from "zod";
 
@@ -22,6 +23,7 @@ import { PanelPatchSchema } from "../node/settings.ts";
 import { isDirectLoopbackRequest } from "../transport/net.ts";
 import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
 import { errorMessage } from "../kernel/errors.ts";
+import { parseBlobRef } from "../protocol/blob.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 export const POD_API_PREFIX = "/orca-api";
@@ -198,6 +200,31 @@ async function handlePost(admin: PodAdmin, request: IncomingMessage, url: URL): 
   return ok(await action.run(admin, parsed.value));
 }
 
+/**
+ * `GET /orca-api/blob?node=&blob=`: a file a member published, fetched by this
+ * node and streamed to the panel (§5.6). A failure before the first byte is the
+ * usual JSON error; one after it can only cut the transfer short.
+ */
+async function sendBlob(admin: PodAdmin, url: URL, response: ServerResponse): Promise<void> {
+  const ref = parseBlobRef(`${url.searchParams.get("node") ?? ""}/${url.searchParams.get("blob") ?? ""}`);
+  if (ref === null) {
+    sendJson(response, 400, { error: "node and blob must name a published file" });
+    return;
+  }
+  let opened: Awaited<ReturnType<PodAdmin["blob"]>>;
+  try {
+    opened = await admin.blob(ref.node, ref.blob);
+  } catch (error) {
+    const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;
+    sendJson(response, status, { error: errorMessage(error) });
+    return;
+  }
+  response.statusCode = 200;
+  response.setHeader("content-type", "application/octet-stream");
+  if (opened.size !== undefined) response.setHeader("content-length", String(opened.size));
+  await pipeline(opened.stream, response).catch(() => response.destroy());
+}
+
 /** Route handler for `/orca-api`; exported for tests. */
 export function createPodApiHandler(
   admin: PodAdmin,
@@ -209,6 +236,10 @@ export function createPodApiHandler(
       return;
     }
     const url = new URL(request.url ?? POD_API_PREFIX, "http://localhost");
+    if (request.method === "GET" && url.pathname === `${POD_API_PREFIX}/blob`) {
+      await sendBlob(admin, url, response);
+      return;
+    }
     let reply: Reply;
     try {
       if (request.method === "GET") reply = await handleGet(admin, url);

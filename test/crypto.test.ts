@@ -5,14 +5,12 @@ import {
   DEFAULT_CLOCK_SKEW_MS,
   NonceCache,
   admissionProof,
-  blobLinkSignature,
   buildAuthHeader,
   deriveWorkgroupKey,
   parseAuthHeader,
   signGrant,
   verifyAdmissionProof,
   verifyAuth,
-  verifyBlobLinkSignature,
   verifyGrant,
   type VerifyAuthOptions,
 } from "../src/security/crypto.ts";
@@ -317,21 +315,5 @@ describe("grants", () => {
   it("rejects verification against a different origin", () => {
     const signed = signGrant(identity, grant);
     expect(verifyGrant(generateNodeIdentity().orcaNodeId, signed)).toBe(false);
-  });
-});
-
-describe("blob link signatures", () => {
-  const identity = generateNodeIdentity();
-  const exp = "1700000000";
-
-  it("roundtrips", () => {
-    const sig = blobLinkSignature(identity, "abc123", exp);
-    expect(verifyBlobLinkSignature(identity.orcaNodeId, "abc123", exp, sig)).toBe(true);
-  });
-
-  it("rejects a different blob or expiry", () => {
-    const sig = blobLinkSignature(identity, "abc123", exp);
-    expect(verifyBlobLinkSignature(identity.orcaNodeId, "def456", exp, sig)).toBe(false);
-    expect(verifyBlobLinkSignature(identity.orcaNodeId, "abc123", "1700000001", sig)).toBe(false);
   });
 });

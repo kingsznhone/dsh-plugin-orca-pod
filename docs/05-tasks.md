@@ -130,30 +130,37 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 
 
 文件不走 JSON 内联（base64 会膨胀 33%，也没法流式），也不在节点之间推送：**节点只发布自己机器上的文件，谁需要谁来拉**。任务的产物由 target 发布、origin 拉取；origin 要交给任务的文件，由 origin 发布、target 上的 agent 拉取。
 
+**文件的名字不含地址**：一个文件写作 `<orca_node_id>/<sha256>`——谁发布的、内容哈希是什么。取文件的一方问**自己的**节点，由它按成员表里对方宣告的地址、用和心跳相同的顺序去拨（上次成功的地址在前，来自他人名单的候选地址先筛查，[§7.7](07-security.md#77-ssrf--候选端点防护)）。发布方在反代后面、有多张网卡或 IPv4/IPv6 双栈都不影响：它只要在 `endpoints` 里宣告取得到它的地址（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
+
 ```text
 # 在本机登记一个文件（不经过网络，不需要节点在跑）
 $ orca-node publish ./report.md --ttl 86400
-http://host.example/blobs/<sha256>?exp=...&sig=...
+<orca_node_id>/<sha256>
+
+# 在任何成员上取它：本机节点找到发布方并拉取，写盘前校验 sha256
+$ orca-node fetch <orca_node_id>/<sha256> --output report.md
 ```
 
 ```http
-GET /blobs/<blob_id>                       # 成员签名，或 ?exp=<unix>&sig=<base64url> 直链
+GET /blobs/<blob_id>                         # 成员签名；只读本节点发布的文件
+GET /cluster/blob?node=<id>&blob=<blob_id>   # 仅本机：本节点替 CLI 去取任一成员的文件
 ```
 
 规则：
 
-- **登记**：`orca-node publish <path> [--ttl <seconds>]`：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，打印一条带 `?exp&sig` 的直链。字节不复制，`GET` 时网关按映射从磁盘流式读出；映射跨重启保留。同一文件重复登记得到同一个 `blob_id`，并刷新过期时间。
+- **登记**：`orca-node publish <path> [--ttl <seconds>]`：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，打印文件名 `<orca_node_id>/<sha256>`。字节不复制，`GET` 时网关按映射从磁盘流式读出；映射跨重启保留。同一文件重复登记得到同一个 `blob_id`，并刷新过期时间。
 - **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥，任何成员都能让目标节点替它去读本机路径，“只有本机能登记”无法靠成员签名在网络层实现，所以登记只在本地发生：CLI 直写节点自己的数据库。这也让登记不依赖节点进程。
-- **节点不接收别人的字节**：网关对外只有 `GET /blobs/{id}` 这一条文件路由，没有上传，所以也没有接收侧的配额、临时文件与垃圾回收。
-- **生命周期**：登记默认 **7 天**过期（`--ttl` 可改，`--ttl 0` 不过期）。过期 → `410 blob_expired`；文件被删或移走 → `410 blob_file_missing`；没登记过 → `404 blob_not_found`。文件本身属于工作区，节点不删；要保住某个产物，就在过期前下载它。
-- **直链**：`publish` 打印的链接与登记同时过期（不过期的登记，链接按 7 天）；面板里的产物链接 300 秒。直链的 `sig` 是**发布节点自己的 Ed25519 签名**（签 `orca-pod/blob-link|<blob_id>|<exp>`），用它自己的公钥验证；篡改 `blob_id`/`exp` → `403 link_invalid`，过期 → `410 link_expired`。直链只是省掉请求签名头，不改变可读范围：浏览器、curl 和远端 agent 不必拿长期密钥；同组成员也可以直接用签名请求 `GET`。
-- **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道 `blob_id` 就能 `GET`。跨 orca node 直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
+- **获取**：`orca-node fetch <ref> [--output <path>]` 经回环的 `GET /cluster/blob` 让本机节点去取：引用的是自己就直接读盘；是别的成员就按拨号顺序逐个地址试，对方一旦作答（包括 `404`）就以它为准，只有连不上才换下一个地址，全都连不上 → `503 peer_not_online`；不是成员 → `404 unknown_orca_node`。下载流式进行，不受普通响应 4 MiB 上限的约束；截止时间只管等到对方开始作答，不管传输多久。CLI 边写临时文件边算 `sha256`，与引用一致才改名到位，不一致就删掉并报错。
+- **节点不接收别人的字节**：没有上传路由，也就没有接收侧的配额、临时文件与垃圾回收。
+- **读取要成员签名**：`GET /blobs/{id}` 的访问级别是 `member`，没有可以转交给组外的无签名链接。面板经本机的 `/orca-api/blob` 中转（[§9.2.1](09-implementation.md#921-同源桥pluginwebts)）。
+- **生命周期**：登记默认 **7 天**过期（`--ttl` 可改，`--ttl 0` 不过期）。过期 → `410 blob_expired`；文件被删或移走 → `410 blob_file_missing`；没登记过 → `404 blob_not_found`。文件本身属于工作区，节点不删；要保住某个产物，就在过期前取走它。
+- **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道名字就能取。跨 orca node 直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新文件、新登记。
 
-**交给任务的文件**：origin（人通过插件工具，或上游任务里的 agent）先在本机 `publish`，把链接写进任务书；target 上的 agent 读到后自己下载到工作区（`curl -fL -o <name> <url>`），任务书的前言也这样提示（[§6.7](06-execution.md#67-工作区一份持久)）。节点不替 agent 下载、不物化、不清点数量与大小；下载是 agent 执行的命令，受本任务的权限模式约束（[§7.10](07-security.md#710-权限模式继承)）。这要求 **target 能连到 origin**：全互联 mesh 里两边互相在线即满足；origin 在对端看来是 `suspect(unreachable)`（例如在 NAT 后）时链接取不到，文件需要放到双方都能访问的地方。
+**交给任务的文件**：origin（人通过插件工具，或上游任务里的 agent）先在本机 `publish`，把文件名写进任务书；target 上的 agent 读到后用 `orca-node fetch` 取到工作区，任务书的前言也这样提示（[§6.7](06-execution.md#67-工作区一份持久)）。节点不替 agent 预先下载、不物化、不清点数量与大小；`fetch` 是 agent 执行的命令，受本任务的权限模式约束（[§7.10](07-security.md#710-权限模式继承)）。这要求 **target 能连到 origin**：全互联 mesh 里两边互相在线即满足；origin 在对端看来是 `suspect(unreachable)`（例如在 NAT 后）时取不到，文件需要放到双方都能访问的节点上。
 
-**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；大文件由子节点 `publish` 后把 URL 写进结论文本，origin 按需 `GET`，**不自动全量回传**，避免把网络当同步盘。只有 Echo 脚本会产生 `artifacts` 数组：内容写进节点自己的 `state/<workgroup_id>/artifacts/<task_id>/`、按同样的方式登记，`artifactId` 就是 `blob_id`。
+**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；大文件由子节点 `publish` 后把文件名写进结论文本，origin 按需 `fetch`，**不自动全量回传**，避免把网络当同步盘。只有 Echo 脚本会产生 `artifacts` 数组：内容写进节点自己的 `state/<workgroup_id>/artifacts/<task_id>/`、按同样的方式登记，`artifactId` 就是 `blob_id`，发布者就是跑任务的节点。
 
 **方向**：两类文件都由需要它的一方发起请求——产物是 origin 去 target 取，交给任务的文件是 target 去 origin 取；没有任何一方往对方推字节。
 

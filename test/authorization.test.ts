@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NonceCache, admissionProof, blobLinkSignature, buildAuthHeader } from "../src/security/crypto.ts";
+import { NonceCache, admissionProof, buildAuthHeader } from "../src/security/crypto.ts";
 import { runtimeDigest, type BusyState, type PeerView, type SelfRecord } from "../src/protocol/peer.ts";
 import type { TaskRunner } from "../src/protocol/task.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
@@ -84,6 +84,9 @@ function createHarness(): Harness {
       workgroup_id: WORKGROUP,
       self: () => selfRecord(identity),
       linkChildTask: () => {},
+      fetchBlob: async () => {
+        throw new Error("not used");
+      },
     },
     identity,
     workgroupKey: key,
@@ -231,7 +234,7 @@ describe("workgroup membership gate (C1)", () => {
     expect(rejected.json()).toMatchObject({ code: "not_a_member" });
   });
 
-  it("keeps /cluster/join open for the first admission and blob links public", async () => {
+  it("keeps /cluster/join open for the first admission", async () => {
     const harness = createHarness();
     const stranger = generateNodeIdentity();
     const ts = Date.now();
@@ -265,14 +268,6 @@ describe("workgroup membership gate (C1)", () => {
       },
     });
     expect(joined.statusCode).toBe(200);
-
-    const payload = Buffer.from("public by link");
-    const blobId = await publish(harness, payload);
-    const exp = String(Math.floor(Date.now() / 1000) + 60);
-    const sig = blobLinkSignature(harness.identity, blobId, exp);
-    const direct = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}?exp=${exp}&sig=${sig}` });
-    expect(direct.statusCode).toBe(200);
-    expect(direct.rawPayload.equals(payload)).toBe(true);
   });
 
   it("screens the endpoints a joining node declares", async () => {

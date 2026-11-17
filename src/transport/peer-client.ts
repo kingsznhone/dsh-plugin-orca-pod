@@ -145,9 +145,48 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
     };
   }
 
-  /** A 2xx body parsed as JSON, or the typed error of a failed reply. */
-  function unwrap(label: string, reply: Reply): unknown {
-    if (reply.ok) return parseJson(label, reply);
+  /** A file, streamed: signed like any call, but neither buffered nor capped. */
+  async function download(endpoint: string, path: string, call: CallOptions) {
+    const target = call.target ?? known(endpoint);
+    const url = new URL(path, endpoint);
+    const answered = new AbortController();
+    // The deadline covers the answer, not the transfer: a large file may stream for long.
+    const timer = setTimeout(
+      () => answered.abort(new DOMException("download timed out", "TimeoutError")),
+      call.timeoutMs ?? options.timeoutMs,
+    );
+    try {
+      const response = await options.fetch(url, {
+        method: "GET",
+        headers: {
+          authorization: buildAuthHeader({
+            identity: options.identity,
+            method: "GET",
+            url: `${url.pathname}${url.search}`,
+            targetOrcaNodeId: target,
+          }),
+        },
+        redirect: "manual",
+        signal: call.signal === undefined ? answered.signal : AbortSignal.any([answered.signal, call.signal]),
+      });
+      if (!response.ok || response.body === null) {
+        const reply: Reply = {
+          status: response.status,
+          ok: false,
+          contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
+          text: await readCapped(path, response),
+        };
+        throw unwrapError(path, reply);
+      }
+      const length = response.headers.get("content-length");
+      return { body: response.body, size: length === null ? undefined : Number(length) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** The typed error of a failed reply. */
+  function unwrapError(label: string, reply: Reply): PodError {
     let body: ErrorReply | undefined;
     try {
       const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.text));
@@ -155,7 +194,13 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
     } catch {
       // A non-JSON error page keeps the generic code.
     }
-    throw remoteError(label, reply, body);
+    return remoteError(label, reply, body);
+  }
+
+  /** A 2xx body parsed as JSON, or the typed error of a failed reply. */
+  function unwrap(label: string, reply: Reply): unknown {
+    if (reply.ok) return parseJson(label, reply);
+    throw unwrapError(label, reply);
   }
 
   /** The 2xx body checked against what the caller expects: a peer cannot hand us a shape we did not ask for. */
@@ -188,5 +233,7 @@ export function createPeerClient(options: PeerClientOptions): PeerClient {
       if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, reply, envelope.data);
       return expectReply(method, reply, RpcResultSchema, json).result;
     },
+
+    download: (endpoint, path, call = {}) => download(endpoint, path, call),
   };
 }

@@ -12,11 +12,11 @@
 import { readdirSync } from "node:fs";
 
 import { defaultDataRoot } from "../node/config.ts";
-import type { DispatchEntry } from "../storage/stores.ts";
+import type { DispatchEntry, OpenedBlob } from "../storage/stores.ts";
 import { shortenNodeId } from "../security/identity.ts";
 import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
 import { isTerminal } from "../protocol/task.ts";
-import type { PeerView, SelfRecord } from "../protocol/peer.ts";
+import type { OrcaNodeId, PeerView, SelfRecord } from "../protocol/peer.ts";
 import type { PermissionMode } from "../protocol/permission.ts";
 import type { PermissionRequest } from "../protocol/grant.ts";
 import type { PodTaskMetadata, TaskState, TaskView } from "../protocol/task.ts";
@@ -27,13 +27,13 @@ import type { PodHandle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 
-/** One artifact attached to a task. */
+/** One artifact attached to a task: a file its node published (§5.6). */
 export interface PodArtifact {
   name: string;
   blob_id: string;
   bytes: number;
-  /** Signed direct link; null for tasks that live on another node (this node cannot sign for it). */
-  url: string | null;
+  /** The node that published it; null when this node cannot tell which member runs the task. */
+  node: string | null;
 }
 
 /** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
@@ -160,6 +160,8 @@ export interface PodAdmin {
   reset(): Promise<PodConfigView>;
   /** Change notification; subscribes to both node events and tracker updates. */
   subscribe(listener: () => void): () => void;
+  /** A file a member published, fetched by this node for the panel (§5.6). */
+  blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob>;
 }
 
 const REQUESTED_PREVIEW_CHARS = 160;
@@ -251,7 +253,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       who: label(origin),
       who_title: origin ?? "",
       at: view.status.timestamp,
-      artifacts: artifactsOf(current, view, true),
+      artifacts: artifactsOf(view, current.orcaNodeId),
       cancellable: isActive(view.status.state),
     };
   }
@@ -270,12 +272,12 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
     };
   }
 
-  function artifactsOf(current: OrcaNode, view: TaskView, local: boolean): PodArtifact[] {
+  function artifactsOf(view: TaskView, node: OrcaNodeId | undefined): PodArtifact[] {
     return (view.artifacts ?? []).map((artifact) => ({
       name: artifact.name,
       blob_id: artifact.artifactId,
       bytes: artifact.bytes,
-      url: local ? current.blobLink(artifact.artifactId) : null,
+      node: node ?? null,
     }));
   }
 
@@ -369,13 +371,11 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
     async task(peer, taskId) {
       const current = requireNode();
       const task = await current.getTask(peer, taskId);
-      // Only a task this node runs has its artifacts here.
-      const local = current.endpoints.includes(peer);
       return {
         task,
         origin: labeller(current)(podOf(task).root_origin),
         dispatch: current.listDispatches().find((entry) => entry.task_id === task.id) ?? null,
-        artifacts: artifactsOf(current, task, local),
+        artifacts: artifactsOf(task, current.nodeIdOf(peer)),
       };
     },
     approve: (peer, taskId) => broker.approve(peer, taskId),
@@ -393,6 +393,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
           .map((entry) => entry.name),
       };
     },
+    blob: (node, blobId) => requireNode().fetchBlob(node, blobId),
     config: configView,
     async saveConfig(patch) {
       // The password goes to the DSH credential store and the other fields to the

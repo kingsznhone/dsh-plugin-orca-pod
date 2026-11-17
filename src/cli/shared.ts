@@ -27,6 +27,7 @@ export const OPTIONS = {
   task: { type: "string" },
   timeout: { type: "string" },
   ttl: { type: "string" },
+  output: { type: "string" },
   path: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },

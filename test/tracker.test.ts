@@ -76,6 +76,7 @@ function fakeNode(views: Map<string, TaskView>): TrackerNode {
       return view;
     },
     annotateDispatch() {},
+    nodeIdOf: () => undefined,
   };
 }
 
@@ -86,7 +87,7 @@ function createTracker(getNode: () => Pick<TrackerNode, "getTask"> | null, optio
   return createTrackerWith(
     () => {
       const node = getNode();
-      return node === null ? null : { annotateDispatch() {}, ...node };
+      return node === null ? null : { annotateDispatch() {}, nodeIdOf: () => undefined, ...node };
     },
     broker,
     logger,

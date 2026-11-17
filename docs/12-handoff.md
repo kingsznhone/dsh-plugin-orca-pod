@@ -39,9 +39,9 @@ Hard constraints that must not be undone:
   compatibility branches. Domain separators are plain tags ("orca-pod/request").
 - Agent Card is public but carries only name, url and max_task_ttl_s; runtime,
   busy state and the model catalog sit behind signed endpoints only.
-- File exchange goes through a content-addressed blob channel. Task conclusions
-  come back inline as text; large outputs are published by the child as signed
-  blob URLs and pulled explicitly.
+- Files are named `<orca node id>/<sha256>`, never by URL. Task conclusions come
+  back inline as text; large outputs are published by the child and fetched
+  explicitly (`orca-node fetch`), the fetching node dialing the publisher itself.
 - Approval happens on the ORIGIN orca node. A task inherits the dispatching
   session's permission mode (none inherited => read-only); the local
   permission_mode only narrows it. The target auto-answers ACP permission
@@ -89,8 +89,9 @@ Hard constraints that must not be undone:
   as failed.
 - Quotas are settings (max_workspace_bytes, max_workspace_files); over quota
   is 507 quota_exceeded.
-- Files move by link only: a node publishes its own files (`orca-node publish`)
-  and whoever needs one pulls it; there is no upload route.
+- Files move by name only: a node publishes its own files (`orca-node publish`)
+  and whoever needs one has its own node pull it; there is no upload route and
+  no unsigned download link.
 - `npm run check` (biome + tsc + vitest) is the single acceptance command.
 ```
 

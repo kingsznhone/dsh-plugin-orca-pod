@@ -4,7 +4,7 @@ import type { NonceCache } from "../../security/crypto.ts";
 import type { NodeIdentity } from "../../security/identity.ts";
 import type { SelfRecord, OrcaNodeId, WorkgroupId } from "../../protocol/peer.ts";
 import type { TaskRunner } from "../../protocol/task.ts";
-import type { FileBlobRegistry } from "../../storage/stores.ts";
+import type { FileBlobRegistry, OpenedBlob } from "../../storage/stores.ts";
 import type { PeerStore } from "../../membership/membership.ts";
 import { a2aRoutes } from "./a2a-routes.ts";
 import { installAccessPolicy } from "./auth.ts";
@@ -19,6 +19,8 @@ type GatewayOrcaNode = {
   self: () => SelfRecord;
   /** Local-only capability: register a child task for automatic relay (§7.12). */
   linkChildTask: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
+  /** A file a member published, streamed from wherever that member answers (§5.6). */
+  fetchBlob: (nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal) => Promise<OpenedBlob>;
 };
 
 export type GatewayDeps = {

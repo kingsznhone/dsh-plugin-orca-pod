@@ -20,7 +20,7 @@ function createTracker(
   return createTrackerWith(
     () => {
       const node = getNode();
-      return node === null ? null : { annotateDispatch() {}, ...node };
+      return node === null ? null : { annotateDispatch() {}, nodeIdOf: () => undefined, ...node };
     },
     createApprovalBroker(() => null),
     logger,

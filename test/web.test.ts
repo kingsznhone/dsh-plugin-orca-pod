@@ -4,7 +4,7 @@
  * to another machine through a reverse proxy.
  */
 
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import type { PodAdmin, PodApproval, PodPeer, PodTaskRow } from "../src/plugin/admin.ts";
@@ -13,6 +13,7 @@ import type { TaskView } from "../src/protocol/task.ts";
 import type { HostLogger } from "../src/plugin/dsh.ts";
 import { isDirectLoopbackRequest } from "../src/transport/net.ts";
 import { createPodApiHandler, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"], artifacts: TaskView["artifacts"] = []): TaskView {
   return {
@@ -24,7 +25,7 @@ function taskView(id: string, state: TaskView["status"]["state"], artifacts: Tas
   } as TaskView;
 }
 
-const ARTIFACT = { name: "report.md", blob_id: "art-1", bytes: 3, url: "http://127.0.0.1/blobs/x" };
+const ARTIFACT = { name: "report.md", blob_id: "art-1", bytes: 3, node: "NODE02" };
 
 const RECENT: PodTaskRow[] = [
   {
@@ -147,12 +148,14 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
     workspace: () => ({
       root: "/data/workgroups/wg",
       notes: "/data/workgroups/wg/notes",
-      inputs: "/data/workgroups/wg/inputs",
       state: "/data/state/wg",
       notes_files: ["STATUS.md"],
-      inputs_dirs: [],
     }),
     subscribe: () => () => {},
+    blob: async (node, blobId) => {
+      calls.push(`blob:${node}/${blobId}`);
+      return { stream: Readable.from([Buffer.from("file bytes")]), size: 10 };
+    },
     ...overrides,
   };
   return Object.assign(admin, { calls });
@@ -200,7 +203,49 @@ async function invoke(handler: (request: never, response: never) => Promise<void
   return { status, body: body.length === 0 ? null : JSON.parse(body) };
 }
 
+/** A response that collects what the bridge streams. */
+function streamResponse() {
+  const sink = new PassThrough();
+  const chunks: Buffer[] = [];
+  sink.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const headers: Record<string, string> = {};
+  const response = Object.assign(sink, {
+    statusCode: 0,
+    setHeader(name: string, value: string) {
+      headers[name] = value;
+    },
+    writeHead(code: number) {
+      response.statusCode = code;
+      return response;
+    },
+  });
+  return { response, headers, body: () => Buffer.concat(chunks).toString("utf8") };
+}
+
 describe("panel HTTP bridge", () => {
+  it("streams a member's file this node fetched, named by node and sha256", async () => {
+    const admin = fakeAdmin() as PodAdmin & { calls: string[] };
+    const node = fakeNodeId("publisher");
+    const blobId = "c".repeat(64);
+    const { response, headers, body } = streamResponse();
+    const request = Object.assign(Readable.from([]), {
+      method: "GET",
+      url: `${POD_API_PREFIX}/blob?node=${node}&blob=${blobId}`,
+      headers: { host: "127.0.0.1:7775", "x-orca-pod": "1" },
+      socket: { remoteAddress: "127.0.0.1" },
+    });
+    await createPodApiHandler(admin)(request as never, response as never);
+    expect(response.statusCode).toBe(200);
+    expect(headers["content-length"]).toBe("10");
+    expect(body()).toBe("file bytes");
+    expect(admin.calls).toContain(`blob:${node}/${blobId}`);
+  });
+
+  it("refuses a blob request that does not name a published file", async () => {
+    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/blob?node=x&blob=y` });
+    expect(result.status).toBe(400);
+  });
+
   it("serves one state snapshot with members, recent tasks and pending approvals", async () => {
     const admin = fakeAdmin();
     const result = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/state` });

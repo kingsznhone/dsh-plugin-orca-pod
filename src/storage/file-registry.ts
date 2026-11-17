@@ -14,8 +14,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { resolve } from "node:path";
+
+import { PodError } from "../kernel/errors.ts";
 
 import { DEFAULT_BLOB_TTL_S, type FileBlob, type FileBlobRegistry, type FileBlobStore } from "./stores.ts";
 
@@ -54,6 +56,13 @@ export function createFileBlobRegistry(store: FileBlobStore): FileBlobRegistry {
     },
     has(blobId: string): boolean {
       return store.get(blobId) !== undefined;
+    },
+    open(blobId: string) {
+      const file = store.get(blobId);
+      if (!file) throw new PodError("blob_not_found");
+      if (file.expires_at !== null && Date.parse(file.expires_at) <= Date.now()) throw new PodError("blob_expired");
+      if (!existsSync(file.path)) throw new PodError("blob_file_missing");
+      return { stream: createReadStream(file.path), size: file.size };
     },
   };
 }

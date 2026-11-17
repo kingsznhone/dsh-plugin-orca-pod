@@ -38,16 +38,17 @@ async function waitForTerminal(runner: TaskRunner, taskId: string, timeoutMs = 5
 }
 
 describe("task prompt", () => {
-  it("tells the agent that shared files are links, and how to hand files on", async () => {
+  it("tells the agent how files are named, fetched and handed on", async () => {
     const prompts: string[] = [];
     const runner = createTestRunner({ executor: promptRecorder(prompts) });
-    const view = runner.submit({ message: message("summarize https://origin.test/blobs/abc?exp=1&sig=x") });
+    const view = runner.submit({ message: message("summarize the report") });
     await waitForTerminal(runner, view.id);
 
     const preamble = prompts[0]!.slice(0, prompts[0]!.indexOf("<untrusted-task-input>"));
-    expect(preamble).toContain("Files the origin shares are links in the task text");
+    expect(preamble).toContain("Files are named <orca node id>/<sha256>");
+    expect(preamble).toContain("fetch <orca node id>/<sha256> --output <file> --json");
     expect(preamble).toContain("publish <path> --json");
-    expect(preamble).toContain("put the URLs in the task text you send");
+    expect(preamble).toContain("put the names in the task text you send");
   });
 
   it("lists workspace notes from earlier tasks in the prompt appendix", async () => {

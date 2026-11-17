@@ -15,7 +15,6 @@ const AUTH_SCHEME = "Pod";
 const REQUEST_DOMAIN = "orca-pod/request";
 const ADMISSION_DOMAIN: Record<AdmissionKind, string> = { join: "orca-pod/join", heartbeat: "orca-pod/heartbeat" };
 const GRANT_DOMAIN = "orca-pod/grant";
-const BLOB_LINK_DOMAIN = "orca-pod/blob-link";
 const KEY_DERIVATION_SALT = "orca-pod";
 /** scrypt parameters: ~32 MiB, one derivation per start, ~100ms (§7.1). */
 const KEY_DERIVATION_N = 1 << 15;
@@ -329,22 +328,4 @@ export function signGrant(identity: NodeIdentity, grant: Grant): SignedGrant {
 export function verifyGrant(originOrcaNodeId: OrcaNodeId, grant: SignedGrant): boolean {
   if (typeof grant.sig !== "string" || grant.sig.length === 0) return false;
   return verifyWithNodeId(originOrcaNodeId, grantSignatureInput(grant), grant.sig);
-}
-
-/**
- * Capability URL for a blob (§5.6): `GET /blobs/:id?exp&sig` works without a
- * request signature, so a summary can paste the URL as-is. The URL is signed by
- * the serving node itself and verified with its own public key.
- */
-export function blobLinkSignature(identity: NodeIdentity, blobId: string, exp: string): string {
-  return signWithIdentity(identity, `${BLOB_LINK_DOMAIN}|${blobId}|${exp}`);
-}
-
-/** The capability URL of a blob on the node at `endpoint`; `exp` is epoch seconds, as text (§5.6). */
-export function signedBlobUrl(identity: NodeIdentity, endpoint: string, blobId: string, exp: string): string {
-  return `${endpoint.replace(/\/+$/, "")}/blobs/${blobId}?exp=${exp}&sig=${blobLinkSignature(identity, blobId, exp)}`;
-}
-
-export function verifyBlobLinkSignature(orcaNodeId: OrcaNodeId, blobId: string, exp: string, sig: string): boolean {
-  return verifyWithNodeId(orcaNodeId, `${BLOB_LINK_DOMAIN}|${blobId}|${exp}`, sig);
 }

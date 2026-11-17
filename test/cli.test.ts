@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   configPath,
   createOrcaNodeConfig,
+  endpointWriteback,
   saveConfig,
   validateConfig,
   type OrcaNodeConfig,
@@ -59,8 +60,8 @@ describe("orca-node CLI", () => {
     await saveConfig(configPath(root), config);
     node = createOrcaNode({ config, storage: createPersistentStorage(config) });
     endpoint = (await node.start()).url;
-    // `serve` records the listen address; tests start the node in-process, so do it here.
-    await saveConfig(configPath(root), { ...config, endpoints: [endpoint] });
+    // `serve` records the listen address and port; tests start the node in-process, so do it here.
+    await saveConfig(configPath(root), endpointWriteback(config, endpoint) ?? config);
   });
 
   afterAll(async () => {
@@ -266,7 +267,7 @@ describe("orca-node CLI", () => {
     expect(escalated.stderr).toContain("not waiting for permission");
   });
 
-  it("publishes a produced file as a signed blob URL without any HTTP route", async () => {
+  it("publishes a file under <node id>/<sha256> and fetches it back through the node", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-cli-publish-"));
     const filePath = join(dir, "report.md");
     const content = Buffer.from("# cli publish\n");
@@ -274,13 +275,15 @@ describe("orca-node CLI", () => {
 
     const published = await runCli(["--data-root", root, "publish", filePath, "--json"]);
     expect(published.code, published.stderr).toBe(0);
-    const body = JSON.parse(published.stdout) as { blob_id: string; size: number; url: string };
-    expect(body.blob_id).toBe(bodySha256(content));
+    const body = JSON.parse(published.stdout) as { ref: string; size: number };
+    expect(body.ref).toBe(`${node.orcaNodeId}/${bodySha256(content)}`);
     expect(body.size).toBe(content.length);
 
-    const response = await fetch(body.url);
-    expect(response.status).toBe(200);
-    expect(Buffer.from(await response.arrayBuffer()).equals(content)).toBe(true);
+    const output = join(dir, "copy.md");
+    const fetched = await runCli(["--data-root", root, "fetch", body.ref, "--output", output, "--json"]);
+    expect(fetched.code, fetched.stderr).toBe(0);
+    expect(JSON.parse(fetched.stdout)).toEqual({ path: output, size: content.length });
+    expect((await readFile(output)).equals(content)).toBe(true);
   });
 });
 

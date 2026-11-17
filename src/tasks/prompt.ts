@@ -1,8 +1,8 @@
 /**
  * A task's prompt (§6.7, §6.14): the node's own trusted preamble, the notes
  * left by earlier tasks, and the origin's text last, inside an untrusted block.
- * Files the origin shares arrive as links in that text (§5.6); the agent
- * fetches what it needs.
+ * Files the origin shares are named in that text as `<node id>/<sha256>`
+ * (§5.6); the agent fetches what it needs.
  */
 
 import { readdir } from "node:fs/promises";
@@ -63,10 +63,11 @@ function preamble({ taskId, selfOrcaNodeId, dataRoot }: PromptParts): string {
     `then list what you already finished, what is blocked, and what the origin should provide or rerun.`,
     `A required peer can be offline: retry the same command at most once after a few seconds; do not poll for long.`,
     `A child task that cannot continue ends on its own with its own BLOCKED report; do not wait on it.`,
-    `Files the origin shares are links in the task text: download the ones you need into the workspace (curl -fL -o <file> <url>).`,
-    `To share a file with the origin, attach a blob URL to your summary:`,
+    `Files are named <orca node id>/<sha256>. Fetch one the task text names into the workspace with:`,
+    `  ${cli} fetch <orca node id>/<sha256> --output <file> --json`,
+    `To share a file with the origin, publish it and put the name it prints in your summary:`,
     `  ${cli} publish <path> --json`,
-    `  To hand files to a child task, publish them the same way and put the URLs in the task text you send.`,
+    `  To hand files to a child task, publish them the same way and put the names in the task text you send.`,
     `Never approve your own permission requests; escalate them instead.`,
   ].join("\n");
 }

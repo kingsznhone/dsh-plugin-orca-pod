@@ -32,6 +32,8 @@ export interface TrackerNode {
   getTask(peerUrl: string, taskId: string): Promise<TaskView>;
   /** Persist the dispatching agent so tracking can resume after a host restart. */
   annotateDispatch(taskId: string, agentId: string): void;
+  /** The member behind a URL, so a task's files can be named `<node id>/<sha256>` (§5.6). */
+  nodeIdOf(endpoint: string): string | undefined;
 }
 
 /** Timing knobs; every value has a production default. */
@@ -122,7 +124,7 @@ function denyUntrustedBlockBreak(text: string): string {
 }
 
 /** One terminal task reduced to the line shown to the agent. */
-export function taskNoticeLine(view: TaskView, peer: string): string {
+export function taskNoticeLine(view: TaskView, peer: string, node?: string): string {
   const text = view.status.message?.parts
     ?.map((part) => (part.kind === "text" ? part.text : ""))
     .join(" ")
@@ -135,8 +137,10 @@ export function taskNoticeLine(view: TaskView, peer: string): string {
   const parts = [`task ${view.id} on ${peer} is ${state}`];
   if (view.status.reason) parts.push(`reason: ${view.status.reason}`);
   if (view.artifacts && view.artifacts.length > 0) {
+    // Named the way `orca-node fetch` takes them, when the publisher is known (§5.6).
+    const name = (id: string): string => (node === undefined ? id : `${node}/${id}`);
     parts.push(
-      `artifacts: ${view.artifacts.map((artifact) => `${artifact.name} (${artifact.artifactId})`).join(", ")}`,
+      `artifacts: ${view.artifacts.map((artifact) => `${artifact.name} (${name(artifact.artifactId)})`).join(", ")}`,
     );
   }
   parts.push(
@@ -332,7 +336,7 @@ export function createTracker(
       batch.lines.push(
         task.kind === "interrupted"
           ? trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
-          : taskNoticeLine(task.view, task.peer),
+          : taskNoticeLine(task.view, task.peer, getNode()?.nodeIdOf(task.peer)),
       );
       batches.set(task.agent.id, batch);
     }

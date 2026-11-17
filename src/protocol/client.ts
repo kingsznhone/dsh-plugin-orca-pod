@@ -34,6 +34,9 @@ export type JsonRequest<S extends z.ZodType> = {
   reply: S;
 };
 
+/** A file a peer is sending: its bytes as they arrive, and their count when the peer said it. */
+export type Download = { body: ReadableStream<Uint8Array>; size: number | undefined };
+
 export type PeerClient = {
   /** Node id behind a URL: this node, a URL it dialed, or a member that advertises it. */
   idOf(endpoint: string): OrcaNodeId | undefined;
@@ -46,4 +49,10 @@ export type PeerClient = {
   call<S extends z.ZodType>(endpoint: string, request: JsonRequest<S>, options?: CallOptions): Promise<z.output<S>>;
   /** Signed JSON-RPC call to `/a2a`; every method answers with a task view. */
   rpc<M extends A2AMethod>(endpoint: string, method: M, params: A2AParams<M>, options?: CallOptions): Promise<TaskView>;
+  /**
+   * Signed `GET` of a file, streamed: no response cap, and the deadline covers
+   * the answer only, not the transfer. A failed reply is the same typed error
+   * as for `call`.
+   */
+  download(endpoint: string, path: string, options?: CallOptions): Promise<Download>;
 };
