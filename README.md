@@ -27,7 +27,7 @@ orca-pod/
 │   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce）、grants（grant 校验与转发）
 │   ├── storage/          # stores（全部存储接口）；实现 memory / file-registry（publish）/ sqlite
 │   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
-│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、prompt（任务书）、workspace、delegation（发起侧派发、审批、上交、child-link；childPodMetadata；派发日志语义）
+│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、prompt（任务书）、workspace、delegation（发起侧派发、审批签 grant、派发日志语义）
 │   ├── execution/        # executor 契约、echo、process（子进程公共件）、acp/（config / connection / session / permissions / executor）
 │   ├── transport/        # peer-client（唯一的出站客户端）、net（地址归一化、回环、端口）、gateway/（入站 HTTP 路由）
 │   ├── node/             # orca-node（组合根 createOrcaNode）、config（config.json）、settings（字段表）、harness（测试用多节点）
@@ -69,7 +69,7 @@ npx orca-pod install --workgroup orca-demo -p 'secret' --peer http://192.168.86.
 npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 ```
 
-节点只监听节点端口（默认 11811）；不要通过代理暴露 `/cluster/child-link` 与 `/cluster/task`（它们只接受回环请求）。
+节点只监听节点端口（默认 11811）；不要通过代理暴露 `/cluster/blob`（它只接受回环请求）。
 
 ## 配置
 
@@ -98,7 +98,7 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 
 `config.json` 首次启动生成（身份 + 派生密钥，0600），同一 `data_root` 下复用，因此 node id 跨重启保持不变；改密码 = 重建组。ACP/CLI 子会话从 executor 收到 `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT`。
 
-任务的权限模式继承发起会话（没继承到就 `read-only`），本机 `permission_mode` 只能收窄；审批默认无限等待，只有配置了 `approval_timeout_s` 才在到点自动拒绝。多跳没有深度上限：子任务由 agent 显式派发（CLI），环靠 `pod.chain` 检测（`403 ancestor_call_forbidden`）。
+任务的权限模式继承发起会话（没继承到就 `read-only`），本机 `permission_mode` 只能收窄；审批默认无限等待，只有配置了 `approval_timeout_s` 才在到点自动拒绝。任务只有一跳：执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 在里面拒绝——这是防 agent 转手的非对抗性约束，不是密钥隔离。
 
 ## 工具
 
@@ -116,21 +116,20 @@ npx orca-pod install --dry-run --workgroup orca-demo -p 'secret'
 
 ## CLI
 
-无头/ACP 会话里没有插件工具，agent 用自带 shell 调 `orca-node` 子命令（任务书的前言会给出 CLI 路径与用法）：
+终端、脚本与无头会话用 `orca-node` 子命令；执行任务的 ACP 会话只用得上 `publish`/`fetch`（任务书的前言会给出 CLI 路径与用法）：
 
 ```bash
 orca-node serve    --config <path> [--peer <url>] [--bind <host>] [--port <n>]   # 启动一个节点
-orca-node send     --peer <url> --text <text|-> [--local-task <this task>] [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
+orca-node send     --peer <url> --text <text|-> [--context <id>] [--permission-mode <mode>] [--model <provider/model>] [--reasoning-effort <effort>] [--echo <json>] [--json]
 orca-node status   --peer <url> --task <id> [--json]
-orca-node wait     --peer <url> --task <id> [--local-task <this task>] [--timeout <s>] [--json]
-orca-node escalate --peer <child> --task <child task> --local-task <this task> [--timeout <s>] [--json]
+orca-node wait     --peer <url> --task <id> [--timeout <s>] [--json]
 orca-node publish  <path> [--ttl <s>] [--json]       # 登记本机文件，打印 <节点 id>/<sha256>（写本机 SQLite，无 HTTP 路由）
 orca-node fetch    <节点 id>/<sha256> [--output <path>] [--json]   # 由本机节点找到发布方并拉取，校验 sha256 后落盘
 orca-node log      [--json]                          # 本节点派发过的任务（读派发日志）
 orca-node members  [--peer <url>] [--json]
 ```
 
-共用选项：`--config <path>` 或 `--data-root <path>`（默认 `$ORCA_POD_HOME`，否则 `$DSH_PROFILE_DIR/orca-pod`，否则 `$DSH_HOME/orca-pod`，再否则 `~/.dsh/orca-pod`；在 profile 之外的终端里运行时请用 `--data-root` 指向插件所在 profile 的目录）。`wait` 退出码：0 完成 / 1 失败或取消 / 2 仍在跑 / 3 需要权限；`escalate`：0 已批准恢复 / 1 被拒绝 / 2 超时。`--local-task` 让节点监视子任务并在它要权限时把本任务挂起上交，由 origin 的人决定一次。CLI 读本机 `config.json`，用本 orca node 的身份签名；它不是节点，不监听端口，也不会替你 join 陌生地址（先 `serve --peer <url>`）。
+共用选项：`--config <path>` 或 `--data-root <path>`（默认 `$ORCA_POD_HOME`，否则 `$DSH_PROFILE_DIR/orca-pod`，否则 `$DSH_HOME/orca-pod`，再否则 `~/.dsh/orca-pod`；在 profile 之外的终端里运行时请用 `--data-root` 指向插件所在 profile 的目录）。`wait` 退出码：0 完成 / 1 失败或取消 / 2 仍在跑 / 3 需要权限（由 origin 节点 UI 上的人决定）。CLI 读本机 `config.json`，用本 orca node 的身份签名；它不是节点，不监听端口，也不会替你 join 陌生地址（先 `serve --peer <url>`）。
 
 ## 开发
 

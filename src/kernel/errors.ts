@@ -17,7 +17,6 @@ export const POD_ERROR_STATUS = {
   not_a_member: 403,
   local_only: 403,
   not_task_origin: 403,
-  ancestor_call_forbidden: 403,
   // Malformed or unsupported requests.
   bad_request: 400,
   bad_echo_script: 400,
@@ -33,7 +32,6 @@ export const POD_ERROR_STATUS = {
   permission_denied: 409,
   grant_invalid: 409,
   grant_expired: 409,
-  escalation_required: 409,
   // Gone.
   blob_expired: 410,
   blob_file_missing: 410,

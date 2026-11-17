@@ -50,11 +50,9 @@ describe("A2A task surface", () => {
     });
     expect(submitted.kind).toBe("task");
     expect(["submitted", "working"]).toContain(submitted.status.state);
-    // The view names the origin of the delegation tree, so the panel can show it
+    // The view names the node that dispatched the task, so the panel can show it
     // without a second lookup (§9.2).
-    expect((submitted.metadata?.pod as { root_origin?: string } | undefined)?.root_origin).toBe(
-      origin.self().orca_node_id,
-    );
+    expect(submitted.metadata?.pod?.origin_orca_node).toBe(origin.self().orca_node_id);
 
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("hello pod");

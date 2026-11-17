@@ -293,8 +293,7 @@ export function verifyAdmission(kind: AdmissionKind, key: Buffer, admission: Adm
 }
 
 // ---------------------------------------------------------------------------
-// Grants (§7.11): the origin node signs its human decision with its own key;
-// deriving a child grant keeps the origin signature verifiable at every hop.
+// Grants (§7.11): the origin node signs its human decision with its own key.
 // ---------------------------------------------------------------------------
 
 /**
@@ -312,7 +311,6 @@ function grantSignatureInput(grant: Grant): string {
     target_orca_node: grant.target_orca_node,
     tool: grant.tool,
     mode: grant.mode,
-    chain: grant.chain,
     request_id: grant.request_id,
     issued_at: grant.issued_at,
     expires_at: grant.expires_at,
@@ -324,7 +322,7 @@ export function signGrant(identity: NodeIdentity, grant: Grant): SignedGrant {
   return { ...grant, sig };
 }
 
-/** Verify a grant against the origin node that signed it (chain[0]). */
+/** Verify a grant against the origin node that signed it. */
 export function verifyGrant(originOrcaNodeId: OrcaNodeId, grant: SignedGrant): boolean {
   if (typeof grant.sig !== "string" || grant.sig.length === 0) return false;
   return verifyWithNodeId(originOrcaNodeId, grantSignatureInput(grant), grant.sig);

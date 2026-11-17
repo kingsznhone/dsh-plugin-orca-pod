@@ -37,9 +37,6 @@ const idleTasks: TaskRunner = {
   busy() {
     return null;
   },
-  escalate() {
-    throw new Error("not used");
-  },
   recover() {
     return 0;
   },
@@ -83,7 +80,6 @@ function createHarness(): Harness {
       orca_node_id: orcaNodeId,
       workgroup_id: WORKGROUP,
       self: () => selfRecord(identity),
-      linkChildTask: () => {},
       fetchBlob: async () => {
         throw new Error("not used");
       },
@@ -384,7 +380,8 @@ describe("workgroup membership gate (C1)", () => {
     const harness = createHarness();
     const stranger = generateNodeIdentity();
     harness.peers.upsert(peerView(stranger, "http://stranger.test"));
-    const url = "/cluster/task?task=missing";
+    // A malformed fetch: past the access check it fails validation, so it never dials anyone.
+    const url = "/cluster/blob?node=x&blob=y";
     const call = (options: { remoteAddress?: string; headers?: Record<string, string>; as?: NodeIdentity }) =>
       harness.app.inject({
         method: "GET",
@@ -396,7 +393,7 @@ describe("workgroup membership gate (C1)", () => {
         },
       });
 
-    expect((await call({})).statusCode).toBe(404);
+    expect((await call({})).statusCode).toBe(400);
     for (const rejected of [
       await call({ remoteAddress: "10.0.0.5" }),
       await call({ headers: { "x-forwarded-for": "10.0.0.5" } }),

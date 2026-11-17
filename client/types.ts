@@ -20,7 +20,6 @@ export type {
   PodAdvancedConfig,
   PodApproval,
   PodArtifact,
-  PodChainEntry,
   PodConfigView,
   PodPeer,
   PodTaskDetail,
@@ -31,7 +30,6 @@ export type { PodActions, PodReads, PodState } from "../src/plugin/panel-api.ts"
 export type { PanelPatch } from "../src/node/settings.ts";
 export type { ModelOffer, ModelSelection } from "../src/protocol/model.ts";
 export type { PeerView, RuntimeInfo } from "../src/protocol/peer.ts";
-export type { PermissionMode } from "../src/protocol/permission.ts";
 
 /** One namespace's strings for one language. */
 export type LocaleDict = Record<string, string>;

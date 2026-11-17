@@ -22,7 +22,7 @@ interface ApprovalPrompt {
   request_id: string;
   tool: string;
   requested: unknown;
-  /** Full request so the UI can show the relay chain and the real requester. */
+  /** Full request, so the UI can show who asks and the request it previews. */
   request: PermissionRequest;
   agent_id: string;
   created_at: string;

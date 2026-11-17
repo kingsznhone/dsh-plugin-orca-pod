@@ -1,16 +1,9 @@
 /**
- * Value lists the protocol fixes and the panel offers as choices.
+ * Value lists the protocol offers as panel choices.
  *
- * This module imports nothing, so the client bundle can take these lists from
- * here without pulling in zod; the schemas build on them (`permission.ts`,
- * `model.ts`).
+ * Kept here because the client bundle may not import a host package at runtime;
+ * the type-only import below is erased when that bundle is built.
  */
-
-/** Permission modes in rank order: a later mode lets the agent do more (§7.10). */
-export const PERMISSION_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
-
-/** How much an agent may do on the orca node running its task. */
-export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
  * Reasoning efforts DSH's providers offer today. The protocol treats an effort

@@ -11,15 +11,10 @@
 ```json
 {
   "pod": {
-    "hop": 1,
-    "chain": ["<A 的 orca_node_id>"],
-    "root": "<根 task id>",
-    "root_origin": "<A 的 orca_node_id>",
     "permission_mode": "workspace-write",
     "model": { "provider": "deepseek", "model": "deepseek-flash", "reasoning_effort": "high" },
     "reasoning_effort": "high",
-    "task_ttl_s": 1800,
-    "inputs": [{ "blob_id": "<sha256>", "name": "input.zip" }]
+    "task_ttl_s": 1800
   }
 }
 ```
@@ -28,14 +23,11 @@
 
 - `task_id` 由 target 生成（ULID 形状：48 位毫秒时间戳 + 80 位随机，26 字符，按创建时间排序，不可枚举）；origin 在派发日志里记 `(peer, task_id)`。
 - **origin 是请求的签名者**（`origin_orca_node`），不由元数据声明。`context_id` 取 `message.contextId`，缺省等于 task id；目标 orca node 把 `(origin, context_id)` 映射到本地 ACP session，cwd 固定为 workgroup 根（[§6.10](06-execution.md#610-sessioncontext-与-workspace-的绑定)）。
-- `pod.hop`：任务已经跨了几跳，只作信息与排查，**没有上限**——一个 workgroup 就是几台机器，环检测靠 `chain` 不靠深度。非负整数。
-- `pod.chain`：经手派发的 orca_node_id 列表（祖先路径），只用于环检测，不做路由；每个派发子任务的节点把自己追加进去。`pod.root_origin`：整棵委派树的发起节点；每个接收方都把它写进自己存下的任务，两条子任务路径（CLI `--local-task`、本地任务委派）原样带下去。target 若发现自己在 `chain` 中、或自己就是 `root_origin` → `403 ancestor_call_forbidden`。用插件工具派发的根任务不带 `chain`，所以“根 origin 不能被回调”必须靠 `root_origin` 判断，A → B → A 因此也会被挡住。被挡住时，agent 应把问题写进结论文本（`BLOCKED: …`）交还 origin，而不是换条路再调回去。仍然拦不住的是 agent 不带 `--local-task` 直接发一个新的根任务（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
-- `pod.root`：这条调用树的根 task id；`pod.root_origin`：根任务的 origin。`root_origin` 缺省取本任务的 origin，并写回 task 视图的 `metadata.pod`，grant 只认根 origin 的签名（[§7.11](07-security.md#711-grant)）。
-- **`hop`/`chain`/`root`/`root_origin` 由发起方的 CLI 在客户端拼装**：`orca-node send --local-task <本机 task>` 通过回环的 `GET /cluster/task` 读父任务视图，写成 `hop+1`、`chain + [本机 id]`、沿用 `root`/`root_origin`，并在没有显式 `--permission-mode` 时继承父任务的模式。target 只校验形状与环，不重算这些字段；这意味着节点上的 agent 能自己写它们（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
+- `pod.origin_orca_node`：target 在建任务时按签名者写进任务视图，让读任务的人（面板）不必再查一次；调用方自己带的值被覆盖。
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`）；缺省按 `read-only`；本机 `permission_mode` 是上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。非法值 → `400 bad_request`。
 - `pod.model` / `pod.reasoning_effort`（可选）：origin 想用的模型与 effort；由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
 - `pod.task_ttl_s`（可选）：origin 期望的任务寿命；实际寿命取它与本机 `task_timeout_s`（默认 3600）的较小者。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
-- 任务本身不转发：多跳是 target 上的 agent **新建**子任务，不是把原任务转出去；原任务仍只属于它的 origin。
+- **任务只有一跳**：任务不转发，执行任务的 agent 也不能再派新任务（CLI 与插件的 `send` 在执行器会话里拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。做不完就以 `BLOCKED:` 结论交回 origin，由 origin 的会话决定把哪部分派给谁。元数据里因此没有调用链、根任务或跳数。
 - 元数据是不可信输入：在 `submit` 时一次性解析成类型化的 `TaskMeta`，之后的代码不再读原始 metadata；类型不合法 → `400 bad_request`。
 
 ### 5.2 任务回报
@@ -83,7 +75,7 @@ tracker 的行为：
 要点：
 
 - **合并**：2s 窗口内到达的多个终态按会话合成一条 notice、一次 `followup()`；五个任务同时完成不该叫醒五次。
-- **预算**：连续后台唤醒轮次 ≤3（中间没有用户输入）。**用户给该 agent 发消息时重置**（监听 `agent/inbox/claimed` 且 `source.kind === "user"`）。这是防 A→B→A 自动循环烧 token 的闸，不是防正常续跑。
+- **预算**：连续后台唤醒轮次 ≤3（中间没有用户输入）。**用户给该 agent 发消息时重置**（监听 `agent/inbox/claimed` 且 `source.kind === "user"`）。这是防后台通知反复叫醒同一会话烧 token 的闸，不是防正常续跑。
 - **不反向**：唤醒是 origin 自己对自己做的，不涉及任何 target→origin 的连接。
 - `followup()` 只对**仍然活着**的 session 有效：DSH 进程里还有这个 `Agent` 实例，插件才有对象可唤醒。会话已关闭/归档时没有对象，任务结果留在目标侧任务存储里，靠 `status` 重读——不存在“插件把 DSH 会话从磁盘拉起来”。
 - 会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`status` 随时可重放，插件内存只是缓存。
@@ -97,7 +89,7 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 
 - ACP：发 `session/cancel`；2s 宽限后如果该 session 仍是连接上正在跑的那个，就关闭连接、终止子进程树（避免误杀已复用同一连接的下一个任务）；
 - Echo：中止脚本。
 
-取消后 task 置 `canceled`；如果它正挂着一个替子任务上交的权限请求，同时向子任务发 `permission_denied`，子任务随之失败而不是悬挂。task 已是终态时原样返回，不报错、不改状态。
+取消后 task 置 `canceled`；挂着的权限请求随之作废（ACP 侧回 `cancelled`）。task 已是终态时原样返回，不报错、不改状态。
 
 **谁可以取消**：只有 task 的 origin（以及执行该 task 的本机节点自身，用于本地控制路径）。同组其他成员可以 `tasks/get` 读，但 `tasks/cancel` 返回 `403 not_task_origin`——共享 workgroup 密钥下“同组”不等于“可以互相杀任务”，取消按任务归属校验而不是按签名身份。
 

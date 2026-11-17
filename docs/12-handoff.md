@@ -57,11 +57,11 @@ Hard constraints that must not be undone:
   the user. No server-side queue. Endpoints are an ordered list (1-8, primary
   first); peers dial them in order. The protocol never carries
   paths (task input names are bare file names).
-- Tasks are never forwarded: a child task is a new task an agent creates
-  explicitly through the CLI (send --local-task). The CLI assembles hop/chain/root;
-  there is no depth limit (a workgroup is a few machines) and the loop guard is
-  the ancestor chain (403 ancestor_call_forbidden). Nodes never wake each other
-  except by an origin-issued request.
+- Tasks are single-hop: a task is never forwarded, and the agent running it
+  cannot dispatch another one (the executor sets ORCA_POD_IN_TASK=1; the CLI's
+  and the plugin's send refuse). A task it cannot finish ends with a BLOCKED:
+  report. This is a non-adversarial guard, not key isolation. Nodes never wake
+  each other except by an origin-issued request.
 - Polling lives in the Host plugin, not in the agent's shell: orca_pod's send
   method returns a task_id immediately; a background tracker polls tasks/get every
   second with backoff, and completion reaches the session as a compact

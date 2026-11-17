@@ -1,28 +1,25 @@
-/** `orca-node send`: dispatch a task to a peer, with an inherited delegation chain. */
+/** `orca-node send`: dispatch a task to a peer. */
 
 import process from "node:process";
 
-import { childPodMetadata } from "../tasks/delegation.ts";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { parseEchoScript } from "../execution/echo.ts";
-import { errorMessage } from "../kernel/errors.ts";
+import { runningInTask } from "../kernel/entry.ts";
 import { parseSchema, describeIssue } from "../kernel/schema.ts";
-import { AckSchema } from "../protocol/a2a.ts";
-import { PermissionModeSchema, type PermissionMode } from "../protocol/permission.ts";
+import { SandboxModeSchema } from "../protocol/permission.ts";
+import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import {
   PodTaskMetadataSchema,
   TaskMetadataSchema,
-  TaskViewSchema,
   type A2AMessage,
   type PodTaskMetadata,
   type TaskMetadata,
 } from "../protocol/task.ts";
 import { parseModelSpec } from "../protocol/model.ts";
-import type { PeerClient } from "../protocol/client.ts";
 import { normalizePeerUrl } from "../transport/net.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,
-  localControlEndpoint,
   peerClient,
   printView,
   required,
@@ -30,13 +27,11 @@ import {
   type Flags,
   type OptionName,
 } from "./shared.ts";
-import type { OrcaNodeConfig } from "../node/config.ts";
 
 export const options: readonly OptionName[] = [
   ...COMMON_OPTIONS,
   "peer",
   "text",
-  "local-task",
   "context",
   "permission-mode",
   "model",
@@ -64,9 +59,9 @@ function parseMetadataFlag(raw: string | undefined): { metadata: TaskMetadata; p
   return { metadata: parsed.value, pod: pod.value };
 }
 
-function permissionModeFlag(raw: string): PermissionMode {
-  const parsed = parseSchema(PermissionModeSchema, raw);
-  if (!parsed.ok) throw new Error(`--permission-mode must be read-only, workspace-write or danger-full-access`);
+function permissionModeFlag(raw: string): SandboxMode {
+  const parsed = parseSchema(SandboxModeSchema, raw);
+  if (!parsed.ok) throw new Error(`--permission-mode must be ${SANDBOX_MODES.join(", ")}`);
   return parsed.value;
 }
 
@@ -93,66 +88,27 @@ function modelFields(flags: Flags): Pick<PodTaskMetadata, "model" | "reasoning_e
   return reasoningFlag === undefined ? {} : { reasoning_effort: reasoningFlag };
 }
 
-/**
- * Inherit the delegation chain from the local parent task (§5.1). The target
- * validates `pod.chain` and later matches an origin-signed grant against it, so
- * a permission escalated through this node can resume the child (§7.12). The
- * root origin rides along so a grant from the top of the tree can be verified
- * at the leaf without trusting the middle hops (§7.11).
- */
-async function inheritedFields(
-  client: PeerClient,
-  config: OrcaNodeConfig,
-  parentLocalTask: string,
-): Promise<PodTaskMetadata> {
-  const parentView = await client.call(localControlEndpoint(config), {
-    method: "GET",
-    path: `/cluster/task?task=${encodeURIComponent(parentLocalTask)}`,
-    reply: TaskViewSchema,
-  });
-  const parentPod = parseSchema(PodTaskMetadataSchema, parentView.metadata?.pod ?? {});
-  return childPodMetadata(parentPod.ok ? parentPod.value : undefined, parentLocalTask, config.orca_node_id);
-}
-
-/** §7.12: register the child link so this node relays the child's permission requests automatically. */
-async function registerChildLink(
-  client: PeerClient,
-  config: OrcaNodeConfig,
-  link: { parentTaskId: string; peer: string; childTaskId: string },
-): Promise<void> {
-  try {
-    await client.call(localControlEndpoint(config), {
-      method: "POST",
-      path: "/cluster/child-link",
-      payload: { parent_task_id: link.parentTaskId, peer: link.peer, child_task_id: link.childTaskId },
-      reply: AckSchema,
-    });
-  } catch (error) {
-    process.stderr.write(`orca-pod: could not register child link: ${errorMessage(error)}\n`);
-  }
-}
-
 export async function run({ flags }: CommandArgs): Promise<number> {
+  // Tasks are single-hop: an agent running a task reports back instead of dispatching (§7.9).
+  if (runningInTask()) {
+    throw new Error(
+      "send is not available inside a task: tasks are single-hop. If you cannot finish alone, end your task with a BLOCKED: report for the origin.",
+    );
+  }
   const config = await loadNodeConfig(flags);
   const peer = normalizePeerUrl(required(flags.peer, "peer"));
   const client = await peerClient(config, peer);
   const raw = required(flags.text, "text");
   const text = raw === "-" ? await readStdin() : raw;
   if (text.length === 0) throw new Error("--text must not be empty (pipe text with --text -)");
-  const parentLocalTask = [flags["local-task"], process.env.ORCA_POD_PARENT_TASK].find(
-    (value) => value !== undefined && value.length > 0,
-  );
 
   const { metadata, pod: given } = parseMetadataFlag(flags.metadata);
-  // The flags override what `--metadata` carried; what the parent task passes on comes last,
-  // except that an explicit permission mode stays (B18: it is not narrowed against the parent's).
-  const inherited = parentLocalTask === undefined ? {} : await inheritedFields(client, config, parentLocalTask);
+  // The flags override what `--metadata` carried.
   const mode =
     flags["permission-mode"] === undefined ? given.permission_mode : permissionModeFlag(flags["permission-mode"]);
   const pod: PodTaskMetadata = {
     ...given,
     ...modelFields(flags),
-    ...inherited,
     ...(mode === undefined ? {} : { permission_mode: mode }),
   };
   const sent: TaskMetadata = {
@@ -169,9 +125,6 @@ export async function run({ flags }: CommandArgs): Promise<number> {
     message,
     metadata: Object.keys(sent).length > 0 ? sent : undefined,
   });
-  if (parentLocalTask !== undefined) {
-    await registerChildLink(client, config, { parentTaskId: parentLocalTask, peer, childTaskId: view.id });
-  }
   printView(view, flags);
   return 0;
 }

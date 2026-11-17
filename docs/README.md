@@ -51,7 +51,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - 每台机器上跑一个 **DSH 插件**（Pod 网关）：对外是 A2A server + 控制面，对内驱动本地 DSH。
 - 本地执行由 **LocalExecutor** 驱动，ACP 只走本地 stdio，绝不跨网络。
 - orca node 之间是 **full mesh**，10 台以内不做 ring、不做 gossip、不做中心调度器。
-- **没有隐式转发**：origin → target 是一次请求；target 上的 agent 想再派活，必须显式新建子任务（CLI），没有回调、没有广播。orca node 只被任务请求唤醒，忙时 429 而不是排队。
+- **任务只有一跳**：origin → target 是一次请求；target 上执行任务的 agent 不能再派任务（执行器会话里 `send` 拒绝），做不完就以 `BLOCKED:` 结论交回。没有回调、没有广播。orca node 只被任务请求唤醒，忙时 429 而不是排队。
 - **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
 - orca node 身份 = 首次启动生成的 **Ed25519 公钥**（`<data_root>/identity.json`，43 字符 base64url；面板显示缩略，如 `psB9aQ…3Zlw`）。节点用自己的私钥签每个请求，别人用公钥验签——id 就是公钥，可验证、不可伪造。
 - 入组 = `workgroup_id` + **非空密码**：密码只派生 `/cluster/join` 与每拍心跳的准入证明（HMAC）；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。

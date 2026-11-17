@@ -39,9 +39,6 @@ const idleTasks: TaskRunner = {
   busy() {
     return null;
   },
-  escalate() {
-    throw new Error("not used");
-  },
   recover() {
     return 0;
   },
@@ -92,7 +89,6 @@ function createHarness(
       orca_node_id: orcaNodeId,
       workgroup_id: wg("orca-dev"),
       self: () => selfRecord(identity),
-      linkChildTask: () => {},
       fetchBlob,
     },
     identity,
@@ -283,9 +279,6 @@ describe("a2a busy response", () => {
       },
       busy() {
         return holder;
-      },
-      escalate() {
-        throw new Error("not used");
       },
       recover() {
         return 0;

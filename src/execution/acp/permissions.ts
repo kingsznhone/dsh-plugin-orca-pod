@@ -7,7 +7,7 @@ import type {
   ToolKind,
 } from "@agentclientprotocol/sdk";
 
-import type { PermissionMode } from "../../protocol/permission.ts";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 
 /** What an ACP child asks permission for, as the executor reads it (not the protocol's `PermissionRequest`). */
 export type AcpPermissionAsk = {
@@ -36,7 +36,7 @@ export function parsePermissionRequest(params: RequestPermissionRequest): AcpPer
  * Auto-answer a permission request the inherited mode already covers (§7.10).
  * `null` means the request is outside the mode and must go to the origin.
  */
-export function autoDecision(mode: PermissionMode, kind: ToolKind | undefined): PermissionDecision | null {
+export function autoDecision(mode: SandboxMode, kind: ToolKind | undefined): PermissionDecision | null {
   if (mode === "danger-full-access") return "allow";
   const readable = kind === "read" || kind === "search" || kind === "think";
   if (mode === "read-only") return readable ? "allow" : "reject";

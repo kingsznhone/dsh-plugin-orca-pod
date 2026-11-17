@@ -107,7 +107,6 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
           [t("dtUpdated"), task.status.timestamp],
           !!task.status.reason && [t("dtReason"), task.status.reason],
           !!pod.model && [t("dtModel"), modelText(pod.model)],
-          pod.hop !== undefined && [t("dtTimeline"), `hop ${pod.hop}${pod.root ? ` · root ${short(pod.root)}` : ""}`],
           !!message && [t("dtMessage"), message],
         ]}
       />
@@ -121,7 +120,6 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
             [t("colState"), <StateText key={"state"} state={dispatch.state} />],
             [t("dtCreated"), dispatch.created_at],
             [t("dtUpdated"), dispatch.updated_at],
-            !!dispatch.parent_local_task_id && [t("dtTimeline"), short(dispatch.parent_local_task_id)],
             !!dispatch.last_error && [t("dtLastError"), <span className={ui.error}>{dispatch.last_error}</span>],
           ]}
         />

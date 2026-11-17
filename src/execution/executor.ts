@@ -3,10 +3,10 @@
  * events it gets back. Implementations live in `echo.ts` and `acp/executor.ts`.
  */
 
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { EchoScript } from "./echo.ts";
 import type { ModelSelection, ReasoningEffort } from "../protocol/model.ts";
-import type { PermissionMode } from "../protocol/permission.ts";
-import type { RequestedAccess, TaskRelay } from "../protocol/grant.ts";
+import type { RequestedAccess } from "../protocol/grant.ts";
 import type { OrcaNodeId } from "../protocol/peer.ts";
 
 /**
@@ -14,12 +14,8 @@ import type { OrcaNodeId } from "../protocol/peer.ts";
  * permission decision from the origin (§7.11). An executor that cannot continue
  * for any other reason finishes instead, with `BLOCKED: …` as the first line of
  * its result (§6.14); there is no "ask the origin a question" suspension.
- *
- * `relay` names the child task whose permission request this one passes on: the
- * task runner turns it into this node's own `permission_request` without a
- * network call (§7.12).
  */
-export type Suspension = { kind: "permission"; tool: string; requested: RequestedAccess; relay?: TaskRelay };
+export type Suspension = { kind: "permission"; tool: string; requested: RequestedAccess };
 
 export type ExecutorEvent =
   | { type: "suspend"; suspend: Suspension }
@@ -41,7 +37,7 @@ export type ExecuteInput = {
   /** Group workspace `.pod/` dir; executors keep their own state here. */
   podDir: string;
   /** Effective permission mode after origin inheritance and local ceiling (§7.10). */
-  permissionMode: PermissionMode;
+  permissionMode: SandboxMode;
   /** Model route the origin asks for; an executor that cannot select one fails the task (§6.15). */
   model: ModelSelection | undefined;
   /** Reasoning effort for that route, same rule. */

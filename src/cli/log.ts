@@ -24,9 +24,8 @@ export async function run({ flags }: CommandArgs): Promise<number> {
       return 0;
     }
     for (const entry of entries) {
-      const parent = entry.parent_local_task_id === undefined ? "" : `  parent=${entry.parent_local_task_id}`;
       const error = entry.last_error === undefined ? "" : `  (${entry.last_error})`;
-      process.stdout.write(`${entry.state.padEnd(14)} ${entry.task_id}  ${entry.peer}${parent}${error}\n`);
+      process.stdout.write(`${entry.state.padEnd(14)} ${entry.task_id}  ${entry.peer}${error}\n`);
     }
     return 0;
   } finally {

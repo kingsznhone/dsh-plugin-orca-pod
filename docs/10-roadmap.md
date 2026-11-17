@@ -34,13 +34,13 @@
 
 - grant 签发/校验（[§7.11](07-security.md#711-grant)）：单次、绑定请求与决策链。
 - `input-required` 升级回路（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询看到 → **UI 卡片/弹窗/面板作答** → 批准发 grant 作为同一 task 的后续 message / 拒绝置 `failed(permission_denied)`。
-- 链式升级：中间节点不自批，越界请求沿 task 状态逐跳上升，grant 由 origin 签发、逐跳转发；自动上升靠 CLI 的 child-link 与 `wait --local-task`。
+- 任务只有一跳：执行器会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 拒绝；越界请求只在 origin 派出的那个任务上挂起，grant 由 origin 对该任务签发（D39）。
 - 验收：权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
 
 ### 10.5 Phase 4：规模化与部署
 
 - `orca-pod install`：检查 `dsh --version`、生成/复用节点配置、渲染 systemd unit 并 `daemon-reload` + `enable --now`；固定常驻 `orca-node serve`（不提供 web 模式）。裸 `install` 或只带 `--dry-run` 是交互式向导；带任何其他参数即进入参数分支、完全不提问（agent 通过 SSH 安装时用 `--workgroup` + `-p/--password`）；`--dry-run`、`--system`、`--skip-dsh-check` 适合无 sudo/CI 场景。
-- 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/cluster/child-link` 与 `/cluster/task`（它们故意只认传输层回环）。跨机验证前用 `scripts/sync-guest.ps1` 把当前提交同步到 guest 并重装依赖，避免两端代码漂移。
+- 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/cluster/blob`（它故意只认传输层回环）。跨机验证前用 `scripts/sync-guest.ps1` 把当前提交同步到 guest 并重装依赖，避免两端代码漂移。
 - 10 个 orca node full mesh 压测：任务延迟、内存/CPU、心跳稳定性。
 - 验收：10 个 orca node 24h 稳定；单 orca node 故障不影响其他 orca node 任务。
 
@@ -93,7 +93,7 @@
 - [x] `workspace-write` 之外的请求类型上交 origin，由人决定
 - [x] 升级请求只在 origin 由人决定，target 无本地弹窗（权限请求 park 在 `ApprovalBroker`，由会话聊天卡/后台弹窗/面板作答；`orca_pod` 没有 approve 方法）
 - [x] 权限请求不产生聊天 notice
-- [x] 审批卡片显示来源链（`requested_by`/`via`/`upstream`）
+- [x] 审批卡片显示需要权限的节点（`requested_by`）
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
 - [x] 工作区超过 `max_workspace_bytes`/`max_workspace_files` 时新任务 `507 quota_exceeded`，清理后恢复
 - [ ] orca node 忙时第二个任务返回 429 `orca_node_busy` + `Retry-After`，调用方能从错误体拿到 `retry_after_s` 与持有者
@@ -101,7 +101,7 @@
 - [x] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举（`tasks/get` 只认 id，无列表接口）
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [x] 交接不走协议层：同一 workgroup 的任务共享 workgroup 根（agent cwd）与 `notes/`，协议没有 `continuation_of`
-- [x] 链式升级：A→B→C 时 C 的越界请求经 B 上升为 A 的 `input-required`，A 批准后 grant 原样逐跳转发、C 继续；等待期间 B/C 槽位都释放（child-link 轮询自动上升）
+- [x] 任务内不能再派任务：执行器会话里 `orca-node send` 与插件 `send` 都拒绝，`publish`/`fetch`/`members` 照常可用
 - [x] 只有 origin 能取消/恢复任务，其他成员 `403 not_task_origin`
 
 #### 文件交换
@@ -136,7 +136,6 @@
 - [ ] 心跳链路稳定 24h，CPU/内存无泄漏
 - [ ] 单 orca node 故障不影响其余 orca node 任务
 - [ ] 任务延迟与 2 个 orca node 相比无数量级退化
-- [x] 多跳无深度上限：`pod.hop=2` 的任务照常执行（`hop` 只记账）；目标 orca node 已在 `chain` 中、或是根 origin，被 `403 ancestor_call_forbidden`
 - [x] origin 对同一 target 并发 10 个请求：target 只创建 1 个 agent 进程，其余 429
 - [ ] B、C 互调：后到的一方拿到 `429 orca_node_busy` 并写进结论文本回报 A；不出现两边都卡到 TTL
 

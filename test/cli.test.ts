@@ -22,12 +22,12 @@ const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 
 type CliResult = { code: number; stdout: string; stderr: string };
 
-function runCli(args: string[], input?: string): Promise<CliResult> {
+function runCli(args: string[], input?: string, env: NodeJS.ProcessEnv = process.env): Promise<CliResult> {
   return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
       ["--no-warnings", CLI, ...args],
-      { env: process.env, maxBuffer: 4 * 1024 * 1024 },
+      { env, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
         const code =
           error !== null && typeof (error as { code?: unknown }).code === "number"
@@ -247,24 +247,35 @@ describe("orca-node CLI", () => {
     expect(failed.stderr).toContain("orca-node:");
   });
 
-  it("escalate reports a child that is not waiting for permission", async () => {
-    const sent = await runCli(["send", "--data-root", root, "--peer", endpoint, "--text", "quick", "--json"]);
-    expect(sent.code).toBe(0);
-    const created = JSON.parse(sent.stdout) as { id: string };
-    const escalated = await runCli([
-      "escalate",
+  it("refuses to send from inside a task, and keeps the other commands", async () => {
+    const inTask = { ...process.env, ORCA_POD_IN_TASK: "1" };
+    const sent = await runCli(
+      ["send", "--data-root", root, "--peer", endpoint, "--text", "nested", "--json"],
+      undefined,
+      inTask,
+    );
+    expect(sent.code).toBe(1);
+    expect(sent.stderr).toContain("single-hop");
+    const listed = await runCli(["members", "--data-root", root, "--peer", endpoint, "--json"], undefined, inTask);
+    expect(listed.code, `${listed.stdout}\n${listed.stderr}`).toBe(0);
+  });
+
+  it("no longer knows escalate or --local-task", async () => {
+    const escalate = await runCli(["escalate", "--data-root", root]);
+    expect(escalate.code).toBe(1);
+    const localTask = await runCli([
+      "send",
       "--data-root",
       root,
       "--peer",
       endpoint,
-      "--task",
-      created.id,
+      "--text",
+      "x",
       "--local-task",
-      created.id,
-      "--json",
+      "t",
     ]);
-    expect(escalated.code).toBe(1);
-    expect(escalated.stderr).toContain("not waiting for permission");
+    expect(localTask.code).toBe(1);
+    expect(localTask.stderr).toContain("--local-task");
   });
 
   it("publishes a file under <node id>/<sha256> and fetches it back through the node", async () => {

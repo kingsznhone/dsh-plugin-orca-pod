@@ -22,12 +22,6 @@ function dispatch(deps: GatewayDeps, method: string, raw: unknown, caller: OrcaN
       if (!view) throw new PodError("task_not_found", `unknown task ${id}`);
       return view;
     }
-    case "tasks/escalate": {
-      // Local control used by the CLI: the agent parks its own task because a
-      // child task needs an approval that only this task's origin can give.
-      const { taskId, relay } = parseInput(A2A_PARAMS[method], raw, "params");
-      return deps.tasks.escalate(taskId, relay, caller);
-    }
     case "tasks/cancel": {
       const { id } = parseInput(A2A_PARAMS[method], raw, "params");
       const origin = deps.tasks.originOf(id);

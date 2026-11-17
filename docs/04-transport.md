@@ -29,14 +29,12 @@
 | ------ | ------------------------------ | ---------------------------------------------------------- | ------------------------------- |
 | GET    | `/health`                      | 进程存活探针，返回 `{status:"ok", orca_node_id}`           | public                          |
 | GET    | `/.well-known/agent-card.json` | A2A Agent Card（见 §4.6）                                  | public                          |
-| POST   | `/a2a`                         | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`、`tasks/escalate`（§4.7） | member                          |
+| POST   | `/a2a`                         | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`（§4.7） | member                          |
 | GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | member                          |
 | POST   | `/cluster/join`                | 引导/准入：返回自述 + 目录                                 | join + 密码证明                 |
 | POST   | `/cluster/heartbeat`           | 心跳 + 摘要 + 准入证明 + 完整自述；摘要不一致时响应回目录   | member + 密码证明               |
 | GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲）                           | member                          |
 | POST   | `/cluster/leave`               | 主动离开（不是安全操作）                                   | member                          |
-| POST   | `/cluster/child-link`          | 本机 task 登记子任务，供自动上升（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） | local                           |
-| GET    | `/cluster/task?task=`          | 读本机任务视图，CLI 建子任务时据此继承 `hop/chain/root`    | local                           |
 | GET    | `/cluster/blob?node=&blob=`    | 本节点替 CLI 去取任一成员发布的文件（`orca-node fetch`）    | local                           |
 
 文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点 `publish` 登记的文件；取别的成员的文件由本机节点按对方宣告的地址去拨（`/cluster/blob`），所以发布方在反代后面也照样取得到。登记没有 HTTP 路由，由 `orca-node publish` 直写本机 SQLite；节点之间不推送文件。
@@ -53,10 +51,10 @@
 | 状态 | 错误码                                                                                                                      |
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
-| 403  | `not_a_member`、`local_only`、`not_task_origin`、`ancestor_call_forbidden`                                                  |
+| 403  | `not_a_member`、`local_only`、`not_task_origin`                                                                             |
 | 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`blob_digest_mismatch`、`input_blob_missing`、`too_many_inputs`、`inputs_too_large`、`endpoint_refused` |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
-| 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`escalation_required`、`duplicate_input_name`                        |
+| 409  | `permission_denied`、`grant_invalid`、`grant_expired`                                                                       |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
 | 413  | `blob_too_large`、`body_too_large`                                                                                          |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |
@@ -70,7 +68,7 @@
 | 事项     | 要求                                                                                                                                                                                                                                              |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 心跳路径 | 不要给 `/cluster/heartbeat` 加缓存；代理层保持 keep-alive 到上游                                                                                                                                                                                  |
-| 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`local` 路由带任何转发头直接 `403 local_only`，所以代理不要转发 `/cluster/child-link` 与 `/cluster/task`                                                                           |
+| 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`local` 路由带任何转发头直接 `403 local_only`，所以代理不要转发 `/cluster/blob`                                                                           |
 | 对端地址 | 节点互通靠 **join 请求体里自报的 `endpoints`**（有序列表，可含 IPv6/IPv4、局域网与公网地址），不靠来源 IP：反代部署必须把公网 URL 配进 `endpoints`，否则对端会记下 loopback 地址、心跳发不过来；对端按顺序逐个尝试，一个地址不可达不代表 orca node 离线 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权                                                                                                                                                                                                         |
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的（orca node 一侧是 1 MiB，没有更大的请求体）                                                                                                                                                              |
@@ -124,11 +122,10 @@
 - `message/send`：提交消息，始终返回 `Task`。`message.taskId` 为空时新建 task（`submitted` → `working`）；非空时是对挂起任务的恢复：task 必须处于 `input-required`（否则 `400 bad_request`），调用者必须是 task 的 origin（否则 `403 not_task_origin`），恢复时要重新拿到执行槽——槽被别的任务占着就回 `429 orca_node_busy`，**由上游自己决定什么时候重试**，不预留、不排队（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
 - `tasks/get`：按 task id 取状态与 artifact；未知 id 返回 `404 task_not_found`。任何成员都可读。
 - `tasks/cancel`：只有 origin（或本机自己）可取消，否则 `403 not_task_origin`；对终态 task 原样返回，不报错。
-- `tasks/escalate`：本机控制接口，CLI 用它把本机某个运行中的 task 挂起并上交子任务的权限请求（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；非本机签名一律 `400 bad_request`。
 
 用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。方法面只取其中必要的子集。
 
-**出站调用只有一个客户端**（`src/transport/peer-client.ts`），CLI、心跳、tracker、child-link 轮询都走它：
+**出站调用只有一个客户端**（`src/transport/peer-client.ts`），CLI、心跳、tracker 都走它：
 
 - 每次调用带 `AbortSignal.timeout`：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
 - 签名绑定接收方 `orca_node_id` 与 `path+query`（[§7.2](07-security.md#72-请求签名没有-session-token)）。接收方 id 来自：本机自己、本机拨过的 URL 记录、或成员表里自述了该 URL 的成员。
@@ -159,7 +156,7 @@ submitted ──► working ──► input-required ──► working
 - `input-required`：需要发起 orca node **补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷是 task 的 `status.message.parts` 里 data part 的 `permission_request`，不依赖推送；恢复消息必须是签名 grant 或拒绝。没有“补输入”的挂起：任务不能继续时以 `completed` 结束，结论首行写 `BLOCKED: …`（[§6.14](06-execution.md#614-acpexecutor)）。
 - `input-required` **不占用执行槽**：任务挂起时槽位释放，恢复时重新竞争，不预留、不排队。槽被占就回 `429 orca_node_busy`，由 origin 决定重试还是放弃。
 - 恢复 ACP 任务时复用同一个 ACP session（它没有退出），不是新开会话。
-- 远程 agent 不能回调祖先 orca node：子任务的 `pod.chain` 含目标自己、或 `pod.root_origin` 就是目标时 `403 ancestor_call_forbidden`（[§5.1](05-tasks.md#51-任务标识与元数据)）。
+- 任务只有一跳：执行任务的 agent 不能再派任务（[§7.9](07-security.md#79-权限跟随发起-orca-node)），所以没有调用链，也没有回调祖先的问题。
 - `completed` / `failed` / `canceled`：终态。终态不可逆；重试就是显式再派一个新 task，不复活旧 task。
 - 任务状态每次变迁都写 SQLite（[§5.5](05-tasks.md#55-任务存储)）；进程重启时所有非终态 task 标 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）。
 

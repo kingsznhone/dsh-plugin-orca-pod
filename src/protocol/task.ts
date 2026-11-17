@@ -3,9 +3,9 @@
 import { type PRNG, ulid } from "ulid";
 import { z } from "zod";
 
-import { PermissionRequestSchema, type PermissionRequest, type ResumeControl, type TaskRelay } from "./grant.ts";
+import { PermissionRequestSchema, type PermissionRequest, type ResumeControl } from "./grant.ts";
 import { ModelSelectionSchema, ReasoningEffortSchema } from "./model.ts";
-import { PermissionModeSchema } from "./permission.ts";
+import { SandboxModeSchema } from "./permission.ts";
 import { OrcaNodeIdSchema, type BusyState, type OrcaNodeId } from "./peer.ts";
 
 /**
@@ -71,21 +71,20 @@ export function controlMessage(taskId: string, control: ResumeControl, messageId
   return { role: "user", parts: [{ kind: "data", data: { ...control } }], taskId, messageId };
 }
 
-const NOT_NEGATIVE_INT = "must be a non-negative integer";
-
 /**
  * The `pod` block of a task's metadata (§5.1). Unknown keys are kept: another
  * node may be newer. The task lifetime is narrowed further where the task is
- * accepted (`tasks/meta.ts`).
+ * accepted (`tasks/meta.ts`). A task is always single-hop: an agent running a
+ * task cannot dispatch another one, so there is no delegation chain to carry.
  */
 export const PodTaskMetadataSchema = z.looseObject({
-  hop: z.number(NOT_NEGATIVE_INT).int(NOT_NEGATIVE_INT).min(0, NOT_NEGATIVE_INT).optional(),
-  chain: z.array(OrcaNodeIdSchema, "must be an array of orca node ids").optional(),
-  root: z.string("must be a task id").optional(),
-  /** Origin of the whole delegation tree; propagated unchanged by child tasks (§7.11). */
-  root_origin: OrcaNodeIdSchema.optional(),
+  /**
+   * The node that dispatched the task. The target writes it into the task view
+   * from the authenticated caller; whatever a caller sends is overwritten.
+   */
+  origin_orca_node: OrcaNodeIdSchema.optional(),
   /** Origin session mode; the target never runs above it (§7.10). */
-  permission_mode: PermissionModeSchema.optional(),
+  permission_mode: SandboxModeSchema.optional(),
   /** Model route the target's ACP executor should select for this task (§6.15). */
   model: ModelSelectionSchema.optional(),
   /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
@@ -146,13 +145,6 @@ export interface TaskRunner {
   submit(input: SubmitTaskInput & { originOrcaNode: OrcaNodeId }): TaskView;
   get(taskId: string): TaskView | null;
   resume(taskId: string, message: A2AMessage, callerOrcaNode?: OrcaNodeId): TaskView;
-  /**
-   * Suspend a running task because a child task it delegated to needs a
-   * permission only this task's origin can grant (§7.12). The parent task goes
-   * `input-required` with an upstream request; an approval derives a child
-   * grant from the parent grant and resumes the child.
-   */
-  escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: OrcaNodeId): TaskView;
   cancel(taskId: string): TaskView;
   /** Origin of a known task, used by the gateway to authorize cancellation (§5.3). */
   originOf(taskId: string): OrcaNodeId | null;

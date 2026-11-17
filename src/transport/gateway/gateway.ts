@@ -17,8 +17,6 @@ type GatewayOrcaNode = {
   workgroup_id: WorkgroupId;
   /** Live self record owned by the node: endpoints, model catalog, busy holder (§6.15). */
   self: () => SelfRecord;
-  /** Local-only capability: register a child task for automatic relay (§7.12). */
-  linkChildTask: (parentTaskId: string, peerUrl: string, childTaskId: string) => void;
   /** A file a member published, streamed from wherever that member answers (§5.6). */
   fetchBlob: (nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal) => Promise<OpenedBlob>;
 };

@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import { PodError } from "../kernel/errors.ts";
 import { parseSchema } from "../kernel/schema.ts";
-import { RequestedAccessSchema, TaskRelaySchema } from "../protocol/grant.ts";
+import { RequestedAccessSchema } from "../protocol/grant.ts";
 import { describeModelRequest } from "../protocol/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "./executor.ts";
 import { abortError } from "./process.ts";
@@ -32,7 +32,6 @@ const EchoSuspendSchema = z.strictObject({
   kind: z.literal("permission", 'must be "permission"'),
   tool: z.string(),
   requested: RequestedAccessSchema,
-  relay: TaskRelaySchema.optional(),
 });
 
 const EchoStepSchema = z.strictObject({

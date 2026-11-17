@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { normalizePeerUrl } from "../transport/net.ts";
 import { DEFAULT_PORT } from "../protocol/constants.ts";
 import {
@@ -16,7 +17,7 @@ import {
   type ModelOffer,
   type ModelSelection,
 } from "../protocol/model.ts";
-import { PermissionModeSchema, type PermissionMode } from "../protocol/permission.ts";
+import { SandboxModeSchema } from "../protocol/permission.ts";
 import { WorkgroupIdSchema, normalizeEndpoints, type WorkgroupId } from "../protocol/peer.ts";
 import { errorMessage } from "../kernel/errors.ts";
 import { isRecord, parseSchema } from "../kernel/schema.ts";
@@ -65,7 +66,7 @@ export interface Settings {
   executor?: ExecutorKind;
   acp?: AcpExecutorConfig;
   /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
-  permission_mode?: PermissionMode;
+  permission_mode?: SandboxMode;
   /** Hard cap on a task's lifetime; peers see it as max_task_ttl_s (§6.9). */
   task_timeout_s?: number;
   /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
@@ -168,7 +169,7 @@ const FIELDS = {
   skill_injection: field(z.boolean(), { default: false, local: true }),
   executor: field(ExecutorKindSchema, { panel: true }),
   acp: field(AcpExecutorConfigSchema),
-  permission_mode: field(PermissionModeSchema, { panel: true }),
+  permission_mode: field(SandboxModeSchema, { panel: true }),
   task_timeout_s: field(PositiveNumber, { panel: true }),
   approval_timeout_s: field(PositiveNumber, { panel: true }),
   result_max_bytes: field(PositiveInteger, { panel: true }),

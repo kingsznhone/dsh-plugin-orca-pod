@@ -348,7 +348,6 @@ describe("UI data surface", () => {
         from: shortenNodeId(LEAF),
       },
     ]);
-    expect(approvals[0]!.chain.map((entry) => entry.self)).toEqual([true, false]);
     await waitFor(
       () => notified,
       (count) => count > 0,

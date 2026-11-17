@@ -2,7 +2,6 @@
 
 import { z } from "zod";
 
-import { TaskRelaySchema } from "./grant.ts";
 import { A2AMessageSchema, TaskMetadataSchema, TaskViewSchema } from "./task.ts";
 
 const TaskIdParams = z.looseObject({ id: z.string() });
@@ -16,8 +15,6 @@ export const A2A_PARAMS = {
   "message/send": z.looseObject({ message: A2AMessageSchema, metadata: TaskMetadataSchema.optional() }),
   "tasks/get": TaskIdParams,
   "tasks/cancel": TaskIdParams,
-  /** Local control used by the CLI: park a task whose child needs an approval only the origin can give (§7.12). */
-  "tasks/escalate": z.looseObject({ taskId: z.string(), relay: TaskRelaySchema }),
 };
 export type A2AMethod = keyof typeof A2A_PARAMS;
 export type A2AParams<M extends A2AMethod> = z.input<(typeof A2A_PARAMS)[M]>;
@@ -61,5 +58,5 @@ export const ErrorReplySchema = z.object({
 });
 export type ErrorReply = z.infer<typeof ErrorReplySchema>;
 
-/** A reply that carries only an acknowledgement (leave, child-link). */
+/** A reply that carries only an acknowledgement (leave). */
 export const AckSchema = z.object({ ok: z.literal(true) });

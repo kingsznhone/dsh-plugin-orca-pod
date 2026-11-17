@@ -7,7 +7,7 @@
 
 import type { PromptResponse, RequestPermissionResponse, SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 
-import { CLI_PATH } from "../../kernel/entry.ts";
+import { CLI_PATH, IN_TASK_ENV } from "../../kernel/entry.ts";
 import { errorMessage } from "../../kernel/errors.ts";
 import type { NodeLogger } from "../../kernel/events.ts";
 import { describeModelRequest, type ModelDefaults, type ModelSelection } from "../../protocol/model.ts";
@@ -187,9 +187,11 @@ export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecut
     spawn: {
       command: options.command ?? "dsh",
       args: [...(options.extra_args ?? []), "--profile", options.profile ?? "acp"],
-      // Sessions spawned by this executor get the CLI path for the orca-node skill.
+      // Sessions spawned by this executor get the CLI path for publish/fetch, and
+      // the in-task marker that makes the CLI and the plugin refuse to send (§7.9).
       env: {
         ...process.env,
+        [IN_TASK_ENV]: "1",
         ORCA_POD_CLI: CLI_PATH,
         ...(options.data_root === undefined ? {} : { ORCA_POD_DATA_ROOT: options.data_root }),
       },

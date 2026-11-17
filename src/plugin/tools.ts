@@ -11,14 +11,16 @@ import { z } from "zod";
 
 import { normalizePeerUrl } from "../transport/net.ts";
 import { DEFAULT_PORT } from "../protocol/constants.ts";
-import { PermissionModeSchema, isPermissionMode, type PermissionMode } from "../protocol/permission.ts";
+import { SandboxModeSchema, isPermissionMode } from "../protocol/permission.ts";
 import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../protocol/task.ts";
 import { parseModelSpec } from "../protocol/model.ts";
 import type { PeerView } from "../protocol/peer.ts";
 import { describeIssue, parseSchema } from "../kernel/schema.ts";
+import { runningInTask } from "../kernel/entry.ts";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import type { JsonSchemaNode, ToolDefinition, ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
@@ -59,7 +61,7 @@ const TaskArgs = PeerArgs.extend({ task_id: Text });
 const SendArgs = PeerArgs.extend({
   text: Text,
   echo: z.record(z.string(), z.unknown(), "must be an object holding a deterministic echo script").optional(),
-  permission_mode: PermissionModeSchema.optional(),
+  permission_mode: SandboxModeSchema.optional(),
   model: z.string("must be a provider/model string").optional(),
   // A value that is not text means "no effort"; a blank one is refused.
   reasoning_effort: z.preprocess((value) => (typeof value === "string" ? value : undefined), Text.optional()),
@@ -150,7 +152,7 @@ function peerSummary(peer: PeerView): PeerSummary {
 export function sessionSandboxMode(
   policy: SandboxReader | undefined,
   exec: ToolExecution | undefined,
-): PermissionMode | undefined {
+): SandboxMode | undefined {
   const session = exec?.agent?.session;
   if (policy === undefined || session === undefined) return undefined;
   const mode = policy.resolve({ session }).mode;
@@ -164,6 +166,12 @@ async function runSend(
   exec: ToolRunContext | undefined,
   policy: SandboxReader | undefined,
 ): Promise<SendResult> {
+  // Tasks are single-hop: a session the task executor spawned never dispatches (§7.9).
+  if (runningInTask()) {
+    throw new Error(
+      "send is not available inside a task: tasks are single-hop; end the task with a BLOCKED: report instead",
+    );
+  }
   const signal = exec?.signal;
   const peer = normalizePeerUrl(args.peer);
   const permissionMode = args.permission_mode ?? sessionSandboxMode(policy, exec);
@@ -356,7 +364,7 @@ export function createPodTools(
         },
         permission_mode: {
           type: "string",
-          enum: [...PermissionModeSchema.options],
+          enum: [...SandboxModeSchema.options],
           description:
             "send: explicit permission mode; when omitted the dispatching session's sandbox mode is inherited. The target caps it by its own policy and never runs above it.",
         },

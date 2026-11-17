@@ -36,16 +36,16 @@ function tempRoot(): string {
 }
 
 describe("dispatch store (13.4)", () => {
-  it("survives a reopen and keeps the parent link", () => {
+  it("survives a reopen", () => {
     const file = join(tempRoot(), "tasks.db");
     const store = createSqliteDispatchStore(file);
-    store.save(entry({ task_id: "task-1", state: "working", parent_local_task_id: "parent-1" }));
+    store.save(entry({ task_id: "task-1", state: "working" }));
     store.save(entry({ task_id: "task-2", state: "completed" }));
     store.close();
 
     const reopened = createSqliteDispatchStore(file);
     const byId = new Map(reopened.list().map((item) => [item.task_id, item]));
-    expect(byId.get("task-1")).toMatchObject({ state: "working", parent_local_task_id: "parent-1" });
+    expect(byId.get("task-1")).toMatchObject({ state: "working" });
     expect(byId.get("task-2")).toMatchObject({ state: "completed" });
     expect(reopened.get("task-1")?.peer).toBe("http://127.0.0.1:9");
     reopened.close();

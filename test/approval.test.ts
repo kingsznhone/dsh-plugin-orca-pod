@@ -130,8 +130,7 @@ function grantFor(view: TaskView, originOrcaNode: OrcaNodeId, tool = "write_file
     target_orca_node: request.requested_by,
     tool,
     mode: "allow_once",
-    chain: [originOrcaNode, ...request.via],
-    request_id: request.origin_request_id ?? request.request_id,
+    request_id: request.request_id,
     issued_at: issuedAt.toISOString(),
     expires_at: new Date(issuedAt.getTime() + 60_000).toISOString(),
   };
@@ -270,7 +269,7 @@ describe("grant binding (§7.11)", () => {
     expect(failed.status.reason).toBe("grant_invalid");
   });
 
-  it("rejects a grant whose origin is not the task root origin", async () => {
+  it("rejects a grant whose origin is not the task origin", async () => {
     const { origin, targetUrl, outsider, identity } = await threeNodes();
     const outsiderIdentity = loadIdentity(outsider.config.data_root);
     if (outsiderIdentity === null) throw new Error("outsider identity is missing");
@@ -284,14 +283,14 @@ describe("grant binding (§7.11)", () => {
     expect(failed.status.reason).toBe("grant_invalid");
   });
 
-  it("rejects a grant whose chain does not start with its origin", async () => {
-    const { origin, targetUrl, outsider, identity } = await threeNodes();
+  it("rejects a grant the origin signed for another task", async () => {
+    const { origin, targetUrl, identity } = await threeNodes();
     const view = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
     const grant = grantFor(suspended, origin.self().orca_node_id);
-    const relabelled = signGrant(identity, { ...grant, chain: [outsider.orcaNodeId, ...grant.chain] });
+    const elsewhere = signGrant(identity, { ...grant, task_id: "another-task" });
 
-    await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: relabelled }));
+    await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: elsewhere }));
     const failed = await waitForState(origin, targetUrl, view.id, "failed");
     expect(failed.status.reason).toBe("grant_invalid");
   });

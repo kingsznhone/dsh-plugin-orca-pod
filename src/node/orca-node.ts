@@ -10,12 +10,7 @@ import { createMemoryFileBlobStore, createMemoryDispatchStore, createMemoryTaskS
 import type { FileBlobStore, DispatchEntry, DispatchStore, OpenedBlob, TaskStore } from "../storage/stores.ts";
 import { NonceCache } from "../security/crypto.ts";
 import { loadOrCreateIdentity } from "../security/identity.ts";
-import {
-  createDelegation,
-  type ApprovalOptions,
-  type SendTaskOptions,
-  type TaskCallOptions,
-} from "../tasks/delegation.ts";
+import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../tasks/delegation.ts";
 import { EchoExecutor } from "../execution/echo.ts";
 import { createAcpExecutor } from "../execution/acp/executor.ts";
 import type { LocalExecutor } from "../execution/executor.ts";
@@ -38,7 +33,6 @@ import type {
 import type { ModelOffer, ModelSelection, ReasoningEffort } from "../protocol/model.ts";
 import type { PodEventInput, PodEventListener } from "../protocol/events.ts";
 import type { SubmitTaskInput, TaskView } from "../protocol/task.ts";
-import type { TaskRelay } from "../protocol/grant.ts";
 import { createSqliteDispatchStore, createSqliteFileBlobStore, createSqliteTaskStore } from "../storage/sqlite.ts";
 import { createTaskRunner } from "../tasks/runner.ts";
 import { createWorkspaceManager, type WorkspacePaths } from "../tasks/workspace.ts";
@@ -138,25 +132,13 @@ export interface OrcaNode {
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
   /** Leave the workgroup: tell every known peer, then clear the local roster. */
   leave(): Promise<LeaveResult>;
-  sendTask(peerUrl: string, input: SubmitTaskInput, options?: SendTaskOptions): Promise<TaskView>;
+  sendTask(peerUrl: string, input: SubmitTaskInput, options?: TaskCallOptions): Promise<TaskView>;
   getTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
   cancelTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView>;
   /** Approve a suspended permission request: sign a grant and resume the task (§7.11). */
   approveTask(peerUrl: string, view: TaskView, options?: ApprovalOptions): Promise<TaskView>;
   /** Deny a suspended permission request: the remote task fails with permission_denied. */
   denyTask(peerUrl: string, view: TaskView, reason?: string): Promise<TaskView>;
-  /**
-   * Park this orca node's running task because a child it delegated to needs a
-   * permission only this task's origin can grant (§7.12). The CLI calls this
-   * on the local node.
-   */
-  escalateTask(peerUrl: string, taskId: string, relay: TaskRelay): Promise<TaskView>;
-  /**
-   * Register a task this node's local task delegated to. While the local task runs,
-   * the node polls the child and, when it asks for a permission, parks the local
-   * task automatically — no explicit `escalate` call from the executor (§7.12).
-   */
-  linkChildTask(parentTaskId: string, peerUrl: string, childTaskId: string): void;
   /** Origin-side dispatch log, oldest first (§8.3). */
   listDispatches(): DispatchEntry[];
   /**
@@ -297,9 +279,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     maxWorkspaceFiles: config.max_workspace_files,
     taskTimeoutS: maxTaskTtlS,
     dataRoot: config.data_root,
-    sendTaskMessage: async (peerUrl, message) => {
-      await client.rpc(peerUrl, "message/send", { message });
-    },
     onEvent: (view) => {
       events.emit({ type: "task", view });
       // The busy holder is part of every member record; re-render it too.
@@ -311,7 +290,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     workgroupId: config.workgroup_id,
     client,
     membership,
-    tasks,
     dispatches,
     emit: events.emit,
   });
@@ -320,7 +298,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       orca_node_id: config.orca_node_id,
       workgroup_id: config.workgroup_id,
       self: group.self,
-      linkChildTask: delegation.linkChildTask,
       fetchBlob,
     },
     identity,
@@ -390,7 +367,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     },
     async stop() {
       group.stop();
-      delegation.stop();
       await app.close();
       await executor.close?.();
       taskStore.close();
@@ -409,8 +385,6 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     cancelTask: delegation.cancelTask,
     approveTask: delegation.approveTask,
     denyTask: delegation.denyTask,
-    escalateTask: delegation.escalateTask,
-    linkChildTask: delegation.linkChildTask,
     listDispatches: delegation.listDispatches,
     annotateDispatch: delegation.annotateDispatch,
     listTasks: (limit = 200) => tasks.list(limit),

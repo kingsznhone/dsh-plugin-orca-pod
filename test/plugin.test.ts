@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
 import type { DispatchEntry } from "../src/storage/stores.ts";
@@ -186,6 +186,19 @@ describe("orca_pod tool", () => {
     await expect(run(tools, { method: "connect", peer: "127.0.0.1:11811" })).rejects.toThrow(
       /orca node is not running/,
     );
+  });
+
+  it("refuses to send from a session the task executor spawned (tasks are single-hop)", async () => {
+    vi.stubEnv("ORCA_POD_IN_TASK", "1");
+    try {
+      await expect(run(tools, { method: "send", peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
+        /single-hop/,
+      );
+      // Reads stay available.
+      await expect(run(tools, { method: "members" })).rejects.toThrow(/orca node is not running/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("inherits the dispatching session's permission mode when send omits one", async () => {

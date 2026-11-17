@@ -1,12 +1,10 @@
-import { randomUUID } from "node:crypto";
-
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { FileBlobRegistry, TaskStore } from "../storage/stores.ts";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
 import type { LocalExecutor } from "../execution/executor.ts";
 import { createGrantLedger } from "../security/grants.ts";
 import {
-  controlMessage,
   isTerminal,
   messageText,
   newTaskId,
@@ -15,8 +13,6 @@ import {
   type TaskView,
 } from "../protocol/task.ts";
 import type { BusyState, OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
-import type { PermissionMode } from "../protocol/permission.ts";
-import type { TaskRelay } from "../protocol/grant.ts";
 import { TaskRecord, type RecordHost } from "./record.ts";
 import { parsePodMetadata } from "./meta.ts";
 import { measureWorkspace, type Workspace, type WorkspaceUsage } from "./workspace.ts";
@@ -35,7 +31,7 @@ export type TaskRunnerDeps = {
   /** Data root, so the prompt can point an agent at the local CLI (§6.14). */
   dataRoot: string;
   /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
-  permissionMode?: PermissionMode;
+  permissionMode?: SandboxMode;
   /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
   permissionTtlS?: number;
   /** Hard cap on task lifetime; peers see it as max_task_ttl_s (§6.9). Default 3600s. */
@@ -45,8 +41,6 @@ export type TaskRunnerDeps = {
   /** A new task is refused while the workspace holds more than this (§6.13). */
   maxWorkspaceBytes: number;
   maxWorkspaceFiles: number;
-  /** Sends a control message to a child task (grant/denial downward, §7.12). */
-  sendTaskMessage: (peerUrl: string, message: A2AMessage) => Promise<void>;
   /** Called after every observable task change, for the UI event bus (§9.2). */
   onEvent: (view: TaskView) => void;
 };
@@ -86,8 +80,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     ledger: createGrantLedger(),
     permissionMode: deps.permissionMode,
     permissionTtlS: deps.permissionTtlS,
-    sendControl: (child, control) =>
-      deps.sendTaskMessage(child.peer, controlMessage(child.task_id, control, randomUUID())),
     claim: (taskId) => {
       slot = taskId;
     },
@@ -104,7 +96,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
 
   function submit(input: Parameters<TaskRunner["submit"]>[0]): TaskView {
     if (slot !== null) throw busyError();
-    const meta = parsePodMetadata(input.metadata, deps.selfOrcaNodeId, input.originOrcaNode);
+    const meta = parsePodMetadata(input.metadata);
     if (usage !== null && (usage.bytes > deps.maxWorkspaceBytes || usage.files > deps.maxWorkspaceFiles)) {
       // Measure again, so the next attempt sees it if the owner cleaned up meanwhile.
       measure();
@@ -119,8 +111,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       id,
       contextId: input.message.contextId ?? id,
       status: { state: "submitted", timestamp: new Date().toISOString() },
-      // Every reader learns the origin of the whole delegation tree from the view.
-      metadata: { ...input.metadata, pod: { ...input.metadata?.pod, root_origin: meta.rootOrigin } },
+      // Every reader learns who dispatched the task from the view (§7.6).
+      metadata: { ...input.metadata, pod: { ...input.metadata?.pod, origin_orca_node: input.originOrcaNode } },
     };
     const record = new TaskRecord(host, {
       view,
@@ -177,16 +169,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return record.snapshot();
   }
 
-  function escalate(taskId: string, relay: TaskRelay, callerOrcaNode?: string): TaskView {
-    if (callerOrcaNode !== undefined && callerOrcaNode !== deps.selfOrcaNodeId) {
-      throw new PodError("bad_request", "escalate is a local control invoked by this orca node");
-    }
-    const record = live.get(taskId);
-    if (record === undefined) throw new PodError("task_not_found", `unknown task ${taskId}`);
-    record.escalate(relay);
-    return record.snapshot();
-  }
-
   function cancel(taskId: string): TaskView {
     const record = live.get(taskId);
     if (record === undefined) {
@@ -226,5 +208,5 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   }
 
   measure();
-  return { submit, get, list, originOf, resume, escalate, cancel, busy, recover };
+  return { submit, get, list, originOf, resume, cancel, busy, recover };
 }

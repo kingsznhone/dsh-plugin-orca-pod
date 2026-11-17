@@ -29,9 +29,6 @@ const tasks: TaskRunner = {
   cancel() {
     throw new PodError("internal", "cancel reached");
   },
-  escalate() {
-    throw new PodError("internal", "escalate reached");
-  },
   busy: () => null,
   recover: () => 0,
   list: () => [],
@@ -57,7 +54,6 @@ function harness() {
       orca_node_id: self.orcaNodeId,
       workgroup_id: WORKGROUP,
       self: () => record,
-      linkChildTask: () => {},
       fetchBlob: async () => {
         throw new Error("not used");
       },
@@ -126,8 +122,12 @@ describe("gateway body schemas", () => {
     expect(missing.statusCode).toBe(400);
     expect(missing.json()).toMatchObject({ id: 1, error: { message: "bad_request" } });
 
-    const relay = await post(self, "/a2a", { method: "tasks/escalate", params: { taskId: "t" } });
-    expect(relay.statusCode).toBe(400);
+    const noId = await post(self, "/a2a", { method: "tasks/cancel", params: { taskId: "t" } });
+    expect(noId.statusCode).toBe(400);
+
+    // Removed with cascading tasks: a node no longer parks a task for a child (§7.9).
+    const escalate = await post(self, "/a2a", { method: "tasks/escalate", params: { taskId: "t" } });
+    expect(escalate.json()).toMatchObject({ error: { message: "unsupported" } });
 
     // Valid shape: the request reaches the method and fails there instead.
     const unknown = await post(self, "/a2a", { method: "tasks/get", params: { id: "nope" } });

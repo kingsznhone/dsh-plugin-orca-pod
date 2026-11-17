@@ -8,11 +8,10 @@
  * visible to every session this host runs. Nothing is copied into a user skill
  * root, so there is no second copy to keep in sync.
  *
- * The bundle itself only registers tools inside the DSH host process it runs
- * in. The ACP executor and CLI sessions start *other* `dsh` subprocesses (other
- * profiles), which is why the skill exists; sessions spawned by the bundle also
- * receive `ORCA_POD_CLI`/`ORCA_POD_DATA_ROOT` in their environment, which the
- * skill prefers over the bare `orca-node` command.
+ * The skill is for sessions that may dispatch (this host's own). Sessions the
+ * ACP executor spawns run a task: they cannot see this host's registry, learn
+ * the CLI (publish/fetch only) from the task preamble, and carry
+ * `ORCA_POD_IN_TASK=1`, which makes `send` refuse (§7.9).
  */
 
 import { readFileSync } from "node:fs";

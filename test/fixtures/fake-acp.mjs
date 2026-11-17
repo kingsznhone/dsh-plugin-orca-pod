@@ -117,7 +117,7 @@ function promptTurn(id, params) {
 function onRequest(message) {
   const { id, method, params } = message;
   if (method === "initialize") {
-    log({ method: "initialize" });
+    log({ method: "initialize", inTask: process.env.ORCA_POD_IN_TASK });
     respond(id, {
       protocolVersion: 1,
       agentInfo: { name: "fake-acp", version: "0.0.0" },

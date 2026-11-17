@@ -5,14 +5,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { createAcpExecutor } from "../src/execution/acp/executor.ts";
-import { childPodMetadata } from "../src/tasks/delegation.ts";
 import { parseEchoScript } from "../src/execution/echo.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { parsePodMetadata } from "../src/tasks/meta.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { narrowPermissionMode, permissionModeRank } from "../src/protocol/permission.ts";
-import type { PodTaskMetadata } from "../src/protocol/task.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
@@ -60,22 +58,10 @@ describe("permission modes", () => {
   });
 
   it("validates and normalizes pod.permission_mode", () => {
-    const metadata = { pod: { hop: 0, chain: [], permission_mode: "workspace-write" } };
-    expect(parsePodMetadata(metadata, labelId("B"), labelId("A"))).toMatchObject({ permissionMode: "workspace-write" });
-    expect(parsePodMetadata(undefined, labelId("B"), labelId("A")).permissionMode).toBe("read-only");
-    expect(() => parsePodMetadata({ pod: { permission_mode: "root" } }, labelId("B"), labelId("A"))).toThrowError(
-      /permission_mode/,
-    );
-  });
-
-  it("child tasks inherit the parent's permission mode", () => {
-    const parent: PodTaskMetadata = { hop: 0, chain: [labelId("A")], root: "t_root", permission_mode: "read-only" };
-    expect(childPodMetadata(parent, "t_parent", labelId("B"))).toMatchObject({
-      permission_mode: "read-only",
-      hop: 1,
-      chain: ["A", "B"],
-    });
-    expect(childPodMetadata(undefined, "t_parent", labelId("B"))).toMatchObject({ hop: 1 });
+    const metadata = { pod: { permission_mode: "workspace-write" } };
+    expect(parsePodMetadata(metadata)).toMatchObject({ permissionMode: "workspace-write" });
+    expect(parsePodMetadata(undefined).permissionMode).toBe("read-only");
+    expect(() => parsePodMetadata({ pod: { permission_mode: "root" } })).toThrowError(/permission_mode/);
   });
 });
 

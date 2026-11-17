@@ -295,7 +295,6 @@ describe("grants", () => {
     target_orca_node: fakeNodeId("z"),
     tool: "write_file",
     mode: "allow_once",
-    chain: [identity.orcaNodeId],
     request_id: "req-1",
     issued_at: new Date(0).toISOString(),
     expires_at: new Date(60_000).toISOString(),

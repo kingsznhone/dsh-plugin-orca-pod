@@ -11,13 +11,14 @@
 
 import { readdirSync } from "node:fs";
 
+import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { defaultDataRoot } from "../node/config.ts";
 import type { DispatchEntry, OpenedBlob } from "../storage/stores.ts";
 import { shortenNodeId } from "../security/identity.ts";
 import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
 import { isTerminal } from "../protocol/task.ts";
 import type { OrcaNodeId, PeerView, SelfRecord } from "../protocol/peer.ts";
-import type { PermissionMode } from "../protocol/permission.ts";
 import type { PermissionRequest } from "../protocol/grant.ts";
 import type { PodTaskMetadata, TaskState, TaskView } from "../protocol/task.ts";
 import type { ReasoningEffort } from "../protocol/model.ts";
@@ -39,12 +40,6 @@ export interface PodArtifact {
 /** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
 export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | null };
 
-/** One hop of an approval chain, root first. */
-export interface PodChainEntry {
-  name: string;
-  self: boolean;
-}
-
 /** One permission request waiting for the human (tracker and broker views merged). */
 export interface PodApproval {
   /** `peer|task_id`: stable across polls. */
@@ -54,10 +49,8 @@ export interface PodApproval {
   tool: string;
   /** Short preview of the requested arguments. */
   requested: string;
-  /** Label of the node that actually needs the permission. */
+  /** Label of the node that needs the permission. */
   from: string;
-  /** Approval path, this node first and the requesting node last. */
-  chain: PodChainEntry[];
   /** DSH session that dispatched the task; null when only the tracker has seen the request. */
   agent_id: string | null;
 }
@@ -102,7 +95,7 @@ export interface PodAdvancedConfig {
   max_workspace_files: number;
   allow_public_peers: boolean | null;
   allow_loopback_peers: boolean | null;
-  permission_mode: PermissionMode | null;
+  permission_mode: SandboxMode | null;
   default_reasoning_effort: ReasoningEffort | null;
   executor: ExecutorKind | null;
 }
@@ -122,6 +115,8 @@ export interface PodConfigView {
   endpoints: string[];
   /** Dial URLs the form starts from: the usable advertised ones, else this machine's detected addresses. */
   suggested_endpoints: string[];
+  /** The permission modes this DSH accepts, in rank order (read from DSH itself). */
+  permission_modes: readonly SandboxMode[];
   /** Listen addresses the form offers. */
   bind_choices: string[];
   peers: string[];
@@ -197,16 +192,6 @@ function labeller(current: OrcaNode | null): (key: string | undefined) => string
   };
 }
 
-/** Approval path root first: this node, then each hop down to the node that needs the permission. */
-function chainOf(request: PermissionRequest, self: SelfRecord | null, label: (key: string) => string): PodChainEntry[] {
-  const chain: PodChainEntry[] = self === null ? [] : [{ name: label(self.orca_node_id), self: true }];
-  for (const id of [request.requested_by, ...[...(request.upstream ?? [])].reverse()]) {
-    const name = label(id);
-    if (chain.at(-1)?.name !== name) chain.push({ name, self: false });
-  }
-  return chain;
-}
-
 /** Build the admin surface over one running orca node. */
 /** A permission request waiting for the human, whoever saw it first. */
 type PendingApproval = { peer: string; taskId: string; request: PermissionRequest; agentId: string | null };
@@ -243,9 +228,9 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
     return waiting;
   }
 
-  /** A task this node runs: its origin is the root of the delegation tree. */
+  /** A task this node runs: its who is the node that dispatched it. */
   function localRow(current: OrcaNode, label: (key: string | undefined) => string, view: TaskView): PodTaskRow {
-    const origin = podOf(view).root_origin;
+    const origin = podOf(view).origin_orca_node;
     return {
       id: view.id,
       peer: current.endpoints[0] ?? "",
@@ -297,6 +282,7 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       port,
       endpoints,
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
+      permission_modes: SANDBOX_MODES,
       bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
       peers: [...new Set([...config.peers, ...handle.rememberedPeers])],
       data_root: config.data_root ?? defaultDataRoot(),
@@ -351,29 +337,23 @@ export function createPodAdmin(handle: PodHandle, tracker: Tracker, broker: Appr
       return rows.sort((left, right) => right.at.localeCompare(left.at)).slice(0, limit);
     },
     approvals() {
-      const current = node();
-      const label = labeller(current);
-      const self = current?.self() ?? null;
-      return [...waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => {
-        const chain = chainOf(request, self, label);
-        return {
-          id,
-          peer,
-          task_id: taskId,
-          tool: request.tool,
-          requested: preview(request.requested),
-          from: chain.at(-1)?.name ?? "-",
-          chain,
-          agent_id: agentId,
-        };
-      });
+      const label = labeller(node());
+      return [...waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => ({
+        id,
+        peer,
+        task_id: taskId,
+        tool: request.tool,
+        requested: preview(request.requested),
+        from: label(request.requested_by),
+        agent_id: agentId,
+      }));
     },
     async task(peer, taskId) {
       const current = requireNode();
       const task = await current.getTask(peer, taskId);
       return {
         task,
-        origin: labeller(current)(podOf(task).root_origin),
+        origin: labeller(current)(podOf(task).origin_orca_node),
         dispatch: current.listDispatches().find((entry) => entry.task_id === task.id) ?? null,
         artifacts: artifactsOf(task, current.nodeIdOf(peer)),
       };

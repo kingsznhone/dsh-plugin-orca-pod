@@ -13,7 +13,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { deriveChildGrant, checkGrant, type GrantLedger } from "../security/grants.ts";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
+import { checkGrant, type GrantLedger } from "../security/grants.ts";
 import type { FileBlobRegistry, TaskStore } from "../storage/stores.ts";
 import { assertNever, errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
@@ -26,8 +27,8 @@ import {
   type TaskState,
   type TaskView,
 } from "../protocol/task.ts";
-import { narrowPermissionMode, type PermissionMode } from "../protocol/permission.ts";
-import type { PermissionRequest, RequestedAccess, ResumeControl, SignedGrant, TaskRelay } from "../protocol/grant.ts";
+import { narrowPermissionMode } from "../protocol/permission.ts";
+import type { PermissionRequest, RequestedAccess } from "../protocol/grant.ts";
 import { composePrompt, listNotes } from "./prompt.ts";
 import { parseResume, type TaskMeta } from "./meta.ts";
 import type { Workspace } from "./workspace.ts";
@@ -46,13 +47,11 @@ export type RecordHost = {
   workgroupId: WorkgroupId;
   dataRoot: string;
   /** Local ceiling for the inherited mode; unset means the origin's mode applies as is (§7.10). */
-  permissionMode: PermissionMode | undefined;
+  permissionMode: SandboxMode | undefined;
   /** Auto-reject a parked request after this many seconds; unset waits forever (§7.12). */
   permissionTtlS: number | undefined;
   /** Inline result summary cap in bytes (§6.11). */
   resultMaxBytes: number;
-  /** Hand a control message to a child task: a grant or a denial going down (§7.12). */
-  sendControl(child: TaskRelay, control: ResumeControl): Promise<void>;
   /** The task runner's single slot (§6.9). */
   claim(taskId: string): void;
   release(taskId: string): void;
@@ -69,15 +68,6 @@ type RecordInit = {
   ttlS: number;
   /** The origin's task text. */
   text: string;
-};
-
-/** A parked permission request: whose child gets the grant, and who is driving the executor meanwhile. */
-type Wait = {
-  request: PermissionRequest;
-  /** Child task that gets the grant (or the denial); null when the request is this node's own. */
-  child: TaskRelay | null;
-  /** True when the executor yielded the request and is idle; false when `escalate` parked a running one. */
-  executorIdle: boolean;
 };
 
 function nowIso(): string {
@@ -108,12 +98,13 @@ export class TaskRecord {
   private readonly ttlS: number;
   private readonly text: string;
   private readonly abort = new AbortController();
-  private readonly mode: PermissionMode;
+  private readonly mode: SandboxMode;
   /** The executor run; created by `begin()` before the first `drive()`. */
   private iterator!: AsyncGenerator<ExecutorEvent, void, void>;
   private ttl: NodeJS.Timeout | null = null;
   private permissionTimer: NodeJS.Timeout | null = null;
-  private wait: Wait | null = null;
+  /** The permission request this task is parked on, if any. */
+  private wait: PermissionRequest | null = null;
 
   constructor(host: RecordHost, init: RecordInit) {
     this.host = host;
@@ -162,7 +153,7 @@ export class TaskRecord {
     // A permission suspension ends only with a grant or an explicit denial (§7.11).
     if (control === null) throw new PodError("bad_request", "resume of a permission request needs a grant or a denial");
     if (control.kind === "denied") {
-      this.deny(control.reason, "failed", textMessage(`permission denied: ${control.reason}`), "permission_denied");
+      this.terminate("failed", textMessage(`permission denied: ${control.reason}`), "permission_denied");
       return;
     }
     const failure = checkGrant(
@@ -171,9 +162,8 @@ export class TaskRecord {
         taskId: this.id,
         selfOrcaNodeId: this.host.selfOrcaNodeId,
         workgroupId: this.host.workgroupId,
-        rootOrigin: this.meta.rootOrigin,
-        chain: this.meta.chain,
-        pending: wait.request,
+        origin: this.origin,
+        pending: wait,
       },
       this.host.ledger,
     );
@@ -182,27 +172,11 @@ export class TaskRecord {
       return;
     }
     this.host.ledger.consume(control.grant);
-    this.proceed(wait.child, control.grant, wait.executorIdle);
-  }
-
-  /**
-   * Park a running task because a child task it delegated to needs a permission
-   * only this task's origin can grant (§7.12). The executor keeps running; the
-   * task surfaces an upstream `permission_request` and frees the slot.
-   */
-  escalate(child: TaskRelay): void {
-    // The automatic child watcher may have parked this task between the caller's
-    // read and this call. Repeating the same escalation is a no-op, not a race
-    // the caller has to retry (§7.12).
-    const parked = this.wait?.child;
-    const trimmed = (url: string): string => url.replace(/\/+$/, "");
-    if (parked && parked.task_id === child.task_id && trimmed(parked.peer) === trimmed(child.peer)) return;
-    if (this.state !== "working") throw new PodError("bad_request", "only a running task can escalate");
-    this.requestPermission(child.request.tool, child.request.requested, child, false);
+    this.proceed();
   }
 
   cancel(): void {
-    this.deny("task canceled", "canceled", undefined, "canceled");
+    this.terminate("canceled", undefined, "canceled");
   }
 
   // ---- state machine ----
@@ -246,45 +220,14 @@ export class TaskRecord {
     this.abort.abort();
   }
 
-  /** The task ends because its permission request will not be granted: tell the child waiting on it, then stop. */
-  private deny(reason: string, state: TaskState, message: A2AMessage | undefined, code: string): void {
-    const child = this.wait?.child;
-    // Best effort: a child that misses this still ends on its own TTL.
-    if (child) void this.host.sendControl(child, { permission_denied: true, reason }).catch(() => {});
-    this.terminate(state, message, code);
-  }
-
-  /** Back to work after a resume: re-take the slot and the clock, hand the grant down, restart the executor loop if it was idle. */
-  private proceed(child: TaskRelay | null, grant: SignedGrant | undefined, drive: boolean): void {
+  /** Back to work after a grant: re-take the slot and the clock, then restart the executor loop. */
+  private proceed(): void {
     this.wait = null;
     this.clearPermissionTimer();
     this.armTtl();
     this.host.claim(this.id);
     this.move("working");
-    void this.guarded(async () => {
-      if (child !== null && grant !== undefined && !(await this.forward(child, grant))) return;
-      if (drive) await this.drive();
-    });
-  }
-
-  /** Derive a child grant from the origin's and hand it to the child (§7.12). False when the task failed instead. */
-  private async forward(child: TaskRelay, grant: SignedGrant): Promise<boolean> {
-    try {
-      const childGrant = deriveChildGrant({
-        parent: grant,
-        request: child.request,
-        selfOrcaNodeId: this.host.selfOrcaNodeId,
-      });
-      await this.host.sendControl(child, { grant: childGrant });
-      return true;
-    } catch (error) {
-      this.terminate(
-        "failed",
-        textMessage(`relay to child failed: ${errorMessage(error)}`),
-        error instanceof PodError ? error.code : "relay_failed",
-      );
-      return false;
-    }
+    void this.guarded(() => this.drive());
   }
 
   // ---- running ----
@@ -326,7 +269,7 @@ export class TaskRecord {
       const event = step.value;
       switch (event.type) {
         case "suspend":
-          return this.requestPermission(event.suspend.tool, event.suspend.requested, event.suspend.relay ?? null, true);
+          return this.requestPermission(event.suspend.tool, event.suspend.requested);
         case "artifact":
           await this.addArtifact(event.name, event.content);
           break;
@@ -361,13 +304,8 @@ export class TaskRecord {
     this.host.onEvent(this.snapshot());
   }
 
-  /** Ask the origin to decide on one tool (§7.11). A `child` is the task whose request this one passes on (§7.12). */
-  private requestPermission(
-    tool: string,
-    requested: RequestedAccess,
-    child: TaskRelay | null,
-    executorIdle: boolean,
-  ): void {
+  /** Ask the origin to decide on one tool (§7.11); the executor waits for the answer. */
+  private requestPermission(tool: string, requested: RequestedAccess): void {
     const ttlS = this.host.permissionTtlS;
     const request: PermissionRequest = {
       request_id: randomUUID(),
@@ -375,13 +313,10 @@ export class TaskRecord {
       tool,
       requested,
       requested_by: this.host.selfOrcaNodeId,
-      via: this.meta.chain,
-      origin_request_id: child ? (child.request.origin_request_id ?? child.request.request_id) : undefined,
-      upstream: child ? [...(child.request.upstream ?? []), child.request.requested_by] : undefined,
       // No expiry by default: the origin waits however long the human takes (§7.12).
       expires_at: ttlS === undefined ? undefined : new Date(Date.now() + ttlS * 1000).toISOString(),
     };
-    this.wait = { request, child, executorIdle };
+    this.wait = request;
     this.park({ role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] });
   }
 
@@ -409,8 +344,7 @@ export class TaskRecord {
     const ttlS = this.host.permissionTtlS;
     if (ttlS === undefined) return;
     this.permissionTimer = setTimeout(
-      () =>
-        this.deny("permission_timeout", "failed", textMessage("permission request timed out"), "permission_timeout"),
+      () => this.terminate("failed", textMessage("permission request timed out"), "permission_timeout"),
       ttlS * 1000,
     );
     this.permissionTimer.unref();

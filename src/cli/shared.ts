@@ -17,7 +17,6 @@ export const OPTIONS = {
   bind: { type: "string" },
   port: { type: "string" },
   text: { type: "string" },
-  "local-task": { type: "string" },
   context: { type: "string" },
   "permission-mode": { type: "string" },
   model: { type: "string" },
@@ -78,7 +77,7 @@ export function localEndpoint(config: OrcaNodeConfig): string {
 
 /**
  * Local control plane: always dial loopback, never a published endpoint. The
- * gateway only accepts child links from loopback without proxy headers (§7.1).
+ * gateway only accepts local-only routes from loopback without proxy headers (§7.1).
  */
 export function localControlEndpoint(config: OrcaNodeConfig): string {
   const host = config.bind_host === "::1" ? "[::1]" : "127.0.0.1";

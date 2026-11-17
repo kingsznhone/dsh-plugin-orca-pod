@@ -11,8 +11,6 @@ export type DispatchEntry = {
   /** Last observed task state; `unknown` once a restart cut the origin off from it. */
   state: TaskState | "unknown";
   last_error?: string;
-  /** When the dispatching task was itself a local task, its id (for automatic relay). */
-  parent_local_task_id?: string;
   /**
    * DSH session that dispatched the task (§8.3). Persisted so the host can
    * resume background tracking after a restart, when the in-memory tracker is

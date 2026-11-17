@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { z } from "zod";
+import type { z } from "zod";
 
 import type { AckSchema } from "../../protocol/a2a.ts";
 import {
@@ -27,8 +27,6 @@ import { isDirectLoopbackRequest } from "../net.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import { parseInput } from "./input.ts";
 
-const NonEmpty = z.string().min(1);
-
 /** The recorded profile of a peer: what it described, with endpoints screened (§7.7). */
 type Profile = Pick<
   PeerView,
@@ -46,10 +44,6 @@ type Profile = Pick<
 const SCREENING_TTL_MS = 60_000;
 
 const ack: z.infer<typeof AckSchema> = { ok: true };
-
-const ChildLinkBody = z.object({ parent_task_id: NonEmpty, peer: NonEmpty, child_task_id: NonEmpty });
-
-const TaskQuery = z.object({ task: NonEmpty });
 
 /**
  * Admission (section 7.1): the Ed25519 signature proved which node is calling;
@@ -203,27 +197,5 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   app.post("/cluster/leave", { config: { access: "member" } }, async (request) => {
     deps.peers.remove(request.auth.orcaNodeId);
     return ack;
-  });
-
-  // Local control: tell this node that one of its local tasks delegated
-  // `child_task_id` to `peer`, so it can relay the child's permission requests
-  // automatically (section 7.12).
-  app.post("/cluster/child-link", { config: { access: "local" } }, async (request) => {
-    const {
-      parent_task_id: parentTaskId,
-      peer,
-      child_task_id: childTaskId,
-    } = parseInput(ChildLinkBody, request.body, "body");
-    deps.orcaNode.linkChildTask(parentTaskId, peer, childTaskId);
-    return ack;
-  });
-
-  // Local control: read one of this node's task views so the CLI can inherit
-  // `metadata.pod` (hop/chain/root) when it dispatches a child task (section 5.1).
-  app.get("/cluster/task", { config: { access: "local" } }, async (request) => {
-    const { task } = parseInput(TaskQuery, request.query, "querystring");
-    const view = deps.tasks.get(task);
-    if (view === null) throw new PodError("task_not_found", `unknown task ${task}`);
-    return view;
   });
 }

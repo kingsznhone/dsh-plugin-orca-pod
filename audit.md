@@ -7,6 +7,7 @@
 > R0 完成后（`ulid`、`@agentclientprotocol/sdk`，校验统一用 `zod`，先用过的 `typebox` 已移除）：50 个文件、437 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
 > §9 代码整理候选实施后（含顺带修复的 R2）：51 个文件、437 个用例全部通过（`normalizeOrcaNodeId` 的 3 个测试随函数删除）；`biome check`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 通过。
 > §9.1 余项（TY9、TY15、TY16、TY18、NE6/NE7）实施、面板改用 DSH 的 UI 组件与 CSS Modules 之后：51 个文件、437 个用例全部通过；`biome check`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 通过。
+> 任务改为只有一跳（D39，去掉级联派发、grant 转发与逐跳上交）后：G2（agent 侧密钥隔离，决定不做）、B18（子任务权限继承）随之关闭；47 个文件、388 个用例全部通过。
 > 本文**只列尚未完成的事项**；已完成的项不再记录。编号沿用历次审计，便于对照。
 
 ---
@@ -15,7 +16,6 @@
 
 | ID | 事项 | 现状 |
 |---|---|---|
-| G2 | 远端任务中的 agent 与节点密钥的隔离；子任务的 hop/chain 由 CLI 在客户端拼装 | agent 以同一个 OS 用户运行，读得到 `<data_root>`（`identity.json` 私钥、`config.json` 的 `key_base64`），也读得到 DSH 凭据文件 `$DSH_HOME/.credentials.yaml` 里的工作组口令。CLI 用本节点身份签名。`ORCA_POD_PARENT_TASK` 只在 `cli/send.ts` 读取，没有任何地方设置。由此导致 **N11**：agent 运行 CLI 时不带 `--local-task`，发出的就是一个全新的根任务，既没有 `chain` 也没有 `root_origin`，祖先禁调拦不住它回调整棵树的发起方。方向：密钥目录与工作区分离；CLI 改为调用回环控制端点，由节点代签，并强制注入父链与收窄后的权限；执行器按任务注入父任务 id |
 | P1 | `orca_pod` `send` 的显式 `permission_mode` 可以**放宽**会话模式 | `plugin/tools.ts`：`explicitMode ?? sessionSandboxMode(...)`。需要确认这是否有意为之；若不是，应改为只能在会话模式之下收窄，读不到会话模式时按 `read-only` |
 
 ## 2. 延后实施（所有者决定）
@@ -40,7 +40,6 @@
 |---|---|---|
 | B6 | `security/identity.ts` `loadIdentity` | `identity.json` 损坏或无法读取时返回 null，身份被**静默重新生成**；应只在 ENOENT 时返回 null，其他情况报错 |
 | B17 | `scripts/sync-guest.ps1` | 硬编码私网 IP `192.168.86.252` 与 `root` 用户，属于个人开发环境脚本 |
-| B18 | `cli/send.ts`（`--local-task` 分支）、`tasks/delegation.ts`（`withParentChain`，`{ ...callerPod, ...childPodMetadata(...) }`） | 子任务的 `permission_mode` 没有按“只能收窄”继承：CLI 里显式 `--permission-mode` 覆盖父任务的模式，所以以 `read-only` 运行的 agent 可以派出 `danger-full-access` 的子任务（目标机仍受本机上限约束）；`delegation.ts` 则相反，父任务模式覆盖调用方。应统一为 `narrowPermissionMode(父, 请求)`，放进 `childPodMetadata` 一处实现，CLI 改调它（TY5）。与 G2/N11、P1 同属“子任务权限不可放大”一族 |
 
 ## 5. 架构重组中发现、不在本次范围内的问题
 
@@ -99,5 +98,4 @@
 
 ### 9.3 实施中发现
 
-- **B18 现在只有一处可改**：`cli/send.ts` 改为调用 `tasks/delegation.ts` 导出的 `childPodMetadata`，但为了不改变行为，仍让显式 `--permission-mode` 覆盖父任务的模式（原样保留缺陷）；`delegation.ts` 的 `withParentChain` 仍是父任务模式覆盖调用方。要修成 `narrowPermissionMode(父, 请求)`，只需改 `childPodMetadata` 并去掉 `cli/send.ts` 里那一行覆盖。
 - **错误文案变化**：zod 取代手写校验后，`parseSignedGrant`、`parsePodMetadata`、echo 脚本、工具参数的错误文案改为 `<路径> <zod 消息>`（例如 `Unrecognized key`、`expected object`）；错误码不变。

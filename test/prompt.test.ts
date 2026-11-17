@@ -38,7 +38,7 @@ async function waitForTerminal(runner: TaskRunner, taskId: string, timeoutMs = 5
 }
 
 describe("task prompt", () => {
-  it("tells the agent how files are named, fetched and handed on", async () => {
+  it("tells the agent how files are named, fetched and handed back, and that it cannot delegate", async () => {
     const prompts: string[] = [];
     const runner = createTestRunner({ executor: promptRecorder(prompts) });
     const view = runner.submit({ message: message("summarize the report") });
@@ -48,7 +48,9 @@ describe("task prompt", () => {
     expect(preamble).toContain("Files are named <orca node id>/<sha256>");
     expect(preamble).toContain("fetch <orca node id>/<sha256> --output <file> --json");
     expect(preamble).toContain("publish <path> --json");
-    expect(preamble).toContain("put the names in the task text you send");
+    expect(preamble).toContain("put the name it prints in your summary");
+    expect(preamble).toContain("single-hop");
+    expect(preamble).not.toContain("send --peer");
   });
 
   it("lists workspace notes from earlier tasks in the prompt appendix", async () => {

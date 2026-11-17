@@ -120,9 +120,8 @@ export function apply(ctx: Context, config: Config): void {
   registerPodWeb(ctx, createPodAdmin(handle, tracker, broker));
 
   // The skill ships inside the package and is registered in memory; no copy is
-  // written to a user skill root. ACP and CLI executors run in their own `dsh`
-  // subprocesses and cannot see this host's registry, so they get
-  // ORCA_POD_CLI/ORCA_POD_DATA_ROOT in their environment instead.
+  // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
+  // this host's registry; it learns publish/fetch from the task preamble instead.
   if (config.skill_injection) {
     ctx.inject(["skills"], (scope) => {
       scope.effect(() => scope.skills.register(skillRegistration()), "orca-pod.skill");

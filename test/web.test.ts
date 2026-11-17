@@ -57,10 +57,6 @@ const APPROVAL: PodApproval = {
   tool: "write_file",
   requested: '{"path":"report.md"}',
   from: "node two",
-  chain: [
-    { name: "node one", self: true },
-    { name: "node two", self: false },
-  ],
   agent_id: "session-1",
 };
 
@@ -88,6 +84,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
       endpoints: ["http://127.0.0.1:11811"],
       suggested_endpoints: ["http://192.168.1.5:11811"],
       bind_choices: ["127.0.0.1", "::", "192.168.1.5"],
+      permission_modes: ["read-only", "workspace-write", "danger-full-access"],
       bind_host: "127.0.0.1",
       peers: [],
       data_root: "/data",
@@ -258,10 +255,6 @@ describe("panel HTTP bridge", () => {
     expect(result.body.approvals).toHaveLength(1);
     expect(result.body.approval_count).toBe(1);
     expect(result.body.approvals[0]).toMatchObject({ tool: "write_file", from: "node two", agent_id: "session-1" });
-    expect(result.body.approvals[0].chain).toEqual([
-      { name: "node one", self: true },
-      { name: "node two", self: false },
-    ]);
     expect(result.body.workspace.notes_files).toEqual(["STATUS.md"]);
     expect(result.body).not.toHaveProperty("tasks");
     expect(result.body).not.toHaveProperty("prompts");

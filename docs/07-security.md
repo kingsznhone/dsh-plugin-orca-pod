@@ -19,16 +19,16 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
   - **DSH 插件**：密码是 DSH 凭据（`ctx.credentials`，默认是 `$DSH_HOME/.credentials.yaml`），引用名默认按 workgroup 派生为 `ORCA_POD_PASSWORD_<WORKGROUP>`（`-` 换成 `_`，全大写），也可以用 `workgroup_password_ref` 指定。凭据文件为整个 DSH home 共用，所以引用名按 workgroup 区分：同一 workgroup 的 profile 共用密码，不同 workgroup 互不覆盖。凭据库里没有值时依次回落到启动环境变量与 `.env`，无头宿主可以直接导出同名变量。插件配置（profile 的 `cordis.patch.yml`）**不接受**明文 `workgroup_password`，校验直接报错。面板读到的配置视图永不返回密码，只给 `password_set`。
   - `<data_root>/config.json`：存**派生密钥** `key_base64`（不存密码），原子写入、文件权限 0600；`orca-node serve` 与 CLI 只读它，不再需要密码。配置文件泄露 = 直接获得准入证明能力。
   - `<data_root>/identity.json`：节点私钥，0600。
-  - 同一个节点的 agent 能读到这些文件：ACP 子进程继承 `ORCA_POD_DATA_ROOT`，CLI 就是用这里的私钥以本节点身份签名；agent 也可以不带 `--local-task` 直接以本节点身份发根任务（见 [§11](11-open-questions.md#11-未决问题)“agent 侧密钥隔离”）。
+  - 同一个节点的 agent 能读到这些文件：ACP 子进程继承 `ORCA_POD_DATA_ROOT`，CLI 用这里的私钥以本节点身份签名（`publish`/`fetch`）。agent 与节点是同一个 OS 用户，**不做密钥隔离**；“任务里不能再派任务”是非对抗性约束（[§7.9](07-security.md#79-权限跟随发起-orca-node)），防的是守规矩的 agent 走偏，不防有意绕过。
 - DSH 插件默认 `bind_host: "127.0.0.1"`，bundle 不携带任何 workgroup/密码：首次启动必须先在面板向导里完成 setup（workgroup、密码、监听地址）。向导默认仍选 loopback，只有显式选择 LAN 地址或 `::` 才接受 peer——同网段访问是运维的显式决定，不是默认。认证仍靠节点签名与成员闸门；不支持无密码的开放 mesh。需要更严格时保持 loopback 并让流量只走代理。
 - **换密码**：**改过的 orca node 用新密码重启、重新 join 组成新 group**（本机 `identity.json` 保留，节点 id 不变）；没改的 orca node 留在旧 mesh 里，下一拍心跳的准入证明对不上，双方互相 401 丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
 - **身份 = Ed25519 公钥**：`orca_node_id` 就是节点公钥，每个请求由本节点私钥签名，接收方用公钥验签——签名能证明“谁在调用”，伪造不了。密码不参与请求签名。
-- **local-only 能力用传输层判定**：“只有本机可以做”的操作（`/cluster/child-link`、`/cluster/task`、`/cluster/blob`、`/a2a` 的 `tasks/escalate`、面板的 `/orca-api`）只看 socket 与转发头，并要求签名身份就是本机自己——代理可能改写来源地址，传输层事实更难伪造。文件 blob 登记更彻底：`publish` 由 CLI 直写本机 SQLite，根本没有 HTTP 路由（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
+- **local-only 能力用传输层判定**：“只有本机可以做”的操作（`/cluster/blob`、面板的 `/orca-api`）只看 socket 与转发头，并要求签名身份就是本机自己——代理可能改写来源地址，传输层事实更难伪造。文件 blob 登记更彻底：`publish` 由 CLI 直写本机 SQLite，根本没有 HTTP 路由（[§5.6](05-tasks.md#56-文件交换blob-通道)）。
 - **目录不能改写已知成员**：他人目录里的条目只是“我还知道这个人”的提示，只用于把从未见过的 `orca_node_id` 加为候选端点；已存在记录的端点/显示名/runtime 只接受该节点本人签名的 join 更新，否则任一成员都能把别人的流量重定向到自己。
 - **响应绑定拨号目标**：join/heartbeat 的响应体本身没有签名，接收方把 `self`/`from` 绑定到本次拨号目标的身份——已知端点不得声明成另一个 `orca_node_id`，否则按失败处理。首次接触没有可比对的身份，仍是 TOFU；明文 HTTP 下的完整消息认证由前置代理的 TLS 承担。
 - **未认证请求只允许小 body**：认证发生在 body 解析之后、schema 校验之前，所以全局 `bodyLimit` 是 1 MiB，没有任何路由放宽；陌生人最多让服务端缓冲 1 MiB。
 - **先证明是成员，再谈签名**：签名只证明“持有这把私钥”，陌生人生成一把 Ed25519 密钥同样能签出合法格式的请求。因此除 `/health`、agent card 与 `/cluster/join` 外，所有签名路由在验签后都要过成员闸门：调用者必须是本机，或在成员表里，否则 `403 not_a_member`。`/cluster/join` 是唯一的准入入口——它同时校验密码派生的准入证明。**不存在隐式 join**：出站调用不认识的 URL 时直接 `unknown_peer`，只有显式的 join/connect 才会向陌生地址发出准入证明（[§4.7](04-transport.md#47-方法与异步语义)）。
-- **授权按记录归属，不按签名身份**：读接口允许同组成员读；写操作在记录归属上校验——`tasks/cancel` 与恢复（`message/send` 带 `taskId`）只接受 task 的 origin（或本机自己），其他成员 `403 not_task_origin`；`tasks/escalate` 只接受本机自己（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+- **授权按记录归属，不按签名身份**：读接口允许同组成员读；写操作在记录归属上校验——`tasks/cancel` 与恢复（`message/send` 带 `taskId`）只接受 task 的 origin（或本机自己），其他成员 `403 not_task_origin`。
 
 ### 7.2 请求签名（没有 session token）
 
@@ -105,8 +105,7 @@ sig = Ed25519(identity.private_key,
 | 派任务（`message/send` 新建）          | 同 workgroup 的任意已加入 orca node                        | 成员闸门；没有按 `orca_node_id` 的白名单 |
 | 读任务 / 读 blob                       | 同 workgroup 凭 id                                         | 无 per-task / per-blob ACL            |
 | 取消、恢复（批准/拒绝/补输入）         | 只有 task 的 origin（及本机自己）                          | `403 not_task_origin`                 |
-| `tasks/escalate`                       | 只有本机自己                                               | `400 bad_request`                     |
-| `child-link`、`/cluster/task`、面板 API | 只有本机（回环 + 无转发头 + 本机签名）                     | `403 local_only`                      |
+| `/cluster/blob`、面板 API               | 只有本机（回环 + 无转发头 + 本机签名）                     | `403 local_only`                      |
 | 权限上限                               | 继承 origin 会话的 mode，本机 `permission_mode` 可再降一档 | [§7.10](07-security.md#710-权限模式继承) |
 | 工作区                                 | 整个 workgroup 共用一份                                    | [§6.7](06-execution.md#67-工作区一份持久) |
 | 登记本机文件为 blob                    | 只有本机（`publish` 直写 SQLite）                          | 没有 HTTP 路由                        |
@@ -143,19 +142,20 @@ sig = Ed25519(identity.private_key,
 
 **审批面属于发起这个任务的会话，不属于节点**：
 
-| 谁发起的任务                                          | 谁批                      | 行为                                                                                                                                         |
-| ----------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| 桌面 DSH 里的交互式会话（`orca_pod` 的 `send`）       | 这台机器上的人            | tracker 把权限请求交给 `ApprovalBroker`，UI 作答：当前会话聊天卡、后台会话弹窗、或面板列表（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
-| ACP 执行器里的 agent，用 CLI 带 `--local-task` 派的子任务 | 链上更上游的人            | 本机不批：本节点轮询子任务，看到权限请求就把**本机的父任务**挂成 `input-required` 上交，沿父任务的 origin 逐跳上升直到有人的会话               |
-| 脚本/终端里不带 `--local-task` 的 CLI 派发             | 没有审批面                | 请求停在 `input-required`，直到 target 配置的 `approval_timeout_s` 到点失败；CLI 没有批准命令                                                  |
+| 谁发起的任务                                    | 谁批           | 行为                                                                                                                                         |
+| ----------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 桌面 DSH 里的交互式会话（`orca_pod` 的 `send`） | 这台机器上的人 | tracker 把权限请求交给 `ApprovalBroker`，UI 作答：当前会话聊天卡、后台会话弹窗、或面板列表（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
+| 脚本/终端里的 CLI 派发                          | 没有审批面     | 请求停在 `input-required`，直到 target 配置的 `approval_timeout_s` 到点失败；CLI 没有批准命令                                                  |
 
-不存在“节点级 attended 标志”：同一台机器通常同时跑桌面 DSH 和 ACP 执行器，有没有人取决于**是哪个会话发起了这个 task**；ACP 执行器会话只有 CLI、没有审批面，所以它派出的子任务一律上交。链上唯一的人坐在根会话前。
+**任务只有一跳**：target 上执行任务的 agent 不能再派任务。ACP 执行器拉起 `dsh` 子进程时注入 `ORCA_POD_IN_TASK=1`，CLI 的 `send` 与插件 `orca_pod` 的 `send` 看到它就拒绝，提示用 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）；`publish`、`fetch`、`status`、`members` 照常可用。所以审批面永远是派发任务的那个会话，不存在“替下游上交”的中间节点。
+
+这是**非对抗性约束**：agent 与节点同一个 OS 用户、读得到私钥（[§7.1](07-security.md#71-workgroup-与密码)），存心绕过的 agent 可以去掉环境变量或自己签请求。它挡住的是守规矩的 agent 因为任务难就转手、以及因此带来的协议复杂度（祖先链、grant 转发、逐跳上交）。要硬边界，得在部署层把执行器放到另一个 OS 用户或沙箱里。
 
 ### 7.10 权限模式继承
 
 origin 发起任务时携带会话的 permission mode（`metadata.pod.permission_mode`），target 按它执行：
 
-- **继承**：`orca_pod` 的 `send` 默认从 DSH 的 `sandboxPolicy` 服务读当前会话的 sandbox 模式（`ctx.sandboxPolicy.resolve({ session }).mode`，其 `SandboxMode` 与本报文的三档同名）；工具的 `permission_mode` 参数显式给出时**用显式值**（是否应只允许收窄见 [§11](11-open-questions.md#11-未决问题)“显式 permission_mode 的方向”）。CLI `orca-node send` 没有 DSH 会话，用 `--permission-mode` 显式传；带 `--local-task` 且没显式传时继承父任务的模式。
+- **继承**：`orca_pod` 的 `send` 默认从 DSH 的 `sandboxPolicy` 服务读当前会话的 sandbox 模式（`ctx.sandboxPolicy.resolve({ session }).mode`，其 `SandboxMode` 与本报文的三档同名）；工具的 `permission_mode` 参数显式给出时**用显式值**（是否应只允许收窄见 [§11](11-open-questions.md#11-未决问题)“显式 permission_mode 的方向”）。CLI `orca-node send` 没有 DSH 会话，用 `--permission-mode` 显式传。
 - **没继承到**（元数据没带 mode）：target 按 `read-only` 执行。
 - **本机上限**：`permission_mode` 设置（面板高级设置）是本机上限，生效模式 = 上限与继承值中较窄的一个；没配上限就用继承值。**只能降，不能升**。
 - **执行**：target 并不把模式传给 `dsh` 子进程；约束完全来自对 ACP `session/request_permission` 的应答规则（[§7.14](07-security.md#714-acp-request_permission-映射)）。
@@ -181,8 +181,7 @@ grant 是 origin 对“这一次权限请求”的授权凭证，由 origin 节�
   "target_orca_node": "<请求者的 id>",
   "tool": "write_file",
   "mode": "allow_once",
-  "chain": ["<A 的 id>", "<经过的节点…>"],
-  "request_id": "<叶子请求的 id>",
+  "request_id": "<被批准的请求 id>",
   "issued_at": "2026-11-14T04:40:00Z",
   "expires_at": "2026-11-14T04:45:00Z",
   "sig": "<base64url>"
@@ -195,16 +194,15 @@ grant 是 origin 对“这一次权限请求”的授权凭证，由 origin 节�
 target 收到恢复消息后按顺序校验（`checkGrant`，全部通过才放行，任一不符即终止任务并以对应 reason `failed`）：
 
 1. 签名能用 `origin_orca_node` 的公钥验过；
-2. `chain[0] === origin_orca_node`，且它等于该任务的**根 origin**（`pod.root_origin`；单跳时就是任务自己的 origin）——中间节点不能冒充 origin；
+2. `origin_orca_node` 就是该任务的 origin（`message/send` 的签名者）——别的成员签的 grant 不算数；
 3. `workgroup_id` 一致、`tool` 与挂起的请求一致；
 4. 未过期（`grant_expired`）；
-5. `request_id` 等于叶子请求的 id（`origin_request_id` 或本请求的 `request_id`）——relay 逐跳原样携带，不重新生成；
+5. `request_id` 等于挂起请求的 `request_id`；
 6. 未被用过：target 在进程内按 `grant_id` 记已消费集合（到 `expires_at` 为止，容量 1024），重复使用 `grant_replayed`；
-7. direct（`task_id` 与 `target_orca_node` 就是本任务与本节点），或 delegated（`target_orca_node` 在本任务的 `chain` 里，且 `grant.chain.slice(1)` 是任务祖先链的前缀）。
+7. `task_id` 与 `target_orca_node` 就是本任务与本节点。
 
 其他：
 
-- 中间节点**不重签**：`deriveChildGrant` 只验父 grant 的签名、`target_orca_node` 是自己、`tool` 一致、未过期，然后把原 grant 转发给子任务；所以 `origin_orca_node` 始终指向真正签字的那个人，也不可能被放宽；
 - 已消费集合与 grant 都不持久化（重启时任务本来就都失败了）；没有“取消时吊销 grant”这一步，grant 本身只有一次有效且很快过期；
 - 签发见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用)：只有 origin 节点的 `approveTask` 签 grant。
 
@@ -221,10 +219,7 @@ target: 执行器发起一次生效模式之外的权限请求
       "task_id": "<target 上的 task>",
       "tool": "write_file",
       "requested": { "tool_call_id": "…", "tool_kind": "edit" },
-      "requested_by": "<需要权限的 orca node>",
-      "via": ["<A>", "<…>"],                // 本任务的祖先链
-      "upstream": ["<C>"],                  // 可选：真正需要权限的下游
-      "origin_request_id": "<叶子请求 id>",  // 可选：relay 时
+      "requested_by": "<需要权限的 orca node，即 target 自己>",
       "expires_at": "…"                     // 可选：仅当 target 配置了 approval_timeout_s
     }
 
@@ -243,34 +238,11 @@ origin: tracker 的下一次 tasks/get 看到 input-required
 - 补发的授权是**同一 task 的后续 message**（带 `taskId` + grant），不是第二个任务，也不是独立的 grant 端点；只有 origin 能发。
 - **只有一个 `ApprovalBroker`，UI 是唯一的答复通道**：`orca_pod` 工具没有 approve 方法（方法只有 `send`/`status`/`cancel`/`members`/`connect`），所以模型无法替用户批准。批准/拒绝按钮直接调 `OrcaNode.approveTask/denyTask`，不经过模型与工具轮次。
 - **权限请求不产生聊天 notice**，也不唤醒 agent；UI 三个落点共用同一个 broker 与同一条决议通道：**当前正在看的会话**里贴一张聊天卡（`conversation.input.dock`，按发起任务的会话 id 匹配）；**后台会话**的请求在框内弹窗（`shell.overlay`）；**面板** Pending approvals 列表可随时签发。任务终态或不再挂起时，卡片自动收回。
-- 卡片显示：需要权限的节点、请求链、工具名、`requested` 的预览；这些都是不可信的远端文本，当纯文本渲染，不当 HTML。
+- 卡片显示：需要权限的节点、工具名、`requested` 的预览；这些都是不可信的远端文本，当纯文本渲染，不当 HTML。
 - `decided_by` 必须来自 UI 的人类动作，不能由模型自批；origin 端是唯一能产生“用户同意”的地方。
 
-#### 链式调用：授权向下收窄，升级向上回传
-
-链 A→B→C 里，如果让 B 直接批准 C 的越界请求，A 的授权就被一个 agent 转授放大了。规则只有一条：**每个 task 的 origin 只能在自己拿到的 grant 范围内放行；超出一律上升，直到有人的那个 orca node，通常是根 A。** B 不自批，也没有“中间节点自动放行”的开关。
-
-```text
-C：模式之外的请求 → C 的 task 变 input-required，permission_request 落在 C 的 task 上
-B 的 agent 用 `send --local-task <B 的 task>` 派的这个子任务，CLI 向 B 登记了 child-link
-B 的节点每 1s 轮询 C 的 task：看到 permission_request
-  → 对 B 自己的父任务调 tasks/escalate(relay = {C 的 endpoint, C 的 task id, C 的请求})
-  → B 的父任务也变 input-required：permission_request 里 requested_by = B，via = B 的祖先链，
-    upstream = [C]，origin_request_id = C 的请求 id
-A（B 的 origin，也是人的位置）：tracker 看到 → 卡片显示“C 经 B 请求…” → 人批
-  → A 签 grant（request_id = 叶子请求 id，target = B，task_id = B 的 task），发给 B
-B 恢复：校验 grant（direct）→ 原样转发给 C 的 task（deriveChildGrant）
-C 校验 grant（delegated：target 在 C 的 chain 里）→ 恢复执行
-```
-
-规则：
-
-- **grant 只由 origin 签发、链上逐跳转发**：中间节点不重签（否则“谁批给谁”的链就断了）；target 端按 [§7.11](07-security.md#711-grant) 的 7 步校验，收窄来自 origin 签发时对请求的约束（同 tool、单次、短有效期），而不是中间节点的二次裁剪。
-- **拒绝/取消向下传**：A 拒绝，B 的父任务 `failed(permission_denied)` 并向 C 发 `permission_denied`，C 随之失败，不悬挂；B 的父任务被取消同理。
-- **等待不占槽**：C 与 B 都停在 `input-required`（槽位释放）；A 长期无人 → 各级继续等，除非 target 配置了 `approval_timeout_s`（到点 `permission_timeout`，同样向下传）。
-- **自动上升靠 CLI**：`send --local-task` 登记 child-link（子任务终态、父任务终态、或连续 10 次读失败都会摘掉链接）；`wait --local-task` 在轮询里看到子任务权限请求时也会自己上升（同一 `request_id` 只上升一次）；`escalate` 是手动路径。不经 CLI 派发子任务的宿主没有这层轮询。child-link 只在内存里，重启后不恢复。
-- **环靠 `chain` 检测，不靠深度上限**（[§5.1](05-tasks.md#51-任务标识与元数据)）；长链由 task TTL 与上面的超时兜底。
-- **根 A 的卡片必须显示来源链**：否则人只看到“C 要写文件”，不知道是 B 代 C 在问。来源链来自 `requested_by`、`via`、`upstream`。
+- **agent 这一侧不做任何事**：权限请求来自 ACP 的 `session/request_permission`，由执行器与任务运行器挂起任务、等待、恢复，agent 只是这次工具调用暂时没有返回；批准后同一轮继续，拒绝则任务以 `permission_denied` 结束。没有 agent 可调用的“上交”命令。
+- **只有一跳**：任务里的 agent 不能再派任务（[§7.9](07-security.md#79-权限跟随发起-orca-node)），所以请求总是直接挂在 origin 派出的那个任务上，grant 也总是 origin 对这个任务签的；没有中间节点转发 grant，也没有逐跳上交。
 
 ### 7.13 目标侧硬拒绝清单
 

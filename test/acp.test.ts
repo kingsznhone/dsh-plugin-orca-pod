@@ -4,12 +4,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
 import { permissionRequestOf, type TaskView } from "../src/protocol/task.ts";
-import type { PermissionMode } from "../src/protocol/permission.ts";
 import { createAcpExecutor } from "../src/execution/acp/executor.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
-import { connectAll } from "./support/harness.ts";
 import { parseEchoScript } from "../src/execution/echo.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
@@ -40,15 +39,6 @@ function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig
   return { ...config, ...overrides };
 }
 
-function echoConfigFor(root: string): OrcaNodeConfig {
-  return createOrcaNodeConfig({
-    workgroup_id: wg("acp-test"),
-    workgroup_password: "correct horse",
-    data_root: root,
-    port: 0,
-  });
-}
-
 async function startNode(config: OrcaNodeConfig): Promise<OrcaNode> {
   const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
   await node.start();
@@ -60,7 +50,7 @@ async function send(
   node: OrcaNode,
   text: string,
   contextId = "ctx-1",
-  permissionMode?: PermissionMode,
+  permissionMode?: SandboxMode,
 ): Promise<TaskView> {
   return node.sendTask(node.endpoints[0]!, {
     message: { role: "user", parts: [{ kind: "text", text }], contextId },
@@ -96,6 +86,7 @@ async function waitForRemoteState(
 
 type LogEntry = {
   method?: string;
+  inTask?: string;
   text?: string;
   cwd?: string;
   mcpServers?: unknown[];
@@ -135,6 +126,8 @@ describe("AcpExecutor", () => {
     const view = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(view)).toBe("acp done");
     const entries = await logEntries(join(root, "acp.log"));
+    // The agent runs inside a task: the CLI and the plugin refuse to send from it (§7.9).
+    expect(entries.find((entry) => entry.method === "initialize")?.inTask).toBe("1");
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);
     // ACP's McpServerStdio shape: args and env always present, env as name/value pairs.
@@ -144,8 +137,10 @@ describe("AcpExecutor", () => {
     ]);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");
-    // The preamble tells the ACP agent how to reach the CLI for delegation.
+    // The preamble tells the ACP agent how to reach the CLI for files, and that it cannot delegate.
     expect(promptText).toContain("ORCA_POD_CLI");
+    expect(promptText).toContain("single-hop");
+    expect(promptText).not.toContain("--local-task");
     expect(promptText).toContain("--data-root");
     // A required peer going offline must end the task with a blocker report.
     expect(promptText).toContain("offline");
@@ -350,59 +345,4 @@ describe("AcpExecutor", () => {
     }).rejects.toThrow("cannot start acp server");
     expect(events).toEqual([]);
   }, 15_000);
-});
-
-describe("AcpExecutor in a chain", () => {
-  it("surfaces an ACP permission request through the relay chain and continues after the root approves", async () => {
-    const rootA = await mkdtemp(join(tmpdir(), "orca-acp-a-"));
-    const rootB = await mkdtemp(join(tmpdir(), "orca-acp-b-"));
-    const rootC = await mkdtemp(join(tmpdir(), "orca-acp-c-"));
-    const a = await startNode(echoConfigFor(rootA));
-    const b = await startNode(echoConfigFor(rootB));
-    const c = await startNode(configFor(rootC, "permission-fetch"));
-    await connectAll([a, b, c]);
-
-    // B (mid node) creates the child task on C; C's ACP agent asks for permission.
-    const child = await b.sendTask(c.endpoints[0]!, {
-      message: { role: "user", parts: [{ kind: "text", text: "write a file" }], contextId: "ctx-child" },
-      metadata: {
-        pod: { hop: 1, chain: [b.orcaNodeId], root_origin: a.orcaNodeId, permission_mode: "workspace-write" },
-      },
-    });
-    const childSuspended = await waitForRemoteState(b, c.endpoints[0]!, child.id, ["input-required"]);
-    const childRequest = permissionRequestOf(childSuspended);
-    expect(childRequest?.tool).toBe("write file");
-    expect(childRequest?.requested_by).toBe(c.orcaNodeId);
-
-    // A (root) starts B's parent task; B relays C's request upward instead of approving it itself.
-    const parentScript = {
-      steps: [
-        {
-          at_ms: 20,
-          suspend: {
-            kind: "permission",
-            tool: childRequest?.tool ?? "write file",
-            requested: childRequest?.requested ?? {},
-            relay: { peer: c.endpoints[0]!, task_id: child.id, request: childRequest },
-          },
-        },
-      ],
-      final: { state: "completed", text: "parent done" },
-    };
-    const parent = await a.sendTask(b.endpoints[0]!, {
-      message: { role: "user", parts: [{ kind: "text", text: "delegate" }], contextId: "ctx-parent" },
-      metadata: { echo: parentScript },
-    });
-    const parentSuspended = await waitForRemoteState(a, b.endpoints[0]!, parent.id, ["input-required"]);
-    const parentRequest = permissionRequestOf(parentSuspended);
-    expect(parentRequest?.requested_by).toBe(b.orcaNodeId);
-    expect(parentRequest?.upstream).toEqual([c.orcaNodeId]);
-
-    await a.approveTask(b.endpoints[0]!, parentSuspended);
-
-    const childDone = await waitForRemoteState(b, c.endpoints[0]!, child.id, ["completed"]);
-    expect(taskText(childDone)).toContain("allowed");
-    const parentDone = await waitForRemoteState(a, b.endpoints[0]!, parent.id, ["completed"]);
-    expect(taskText(parentDone)).toBe("parent done");
-  }, 20_000);
 });

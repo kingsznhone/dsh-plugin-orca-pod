@@ -43,7 +43,6 @@ export function runnerDeps(overrides: Partial<TaskRunnerDeps> = {}): TaskRunnerD
     dataRoot,
     maxWorkspaceBytes: 1024 ** 3,
     maxWorkspaceFiles: 100_000,
-    sendTaskMessage: async () => {},
     onEvent: () => {},
     ...overrides,
   };

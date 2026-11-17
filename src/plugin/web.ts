@@ -8,7 +8,7 @@
  *
  * The route is deliberately reachable only from loopback and never through a
  * reverse proxy: it exposes task prompts, workspace paths and approval actions,
- * so we trust the transport, not a signature (same principle as `/cluster/child-link`).
+ * so we trust the transport, not a signature (same principle as the local `/cluster/blob`).
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
