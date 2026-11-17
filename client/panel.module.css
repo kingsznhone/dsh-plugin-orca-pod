@@ -1,0 +1,368 @@
+/* The status page, the panel frames (overlay dialog, settings page) and the sidebar entry. */
+
+/* ---- Frames ---- */
+
+.dialog {
+  width: min(760px, 100%);
+  height: min(860px, 100%);
+}
+
+.dialogContent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.footer {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.footerStatus {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Inside DSH's settings dialog: the section owns the page, like the Models section. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 720px;
+  min-width: 0;
+}
+
+.pageTitle {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.pageFooter {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  padding: 12px 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+/* ---- Header ---- */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.identity {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.identityName {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.identityMeta {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--dsw-radius-md);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.alert > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* ---- Connect card ---- */
+
+.connect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connectText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.connectRow {
+  display: flex;
+  gap: 8px;
+}
+
+.connectInput {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+}
+
+/* ---- Summary tiles ---- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (width <= 640px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 14px;
+}
+
+.statLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.statValue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 26px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.statValue[data-tone="warning"] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.statTotal {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+/* ---- Members and workspace, side by side when there is room ---- */
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.members {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -8px;
+  padding: 0;
+  list-style: none;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .member:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.member:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.memberMain {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.memberName {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memberSub {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.path {
+  padding: 6px 10px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform, var(--dsw-alias-bg-layer-2));
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.kv dd {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Sidebar entry ---- */
+
+.sidebarAction {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .sidebarAction:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.sidebarAction[data-wide="false"] {
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.sidebarIcon {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.sidebarBadge {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--dsw-alias-bg-layer-1);
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary);
+}
+
+.sidebarBadge[data-tone="warning"] {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.sidebarLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -2,7 +2,7 @@
 
 import React from "react";
 import { POLL_MS } from "./constants.ts";
-import type { LocaleService, PodActions, PodState } from "./types.ts";
+import type { LocaleService, PodActions, PodReads, PodState } from "./types.ts";
 
 /** What every slot component reads. */
 export interface Snapshot {
@@ -17,19 +17,29 @@ export interface Snapshot {
   docked: string[];
 }
 
-export async function api<T = unknown>(path: string, body?: unknown): Promise<T> {
+/** One `/orca-api` call (a POST when it carries a body): the JSON answer, or the host's `error` text thrown. */
+async function call(path: string, post?: { body: unknown }): Promise<unknown> {
   const init: RequestInit =
-    body === undefined
+    post === undefined
       ? { headers: { "x-orca-pod": "1" } }
       : {
           method: "POST",
           headers: { "x-orca-pod": "1", "content-type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(post.body),
         };
   const response = await fetch(`/orca-api/${path}`, init);
-  const data = (await response.json()) as T & { error?: string };
+  const data = (await response.json()) as { error?: string };
   if (!response.ok) throw new Error(data.error);
   return data;
+}
+
+/** GET one panel route; the route name fixes both the query it takes and the shape it answers with. */
+export async function read<K extends keyof PodReads>(
+  route: K,
+  query: PodReads[K]["query"],
+): Promise<PodReads[K]["response"]> {
+  const search = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)])).toString();
+  return (await call(search ? `${route}?${search}` : route)) as PodReads[K]["response"];
 }
 export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 /**
@@ -51,7 +61,7 @@ export function createStore() {
   }
   async function refresh() {
     try {
-      const next = await api<PodState>("state");
+      const next = await read("state", {});
       polledAt = Date.now();
       const text = JSON.stringify(next);
       if (text !== payload) {
@@ -68,7 +78,7 @@ export function createStore() {
   async function act<K extends keyof PodActions>(path: K, body: PodActions[K]): Promise<boolean> {
     set({ busy: true, actionError: null });
     try {
-      await api(path, body);
+      await call(path, { body });
       await refresh();
       return true;
     } catch (err) {
@@ -114,18 +124,27 @@ export function createStore() {
 }
 export const store = createStore();
 export const useStore = () => React.useSyncExternalStore(store.subscribe, store.get);
-/** Fetch one read-only route on mount (and when `version` changes). */
-export function useApi<T>(path: string, version = 0): { data: T | null; error: string | null } {
-  const [result, setResult] = React.useState<{ data: T | null; error: string | null }>({ data: null, error: null });
+/** What `useRead` holds: the answer once it arrived, or why it did not. */
+export type ReadResult<T> = { data: T | null; error: string | null };
+
+/** Read one panel route on mount, and again when the query or `version` changes. */
+export function useRead<K extends keyof PodReads>(
+  route: K,
+  query: PodReads[K]["query"],
+  version = 0,
+): ReadResult<PodReads[K]["response"]> {
+  const [result, setResult] = React.useState<ReadResult<PodReads[K]["response"]>>({ data: null, error: null });
+  const key = JSON.stringify(query);
+  // The effect depends on `key`, not `query`: callers build a new query object on every render.
   React.useEffect(() => {
     let live = true;
-    api<T>(path).then(
+    read(route, query).then(
       (data) => live && setResult({ data, error: null }),
       (err) => live && setResult({ data: null, error: messageOf(err) }),
     );
     return () => {
       live = false;
     };
-  }, [path, version]);
+  }, [route, key, version]);
   return result;
 }

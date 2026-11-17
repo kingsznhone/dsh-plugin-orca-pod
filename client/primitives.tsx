@@ -1,24 +1,12 @@
-/** Small building blocks every view uses: buttons, dialogs, tables, labelled fields. */
+/** Panel building blocks on top of DSH's shared primitives: cards, tables, fact lists, dialogs. */
 
+import { Modal, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
+import { ageOf, stateDot, stateLabel } from "./format.ts";
 import { t } from "./i18n.ts";
 import { store } from "./store.ts";
 import type { ModelOffer, ModelSelection, PodArtifact } from "./types.ts";
-import {
-  BUTTON,
-  CARD,
-  CLOSE_BUTTON,
-  FACT,
-  FIELD,
-  H2,
-  HINT,
-  LABEL,
-  LINK,
-  MUTED,
-  OVERLAY,
-  SECTION,
-  ageOf,
-} from "./styles.ts";
+import ui from "./ui.module.css";
 
 /** `provider/model`: how a model route is written everywhere in the panel. */
 export const modelId = (model: ModelSelection | ModelOffer): string => `${model.provider}/${model.model}`;
@@ -27,111 +15,123 @@ export const modelId = (model: ModelSelection | ModelOffer): string => `${model.
 export const modelText = (model: ModelSelection): string =>
   `${modelId(model)}${model.reasoning_effort ? ` · ${model.reasoning_effort}` : ""}`;
 
-export const Button = ({ style = BUTTON, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-  <button type={"button"} style={style} {...props} />
-);
-/** Centered dialog: role, Escape, backdrop click, initial focus and focus return. */
-export function Modal({
-  label,
-  width = "min(720px, calc(100vw - 48px))",
-  onClose,
-  children,
-}: {
-  label: string;
-  width?: string;
-  onClose: () => void;
-  children?: ReactNode;
-}) {
-  const card = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    card.current?.focus();
-    return () => opener?.focus?.();
-  }, []);
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click closes; the dialog itself handles Escape.
-    <div style={OVERLAY} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div
-        ref={card}
-        role={"dialog"}
-        aria-modal={"true"}
-        aria-label={label}
-        tabIndex={-1}
-        style={{ ...CARD, width, outline: "none" }}
-        onKeyDown={(event) => event.key === "Escape" && onClose()}
-      >
-        <Button style={CLOSE_BUTTON} title={t("close")} aria-label={t("close")} onClick={onClose}>
-          {"×"}
-        </Button>
-        {children}
-      </div>
-    </div>
-  );
-}
-export function Table({ columns, children }: { columns: string[]; children?: ReactNode }) {
-  return (
-    <table style={{ borderCollapse: "collapse", width: "100%" }}>
-      <thead>
-        <tr>
-          {columns.map((title, index) => (
-            <th key={index} scope={"col"} style={{ ...MUTED, textAlign: "left", fontWeight: 500 }}>
-              {title}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>{children}</tbody>
-    </table>
-  );
-}
-/** Clickable table row; buttons inside stop the click from reaching it. */
-export const Row = ({ onClick, children }: { onClick?: () => void; children?: ReactNode }) => (
-  <tr onClick={onClick} style={onClick ? { cursor: "pointer" } : undefined}>
-    {children}
-  </tr>
-);
 export const stop = (handler: () => void) => (event: React.SyntheticEvent) => {
   event.stopPropagation();
   handler();
 };
-/** One label/value line of a detail dialog. */
-export const Fact = ({ label, children }: { label: string; children?: ReactNode }) => (
-  <div style={FACT}>
-    <div style={{ ...MUTED, minWidth: 72 }}>{label}</div>
-    <div style={{ flex: 1, minWidth: 0, wordBreak: "break-word" }}>{children}</div>
-  </div>
-);
-/** One labelled form control (a `<label>` unless it holds several controls). */
-export function Field({
-  label,
-  hint,
-  group,
+
+/** A DSH dialog sized for detail views; its body scrolls, the header stays put. */
+export function Dialog({
+  title,
+  wide,
+  footer,
+  onClose,
   children,
 }: {
-  label: string;
-  hint?: string | null;
-  group?: boolean;
+  title: string;
+  wide?: boolean;
+  footer?: ReactNode;
+  onClose: () => void;
   children?: ReactNode;
 }) {
-  const Tag = group ? "div" : "label";
   return (
-    <Tag style={FIELD}>
-      <span style={LABEL}>{label}</span>
+    <Modal
+      open={true}
+      title={title}
+      closeLabel={t("close")}
+      onClose={onClose}
+      className={wide ? ui.dialogWide : ui.dialog}
+      contentClassName={ui.dialogContent}
+      footer={footer}
+    >
       {children}
-      {hint ? <div style={HINT}>{hint}</div> : null}
-    </Tag>
+    </Modal>
   );
 }
-export const Section = ({ title, action, children }: { title: string; action?: ReactNode; children?: ReactNode }) => (
-  <div style={SECTION}>
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <div style={H2}>{title}</div>
-      <div style={{ flex: 1 }} />
-      {action}
-    </div>
-    {children}
-  </div>
+
+/** A titled card; `count` shows as a badge after the title, `action` sits on the right. */
+export function Section({
+  title,
+  count,
+  action,
+  children,
+}: {
+  title: string;
+  count?: number;
+  action?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <section className={ui.card}>
+      <div className={ui.cardHead}>
+        <h3 className={ui.cardTitle}>
+          <span className={ui.inline}>
+            {title}
+            {count ? <Tag tone={"neutral"}>{count}</Tag> : null}
+          </span>
+        </h3>
+        {action ? <div className={ui.cardAction}>{action}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Placeholder line for a card with nothing to show. */
+export const Empty = ({ children }: { children?: ReactNode }) => <p className={ui.empty}>{children}</p>;
+
+/** A state as a DSH status dot and its label. */
+export const StateText = ({ state }: { state: string }) => (
+  <span className={ui.inline}>
+    <StateDot state={stateDot(state)} size={stateDot(state) === "ongoing" ? 12 : 10} />
+    {stateLabel(state)}
+  </span>
 );
+
+export function Table({ columns, children }: { columns: string[]; children?: ReactNode }) {
+  return (
+    <div className={ui.tableWrap}>
+      <table className={ui.table}>
+        <thead>
+          <tr>
+            {columns.map((title, index) => (
+              <th key={index} scope={"col"}>
+                {title}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Clickable table row; buttons and links inside stop the click from reaching it. */
+export const Row = ({ onClick, children }: { onClick?: () => void; children?: ReactNode }) => (
+  <tr onClick={onClick} className={onClick ? ui.clickable : undefined}>
+    {children}
+  </tr>
+);
+
+/** Label/value pairs of a detail dialog; `null` values are skipped. */
+export function Facts({ rows }: { rows: Array<[string, ReactNode] | null | false> }) {
+  return (
+    <dl className={ui.facts}>
+      {rows.map((row) =>
+        row ? (
+          <React.Fragment key={row[0]}>
+            <dt>{row[0]}</dt>
+            <dd>{row[1]}</dd>
+          </React.Fragment>
+        ) : null,
+      )}
+    </dl>
+  );
+}
+
+export const SubTitle = ({ children }: { children?: ReactNode }) => <h4 className={ui.subTitle}>{children}</h4>;
+
 /** "updated Ns ago", measured from the last successful poll and ticking every second. */
 export function Updated() {
   const [, tick] = React.useState(0);
@@ -139,18 +139,18 @@ export function Updated() {
     const id = window.setInterval(() => tick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
   }, []);
-  return <div style={{ ...HINT, marginTop: 22 }}>{t("updated") + ageOf(store.polledAt()) + t("updatedSuffix")}</div>;
+  return <span className={ui.caption}>{t("updated") + ageOf(store.polledAt()) + t("updatedSuffix")}</span>;
 }
 
 /** Links to a task's artifacts; one this node cannot sign for is shown as plain text. */
-export function ArtifactLinks({ artifacts, block }: { artifacts: PodArtifact[]; block?: boolean }) {
+export function ArtifactLinks({ artifacts }: { artifacts: PodArtifact[] }) {
   return artifacts.map((link) =>
     link.url ? (
-      <a key={link.blob_id} href={link.url} target={"_blank"} rel={"noreferrer"} style={LINK}>
+      <a key={link.blob_id} href={link.url} target={"_blank"} rel={"noreferrer"} className={ui.link}>
         {link.name}
       </a>
     ) : (
-      <span key={link.blob_id} style={{ ...MUTED, marginRight: 10, ...(block ? { display: "inline-block" } : {}) }}>
+      <span key={link.blob_id} className={ui.tertiary}>
         {link.name}
       </span>
     ),

@@ -1,99 +1,114 @@
 /** Mesh members, the node detail dialog and the workspace summary. */
 
+import { IconChevronRightOutlineRegular, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import { GIB } from "./constants.ts";
-import type { ModelOffer, PodPeer, RuntimeInfo, WorkspaceView } from "./types.ts";
+import { age, short, stateDot, stateLabel } from "./format.ts";
 import { t } from "./i18n.ts";
-import { Button, Fact, Modal, Row, Table, modelId, modelText, stop } from "./primitives.tsx";
-import { CELL, H2, MONO_FONT, MUTED, STATE_COLOR, age, short, stateLabel } from "./styles.ts";
+import panel from "./panel.module.css";
+import { Dialog, Empty, Facts, StateText, SubTitle, modelId, modelText } from "./primitives.tsx";
+import type { PodPeer, RuntimeInfo, WorkspaceView } from "./types.ts";
+import ui from "./ui.module.css";
 
 export function Members({ members, onOpen }: { members: PodPeer[]; onOpen: (member: PodPeer) => void }) {
-  if (members.length === 0) return <div style={MUTED}>{t("noPeers")}</div>;
+  if (members.length === 0) return <Empty>{t("noPeers")}</Empty>;
   return (
-    <Table columns={[t("colNode"), t("colBusy"), t("colModel"), ""]}>
+    <ul className={panel.members}>
       {members.map((member) => (
-        <Row key={member.orca_node_id} onClick={() => onOpen(member)}>
-          <td
-            style={{
-              ...CELL,
-              color: member.state === "suspect" ? STATE_COLOR[member.state] : undefined,
-            }}
+        <li key={member.orca_node_id}>
+          <button
+            type={"button"}
+            className={panel.member}
             title={`${member.orca_node_id} · ${stateLabel(member.state)}`}
+            onClick={() => onOpen(member)}
           >
-            {member.display_name}
-          </td>
-          <td style={CELL} title={member.busy ? `${member.busy.task_id} · ${member.busy_from}` : undefined}>
-            {member.busy ? short(member.busy.task_id) : "-"}
-          </td>
-          <td style={MUTED}>{member.default_model ? modelId(member.default_model) : "-"}</td>
-          <td style={{ ...CELL, textAlign: "right" }}>
-            <Button onClick={stop(() => onOpen(member))}>{t("ndOpen")}</Button>
-          </td>
-        </Row>
+            <StateDot state={stateDot(member.state)} />
+            <span className={panel.memberMain}>
+              <span className={panel.memberName}>{member.display_name}</span>
+              <span className={panel.memberSub}>
+                {member.default_model ? modelId(member.default_model) : stateLabel(member.state)}
+              </span>
+            </span>
+            {member.busy ? <Tag tone={"info"}>{t("busy")}</Tag> : null}
+            <IconChevronRightOutlineRegular size={14} className={panel.chevron} />
+          </button>
+        </li>
       ))}
-    </Table>
+    </ul>
   );
 }
+
 /** The host facts a node advertised at join. */
-function RuntimeFacts({ runtime }: { runtime: RuntimeInfo }) {
+const runtimeRows = (runtime: RuntimeInfo): Array<[string, string]> => [
+  [t("colOs"), `${[runtime.os.name, runtime.os.version].join(" ")} · ${runtime.os.family}`],
+  ["cpu", `${runtime.cpu.model} · ${runtime.cpu.logical_cores} ${t("ndCores")}`],
+  [t("ndMemory"), `${(runtime.memory.total_bytes / GIB).toFixed(1)} GiB`],
+  ["node", `node ${runtime.node.version} · ${runtime.arch}`],
+];
+
+/** The default route, then every model route a node offers with the names the provider catalog gave them. */
+function ModelList({ member }: { member: PodPeer }) {
+  const models = member.models ?? [];
   return (
     <>
-      <Fact label={t("colOs")}>{`${[runtime.os.name, runtime.os.version].join(" ")} · ${runtime.os.family}`}</Fact>
-      <Fact label={"cpu"}>{`${runtime.cpu.model} · ${runtime.cpu.logical_cores} ${t("ndCores")}`}</Fact>
-      <Fact label={t("ndMemory")}>{`${(runtime.memory.total_bytes / GIB).toFixed(1)} GiB`}</Fact>
-      <Fact label={"node"}>{`node ${runtime.node.version} · ${runtime.arch}`}</Fact>
+      <Facts
+        rows={[
+          [t("ndDefaultModel"), member.default_model ? modelText(member.default_model) : "-"],
+          ...models.map((model): [string, string] => [
+            modelId(model),
+            [model.name, model.description].filter(Boolean).join(" · ") || "-",
+          ]),
+        ]}
+      />
+      {models.length === 0 ? <Empty>{t("ndNoModels")}</Empty> : null}
     </>
   );
 }
 
-/** The model routes a node offers, with the names the provider catalog gave them. */
-function ModelList({ models }: { models: ModelOffer[] }) {
-  if (models.length === 0) return <div style={MUTED}>{t("ndNoModels")}</div>;
-  return models.map((model) => (
-    <div key={modelId(model)} style={{ marginTop: 6 }}>
-      <div style={{ fontFamily: MONO_FONT }}>{modelId(model)}</div>
-      {model.name || model.description ? (
-        <div style={{ ...MUTED, fontSize: 12 }}>{[model.name, model.description].filter(Boolean).join(" · ")}</div>
-      ) : null}
-    </div>
-  ));
-}
-
 export function NodeDetail({ member, onClose }: { member: PodPeer; onClose: () => void }) {
   const { runtime } = member;
-  const models = member.models ?? [];
   return (
-    <Modal label={t("ndTitle")} width={"min(620px, calc(100vw - 40px))"} onClose={onClose}>
-      <div style={{ ...H2, marginBottom: 6 }}>{t("ndTitle")}</div>
-      <Fact label={t("colNode")}>{member.display_name}</Fact>
-      <Fact label={t("ndId")}>{member.orca_node_id}</Fact>
-      <Fact label={t("colState")}>{stateLabel(member.state)}</Fact>
-      <Fact label={t("colBusy")}>
-        {member.busy ? `${short(member.busy.task_id)} · ${t("busyOrigin")}${member.busy_from}` : t("idle")}
-      </Fact>
-      <Fact label={t("ndLastSeen")}>{member.last_recv_at ? age(member.last_recv_at) + t("updatedSuffix") : "-"}</Fact>
-      <Fact label={t("ndBudget")}>{member.max_task_ttl_s ? `${member.max_task_ttl_s} s` : "-"}</Fact>
-      <div style={{ ...H2, marginTop: 16 }}>{t("ndRuntime")}</div>
-      {runtime === null ? <div style={MUTED}>{"-"}</div> : <RuntimeFacts runtime={runtime} />}
-      <div style={{ ...H2, marginTop: 16 }}>{t("ndModels")}</div>
-      <Fact label={t("ndDefaultModel")}>{member.default_model ? modelText(member.default_model) : "-"}</Fact>
-      <ModelList models={models} />
-      <div style={{ ...H2, marginTop: 16 }}>{t("colEndpoints")}</div>
-      {member.endpoints.map((url) => (
-        <div key={url} style={{ fontFamily: MONO_FONT, wordBreak: "break-all", marginTop: 4, fontSize: 12 }}>
-          {url}
-        </div>
-      ))}
-    </Modal>
+    <Dialog title={t("ndTitle")} onClose={onClose}>
+      <p className={`${ui.idLine} ${ui.mono}`}>{member.orca_node_id}</p>
+      <Facts
+        rows={[
+          [t("colNode"), member.display_name],
+          [t("colState"), <StateText key={"state"} state={member.state} />],
+          [
+            t("colBusy"),
+            member.busy ? `${short(member.busy.task_id)} · ${t("busyOrigin")}${member.busy_from}` : t("idle"),
+          ],
+          [t("ndLastSeen"), member.last_recv_at ? age(member.last_recv_at) + t("updatedSuffix") : "-"],
+          [t("ndBudget"), member.max_task_ttl_s ? `${member.max_task_ttl_s} s` : "-"],
+        ]}
+      />
+      <SubTitle>{t("ndRuntime")}</SubTitle>
+      {runtime === null ? <Empty>{"-"}</Empty> : <Facts rows={runtimeRows(runtime)} />}
+      <SubTitle>{t("ndModels")}</SubTitle>
+      <ModelList member={member} />
+      <SubTitle>{t("colEndpoints")}</SubTitle>
+      <div className={`${ui.chips} ${ui.mono} ${ui.muted}`}>
+        {member.endpoints.map((url) => (
+          <span key={url}>{url}</span>
+        ))}
+      </div>
+    </Dialog>
   );
 }
+
 export function Workspace({ workspace }: { workspace: WorkspaceView | null }) {
-  if (workspace === null) return <div style={MUTED}>{t("workspaceUnavailable")}</div>;
+  if (workspace === null) return <Empty>{t("workspaceUnavailable")}</Empty>;
   const inputs = workspace.inputs_dirs.map((dir) => `${short(dir.task_id)} (${dir.files})`);
   return (
-    <div style={{ fontSize: 12, color: "var(--dsw-alias-label-secondary)" }}>
-      <div style={{ fontFamily: MONO_FONT, wordBreak: "break-all" }}>{workspace.root}</div>
-      <div style={{ marginTop: 4 }}>{t("notes") + (workspace.notes_files.join(", ") || t("empty"))}</div>
-      <div style={{ marginTop: 4 }}>{t("inputs") + (inputs.join(", ") || t("empty"))}</div>
+    <div className={panel.workspace}>
+      <div className={`${panel.path} ${ui.mono}`} title={workspace.root}>
+        {workspace.root}
+      </div>
+      <dl className={panel.kv}>
+        <dt>{t("notes")}</dt>
+        <dd>{workspace.notes_files.join(", ") || t("empty")}</dd>
+        <dt>{t("inputs")}</dt>
+        <dd>{inputs.join(", ") || t("empty")}</dd>
+      </dl>
     </div>
   );
 }

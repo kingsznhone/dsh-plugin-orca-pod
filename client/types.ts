@@ -21,7 +21,7 @@ export type {
   PodTaskRow,
   WorkspaceView,
 } from "../src/plugin/admin.ts";
-export type { PodActions, PodState, PodTasksResponse } from "../src/plugin/panel-api.ts";
+export type { PodActions, PodReads, PodState } from "../src/plugin/panel-api.ts";
 export type { PanelPatch } from "../src/node/settings.ts";
 export type { ModelOffer, ModelSelection } from "../src/protocol/model.ts";
 export type { PeerView, RuntimeInfo } from "../src/protocol/peer.ts";

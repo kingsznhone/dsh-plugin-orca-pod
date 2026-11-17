@@ -1,59 +1,30 @@
-/** Permission requests: chain badge, prompt cards, the chat dock, the popup and the panel list. */
+/** Permission requests: approval path badge, prompt cards, the chat dock, the popup and the panel list. */
 
-import React, { type CSSProperties } from "react";
+import { Button, IconChevronDownOutlineRegular, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
+import React from "react";
+import css from "./approvals.module.css";
+import { short } from "./format.ts";
 import { t, useLocale } from "./i18n.ts";
-import type { PodApproval, PodChainEntry } from "./types.ts";
-import { Button, stop } from "./primitives.tsx";
+import { Empty, stop } from "./primitives.tsx";
 import { store, useStore } from "./store.ts";
-import {
-  BORDER,
-  CELL,
-  CHAIN_TAG,
-  DANGER,
-  DOCK_CARD,
-  DOCK_GROUP,
-  ERROR,
-  FONT_FAMILY,
-  MONO_FONT,
-  MUTED,
-  POPUP_CARD,
-  POPUP_GROUP,
-  PRIMARY,
-  short,
-} from "./styles.ts";
+import type { PodApproval, PodChainEntry } from "./types.ts";
+import ui from "./ui.module.css";
 
-/** Root-to-leaf approval path as a vertical stack. */
+/** Root-to-leaf approval path as a vertical list. */
 export function ChainFlow({ chain }: { chain: PodChainEntry[] }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 4 }}>
-      {chain.map((entry, index) => {
-        const last = index === chain.length - 1;
-        return (
-          <div key={index} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                flex: "0 0 auto",
-                background: last ? "var(--dsw-alias-state-warn-primary)" : "var(--dsw-alias-label-secondary)",
-              }}
-            />
-            <span style={{ fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "18px", fontWeight: last ? 600 : 400 }}>
-              {entry.name}
-            </span>
-            {entry.self ? <span style={{ ...MUTED, padding: 0, fontSize: 11 }}>{t("apSelf")}</span> : null}
-            {!last ? (
-              <span aria-hidden={"true"} style={{ color: "var(--dsw-alias-label-secondary)", fontSize: 11 }}>
-                {"↓"}
-              </span>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
+    <ol className={css.chainList}>
+      {chain.map((entry, index) => (
+        <li key={index} className={css.hop} data-last={index === chain.length - 1 ? "" : undefined}>
+          <span className={css.hopDot} />
+          {entry.name}
+          {entry.self ? <span className={css.hopSelf}>{t("apSelf")}</span> : null}
+        </li>
+      ))}
+    </ol>
   );
 }
+
 /** Compact tag for the approval path; hover or click opens the hops. */
 export function ChainBadge({ chain }: { chain: PodChainEntry[] }) {
   const [hover, setHover] = React.useState(false);
@@ -62,31 +33,22 @@ export function ChainBadge({ chain }: { chain: PodChainEntry[] }) {
   const open = hover || pinned;
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hover is a shortcut; the button pins the list for keyboard users.
-    <span
-      style={{ position: "relative", display: "inline-flex", minWidth: 0 }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-    >
-      <Button style={CHAIN_TAG} title={t("apChainHint")} aria-expanded={open} onClick={stop(() => setPinned(!pinned))}>
+    <span className={css.chainAnchor} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      <button
+        type={"button"}
+        className={css.chainTag}
+        title={t("apChainHint")}
+        aria-expanded={open}
+        onClick={stop(() => setPinned(!pinned))}
+      >
         {t("apChainTag")}
-        <span style={{ fontSize: 10, lineHeight: "10px" }}>{"▾"}</span>
-      </Button>
+        <IconChevronDownOutlineRegular size={12} />
+      </button>
       {open ? (
         // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: only keeps clicks inside the popover from reaching the row.
-        <div
-          style={{ position: "absolute", top: "100%", left: 0, paddingTop: 6, zIndex: 2 }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div
-            style={{
-              minWidth: 200,
-              padding: "10px 12px",
-              background: "var(--dsw-alias-bg-layer-1)",
-              border: BORDER,
-              borderRadius: "var(--dsw-radius-md, 10px)",
-            }}
-          >
-            <div style={{ ...MUTED, padding: 0, fontSize: 11, marginBottom: 6 }}>{t("apChain")}</div>
+        <div className={css.chainPopover} onClick={(event) => event.stopPropagation()}>
+          <div className={css.chainCard}>
+            <div className={css.chainHeading}>{t("apChain")}</div>
             <ChainFlow chain={chain} />
           </div>
         </div>
@@ -94,8 +56,10 @@ export function ChainBadge({ chain }: { chain: PodChainEntry[] }) {
     </span>
   );
 }
+
 export const answer = (kind: "approve" | "deny", approval: PodApproval) =>
   store.act(kind, { peer: approval.peer, task_id: approval.task_id });
+
 /** One waiting permission request as a card; the dock and the popup share it. */
 export function PromptCard({
   approval,
@@ -109,80 +73,73 @@ export function PromptCard({
   const title = background ? t("apBackground") : t("apTitleTask").replace("{task}", short(approval.task_id));
   return (
     // biome-ignore lint/a11y/useSemanticElements: a card, not a form; <fieldset> would bring form semantics and borders.
-    <div role={"group"} aria-label={title} style={background ? POPUP_CARD : DOCK_CARD}>
-      <div style={{ fontFamily: FONT_FAMILY, fontSize: 14, fontWeight: 600, lineHeight: "22px" }}>{title}</div>
-      <div
-        style={{
-          ...MUTED,
-          padding: 0,
-          whiteSpace: "normal",
-          display: "flex",
-          gap: 6,
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
+    <div role={"group"} aria-label={title} className={`${css.card} ${background ? css.popup : css.dock}`}>
+      <div className={css.title}>
+        <StateDot state={"warning"} />
+        {title}
+      </div>
+      <div className={css.meta}>
         {t("from") + approval.from}
         <ChainBadge chain={approval.chain} />
       </div>
-      <div style={{ fontFamily: FONT_FAMILY, fontSize: 13, lineHeight: "20px", marginTop: 4, whiteSpace: "normal" }}>
-        {`${t("apWants")} ${t("tool")} ${approval.tool}`}
-        {approval.requested ? (
-          <div
-            style={{
-              ...MUTED,
-              padding: 0,
-              whiteSpace: "normal",
-              fontFamily: MONO_FONT,
-              fontSize: 12,
-              lineHeight: "18px",
-            }}
-          >
-            {approval.requested}
-          </div>
-        ) : null}
+      <div className={css.request}>
+        {`${t("apWants")} ${t("tool")} `}
+        <span className={`${css.tool} ${ui.mono}`}>{approval.tool}</span>
+        {approval.requested ? <div className={`${css.requested} ${ui.mono}`}>{approval.requested}</div> : null}
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        <Button style={PRIMARY} disabled={busy} onClick={() => answer("approve", approval)}>
+      <div className={css.actions}>
+        <Button variant={"primary"} size={"sm"} disabled={busy} onClick={() => answer("approve", approval)}>
           {t("apAllow")}
         </Button>
-        <Button style={DANGER} disabled={busy} onClick={() => answer("deny", approval)}>
+        <Button
+          variant={"outline"}
+          size={"sm"}
+          className={ui.danger}
+          disabled={busy}
+          onClick={() => answer("deny", approval)}
+        >
           {t("apDeny")}
         </Button>
-        <Button onClick={() => store.setPanelOpen(true)}>{t("apInPanel")}</Button>
+        <span className={css.spacer} />
+        <Button variant={"ghost"} size={"sm"} onClick={() => store.setPanelOpen(true)}>
+          {t("apInPanel")}
+        </Button>
       </div>
     </div>
   );
 }
+
 /** Approvals the human can answer from chat: one card each, plus the last action error. */
 export function PromptGroup({
   approvals,
   background,
-  style,
+  className,
 }: {
   approvals: PodApproval[];
   background?: boolean;
-  style: CSSProperties;
+  className?: string;
 }) {
   const { busy, actionError } = useStore();
   if (approvals.length === 0) return null;
   return (
-    <div style={style}>
+    <div className={className}>
       {approvals.map((approval) => (
         <PromptCard key={approval.id} approval={approval} background={background} busy={busy} />
       ))}
-      {actionError ? <div style={ERROR}>{actionError}</div> : null}
+      {actionError ? <p className={css.error}>{actionError}</p> : null}
     </div>
   );
 }
+
 /** Chat card: the prompts of the session this dock sits in. */
 export function ApprovalDock({ sessionId }: { sessionId: string }) {
   useLocale();
   const { state } = useStore();
   React.useEffect(() => store.dock(sessionId), [sessionId]);
   const mine = state === null ? [] : state.approvals.filter((approval) => approval.agent_id === sessionId);
-  return <PromptGroup approvals={mine} style={DOCK_GROUP} />;
+  return <PromptGroup approvals={mine} className={css.dockGroup} />;
 }
+
 /** Frame-wide popup: prompts of sessions that are not on screen. */
 export function ApprovalPopup() {
   useLocale();
@@ -191,25 +148,42 @@ export function ApprovalPopup() {
     state === null
       ? []
       : state.approvals.filter((approval) => approval.agent_id !== null && !docked.includes(approval.agent_id));
-  return <PromptGroup approvals={away} background={true} style={POPUP_GROUP} />;
+  return <PromptGroup approvals={away} background={true} className={css.popupGroup} />;
 }
+
 /** Panel list of the same requests, answerable in place. */
 export function ApprovalList({ approvals, busy }: { approvals: PodApproval[]; busy: boolean }) {
-  if (approvals.length === 0) return <div style={MUTED}>{t("nothingWaiting")}</div>;
-  return approvals.map((approval) => (
-    <div key={approval.id} style={{ display: "flex", gap: 8, alignItems: "center", margin: "4px 0" }}>
-      <span style={CELL}>{short(approval.task_id)}</span>
-      <span style={MUTED}>{approval.tool}</span>
-      <span style={{ ...MUTED, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", minWidth: 0 }}>
-        {t("from") + approval.from}
-        <ChainBadge chain={approval.chain} />
-      </span>
-      <Button disabled={busy} onClick={() => answer("approve", approval)}>
-        {t("approve")}
-      </Button>
-      <Button style={DANGER} disabled={busy} onClick={() => answer("deny", approval)}>
-        {t("deny")}
-      </Button>
-    </div>
-  ));
+  if (approvals.length === 0) return <Empty>{t("nothingWaiting")}</Empty>;
+  return (
+    <ul className={css.list}>
+      {approvals.map((approval) => (
+        <li key={approval.id} className={css.item}>
+          <div className={css.itemMain}>
+            <div className={css.itemTitle}>
+              <span className={`${css.tool} ${ui.mono}`}>{approval.tool}</span>
+              <Tag tone={"outline"}>{short(approval.task_id)}</Tag>
+            </div>
+            <div className={css.meta}>
+              {t("from") + approval.from}
+              <ChainBadge chain={approval.chain} />
+            </div>
+          </div>
+          <div className={css.itemActions}>
+            <Button variant={"primary"} size={"sm"} disabled={busy} onClick={() => answer("approve", approval)}>
+              {t("approve")}
+            </Button>
+            <Button
+              variant={"outline"}
+              size={"sm"}
+              className={ui.danger}
+              disabled={busy}
+              onClick={() => answer("deny", approval)}
+            >
+              {t("deny")}
+            </Button>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }

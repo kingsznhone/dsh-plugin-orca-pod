@@ -1,0 +1,241 @@
+/* Shared panel building blocks, in DSH's settings vocabulary (cards, rows, captions). */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+/* A titled card: the settings-card surface the Models page uses. */
+.card {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l3));
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-1));
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin-bottom: 4px;
+}
+
+.cardTitle {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.cardAction {
+  flex: none;
+  margin-inline-end: -6px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.empty {
+  margin: 0;
+  padding: 6px 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.caption {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.error {
+  margin: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mono {
+  font-family: var(--ds-font-family-code, var(--dsw-font-markdown-code-font-family, ui-monospace, monospace));
+}
+
+.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Outline button in the error colour (DSH's plugin manager does the same). */
+.danger {
+  color: var(--dsw-alias-state-error-primary);
+  --dsh-button-outline-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, transparent);
+  --dsw-alias-interactive-bg-hover: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+}
+
+.iconButton {
+  width: 28px;
+  padding: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ---- Tables (task lists) ---- */
+
+.tableWrap {
+  overflow-x: auto;
+  margin: 0 -14px;
+  padding: 0 6px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.table th {
+  padding: 6px 8px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 8px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .clickable:hover td {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.table .end {
+  width: 1%;
+  text-align: right;
+}
+
+.muted {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.tertiary {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The first cell's keyboard target: looks like text, opens the row. */
+.rowLink {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--dsw-radius-xs, 4px);
+}
+
+.rowLink:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+.link {
+  margin-inline-end: 10px;
+  color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary));
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+/* ---- Detail dialogs ---- */
+
+.dialog {
+  width: min(640px, 100%);
+  max-height: min(820px, 100%);
+}
+
+.dialogWide {
+  width: min(1000px, 100%);
+  max-height: min(820px, 100%);
+}
+
+.dialogContent {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(88px, max-content) minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.facts dt {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.subTitle {
+  margin: 20px 0 8px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.subTitle:first-child {
+  margin-top: 0;
+}
+
+.idLine {
+  margin: -8px 0 16px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 13px;
+  line-height: 20px;
+}

@@ -4,14 +4,18 @@
  * `npm run build:client` bundles this module and its imports into
  * `lib/client.js`, a classic script that registers a lazy factory with
  * `window.__ModuleLoader__`. The factory's `require` resolves only the shell's
- * platform module table (`react`, `react/jsx-runtime`); host code is reached
- * through the same-origin `/orca-api` routes registered by `src/plugin/web.ts`.
+ * platform module table (`react`, `react/jsx-runtime` and DSH's shared UI
+ * primitives); host code is reached through the same-origin `/orca-api`
+ * routes registered by `src/plugin/web.ts`.
  *
  * The host sends ready-to-render data (names, labels, links, what is
  * cancellable); the client only draws it and posts the user's actions back.
  *
- * UI rules: render inside a Slot, inherit theme tokens via `--dsw-alias-*`,
- * never touch `document.body`, and keep all DOM work inside React.
+ * UI rules: render inside a Slot, build on DSH's primitives (`dsh-ui.d.ts`),
+ * lay out with CSS modules that use only `--dsw-*` theme tokens, never touch
+ * `document.body`, and keep all DOM work inside React. The one exception is
+ * each CSS module's `<style>` tag, injected into `<head>` at materialization
+ * the way DSH's own plugins do (see `scripts/build-client.ts`).
  */
 
 import { ApprovalDock, ApprovalPopup } from "./approvals.tsx";

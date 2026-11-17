@@ -1,12 +1,23 @@
-/** The settings form: first-run wizard and later edits, identity, network and advanced sections. */
+/** The settings form: first-run wizard and later edits; identity, network, advanced and reset groups. */
 
+import {
+  Button,
+  IconChevronDownOutlineRegular,
+  IconCloseOutlineRegular,
+  IconPlusOutlineRegular,
+  Input,
+  StateDot,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { EXECUTOR_KINDS } from "../src/execution/kinds.ts";
+import { KNOWN_REASONING_EFFORTS, PERMISSION_MODES } from "../src/protocol/vocabulary.ts";
 import { DEFAULT_WORKGROUP, GIB, MIB } from "./constants.ts";
 import { t } from "./i18n.ts";
-import { Button, Field } from "./primitives.tsx";
+import panel from "./panel.module.css";
+import css from "./settings.module.css";
 import { store, useStore } from "./store.ts";
-import { BORDER, DANGER, HINT, INPUT, MONO_FONT, MUTED, PRIMARY } from "./styles.ts";
 import type { PanelPatch, PodActions, PodAdvancedConfig, PodConfigView } from "./types.ts";
+import ui from "./ui.module.css";
 
 /** Advanced settings edited as numbers: the ones the host reports as a number. */
 type LimitKey = {
@@ -65,25 +76,42 @@ export function selectFields(): SelectField[] {
     ["allow", t("cfgAllowOption")],
     ["deny", t("cfgDenyOption")],
   ];
-  const literal = (...values: string[]): Array<[string, string]> => [
+  const literal = (values: readonly string[]): Array<[string, string]> => [
     ["", t("cfgDefaultOption")],
     ...values.map((value): [string, string] => [value, value]),
   ];
   return [
-    ["permission_mode", "cfgPermissionMode", literal("read-only", "workspace-write", "danger-full-access")],
+    ["permission_mode", "cfgPermissionMode", literal(PERMISSION_MODES)],
     ["allow_public_peers", "cfgAllowPublicPeers", tri],
     ["allow_loopback_peers", "cfgAllowLoopbackPeers", tri],
-    ["default_reasoning_effort", "cfgDefaultEffort", literal("off", "low", "high", "max"), "cfgDefaultEffortHint"],
-    ["executor", "cfgExecutor", literal("acp", "echo"), "cfgExecutorHint"],
+    ["default_reasoning_effort", "cfgDefaultEffort", literal(KNOWN_REASONING_EFFORTS), "cfgDefaultEffortHint"],
+    ["executor", "cfgExecutor", literal(EXECUTOR_KINDS), "cfgExecutorHint"],
   ];
 }
 
 export const unitText = (value: number | null, unit = 1): string =>
   value === null ? "" : String(+(value / unit).toFixed(3));
 
+/** The numeric limits as form text, in their display units (MiB/GiB); unset is blank. */
+function limitTexts(advanced: PodAdvancedConfig): Record<LimitKey, string> {
+  return Object.fromEntries(LIMITS.map(({ key, unit }) => [key, unitText(advanced[key], unit)])) as Record<
+    LimitKey,
+    string
+  >;
+}
+
+/** The choices as form text: booleans become allow/deny, unset is blank. */
+function choiceTexts(advanced: PodAdvancedConfig): Record<SelectKey, string> {
+  const text = (key: SelectKey): string => {
+    const value = advanced[key];
+    if (BOOLEANS.includes(key)) return value === null ? "" : value ? "allow" : "deny";
+    return String(value ?? "");
+  };
+  return Object.fromEntries(selectFields().map(([key]) => [key, text(key)])) as Record<SelectKey, string>;
+}
+
 export function initialForm(config: PodConfigView, wizard: boolean): FormState {
-  const { advanced } = config;
-  const form = {
+  return {
     workgroup_id: config.workgroup_id || DEFAULT_WORKGROUP,
     password: "",
     /* The first run starts from this node's own id; a configured install keeps its saved name. */
@@ -91,13 +119,9 @@ export function initialForm(config: PodConfigView, wizard: boolean): FormState {
     bind_host: config.bind_host,
     port: String(config.port),
     endpoints: config.suggested_endpoints.length > 0 ? config.suggested_endpoints : [""],
-  } as FormState;
-  for (const limit of LIMITS) form[limit.key] = unitText(advanced[limit.key], limit.unit);
-  for (const [key] of selectFields()) {
-    const value: PodAdvancedConfig[SelectKey] = advanced[key];
-    form[key] = BOOLEANS.includes(key) ? (value === null ? "" : value ? "allow" : "deny") : String(value ?? "");
-  }
-  return form;
+    ...limitTexts(config.advanced),
+    ...choiceTexts(config.advanced),
+  };
 }
 
 type LimitValues = Partial<Record<LimitKey, number | null>>;
@@ -162,6 +186,73 @@ export function buildPatch(
   return { patch };
 }
 
+/** One settings row: label and hint on the left, the control on the right (a `<label>` unless it holds several controls). */
+function SettingRow({
+  label,
+  hint,
+  group,
+  stacked,
+  width = "wide",
+  children,
+}: {
+  label: string;
+  hint?: string | null;
+  group?: boolean;
+  stacked?: boolean;
+  width?: "wide" | "narrow" | "auto";
+  children?: ReactNode;
+}) {
+  const className = stacked ? `${css.row} ${css.stacked}` : css.row;
+  const control = width === "narrow" ? css.controlNarrow : width === "auto" ? css.controlAuto : css.control;
+  const text = (
+    <span className={css.rowText}>
+      <span className={css.rowLabel}>{label}</span>
+      {hint ? <span className={css.rowHint}>{hint}</span> : null}
+    </span>
+  );
+  return group ? (
+    // biome-ignore lint/a11y/useSemanticElements: a settings row, not a form section; <fieldset> would bring its own frame.
+    <div className={className} role={"group"} aria-label={label}>
+      {text}
+      <div className={control}>{children}</div>
+    </div>
+  ) : (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the control arrives as `children`, inside this label.
+    <label className={className}>
+      {text}
+      <span className={control}>{children}</span>
+    </label>
+  );
+}
+
+/** A titled card of settings rows. */
+function Group({ title, danger, children }: { title: string; danger?: boolean; children?: ReactNode }) {
+  return (
+    <section className={css.group}>
+      <h3 className={css.groupTitle}>{title}</h3>
+      <div className={danger ? `${css.groupCard} ${css.dangerCard}` : css.groupCard}>{children}</div>
+    </section>
+  );
+}
+
+/** Native `<select>` in DSH's field frame; a saved value the list does not know stays selectable. */
+function Select({ options, ...props }: ReturnType<Bind> & { options: Array<[string, string]> }) {
+  const known = options.some(([value]) => value === props.value);
+  const shown = known ? options : [...options, [props.value, props.value] as [string, string]];
+  return (
+    <span className={css.selectWrap}>
+      <select className={css.select} {...props}>
+        {shown.map(([value, text]) => (
+          <option key={value} value={value}>
+            {text}
+          </option>
+        ))}
+      </select>
+      <IconChevronDownOutlineRegular size={14} className={css.selectChevron} />
+    </span>
+  );
+}
+
 export function IdentitySection({ bind, wizard, config }: { bind: Bind; wizard: boolean; config: PodConfigView }) {
   const placeholder = wizard || !config.password_set ? t("cfgPasswordOpen") : t("cfgPasswordKeep");
   const hint = wizard
@@ -170,17 +261,17 @@ export function IdentitySection({ bind, wizard, config }: { bind: Bind; wizard: 
       ? t("cfgPasswordHintSet")
       : t("cfgPasswordHintNone");
   return (
-    <>
-      <Field label={t("cfgWorkgroupId")} hint={t("cfgWorkgroupIdHint")}>
-        <input style={INPUT} placeholder={DEFAULT_WORKGROUP} {...bind("workgroup_id")} />
-      </Field>
-      <Field label={t("cfgPassword")} hint={hint}>
-        <input style={INPUT} type={"password"} placeholder={placeholder} {...bind("password")} />
-      </Field>
-      <Field label={t("cfgDisplayName")}>
-        <input style={INPUT} placeholder={t("cfgDisplayNamePlaceholder")} {...bind("display_name")} />
-      </Field>
-    </>
+    <Group title={t("cfgIdentity")}>
+      <SettingRow label={t("cfgWorkgroupId")} hint={t("cfgWorkgroupIdHint")}>
+        <Input className={css.input} placeholder={DEFAULT_WORKGROUP} {...bind("workgroup_id")} />
+      </SettingRow>
+      <SettingRow label={t("cfgPassword")} hint={hint}>
+        <Input className={css.input} type={"password"} placeholder={placeholder} {...bind("password")} />
+      </SettingRow>
+      <SettingRow label={t("cfgDisplayName")}>
+        <Input className={css.input} placeholder={t("cfgDisplayNamePlaceholder")} {...bind("display_name")} />
+      </SettingRow>
+    </Group>
   );
 }
 
@@ -206,89 +297,88 @@ export function NetworkSection({
   const remove = (index: number) => set("endpoints", rows.length === 1 ? [""] : rows.filter((_, i) => i !== index));
   const bindLabel = (host: string) =>
     host === "127.0.0.1" ? t("cfgListenLoopback") : host === "::" ? t("cfgListenAll") : host;
+  const hosts = config.bind_choices.map((host): [string, string] => [host, bindLabel(host)]);
   return (
-    <>
-      <Field label={t("cfgListenAddress")} hint={t("cfgListenAddressHint")}>
-        <select style={INPUT} {...bind("bind_host")}>
-          {config.bind_choices.map((host) => (
-            <option key={host} value={host}>
-              {bindLabel(host)}
-            </option>
+    <Group title={t("cfgNetwork")}>
+      <SettingRow label={t("cfgListenAddress")} hint={t("cfgListenAddressHint")}>
+        <Select options={hosts} {...bind("bind_host")} />
+      </SettingRow>
+      <SettingRow label={t("cfgListenPort")} width={"narrow"}>
+        <Input className={css.input} inputMode={"numeric"} {...bind("port")} />
+      </SettingRow>
+      <SettingRow group={true} stacked={true} label={t("cfgAdvertised")} hint={t("cfgEndpointHint")}>
+        <div className={css.endpoints}>
+          {rows.map((row, index) => (
+            <div key={index} className={css.endpoint}>
+              <Input
+                className={`${css.input} ${css.monoInput}`}
+                value={row}
+                aria-label={`${t("cfgAdvertised")} ${index + 1}`}
+                onChange={(event) => edit(index, event.target.value)}
+                placeholder={"http://192.168.1.11:11811"}
+              />
+              <Button
+                variant={"ghost"}
+                className={ui.iconButton}
+                title={t("cfgRemove")}
+                aria-label={t("cfgRemove")}
+                disabled={busy}
+                icon={<IconCloseOutlineRegular size={14} />}
+                onClick={() => remove(index)}
+              />
+            </div>
           ))}
-        </select>
-      </Field>
-      <Field label={t("cfgListenPort")}>
-        <input style={INPUT} inputMode={"numeric"} {...bind("port")} />
-      </Field>
-      <Field group={true} label={t("cfgAdvertised")} hint={t("cfgEndpointHint")}>
-        {rows.map((row, index) => (
-          <div key={index} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-            <input
-              style={{ ...INPUT, flex: 1, fontFamily: MONO_FONT }}
-              value={row}
-              onChange={(event) => edit(index, event.target.value)}
-              placeholder={"http://192.168.1.11:11811"}
-            />
-            <Button disabled={busy} onClick={() => remove(index)}>
-              {t("cfgRemove")}
-            </Button>
-          </div>
-        ))}
-        <Button disabled={busy} onClick={() => set("endpoints", [...rows, ""])}>
-          {t("cfgAddEndpoint")}
-        </Button>
-      </Field>
-    </>
+          <Button
+            variant={"ghost"}
+            size={"sm"}
+            className={css.addEndpoint}
+            disabled={busy}
+            icon={<IconPlusOutlineRegular size={14} />}
+            onClick={() => set("endpoints", [...rows, ""])}
+          >
+            {t("cfgAddEndpoint")}
+          </Button>
+        </div>
+      </SettingRow>
+    </Group>
   );
 }
 
 export function AdvancedSection({ bind }: { bind: Bind }) {
   const [open, setOpen] = React.useState(false);
   return (
-    <details
-      style={{ marginTop: 6, marginBottom: 14 }}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)" }}>
-        {t("cfgAdvanced")}
+    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className={css.summary}>
+        <span className={css.groupTitle}>{t("cfgAdvanced")}</span>
+        <IconChevronDownOutlineRegular size={14} className={css.summaryChevron} />
       </summary>
-      <div style={{ ...HINT, marginBottom: 10 }}>{t("cfgAdvancedHint")}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 12 }}>
-        {LIMITS.map((limit) => (
-          <Field key={limit.key} label={t(limit.label)} hint={limit.hint && t(limit.hint)}>
-            <input style={INPUT} inputMode={"decimal"} {...bind(limit.key)} />
-          </Field>
-        ))}
-        {selectFields().map(([key, label, options, hint]) => (
-          <Field key={key} label={t(label)} hint={hint && t(hint)}>
-            <select style={INPUT} {...bind(key)}>
-              {options.map(([value, text]) => (
-                <option key={value} value={value}>
-                  {text}
-                </option>
-              ))}
-            </select>
-          </Field>
-        ))}
+      <div className={css.advancedBody}>
+        <p className={css.groupHint}>{t("cfgAdvancedHint")}</p>
+        <div className={css.groupCard}>
+          {LIMITS.map((limit) => (
+            <SettingRow key={limit.key} label={t(limit.label)} hint={limit.hint && t(limit.hint)} width={"narrow"}>
+              <Input className={css.input} inputMode={"decimal"} {...bind(limit.key)} />
+            </SettingRow>
+          ))}
+          {selectFields().map(([key, label, options, hint]) => (
+            <SettingRow key={key} label={t(label)} hint={hint && t(hint)}>
+              <Select options={options} {...bind(key)} />
+            </SettingRow>
+          ))}
+        </div>
       </div>
     </details>
   );
 }
 
-export function ConfigForm({
-  config,
-  wizard,
-  onDone,
-}: {
-  config: PodConfigView;
-  wizard: boolean;
-  onDone: () => void;
-}): ReactNode {
+/** Lays out a view: its body, and the footer that stays visible under it. */
+export type Frame = (body: ReactNode, footer: ReactNode) => ReactNode;
+
+/** The form's state and actions, apart from how it is drawn. */
+function useConfigForm(config: PodConfigView, wizard: boolean, onDone: () => void) {
   const { busy, actionError } = useStore();
   const [form, setForm] = React.useState(() => initialForm(config, wizard));
   const [error, setError] = React.useState<string | null>(null);
-  const [resetArmed, setResetArmed] = React.useState(false);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((previous) => ({ ...previous, [key]: value }));
   const bind: Bind = (key) => ({ value: form[key], onChange: (event) => set(key, event.target.value) });
@@ -303,40 +393,109 @@ export function ConfigForm({
     if (invalid !== undefined) setError(invalid);
     else void run("config", patch);
   }
+  return { form, set, bind, busy, problem: error ?? actionError, run, save };
+}
+
+/** Full reset, behind a second click. */
+function ResetGroup({ busy, onReset }: { busy: boolean; onReset: () => void }) {
+  const [armed, setArmed] = React.useState(false);
   return (
-    <form onSubmit={save} style={{ paddingRight: 32 }}>
-      {wizard ? <div style={{ ...MUTED, marginBottom: 12 }}>{t("cfgWizardIntro")}</div> : null}
+    <Group title={t("cfgDanger")} danger={true}>
+      <SettingRow group={true} label={t("cfgReset")} hint={t("cfgResetIntro")} width={"auto"}>
+        <Button
+          variant={"outline"}
+          className={ui.danger}
+          disabled={busy}
+          onClick={() => (armed ? onReset() : setArmed(true))}
+        >
+          {armed ? t("cfgResetConfirm") : t("cfgResetAction")}
+        </Button>
+      </SettingRow>
+    </Group>
+  );
+}
+
+/** Node status (or the last error) on the left; back, use-existing and save on the right. */
+function ConfigFooter({
+  config,
+  wizard,
+  formId,
+  busy,
+  problem,
+  onBack,
+  onUseExisting,
+}: {
+  config: PodConfigView;
+  wizard: boolean;
+  formId: string;
+  busy: boolean;
+  problem: string | null;
+  onBack: () => void;
+  onUseExisting: () => void;
+}) {
+  return (
+    <div className={panel.footer}>
+      <span className={panel.footerStatus}>
+        {problem ? (
+          <span className={ui.error} role={"alert"}>
+            {problem}
+          </span>
+        ) : (
+          <>
+            <StateDot state={config.running ? "done" : "idle"} />
+            {config.running ? t("cfgRunning") + config.port : t("cfgNotRunning")}
+          </>
+        )}
+      </span>
+      {wizard ? null : (
+        <Button variant={"outline"} onClick={onBack}>
+          {t("cfgBack")}
+        </Button>
+      )}
+      {wizard && config.running ? (
+        <Button variant={"outline"} disabled={busy} onClick={onUseExisting}>
+          {t("cfgUseExisting")}
+        </Button>
+      ) : null}
+      <Button variant={"primary"} type={"submit"} form={formId} disabled={busy}>
+        {wizard ? t("cfgStart") : t("cfgSave")}
+      </Button>
+    </div>
+  );
+}
+
+export function ConfigForm({
+  config,
+  wizard,
+  onDone,
+  frame,
+}: {
+  config: PodConfigView;
+  wizard: boolean;
+  onDone: () => void;
+  frame: Frame;
+}): ReactNode {
+  const formId = React.useId();
+  const { form, set, bind, busy, problem, run, save } = useConfigForm(config, wizard, onDone);
+  const body = (
+    <form id={formId} onSubmit={save} className={css.form}>
+      {wizard ? <p className={css.intro}>{t("cfgWizardIntro")}</p> : null}
       <IdentitySection bind={bind} wizard={wizard} config={config} />
       <NetworkSection form={form} set={set} bind={bind} config={config} busy={busy} />
       <AdvancedSection bind={bind} />
-      {(error ?? actionError) ? (
-        <div style={{ ...HINT, color: "var(--dsw-alias-state-error-primary)", marginBottom: 8 }}>
-          {error ?? actionError}
-        </div>
-      ) : null}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-        <Button type={"submit"} style={PRIMARY} disabled={busy}>
-          {wizard ? t("cfgStart") : t("cfgSave")}
-        </Button>
-        {wizard && config.running ? (
-          <Button disabled={busy} onClick={() => run("config", {})}>
-            {t("cfgUseExisting")}
-          </Button>
-        ) : null}
-        {wizard ? null : <Button onClick={onDone}>{t("cfgBack")}</Button>}
-        <div style={{ flex: 1 }} />
-        <span style={{ ...MUTED, fontSize: 11 }}>
-          {config.running ? t("cfgRunning") + config.port : t("cfgNotRunning")}
-        </span>
-      </div>
-      {wizard ? null : (
-        <div style={{ marginTop: 20, paddingTop: 14, borderTop: BORDER }}>
-          <div style={{ ...HINT, marginBottom: 8 }}>{t("cfgResetIntro")}</div>
-          <Button style={DANGER} disabled={busy} onClick={() => (resetArmed ? run("reset", {}) : setResetArmed(true))}>
-            {resetArmed ? t("cfgResetConfirm") : t("cfgReset")}
-          </Button>
-        </div>
-      )}
+      {wizard ? null : <ResetGroup busy={busy} onReset={() => run("reset", {})} />}
     </form>
   );
+  const footer = (
+    <ConfigFooter
+      config={config}
+      wizard={wizard}
+      formId={formId}
+      busy={busy}
+      problem={problem}
+      onBack={onDone}
+      onUseExisting={() => run("config", {})}
+    />
+  );
+  return frame(body, footer);
 }

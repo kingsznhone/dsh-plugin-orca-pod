@@ -6,6 +6,7 @@
 > 架构重组（按限界上下文分目录，[§9.1](docs/09-implementation.md#91-单包内的模块划分)）完成后：49 个文件、427 个用例（新增 `test/architecture.test.ts`）全部通过；文中路径已改为新位置。
 > R0 完成后（`ulid`、`@agentclientprotocol/sdk`，校验统一用 `zod`，先用过的 `typebox` 已移除）：50 个文件、437 个用例全部通过（新增 `test/gateway-schema.test.ts`）。
 > §9 代码整理候选实施后（含顺带修复的 R2）：51 个文件、437 个用例全部通过（`normalizeOrcaNodeId` 的 3 个测试随函数删除）；`biome check`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 通过。
+> §9.1 余项（TY9、TY15、TY16、TY18、NE6/NE7）实施、面板改用 DSH 的 UI 组件与 CSS Modules 之后：51 个文件、437 个用例全部通过；`biome check`、`tsc --noEmit`、`tsc --noEmit -p client`、`npm run build` 通过。
 > 本文**只列尚未完成的事项**；已完成的项不再记录。编号沿用历次审计，便于对照。
 
 ---
@@ -55,7 +56,7 @@
 
 ## 7. 尚未验证的事项
 
-- 没有在真实的 DSH 桌面或浏览器中运行。客户端只有构建冒烟测试（`test/client-bundle.test.ts`：在假壳里执行工厂、调用 `apply`），没有在 React 里实际渲染过；TSX 改写之后需要在真实面板里点一遍所有视图。
+- 没有在真实的 DSH 桌面或浏览器中运行。客户端只有构建冒烟测试（`test/client-bundle.test.ts`：在假壳里执行工厂、调用 `apply`），没有在 React 里实际渲染过。面板已改用 DSH 共享的 `dsh-client-ui-primitives` 组件与 CSS Modules（组件的 props 按 DSH 自己的调用写在 `client/dsh-ui.d.ts`，DSH 没有发布类型），需要在真实面板里点一遍所有视图：状态页、首启向导、设置（含高级设置与完全重置）、全部任务、任务详情、节点详情、审批停靠卡与后台弹窗，以及设置页里的那一页。
 - 宿主接口：`credentials`（`resolve`/`set`/`unset`）、`configEditor.edit(entry, change)`、`ctx.fiber.entry`、客户端 `locale.register`/`bind` 与 `__ModuleLoader__` 产物格式，都已对照本机 DSH 0.2.2-rc.3 安装包里的源码核对过，但没有实际跑通。尤其需要实测：面板保存配置 → `configEditor.edit` 写回 profile → Loader 重启插件 → 新实例从凭据库读到口令并启动，这条链路。
 - 其余仍只来自本地镜像类型（`src/plugin/dsh.ts`）、没有对照源码确认的：
   - `ctx.inject` 回调拿到的子作用域是否带 `effect`，服务替换时是否先销毁再重跑（插件注册不叠加依赖这一点）；
@@ -87,12 +88,7 @@
 
 | # | 现状 |
 |---|---|
-| TY9 | `OrcaNodeId`/`WorkgroupId` 已导出并用在签名上，`Grant`、`BusyState`、`PermissionRequest`、`pod.chain`/`root_origin` 的 id 字段改用 `OrcaNodeIdSchema`/`WorkgroupIdSchema`（测试里的假 id 改成 `test/fixtures/ids.ts` 的合法 id）；两者仍是 `string` 别名，没有 `.brand()` |
-| TY15 | 请求体 schema 与 `PodState`/`PodTasksResponse`/`PodTaskResponse`/`PodActions` 已在 `plugin/panel-api.ts`，`store.act` 按动作名定类型；`api<T>`/`useApi<T>` 的读取仍由调用方写泛型，没有“路径 → 响应类型”映射 |
-| TY16 | `PanelPatch` 与 `PanelPatchSchema` 由 `node/settings.ts` 的字段表派生，口令空白规则只剩 `reconfigure` 一处；`pickPanelFields` 已删，面板路由用 `PanelPatchSchema` 解析一次，`reconfigure` 只收 `PanelPatch`；`plugin/stores.ts` 的 `RawConfig` 仍是 `Record<string, unknown>` |
-| TY17 | 工具参数已按 `method` 用 zod 解析、结果有命名类型；`parameters` 的 JSON schema 仍是手写（权限模式枚举取自 schema），没有用 `z.toJSONSchema` 生成，因为宿主支持的 JSON schema 子集没核对过 |
-| TY18 | `taskKey`、`PendingApproval`、`ExecutorKind`、`PodTaskRow.state`、`selectionOf`、`modelId`/`modelText` 已做。tracker 已改用 `instanceof PodError`。没做：`client/settings.tsx` 的权限模式选项仍是手抄的第三份（`PERMISSION_MODES` 所在的 `permission.ts` 会把 zod 带进客户端 bundle，没验证过体积影响） |
-| NE6/NE7 | 服务端部分已做。客户端只做了 `TaskDetail`/`AllTasks`（`Loaded`、`TaskFacts`、`ArtifactLinks`）、`Panel` 早返回、`ConnectForm`、`NodeDetail`（`RuntimeFacts`/`ModelList`）和 `buildPatch`（`limitValues`/`choiceValues`）；`ConfigForm`/`initialForm` 没拆。这些没有在真实 React 里渲染过，只过了类型检查与构建冒烟（见 §7） |
+| TY17 | 工具参数的 JSON schema 仍是手写，**有意不改为 `z.toJSONSchema` 生成**：已对照 DSH 0.2.2-rc.3 的 `dsh-tools/src/json-schema.ts` 核实，宿主只接受 `type`/`oneOf`/`properties`/`required`/布尔 `additionalProperties`/`items`/`enum`/`const` 与 `description`/`title`/`default`/`examples`，其余关键字以 `UNSUPPORTED_SCHEMA` 拒绝注册；`z.toJSONSchema` 会产出 `$schema`、`pattern`、`minLength`、`anyOf` 等，直接用会注册失败。可选的后续：加一个测试，校验手写 schema 只用上述子集，且 `method`、`permission_mode` 的枚举与 zod schema 一致 |
 
 ### 9.2 有意保留
 

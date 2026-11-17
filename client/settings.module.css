@@ -1,0 +1,229 @@
+/* The settings form: grouped cards of DSH settings rows (label and hint left, control right). */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.intro {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.groupTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.groupHint {
+  margin: -4px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.groupCard {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0 14px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l3));
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-1));
+}
+
+.dangerCard {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, transparent);
+}
+
+/* ---- Rows ---- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.rowText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rowLabel {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.rowHint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.control {
+  flex: none;
+  width: min(280px, 48%);
+  min-width: 0;
+}
+
+.controlNarrow {
+  flex: none;
+  width: 140px;
+}
+
+.controlAuto {
+  flex: none;
+}
+
+.stacked .control {
+  width: 100%;
+}
+
+@media (width <= 560px) {
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .control,
+  .controlNarrow {
+    width: 100%;
+  }
+}
+
+/* ---- Controls ---- */
+
+.input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.monoInput input {
+  font-family: var(--ds-font-family-code, var(--dsw-font-markdown-code-font-family, ui-monospace, monospace));
+  font-size: 13px;
+}
+
+.selectWrap {
+  position: relative;
+  display: block;
+}
+
+.select {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 30px 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.select:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
+
+.selectChevron {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: var(--dsw-alias-label-tertiary);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.endpoints {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.endpoint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.endpoint > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.addEndpoint {
+  align-self: flex-start;
+  margin-inline-start: -10px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ---- Advanced: a collapsible group ---- */
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  cursor: pointer;
+  list-style: none;
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.summary:focus-visible {
+  border-radius: var(--dsw-radius-xs, 4px);
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+.summaryChevron {
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 0.16s;
+}
+
+details[open] > .summary .summaryChevron {
+  transform: rotate(180deg);
+}
+
+.advancedBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}

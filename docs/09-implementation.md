@@ -89,17 +89,17 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 
 #### 9.2.2 客户端 bundle（`client/` → `lib/client.js`）
 
-源码在 `client/`，按职责分模块（`i18n`、`styles`、`store`、`primitives`、`approvals`、`tasks`、`members`、`settings`、`panel`，入口 `index.tsx`），用 React 18 的 TSX 编写、`strict` 类型检查（`tsc -p client`）。面板读到的数据类型直接从宿主一半导入（`src/plugin/admin.ts`、`src/plugin/panel-api.ts`，仅类型、构建时擦除），路由返回什么与面板画什么不会走样。`npm run build` 用 esbuild（`scripts/build-client.ts`）把它打成 CommonJS，React 留作外部依赖，外面套上 `window.__ModuleLoader__.load({id:"orca-pod", factory: require => …})`——与 DSH 自带客户端插件的产物同一形状；工厂的 `require` 只解析壳的平台模块表（`react`、`react/jsx-runtime`）。导出 `{inject:["slots","locale"], apply}`；`apply` 注册五个 Slot：
+源码在 `client/`，按职责分模块（`i18n`、`format`、`store`、`primitives`、`approvals`、`tasks`、`members`、`settings`、`panel`，入口 `index.tsx`；样式在同名的 `*.module.css`），用 React 18 的 TSX 编写、`strict` 类型检查（`tsc -p client`）。面板读到的数据类型直接从宿主一半导入（`src/plugin/admin.ts`、`src/plugin/panel-api.ts`，仅类型、构建时擦除），路由返回什么与面板画什么不会走样。`npm run build` 用 esbuild（`scripts/build-client.ts`）把它打成 CommonJS，平台模块留作外部依赖，外面套上 `window.__ModuleLoader__.load({id:"orca-pod", factory: require => …})`——与 DSH 自带客户端插件的产物同一形状；工厂的 `require` 只解析壳的平台模块表（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`）。按钮、输入框、标签、状态点、对话框、提示与图标都用 DSH 共享的 `dsh-client-ui-primitives`，外观与 DSH 自带页面一致；它没有发布类型，`client/dsh-ui.d.ts` 按 DSH 自己的调用写了用到的那部分。布局写在 CSS Modules 里，构建时类名按文件加 `orca-pod-<文件>_` 前缀，样式表在模块实例化时以 `<style data-plugin="orca-pod" data-plugin-css="orca-pod/<文件>.module.css">` 注入——与 DSH 自带插件同一约定，壳的模块系统据此认领，停用插件时一并移除。导出 `{inject:["slots","locale"], apply}`；`apply` 注册五个 Slot：
 
 | Slot                      | id                        | 作用                                                                                          |
 | ------------------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
 | `settings.section`        | `orca-pod`                | 设置页里的一页面板                                                                            |
-| `sidebar.footer.action`   | `orca-pod`                | 侧边栏底部按钮，同时是状态灯：有挂起审批为橙黄、有在线成员为绿、未连接为灰                    |
+| `sidebar.footer.action`   | `orca-pod`                | 侧边栏底部按钮，图标带状态角标：有挂起审批为橙黄（并显示件数）、有在线成员为绿、未连接无角标 |
 | `shell.overlay`           | `orca-pod.panel`          | 居中模态浮层，点侧边栏按钮打开，Esc/遮罩/× 关闭                                               |
 | `conversation.input.dock` | `orca-pod.approval-dock`  | **当前会话**里的审批聊天卡（按任务的发起会话 id 匹配）：允许/拒绝/在面板中处理                |
 | `shell.overlay`           | `orca-pod.approval-popup` | **后台会话**的审批弹窗（不受当前会话过滤）                                                    |
 
-设置页与浮层共用同一份 `Panel`，按状态分三视图：未完成设置时是**首启向导**（workgroup、必填密码、显示名、监听地址、本地节点地址）；之后第一屏是**集群状态**（自身、成员、待审批、最近任务、工作区），右上进入**设置视图**，另有**连接/断开**。整个客户端**只有一个共享 store 与一个轮询器**：每 2s `fetch('/orca-api/state')`，所有 slot 组件读同一份快照；审批与取消按钮直接 POST；文案跟随 DSH 桌面语言（中/英）；样式只用内联对象与 `--dsw-alias-*` 主题 token；卸载时清理定时器。
+设置页与浮层共用同一份 `Panel`，按状态分三视图：未完成设置时是**首启向导**（workgroup、必填密码、显示名、监听地址、本地节点地址）；之后第一屏是**集群状态**（自身、成员、待审批、最近任务、工作区），右上进入**设置视图**，另有**连接/断开**。浮层用 DSH 的 `Modal`，设置页里则自带标题与吸底的操作栏；状态页依次是身份与连接标签、未加入 mesh 时的连接卡片、四个概览数字（在线节点、待审批、进行中任务、本机）、待审批（有才显示）、最近任务，以及并排的成员与工作区；设置视图按 DSH 设置页的行式布局分组（工作组与身份、网络、可折叠的高级设置、危险操作）。整个客户端**只有一个共享 store 与一个轮询器**：每 2s `fetch('/orca-api/state')`，所有 slot 组件读同一份快照；审批与取消按钮直接 POST；文案跟随 DSH 桌面语言（中/英）；颜色、圆角、描边只用 DSH 的 `--dsw-*` 主题 token；卸载时清理定时器。
 
 清单接线：`package.json` 的 `exports["./client"] = "./lib/client.js"`、`dsh.client = {platform:"web", immediately:true}`、`files` 含 `lib`。`lib/` 是构建产物、不进仓库；`test/client-bundle.test.ts` 构建一次并在假壳里执行，检查工厂只请求平台模块、`apply` 注册了词典与 Slot。
 
