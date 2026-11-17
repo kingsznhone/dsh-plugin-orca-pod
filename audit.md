@@ -29,7 +29,6 @@
 
 | ID | 事项 | 现状 |
 |---|---|---|
-| G13 | 节点自述变更的传播 | `profilePatch`（`membership/membership.ts`）在重新 join 时不刷新 `models`/`default_model`/`default_reasoning_effort`；`membersDigest` 只覆盖 `id\|endpoints\|runtime_digest`。节点启动后才拿到 Host 模型目录时，已认识它的 peer 看不到变化 |
 | G15 | `idempotency_key` | 类型中有字段（`protocol/task.ts`），没有任何逻辑使用；同一条 `message/send` 提交两次就是两个任务 |
 | G16 | 预授权与可派发者白名单；不可达候选的处理 | 没有 origin 侧预授权，也没有按 `orca_node_id` 限制谁能派任务；候选（`unknown`）每一拍都去拨，失败不退避，也永不修剪 |
 

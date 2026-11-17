@@ -160,6 +160,10 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     };
   }
 
+  /**
+   * The node's latest self-description replaces the recorded one, model catalog
+   * included: a catalog it no longer advertises must not linger here (§3.3).
+   */
   function profilePatch(record: PeerRecord, view: PeerView): void {
     record.view.display_name = view.display_name;
     record.view.endpoints = view.endpoints;
@@ -167,6 +171,9 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     record.view.runtime_digest = view.runtime_digest;
     record.view.busy = view.busy ?? null;
     if (view.max_task_ttl_s !== undefined) record.view.max_task_ttl_s = view.max_task_ttl_s;
+    record.view.models = view.models;
+    record.view.default_model = view.default_model ?? null;
+    record.view.default_reasoning_effort = view.default_reasoning_effort ?? null;
   }
 
   function getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null {

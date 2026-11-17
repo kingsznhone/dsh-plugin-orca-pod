@@ -162,24 +162,31 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
     return { workgroup_id: config.workgroup_id, orca_node_id: selfId, ts, nonce, proof };
   }
 
+  /**
+   * What this node says about itself in a join and in every heartbeat (§3.3).
+   * The request signature covers it, so a peer can take it as this node's word.
+   */
+  function selfDescription() {
+    const self = selfPeer();
+    return {
+      display_name: self.display_name,
+      endpoints: self.endpoints,
+      runtime: self.runtime,
+      max_task_ttl_s: self.max_task_ttl_s,
+      models: self.models,
+      default_model: self.default_model,
+      default_reasoning_effort: self.default_reasoning_effort,
+    };
+  }
+
   async function join(peerUrl: string): Promise<JoinResponse> {
     // A first contact has no receiver id to sign to; a known URL must keep answering as the same node.
     const expected = client.idOf(peerUrl);
-    const self = selfPeer();
     const response = await client.call<JoinResponse>(
       peerUrl,
       "POST",
       "/cluster/join",
-      {
-        ...admission("join"),
-        display_name: self.display_name,
-        endpoints: self.endpoints,
-        runtime: self.runtime,
-        max_task_ttl_s: self.max_task_ttl_s,
-        models: self.models,
-        default_model: self.default_model,
-        default_reasoning_effort: self.default_reasoning_effort,
-      },
+      { ...admission("join"), ...selfDescription() },
       { target: expected ?? "" },
     );
     // The response carries no signature of its own, so bind it to the node we
@@ -202,7 +209,7 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
       peerUrl,
       "POST",
       "/cluster/heartbeat",
-      { ...admission("heartbeat"), busy: deps.busy(), digest: digest() },
+      { ...admission("heartbeat"), busy: deps.busy(), digest: digest(), self: selfDescription() },
       { target: targetId, timeoutMs: membership.timings.heartbeatTimeoutMs },
     );
   }

@@ -35,7 +35,7 @@
 | GET    | `/blobs/{blob_id}`             | 下载文件                                                   | link                            |
 | POST   | `/blobs/{blob_id}/link`        | 换一条直链（`?exp=&sig=`）                                 | member                          |
 | POST   | `/cluster/join`                | 引导/准入：返回自述 + 目录                                 | join + 密码证明                 |
-| POST   | `/cluster/heartbeat`           | 心跳 + 摘要 + 准入证明；摘要不一致时响应回目录             | member + 密码证明               |
+| POST   | `/cluster/heartbeat`           | 心跳 + 摘要 + 准入证明 + 完整自述；摘要不一致时响应回目录   | member + 密码证明               |
 | GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲）                           | member                          |
 | POST   | `/cluster/leave`               | 主动离开（不是安全操作）                                   | member                          |
 | POST   | `/cluster/child-link`          | 本机 task 登记子任务，供自动上升（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） | local                           |

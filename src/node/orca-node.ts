@@ -136,7 +136,8 @@ export interface OrcaNode {
   /**
    * Advertise the model routes an ACP session can be switched to, plus the
    * default route (§6.15). Host integrations call this after the DSH model
-   * catalog is available; peers see it on the next roster exchange.
+   * catalog is available; known peers get it with this node's next heartbeat
+   * (the request carries the full self-description), new ones at join.
    */
   setModelCatalog(
     models: ModelOffer[],

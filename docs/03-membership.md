@@ -52,10 +52,10 @@ D（新）                                            A（已在 mesh）
 要点：
 
 - **join 只用于引导和重新准入**：拿目录、完成登记。之后靠心跳保活。
-- **登记只发生在 join**：心跳不带 self，也不登记陌生人；没登记过的发送者心跳会被成员闸门挡成 `403 not_a_member`，对方据此补一次 join（`404 unknown_orca_node` 同样触发）。
+- **登记只发生在 join**：心跳虽然带 `self`（见下），但只更新已登记成员的资料，不登记陌生人；没登记过的发送者心跳会被成员闸门挡成 `403 not_a_member`，对方据此补一次 join（`404 unknown_orca_node` 同样触发）。
 - **方向恒为单向出站**：新 orca node 主动连已知 orca node；旧 orca node 不需要能反向连新 orca node。
 - **不广播**：没有 announce 消息、没有 gossip。D 自己去找目录里的每个人，这本身就把“我在”传播出去了。
-- **幂等**：同一 `orca_node_id` 重复 join，更新端点/显示名/runtime/预算，不重复写表。
+- **幂等**：同一 `orca_node_id` 重复 join，用这次的自述替换记录里的资料（端点、显示名、runtime、预算、模型目录），不重复写表。
 - **自动接受**：workgroup 密码正确即接受，没有“待批准”状态。
 - **拒绝**：`400 workgroup_mismatch`（workgroup 不对）、`401 bad_proof`（密码证明不对）、`401 clock_skew`（时间差 > 60s）、`401 nonce_replay`。
 - **响应绑定拨号目标**：join/心跳的响应体本身没有签名；已知 URL 的响应若声明成另一个 `orca_node_id`，按失败处理。首次接触没有可比对的身份，是 TOFU。
@@ -82,7 +82,9 @@ POST /cluster/heartbeat
   "ts": 1763100000000, "nonce": "9f2c1a...",
   "proof": "<HMAC-SHA256(scrypt(password, \"orca-pod\\0\" + workgroup_id), \"orca-pod/heartbeat|...\")>",
   "busy": null,
-  "digest": "<members_digest>" }
+  "digest": "<members_digest>",
+  "self": { "display_name": "...", "endpoints": ["http://10.0.0.2:11811"], "runtime": { ... },
+            "max_task_ttl_s": 3600, "models": [ ... ], "default_model": { ... }, "default_reasoning_effort": "high" } }
 
 200 { "from": "<public key>", "busy": null,
       "members_digest": "<hex>",
@@ -91,6 +93,7 @@ POST /cluster/heartbeat
 
 - 心跳和 join 一样带**准入证明**（域分离标签 `orca-pod/heartbeat`）；收方先验请求签名与成员资格，再验证明，失败回 `401 bad_proof`（时钟偏差 `clock_skew`、nonce 重放 `nonce_replay`）。
 - 证明对不上意味着“它不再属于这个 group”：发方收到 401 立即把对方从成员表移除并记墓碑（不等 offline 计时），收方同样拒绝；双方在下一拍心跳就互相消失。
+- **心跳带完整自述**（`self`，字段与 join 请求体相同）：节点启动后才变化的资料（典型是插件晚一步拿到 Host 模型目录）靠它在下一拍传到已认识它的 peer。请求签名覆盖整个 body，准入证明与 nonce 防重放，所以它就是本人的话，收方用它替换该成员的资料；端点照 join 的规则筛查（[§7.7](07-security.md#77-ssrf--候选端点防护)），全部被拒回 `endpoint_refused`，同一组端点的筛查结果复用 60s。不带 `self` 的心跳（旧版本节点）只更新忙闲。
 - 摘要不一致 → 对端顺势回一次目录。接收方按 [§3.5](03-membership.md#35-候选端点与墓碑) 处理：只进候选，不声明在线。
 - 心跳同时是 keep-alive 与“我还活着”的证明；没有单独 ping。
 - 心跳请求超时取当前 `interval` 的一半，别用 30s 默认值。
@@ -174,7 +177,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 
 ### 3.6 目录合并与墓碑
 
-- 合并原则：**按 `orca_node_id` 去重；目录只新增从未见过的节点（`candidate`），绝不修补已有记录**。已有记录的端点、显示名、runtime 只由该节点本人签名的 join 更新，忙闲只由它本人的心跳更新；第三方目录无权改写（[§7.1](07-security.md#71-workgroup-与密码)）。
+- 合并原则：**按 `orca_node_id` 去重；目录只新增从未见过的节点（`candidate`），绝不修补已有记录**。已有记录的端点、显示名、runtime、模型目录只由该节点本人签名的 join 或心跳（`self`）更新，忙闲只由它本人的心跳更新；第三方目录无权改写（[§7.1](07-security.md#71-workgroup-与密码)）。
 - 冲突（同 id 不同端点）：以本人最近一次 join 自述的端点为准；别人目录里的同 id 条目不会覆盖它（真要换 IP，重新 join 一次即可）。
 - 删除：只删本地记录，不通知别人；别人会在 `record_ttl` 后自己修剪。
 - **踢人（安全语义）**：没有共识，所以“移除 orca node”不是可广播的操作。真正把它踢出去只能**换密码**：改过密码的节点与旧 mesh 的每拍心跳都过不了准入证明（[§3.3](03-membership.md#33-心跳与双向看门狗)），双方在下一拍就互相丢弃，等于被移出。UI 必须这么写，别让用户以为点一下 forget 就安全了。

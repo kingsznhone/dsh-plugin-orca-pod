@@ -95,7 +95,20 @@ function harness() {
       ...extra,
     };
   };
-  return { app, self, peers: membership.peers, post, joinBody };
+  const heartbeatBody = (sender: NodeIdentity, extra: Record<string, unknown>) => {
+    const ts = Date.now();
+    const nonce = randomUUID();
+    const fields = { workgroupId: WORKGROUP, orcaNodeId: sender.orcaNodeId, ts, nonce };
+    return {
+      workgroup_id: WORKGROUP,
+      orca_node_id: sender.orcaNodeId,
+      ts,
+      nonce,
+      proof: admissionProof("heartbeat", key, fields),
+      ...extra,
+    };
+  };
+  return { app, self, peers: membership.peers, post, joinBody, heartbeatBody };
 }
 
 describe("gateway body schemas", () => {
@@ -174,5 +187,35 @@ describe("gateway body schemas", () => {
       expect(response.statusCode, JSON.stringify(extra).slice(0, 80)).toBe(400);
       expect(response.json()).toMatchObject({ code: "bad_request" });
     }
+  });
+
+  it("takes a member's profile from its heartbeat but screens the endpoints like a join", async () => {
+    const { post, joinBody, heartbeatBody, peers } = harness();
+    const member = generateNodeIdentity();
+    expect((await post(member, "/cluster/join", joinBody(member, {}))).statusCode).toBe(200);
+
+    const self = {
+      display_name: "renamed",
+      endpoints: ["http://127.0.0.1:2/"],
+      models: [{ provider: "p", model: "m" }],
+    };
+    const ok = await post(member, "/cluster/heartbeat", heartbeatBody(member, { self }));
+    expect(ok.statusCode).toBe(200);
+    expect(peers.get(member.orcaNodeId)).toMatchObject({
+      display_name: "renamed",
+      endpoints: ["http://127.0.0.1:2"],
+      models: [{ provider: "p", model: "m" }],
+    });
+
+    // Link-local (cloud metadata) is refused here exactly as at join (§7.7).
+    const metadata = { ...self, endpoints: ["http://169.254.169.254"] };
+    const refused = await post(member, "/cluster/heartbeat", heartbeatBody(member, { self: metadata }));
+    expect(refused.json()).toMatchObject({ code: "endpoint_refused" });
+    expect(peers.get(member.orcaNodeId)?.endpoints).toEqual(["http://127.0.0.1:2"]);
+
+    // A heartbeat without `self` (an older node) leaves the profile alone.
+    const bare = await post(member, "/cluster/heartbeat", heartbeatBody(member, {}));
+    expect(bare.statusCode).toBe(200);
+    expect(peers.get(member.orcaNodeId)?.display_name).toBe("renamed");
   });
 });

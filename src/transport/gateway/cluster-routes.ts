@@ -34,8 +34,13 @@ const admission = {
   proof: z.string(),
 };
 
-const JoinBody = z.object({
-  ...admission,
+/**
+ * A node's description of itself (§2.5, §3.3). Join carries it at the top
+ * level, a heartbeat as `self`; both are covered by the sender's request
+ * signature, so only the node itself can state it. The latest one replaces
+ * what this node recorded before.
+ */
+const selfDescription = {
   display_name: z.string(),
   endpoints: z.array(z.string()),
   runtime: RuntimeInfoSchema.nullable().optional(),
@@ -43,14 +48,36 @@ const JoinBody = z.object({
   models: ModelOffersSchema.optional(),
   default_model: ModelSelectionSchema.nullable().optional(),
   default_reasoning_effort: ReasoningEffortSchema.nullable().optional(),
-});
+};
+const SelfDescription = z.object(selfDescription);
+type SelfDescription = z.infer<typeof SelfDescription>;
+
+const JoinBody = z.object({ ...admission, ...selfDescription });
 type AdmissionBody = Pick<z.infer<typeof JoinBody>, keyof typeof admission>;
 
 const HeartbeatBody = z.object({
   ...admission,
   digest: z.string().optional(),
   busy: BusyStateSchema.nullable().optional(),
+  /** Optional so a node that predates it still heartbeats; current nodes always send it. */
+  self: SelfDescription.optional(),
 });
+
+/** The recorded profile of a peer: what it described, with endpoints screened (§7.7). */
+type Profile = Pick<
+  PeerView,
+  | "display_name"
+  | "endpoints"
+  | "runtime"
+  | "runtime_digest"
+  | "max_task_ttl_s"
+  | "models"
+  | "default_model"
+  | "default_reasoning_effort"
+>;
+
+/** How long a heartbeat may reuse the screening verdict for an unchanged endpoint list. */
+const SCREENING_TTL_MS = 60_000;
 
 const ChildLinkBody = z.object({ parent_task_id: NonEmpty, peer: NonEmpty, child_task_id: NonEmpty });
 
@@ -110,6 +137,38 @@ async function dialableEndpoints(declared: string[], request: FastifyRequest): P
 }
 
 export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
+  /**
+   * Last screening per node: heartbeats repeat the same endpoints every few
+   * seconds, and screening may resolve names. Join always screens afresh.
+   */
+  const screened = new Map<string, { key: string; allowed: string[]; atMs: number }>();
+
+  async function profileOf(
+    caller: string,
+    described: SelfDescription,
+    request: FastifyRequest,
+    reuseScreening: boolean,
+  ): Promise<Profile> {
+    const declared = normalizeEndpoints(described.endpoints);
+    if (declared === null) throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
+    const key = `${isDirectLoopbackRequest(request)}|${declared.join(",")}`;
+    const previous = screened.get(caller);
+    const fresh = previous !== undefined && previous.key === key && Date.now() - previous.atMs < SCREENING_TTL_MS;
+    const endpoints = reuseScreening && fresh ? previous.allowed : await dialableEndpoints(declared, request);
+    if (!(reuseScreening && fresh)) screened.set(caller, { key, allowed: endpoints, atMs: Date.now() });
+    const runtime = described.runtime ?? null;
+    return {
+      display_name: described.display_name,
+      endpoints,
+      runtime,
+      runtime_digest: runtimeDigest(runtime),
+      max_task_ttl_s: described.max_task_ttl_s,
+      models: described.models,
+      default_model: described.default_model,
+      default_reasoning_effort: described.default_reasoning_effort,
+    };
+  }
+
   app.get("/health", { config: { access: "public" } }, async () => ({
     status: "ok",
     // Public identity hint: a CLI or a first-time caller uses it to bind the
@@ -130,25 +189,12 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   app.post("/cluster/join", { config: { access: "join" } }, async (request) => {
     const body = parseInput(JoinBody, request.body, "body");
     admit(deps, "join", request.auth.orcaNodeId, body);
-    const declared = normalizeEndpoints(body.endpoints);
-    if (declared === null) {
-      throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
-    }
-    const endpoints = await dialableEndpoints(declared, request);
-    const runtime = body.runtime ?? null;
     deps.peers.upsert({
       orca_node_id: body.orca_node_id,
-      display_name: body.display_name,
-      endpoints,
-      runtime,
-      runtime_digest: runtimeDigest(runtime),
+      ...(await profileOf(body.orca_node_id, body, request, false)),
       state: "online",
       busy: null,
       last_recv_at: new Date().toISOString(),
-      max_task_ttl_s: body.max_task_ttl_s,
-      models: body.models,
-      default_model: body.default_model,
-      default_reasoning_effort: body.default_reasoning_effort,
     });
     const { self, digest } = roster(deps);
     const response: JoinResponse = { self, members: deps.peers.list(), members_digest: digest };
@@ -163,7 +209,12 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
       throw new PodError("unknown_orca_node");
     }
     const peer = deps.peers.get(caller);
-    if (body.busy !== undefined && peer) deps.peers.upsert({ ...peer, busy: body.busy });
+    if (peer !== undefined && (body.self !== undefined || body.busy !== undefined)) {
+      // The sender's own signed self-description: how a profile that changed
+      // after join (a model catalog that arrived late) reaches its peers (§3.3).
+      const profile = body.self === undefined ? {} : await profileOf(caller, body.self, request, true);
+      deps.peers.upsert({ ...peer, ...profile, busy: body.busy === undefined ? peer.busy : body.busy });
+    }
 
     const { members, digest } = roster(deps);
     const response: HeartbeatResponse = {
