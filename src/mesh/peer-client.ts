@@ -70,44 +70,6 @@ type SignedRequest = {
 
 type Reply = { status: number; ok: boolean; contentType: string; text: string };
 
-const trimSlash = (url: string): string => url.replace(/\/+$/, "");
-
-/**
- * Read at most `MAX_RESPONSE_BYTES`: the stream is cancelled as soon as the cap
- * is crossed, so a peer cannot make us buffer what `response.text()` would.
- */
-async function readCapped(label: string, response: Response): Promise<string> {
-  const tooLarge = (): PodError =>
-    new PodError("peer_error", `${label} ${response.status}: response body is too large`, 502);
-  if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel();
-    throw tooLarge();
-  }
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for await (const chunk of response.body ?? []) {
-    size += chunk.byteLength;
-    if (size > MAX_RESPONSE_BYTES) throw tooLarge();
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function parseJson(label: string, reply: Reply): unknown {
-  if (!reply.contentType.includes("application/json")) {
-    throw new PodError(
-      "peer_error",
-      `${label} ${reply.status}: unexpected content type ${reply.contentType || "none"}`,
-      502,
-    );
-  }
-  try {
-    return JSON.parse(reply.text) as unknown;
-  } catch {
-    throw new PodError("peer_error", `${label} ${reply.status}: response is not valid JSON`, 502);
-  }
-}
-
 /** One error for both wire shapes: a peer's code if we know it, else `peer_error`. */
 export function remoteError(label: string, status: number, body: ErrorReply | undefined): PodError {
   const data = body?.error?.data ?? body;
@@ -115,31 +77,6 @@ export function remoteError(label: string, status: number, body: ErrorReply | un
   const detail = typeof data?.message === "string" && data.message !== code ? ` (${data.message})` : "";
   const shown = typeof code === "string" ? code : `http_${status}`;
   return new PodError(isPodErrorCode(code) ? code : "peer_error", `${label} ${status}: ${shown}${detail}`, status);
-}
-
-/** The typed error of a failed reply. */
-function unwrapError(label: string, reply: Reply): PodError {
-  let body: ErrorReply | undefined;
-  try {
-    const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.text));
-    body = parsed.success ? parsed.data : undefined;
-  } catch {
-    // A non-JSON error page keeps the generic code.
-  }
-  return remoteError(label, reply.status, body);
-}
-
-/** A 2xx body parsed as JSON, or the typed error of a failed reply. */
-function unwrap(label: string, reply: Reply): unknown {
-  if (reply.ok) return parseJson(label, reply);
-  throw unwrapError(label, reply);
-}
-
-/** The 2xx body checked against what the caller expects: a peer cannot hand us a shape we did not ask for. */
-function expectReply<S extends z.ZodType>(label: string, reply: Reply, schema: S, json: unknown): z.output<S> {
-  const parsed = parseSchema(schema, json);
-  if (parsed.ok) return parsed.value;
-  throw new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(parsed.issue)}`, 502);
 }
 
 /**
@@ -162,11 +99,12 @@ export class HttpPeerClient {
 
   /** Node id behind a URL: this node, a URL it dialed, or a member that advertises it. */
   idOf(endpoint: string): OrcaNodeId | undefined {
-    const key = trimSlash(endpoint);
-    if (this.self.endpoints.some((own) => trimSlash(own) === key)) return this.identity.orcaNodeId;
+    const key = HttpPeerClient.trimSlash(endpoint);
+    if (this.self.endpoints.some((own) => HttpPeerClient.trimSlash(own) === key)) return this.identity.orcaNodeId;
     return (
       this.dialed.get(key) ??
-      this.roster.list().find((peer) => peer.endpoints.some((url) => trimSlash(url) === key))?.orca_node_id
+      this.roster.list().find((peer) => peer.endpoints.some((url) => HttpPeerClient.trimSlash(url) === key))
+        ?.orca_node_id
     );
   }
 
@@ -181,7 +119,7 @@ export class HttpPeerClient {
 
   /** Remember that `endpoint` was answered by `nodeId` (a URL it does not advertise). */
   learn(endpoint: string, nodeId: OrcaNodeId): void {
-    this.dialed.set(trimSlash(endpoint), nodeId);
+    this.dialed.set(HttpPeerClient.trimSlash(endpoint), nodeId);
   }
 
   forget(nodeId: OrcaNodeId): void {
@@ -196,7 +134,11 @@ export class HttpPeerClient {
   ): Promise<z.output<S>> {
     const body = payload === undefined ? undefined : JSON.stringify(payload);
     const reply = await this.send({ label, endpoint, path, method, body }, options);
-    return expectReply(label, reply, schema, unwrap(label, reply));
+    if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply);
+    // A peer cannot hand us a shape we did not ask for.
+    const parsed = parseSchema(schema, HttpPeerClient.parseJson(label, reply));
+    if (parsed.ok) return parsed.value;
+    throw new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(parsed.issue)}`, 502);
   }
 
   /**
@@ -211,14 +153,7 @@ export class HttpPeerClient {
     return this.withDeadline(path, call, async (signal) => {
       const response = await this.options.fetch(url, {
         method: "GET",
-        headers: {
-          authorization: buildAuthHeader({
-            identity: this.identity,
-            method: "GET",
-            url: `${url.pathname}${url.search}`,
-            targetOrcaNodeId: target,
-          }),
-        },
+        headers: { authorization: this.authorization("GET", url, target) },
         redirect: "manual",
         signal,
       });
@@ -227,9 +162,9 @@ export class HttpPeerClient {
           status: response.status,
           ok: false,
           contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
-          text: await readCapped(path, response),
+          text: await HttpPeerClient.readCapped(path, response),
         };
-        throw unwrapError(path, reply);
+        throw HttpPeerClient.unwrapError(path, reply);
       }
       const length = response.headers.get("content-length");
       return { body: response.body, size: length === null ? undefined : Number(length) };
@@ -241,15 +176,7 @@ export class HttpPeerClient {
     const { label, endpoint, path, method, body } = request;
     const target = call.target ?? this.known(endpoint);
     const url = new URL(path, endpoint);
-    const headers: Record<string, string> = {
-      authorization: buildAuthHeader({
-        identity: this.identity,
-        method,
-        url: `${url.pathname}${url.search}`,
-        targetOrcaNodeId: target,
-        body,
-      }),
-    };
+    const headers: Record<string, string> = { authorization: this.authorization(method, url, target, body) };
     if (body !== undefined) headers["content-type"] = "application/json";
     // The deadline covers the whole answer, body included.
     return this.withDeadline(label, call, async (signal) => {
@@ -267,7 +194,7 @@ export class HttpPeerClient {
         status: response.status,
         ok: response.ok,
         contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
-        text: await readCapped(label, response),
+        text: await HttpPeerClient.readCapped(label, response),
       };
     });
   }
@@ -293,5 +220,68 @@ export class HttpPeerClient {
     } finally {
       limit[Symbol.dispose]();
     }
+  }
+  /** The signature of one request: bound to the node it is addressed to, and to the body when there is one. */
+  private authorization(method: HttpMethod, url: URL, target: string, body?: string): string {
+    return buildAuthHeader({
+      identity: this.identity,
+      method,
+      url: `${url.pathname}${url.search}`,
+      targetOrcaNodeId: target,
+      body,
+    });
+  }
+
+  private static trimSlash(url: string): string {
+    return url.replace(/\/+$/, "");
+  }
+
+  /**
+   * Read at most `MAX_RESPONSE_BYTES`: the stream is cancelled as soon as the cap
+   * is crossed, so a peer cannot make us buffer what `response.text()` would.
+   */
+  private static async readCapped(label: string, response: Response): Promise<string> {
+    const tooLarge = (): PodError =>
+      new PodError("peer_error", `${label} ${response.status}: response body is too large`, 502);
+    if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
+      await response.body?.cancel();
+      throw tooLarge();
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of response.body ?? []) {
+      size += chunk.byteLength;
+      if (size > MAX_RESPONSE_BYTES) throw tooLarge();
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  /** A 2xx body parsed as JSON. */
+  private static parseJson(label: string, reply: Reply): unknown {
+    if (!reply.contentType.includes("application/json")) {
+      throw new PodError(
+        "peer_error",
+        `${label} ${reply.status}: unexpected content type ${reply.contentType || "none"}`,
+        502,
+      );
+    }
+    try {
+      return JSON.parse(reply.text) as unknown;
+    } catch {
+      throw new PodError("peer_error", `${label} ${reply.status}: response is not valid JSON`, 502);
+    }
+  }
+
+  /** The typed error of a failed reply. */
+  private static unwrapError(label: string, reply: Reply): PodError {
+    let body: ErrorReply | undefined;
+    try {
+      const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.text));
+      body = parsed.success ? parsed.data : undefined;
+    } catch {
+      // A non-JSON error page keeps the generic code.
+    }
+    return remoteError(label, reply.status, body);
   }
 }

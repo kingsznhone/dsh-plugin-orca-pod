@@ -176,12 +176,12 @@ describe("createTracker", () => {
     const views = new Map([["01TASK", taskView("01TASK", "completed", "done")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
     tracker.track(agent, "http://peer:11811", "01TASK");
-    expect(tracker.size()).toBe(1);
+    expect(tracker.list()).toHaveLength(1);
     await waitFor(() => agent.followed.length === 1);
     expect(agent.injected).toHaveLength(0);
     expect(noticeText(agent.followed[0]!)).toContain("01TASK");
     expect(agent.followed[0]!.source.kind).toBe("orca-pod");
-    expect(tracker.size()).toBe(0);
+    expect(tracker.list()).toHaveLength(0);
     tracker.stop();
   });
 
@@ -248,7 +248,7 @@ describe("createTracker", () => {
     // The raw request text never enters the chat; the UI card carries it.
     expect(agent.followed).toHaveLength(0);
     expect(agent.injected).toHaveLength(0);
-    expect(tracker.size()).toBe(1);
+    expect(tracker.list()).toHaveLength(1);
 
     // A new request id replaces the prompt.
     views.set("01TASK", permissionView("01TASK", "req-2"));
@@ -273,7 +273,7 @@ describe("createTracker", () => {
 
     views.set("01TASK", taskView("01TASK", "working"));
     await waitFor(() => broker.list().length === 0);
-    expect(tracker.size()).toBe(1);
+    expect(tracker.list()).toHaveLength(1);
     tracker.stop();
   });
 
@@ -332,7 +332,7 @@ describe("createTracker", () => {
     const text = noticeText(agent.followed[0]!);
     expect(text).toContain("interrupted");
     expect(text).toContain("01TASK");
-    expect(tracker.size()).toBe(0);
+    expect(tracker.list()).toHaveLength(0);
     tracker.stop();
   });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Membership } from "../src/mesh/membership.ts";
-import { candidateEndpointAllowed } from "../src/mesh/screening.ts";
+import { screenEndpoint } from "../src/mesh/screening.ts";
 import {
   bindUrl,
   detectLocalEndpoints,
@@ -27,11 +27,11 @@ function peer(orcaNodeId: OrcaNodeId, endpoint: string): PeerView {
 
 describe("candidate endpoint filtering (§7.7)", () => {
   it("allows private ranges", async () => {
-    expect(await candidateEndpointAllowed("http://10.1.2.3:11811")).toBe(true);
-    expect(await candidateEndpointAllowed("http://172.20.0.9:11811")).toBe(true);
-    expect(await candidateEndpointAllowed("http://192.168.86.252:11812")).toBe(true);
-    expect(await candidateEndpointAllowed("http://100.64.1.10:11811")).toBe(true);
-    expect(await candidateEndpointAllowed("http://[fd00::1]:11811")).toBe(true);
+    expect(await screenEndpoint("http://10.1.2.3:11811")).toBe("allowed");
+    expect(await screenEndpoint("http://172.20.0.9:11811")).toBe("allowed");
+    expect(await screenEndpoint("http://192.168.86.252:11812")).toBe("allowed");
+    expect(await screenEndpoint("http://100.64.1.10:11811")).toBe("allowed");
+    expect(await screenEndpoint("http://[fd00::1]:11811")).toBe("allowed");
   });
 
   it("always rejects metadata, link-local, multicast and unspecified addresses", async () => {
@@ -43,26 +43,26 @@ describe("candidate endpoint filtering (§7.7)", () => {
       "http://[::]:11811",
     ];
     for (const endpoint of blocked) {
-      expect(await candidateEndpointAllowed(endpoint)).toBe(false);
-      expect(await candidateEndpointAllowed(endpoint, { allowPublicPeers: true })).toBe(false);
+      expect(await screenEndpoint(endpoint)).toBe("refused");
+      expect(await screenEndpoint(endpoint, { allowPublicPeers: true })).toBe("refused");
     }
   });
 
   it("allows loopback by default, and rejects it when disabled", async () => {
-    expect(await candidateEndpointAllowed("http://127.0.0.1:11811")).toBe(true);
-    expect(await candidateEndpointAllowed("http://[::1]:11811")).toBe(true);
-    expect(await candidateEndpointAllowed("http://127.0.0.1:11811", { allowLoopbackPeers: false })).toBe(false);
-    expect(await candidateEndpointAllowed("http://[::1]:11811", { allowLoopbackPeers: false })).toBe(false);
+    expect(await screenEndpoint("http://127.0.0.1:11811")).toBe("allowed");
+    expect(await screenEndpoint("http://[::1]:11811")).toBe("allowed");
+    expect(await screenEndpoint("http://127.0.0.1:11811", { allowLoopbackPeers: false })).toBe("refused");
+    expect(await screenEndpoint("http://[::1]:11811", { allowLoopbackPeers: false })).toBe("refused");
   });
 
   it("rejects public addresses unless allowPublicPeers is set", async () => {
-    expect(await candidateEndpointAllowed("http://8.8.8.8:11811")).toBe(false);
-    expect(await candidateEndpointAllowed("http://8.8.8.8:11811", { allowPublicPeers: true })).toBe(true);
+    expect(await screenEndpoint("http://8.8.8.8:11811")).toBe("refused");
+    expect(await screenEndpoint("http://8.8.8.8:11811", { allowPublicPeers: true })).toBe("allowed");
   });
 
   it("resolves hostnames and applies the same address policy", async () => {
-    expect(await candidateEndpointAllowed("http://localhost:11811")).toBe(true);
-    expect(await candidateEndpointAllowed("http://localhost:11811", { allowLoopbackPeers: false })).toBe(false);
+    expect(await screenEndpoint("http://localhost:11811")).toBe("allowed");
+    expect(await screenEndpoint("http://localhost:11811", { allowLoopbackPeers: false })).toBe("refused");
   });
 
   it("never picks a port that fetch refuses to dial", async () => {
@@ -79,8 +79,8 @@ describe("candidate endpoint filtering (§7.7)", () => {
   });
 
   it("rejects non-http schemes and malformed endpoints", async () => {
-    expect(await candidateEndpointAllowed("ftp://10.0.0.1/")).toBe(false);
-    expect(await candidateEndpointAllowed("not a url")).toBe(false);
+    expect(await screenEndpoint("ftp://10.0.0.1/")).toBe("refused");
+    expect(await screenEndpoint("not a url")).toBe("refused");
   });
 
   it("detects advertised endpoints with IPv4 first and no loopback", () => {

@@ -27,27 +27,6 @@ import { Workspace } from "../task/workspace.ts";
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import type { PodEventInput } from "./events.ts";
 
-/** Snapshot of the local runtime, used to advertise what this machine can do. */
-function collectRuntime(): RuntimeInfo {
-  const platform = osPlatform();
-  const processors = cpus();
-  return {
-    os: {
-      family: platform,
-      name: platform === "win32" ? "Windows" : platform === "linux" ? "Linux" : platform,
-      version: osRelease(),
-    },
-    arch: process.arch,
-    cpu: {
-      model: processors[0]?.model ?? "unknown",
-      logical_cores: processors.length,
-    },
-    memory: { total_bytes: totalmem() },
-    node: { version: process.version },
-    captured_at: new Date().toISOString(),
-  };
-}
-
 /** Durable stores; absent => in-memory (tests, harness). */
 export type OrcaNodeStorage = {
   taskStore?: TaskStore;
@@ -83,18 +62,6 @@ export type OrcaNodeOptions = {
   /** Where refusals and drops are reported; silent unless the entry point supplies one. */
   logger?: NodeLogger;
 };
-
-/** Addresses a remote orca node should dial: explicit list, else derived from bind. */
-function endpointsFrom(config: OrcaNodeConfig, port: number): [string, ...string[]] {
-  const [first, ...rest] = config.endpoints;
-  if (first !== undefined) return [first, ...rest];
-  if (!isWildcardHost(config.bind_host)) {
-    const url = bindUrl(config.bind_host, port);
-    if (url !== undefined) return [url];
-  }
-  const [firstDetected, ...restDetected] = detectLocalEndpoints(port);
-  return firstDetected === undefined ? [`http://127.0.0.1:${port}`] : [firstDetected, ...restDetected];
-}
 
 const SILENT: NodeLogger = { warn() {} };
 
@@ -161,8 +128,8 @@ export class OrcaNode {
 
     this.models = new ModelCatalog(config, logger);
     this.membership = new Membership(config.orca_node_id, { timings: options.timings, clock: options.clock });
-    this.profile = new SelfProfile(config, options.runtime ?? collectRuntime(), this.models, maxTaskTtlS);
-    this.profile.setEndpoints(endpointsFrom(config, config.port));
+    this.profile = new SelfProfile(config, options.runtime ?? OrcaNode.collectRuntime(), this.models, maxTaskTtlS);
+    this.profile.setEndpoints(OrcaNode.endpointsFrom(config, config.port));
     this.client = new HttpPeerClient(identity, this.profile, this.membership, {
       fetch: options.fetch ?? ((url, init) => fetch(url, init)),
       // Every outbound call needs a deadline (§4.7): a peer that accepts the
@@ -221,7 +188,7 @@ export class OrcaNode {
     this.tasks.start();
     const address = await this.gateway.listen(this.config.bind_host, this.config.port);
     const port = Number(new URL(address).port);
-    const urls = endpointsFrom(this.config, port);
+    const urls = OrcaNode.endpointsFrom(this.config, port);
     this.profile.setEndpoints(urls);
     this.delegation.start();
     this.heartbeatLoop.start();
@@ -235,5 +202,38 @@ export class OrcaNode {
     this.taskStore.close();
     this.fileBlobStore.close();
     this.dispatchStore.close();
+  }
+
+  /** Snapshot of the local runtime, used to advertise what this machine can do. */
+  private static collectRuntime(): RuntimeInfo {
+    const platform = osPlatform();
+    const processors = cpus();
+    return {
+      os: {
+        family: platform,
+        name: platform === "win32" ? "Windows" : platform === "linux" ? "Linux" : platform,
+        version: osRelease(),
+      },
+      arch: process.arch,
+      cpu: {
+        model: processors[0]?.model ?? "unknown",
+        logical_cores: processors.length,
+      },
+      memory: { total_bytes: totalmem() },
+      node: { version: process.version },
+      captured_at: new Date().toISOString(),
+    };
+  }
+
+  /** Addresses a remote orca node should dial: explicit list, else derived from bind. */
+  private static endpointsFrom(config: OrcaNodeConfig, port: number): [string, ...string[]] {
+    const [first, ...rest] = config.endpoints;
+    if (first !== undefined) return [first, ...rest];
+    if (!isWildcardHost(config.bind_host)) {
+      const url = bindUrl(config.bind_host, port);
+      if (url !== undefined) return [url];
+    }
+    const [firstDetected, ...restDetected] = detectLocalEndpoints(port);
+    return firstDetected === undefined ? [`http://127.0.0.1:${port}`] : [firstDetected, ...restDetected];
   }
 }

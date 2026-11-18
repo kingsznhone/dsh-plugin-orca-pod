@@ -7,7 +7,7 @@
  */
 
 import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
-import type { ChildProcessByStdio } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import {
   PROTOCOL_VERSION,
@@ -26,9 +26,9 @@ import {
 
 import crossSpawn from "cross-spawn";
 
-import { terminateChild } from "../process.ts";
-
 const STDERR_TAIL = 4096;
+/** How long a child gets to exit after SIGTERM before its tree is killed. */
+export const KILL_GRACE_MS = 2_000;
 /** The handshake must not hang a task forever if the child is wedged. */
 export const HANDSHAKE_TIMEOUT_MS = 30_000;
 
@@ -44,55 +44,6 @@ type ConnectionState = { status: "starting" } | { status: "ready" } | { status: 
 
 export type AcpSpawnSpec = { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 
-export function spawnAcpChild({ command, args, cwd, env }: AcpSpawnSpec): AcpChild {
-  // cross-spawn resolves Windows `.cmd` shims and quotes the command line for
-  // cmd.exe, so the same spec works on every platform.
-  const child = crossSpawn(command, args, {
-    cwd,
-    env,
-    windowsHide: true,
-    detached: process.platform !== "win32", // a process group, so the whole tree can be signalled
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  return child as AcpChild;
-}
-
-/**
- * The child's stdout as the SDK's input. It does not end when stdout ends: the
- * SDK would then close with a bare "connection closed". It errors only once
- * the child is gone (`close`: exited and stdio drained), with `reason()`, so
- * pending requests learn the exit code and the stderr tail.
- */
-function childOutput(child: AcpChild, reason: () => Error): ReadableStream<Uint8Array> {
-  // The reader can cancel the stream first (the SDK does when the connection closes);
-  // a chunk that arrives afterwards has no consumer and must not throw into the child's event loop.
-  let open = true;
-  return new ReadableStream({
-    start(controller) {
-      child.stdout.on("data", (chunk: Buffer) => {
-        if (open) controller.enqueue(new Uint8Array(chunk));
-      });
-      child.on("close", () => {
-        if (!open) return;
-        open = false;
-        controller.error(reason());
-      });
-    },
-    cancel() {
-      open = false;
-    },
-  });
-}
-
-function childInput(child: AcpChild): WritableStream<Uint8Array> {
-  return new WritableStream({
-    write: (chunk) =>
-      new Promise<void>((resolve, reject) => {
-        child.stdin.write(chunk, (error) => (error ? reject(error) : resolve()));
-      }),
-  });
-}
-
 /** The code DSH's `deadline` stamps on a request the child did not answer in time. */
 const ACP_TIMEOUT = "ACP_TIMEOUT";
 
@@ -106,6 +57,21 @@ export class AcpConnection {
   private stderr = "";
   private exited: Promise<void> = Promise.resolve();
 
+  /** Start the child `spec` describes and drive it. */
+  static spawn({ command, args, cwd, env }: AcpSpawnSpec): AcpConnection {
+    // cross-spawn resolves Windows `.cmd` shims and quotes the command line for
+    // cmd.exe, so the same spec works on every platform.
+    const child = crossSpawn(command, args, {
+      cwd,
+      env,
+      windowsHide: true,
+      detached: process.platform !== "win32", // a process group, so the whole tree can be signalled
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return new AcpConnection(child as AcpChild);
+  }
+
+  /** The constructor takes a child that is already running, so building a connection starts nothing itself. */
   constructor(child: AcpChild) {
     this.child = child;
     child.stderr.setEncoding("utf8");
@@ -128,7 +94,7 @@ export class AcpConnection {
         if (route === undefined) throw RequestError.invalidParams(undefined, "no task is running on that session");
         return route.permission(params);
       })
-      .connect(ndJsonStream(childInput(child), childOutput(child, exitError)));
+      .connect(ndJsonStream(AcpConnection.childInput(child), AcpConnection.childOutput(child, exitError)));
     // The SDK closes on its own when the stream fails; the child goes with it.
     void this.rpc.closed.then(() => {
       const reason: unknown = this.rpc.signal.reason;
@@ -220,6 +186,76 @@ export class AcpConnection {
     this.state = { status: "closed", error };
     this.routes.clear();
     this.rpc?.close(error);
-    this.exited = terminateChild(this.child);
+    this.exited = AcpConnection.terminate(this.child);
+  }
+
+  /**
+   * The child's stdout as the SDK's input. It does not end when stdout ends: the
+   * SDK would then close with a bare "connection closed". It errors only once
+   * the child is gone (`close`: exited and stdio drained), with `reason()`, so
+   * pending requests learn the exit code and the stderr tail.
+   */
+  private static childOutput(child: AcpChild, reason: () => Error): ReadableStream<Uint8Array> {
+    // The reader can cancel the stream first (the SDK does when the connection closes);
+    // a chunk that arrives afterwards has no consumer and must not throw into the child's event loop.
+    let open = true;
+    return new ReadableStream({
+      start(controller) {
+        child.stdout.on("data", (chunk: Buffer) => {
+          if (open) controller.enqueue(new Uint8Array(chunk));
+        });
+        child.on("close", () => {
+          if (!open) return;
+          open = false;
+          controller.error(reason());
+        });
+      },
+      cancel() {
+        open = false;
+      },
+    });
+  }
+
+  private static childInput(child: AcpChild): WritableStream<Uint8Array> {
+    return new WritableStream({
+      write: (chunk) =>
+        new Promise<void>((resolve, reject) => {
+          child.stdin.write(chunk, (error) => (error ? reject(error) : resolve()));
+        }),
+    });
+  }
+  /**
+   * SIGTERM the child's process tree, SIGKILL after the grace period; resolves
+   * once the child has exited, so callers can release its cwd safely.
+   */
+  private static terminate(child: ChildProcess): Promise<void> {
+    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => AcpConnection.killTree(child, "SIGKILL"), KILL_GRACE_MS);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      AcpConnection.killTree(child, "SIGTERM");
+    });
+  }
+
+  private static killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+    const pid = child.pid;
+    if (pid === undefined) return;
+    if (process.platform === "win32") {
+      // dsh may spawn its own children; /T is the only portable way to reach them.
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => child.kill());
+      return;
+    }
+    try {
+      process.kill(-pid, signal); // detached => child is a process group leader
+    } catch {
+      try {
+        child.kill(signal);
+      } catch {
+        // already gone
+      }
+    }
   }
 }

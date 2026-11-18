@@ -35,37 +35,6 @@ import type { PodStores, RawConfig } from "./stores.ts";
 /** Settings with the data directory resolved: the lifecycle fixes it once, at start (DX13). */
 export type RootedSettings = Settings & { data_root: string };
 
-/** Anything thrown, as an `Error`. */
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
-}
-
-/** Apply settings to a raw plugin config: a value sets the key, `null` removes it; other keys stay. */
-function applyPanelFields(raw: RawConfig, fields: ConfigFields): RawConfig {
-  const next: Record<string, unknown> = { ...raw };
-  for (const [key, value] of Object.entries(fields)) {
-    if (value === null) delete next[key];
-    else if (value !== undefined) next[key] = value;
-  }
-  // Every key written came from `fields`, so `next` still has the `RawConfig` shape.
-  return next as RawConfig;
-}
-
-/** The plugin config without the in-memory password: what may be persisted. */
-function withoutSecret(config: Settings): RawConfig {
-  const { workgroup_password: _password, ...rest } = config;
-  return rest;
-}
-
-/**
- * A panel-configured orca node needs both a workgroup and a password. Empty
- * values mean "not configured yet" and keep the node idle instead of opening a
- * passwordless mesh; the first-run wizard fills them in.
- */
-function needsSetup(config: Settings): boolean {
-  return !config.workgroup_id || !config.workgroup_password;
-}
-
 /**
  * The orca node of one plugin fiber, and what drives it: start, panel
  * reconfiguration, peers, reset. Every restart and state write goes through one
@@ -197,7 +166,9 @@ export class PodLifecycle {
       throw new Error("a workgroup password is required; a passwordless mesh is not supported");
     }
     // Validate the whole result first, so a bad patch changes nothing.
-    const preview = parseSettings(applyPanelFields(withoutSecret(this.effective), fields));
+    // The plugin config without the in-memory password is what may be persisted.
+    const { workgroup_password: _password, ...persisted } = this.effective;
+    const preview = parseSettings(PodLifecycle.applyPanelFields(persisted, fields));
     const ref = passwordRefFor(preview);
     if (ref === undefined) throw new Error("a workgroup id is required");
     // Switching workgroups keeps the current password unless a new one is
@@ -214,7 +185,7 @@ export class PodLifecycle {
       throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
     }
     // Outside the queue on purpose: a host restart waits for the queue to drain.
-    const changed = await this.persist((raw) => applyPanelFields(raw, fields));
+    const changed = await this.persist((raw) => PodLifecycle.applyPanelFields(raw, fields));
     // Nothing to persist (only the password changed, or the bundle already
     // names the workgroup): no host restart follows, so restart in place.
     if (!changed) await this.queue.run(() => this.boot());
@@ -242,7 +213,8 @@ export class PodLifecycle {
       await this.peers.clear();
     });
     // Startup peers named in the plugin config are forgotten too.
-    if (this.effective.peers.length > 0) await this.persist((raw) => applyPanelFields(raw, { peers: null }));
+    if (this.effective.peers.length > 0)
+      await this.persist((raw) => PodLifecycle.applyPanelFields(raw, { peers: null }));
   }
 
   /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
@@ -258,7 +230,7 @@ export class PodLifecycle {
     });
     if (ref !== undefined) await this.stores.clearSecret(ref);
     const changed = await this.persist((raw) =>
-      applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
+      PodLifecycle.applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
     );
     // Back to the first-run wizard: without a stored password nothing starts,
     // even when an inherited config layer still names a workgroup.
@@ -295,7 +267,10 @@ export class PodLifecycle {
     this.failure = null;
     const password = await this.readPassword(this.pluginConfig);
     this.effective = { ...this.pluginConfig, workgroup_password: password ?? "" };
-    this.isConfigured = !needsSetup(this.effective);
+    // A panel-configured orca node needs both a workgroup and a password. Empty
+    // values mean "not configured yet" and keep the node idle instead of opening
+    // a passwordless mesh; the first-run wizard fills them in.
+    this.isConfigured = Boolean(this.effective.workgroup_id && this.effective.workgroup_password);
     if (this.disposed) return;
     if (!this.isConfigured) {
       // The panel shows its first-run wizard and calls `reconfigure` once the
@@ -306,7 +281,7 @@ export class PodLifecycle {
     try {
       await this.startNode(this.effective);
     } catch (error) {
-      this.failure = toError(error);
+      this.failure = PodLifecycle.toError(error);
       this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(this.failure)}`);
     }
   }
@@ -402,5 +377,21 @@ export class PodLifecycle {
     } catch (error) {
       this.logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
     }
+  }
+
+  /** Anything thrown, as an `Error`. */
+  private static toError(error: unknown): Error {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  /** Apply settings to a raw plugin config: a value sets the key, `null` removes it; other keys stay. */
+  private static applyPanelFields(raw: RawConfig, fields: ConfigFields): RawConfig {
+    const next: Record<string, unknown> = { ...raw };
+    for (const [key, value] of Object.entries(fields)) {
+      if (value === null) delete next[key];
+      else if (value !== undefined) next[key] = value;
+    }
+    // Every key written came from `fields`, so `next` still has the `RawConfig` shape.
+    return next as RawConfig;
   }
 }

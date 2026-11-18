@@ -15,14 +15,12 @@ import type { Context, Inject, Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-app-boot";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
-import type { StandardSchemaV1 } from "@standard-schema/spec";
 // `ctx.settings` is this plugin's own injection; the service package owns the type.
 import type {} from "@deepseek-ai/dsh-settings";
 
 import { PodAdmin } from "./admin.ts";
 import { ApprovalBroker } from "./broker.ts";
 import { ModelCatalogFeed } from "./catalog.ts";
-import { createConfigSchema } from "./config.ts";
 import { PodLifecycle } from "./lifecycle.ts";
 import { OptionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
@@ -33,8 +31,7 @@ import { PodApi } from "./web.ts";
 import { DATA_ROOT_ENV, defaultDataRoot } from "../node/config.ts";
 import type { Settings } from "../node/settings.ts";
 
-/** Standard Schema config consumed by Cordis before `apply` runs: the node `Settings`, without the password. */
-export const Config: StandardSchemaV1<unknown, Settings> = createConfigSchema();
+export { Config } from "./config.ts";
 
 /**
  * Hard dependencies: the tool registry, the credential store that holds the
@@ -127,7 +124,7 @@ class PodPlugin {
    * appearing); with `agent`, only that session's own dispatches. Repeating it
    * is harmless: watched or abandoned tasks are left alone.
    */
-  restore(agent?: Agent): void {
+  private restore(agent?: Agent): void {
     const node = this.lifecycle.node;
     if (node === null) return;
     this.tracker.restore(
@@ -137,16 +134,16 @@ class PodPlugin {
     );
   }
 
-  onAgentCreated(agent: Agent): void {
+  private onAgentCreated(agent: Agent): void {
     agent.ctx.effect(() => () => this.tracker.forget(agent.id), "orca-pod.track");
     void this.lifecycle.ready.then(() => this.restore(agent));
   }
 
-  onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {
+  private onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {
     if (message.source?.kind === "user") this.tracker.resetWakes(agent.id);
   }
 
-  async dispose(): Promise<void> {
+  private async dispose(): Promise<void> {
     this.broker.clear();
     this.tracker.stop();
     await this.lifecycle.stop();

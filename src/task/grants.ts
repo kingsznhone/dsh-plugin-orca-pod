@@ -1,23 +1,15 @@
 /**
  * Permission grants on the target side (§7.11): a grant crosses the trust
- * boundary in a resume message and is parsed once here (`parseSignedGrant`);
- * `GrantLedger.accept` verifies it and remembers it in one step.
+ * boundary in a resume message (parsed by `parseResume`), and `GrantLedger.accept`
+ * verifies it and remembers it in one step.
  */
 
-import { PodError, type PodErrorCode } from "../core/errors.ts";
+import type { PodErrorCode } from "../core/errors.ts";
 import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "../core/identity.ts";
-import { describeIssue, parseSchema } from "../core/schema.ts";
-import { SignedGrantSchema, type Grant, type PermissionRequest, type SignedGrant } from "../core/wire/grant.ts";
+import type { Grant, PermissionRequest, SignedGrant } from "../core/wire/grant.ts";
 import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 
 const GRANT_DOMAIN = "orca-pod/grant";
-
-/** A grant as it arrives in a resume message; the signature is checked later, by `GrantLedger.accept`. */
-export function parseSignedGrant(raw: unknown): SignedGrant {
-  const parsed = parseSchema(SignedGrantSchema, raw);
-  if (parsed.ok) return parsed.value;
-  throw new PodError("bad_request", `grant ${describeIssue(parsed.issue)}`);
-}
 
 /** What a grant has to match: the task that waits and the request it is parked on. */
 export type GrantExpectation = {

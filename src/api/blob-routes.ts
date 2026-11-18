@@ -9,12 +9,6 @@ import { parseInput } from "./input.ts";
 const BlobParams = z.object({ blob_id: BlobIdSchema });
 const FetchQuery = z.object({ node: OrcaNodeIdSchema, blob: BlobIdSchema });
 
-function send(reply: FastifyReply, { stream, size }: OpenedBlob): FastifyReply {
-  reply.header("content-type", "application/octet-stream");
-  if (size !== undefined) reply.header("content-length", String(size));
-  return reply.send(stream);
-}
-
 /**
  * Files move by name, never by URL (§5.6): a file is the sha256 a member
  * published, and whoever needs it asks its own node, which finds that member's
@@ -29,13 +23,19 @@ export class BlobRoutes {
     // A file this node published, for a member's signed request.
     app.get("/blobs/:blob_id", { config: { access: "member" } }, async (request, reply) => {
       const { blob_id: blobId } = parseInput(BlobParams, request.params, "params");
-      return send(reply, this.files.open(blobId));
+      return BlobRoutes.send(reply, this.files.open(blobId));
     });
 
     // Local control for the CLI: any member's file, fetched by this node (§5.6).
     app.get("/cluster/blob", { config: { access: "local" } }, async (request, reply) => {
       const { node, blob } = parseInput(FetchQuery, request.query, "querystring");
-      return send(reply, await this.files.fetch(node, blob));
+      return BlobRoutes.send(reply, await this.files.fetch(node, blob));
     });
+  }
+
+  private static send(reply: FastifyReply, { stream, size }: OpenedBlob): FastifyReply {
+    reply.header("content-type", "application/octet-stream");
+    if (size !== undefined) reply.header("content-length", String(size));
+    return reply.send(stream);
   }
 }

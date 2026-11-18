@@ -7,7 +7,7 @@ import { z } from "zod";
 import { withFileLock, writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
 
 import { errorMessage, isMissingFile } from "./errors.ts";
-import { OrcaNodeIdSchema, isOrcaNodeId, type OrcaNodeId } from "./wire/peer.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId } from "./wire/peer.ts";
 
 /**
  * Per-node identity (§7.1): an Ed25519 keypair created at first start. The
@@ -65,7 +65,6 @@ export function signWithIdentity(identity: NodeIdentity, message: string | Uint8
 }
 
 export function verifyWithNodeId(orcaNodeId: OrcaNodeId, message: string | Uint8Array, signature: string): boolean {
-  if (!isOrcaNodeId(orcaNodeId)) return false;
   try {
     const publicKey = createPublicKey({
       key: Buffer.concat([

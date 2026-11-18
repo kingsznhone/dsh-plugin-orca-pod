@@ -18,36 +18,6 @@ import type { DialPolicy } from "./screening.ts";
 import type { SelfProfile } from "./self-profile.ts";
 import type { HeartbeatRequest, JoinRequest, MembersEvent } from "./wire.ts";
 
-/** A 401 proves the peer no longer shares this password (§7.1). */
-function isAdmissionRejection(error: unknown): boolean {
-  return error instanceof PodError && error.status === 401;
-}
-
-/**
- * The response carries no signature of its own, so it must not be able to
- * speak for a node other than the one we dialed (§7.1). First contact is TOFU:
- * with nothing to compare it with, any answer is taken.
- */
-function assertAnsweredBy(route: string, peerUrl: string, claimed: OrcaNodeId, expected: OrcaNodeId | undefined): void {
-  if (expected !== undefined && claimed !== expected) {
-    throw new Error(`${route} from ${peerUrl} claimed ${claimed} but ${expected} was expected`);
-  }
-}
-
-/** The roster fields a panel renders; two rosters with the same signature need no event. */
-function signatureOf(peers: PeerView[]): string {
-  return peers
-    .map((peer) => {
-      const model = peer.default_model ? `${peer.default_model.provider}/${peer.default_model.model}` : "";
-      return (
-        `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
-        `:${peer.models?.length ?? 0}:${model}:${peer.default_reasoning_effort ?? ""}`
-      );
-    })
-    .sort()
-    .join("|");
-}
-
 /**
  * This node's side of the workgroup (§3): it admits itself at a peer (`join`),
  * keeps the members' records fresh (`heartbeat`), says goodbye (`leave`) and
@@ -82,7 +52,7 @@ export class Workgroup {
   /** Emit a `members` event if something a panel would render changed (§9.2). */
   emitMembersIfChanged(): void {
     const current = this.roster();
-    const signature = signatureOf(current);
+    const signature = Workgroup.signatureOf(current);
     if (signature === this.membersSignature) return;
     this.membersSignature = signature;
     this.events.emit({ type: "members", members: current, digest: membersDigest(current) });
@@ -98,7 +68,7 @@ export class Workgroup {
       { method: "POST", path: "/cluster/join", payload: request, reply: JoinResponseSchema },
       { target: expected ?? "" },
     );
-    assertAnsweredBy("/cluster/join", peerUrl, response.self.orca_node_id, expected);
+    Workgroup.assertAnsweredBy("/cluster/join", peerUrl, response.self.orca_node_id, expected);
     this.membership.upsert(response.self);
     this.client.learn(peerUrl, response.self.orca_node_id);
     this.membership.observeInbound(response.self.orca_node_id);
@@ -129,7 +99,7 @@ export class Workgroup {
     try {
       return await this.pulse(peerUrl, targetId);
     } catch (error) {
-      if (!isAdmissionRejection(error)) this.membership.observeOutboundFail(targetId);
+      if (!Workgroup.isAdmissionRejection(error)) this.membership.observeOutboundFail(targetId);
       throw error;
     }
   }
@@ -146,7 +116,7 @@ export class Workgroup {
         return;
       } catch (error) {
         // Every URL belongs to the same node, so a credential mismatch is final.
-        if (isAdmissionRejection(error)) return;
+        if (Workgroup.isAdmissionRejection(error)) return;
       }
     }
     this.membership.observeOutboundFail(peer.orca_node_id);
@@ -227,14 +197,14 @@ export class Workgroup {
   private async pulse(peerUrl: string, targetId: OrcaNodeId): Promise<HeartbeatResponse> {
     try {
       const response = await this.heartbeatWithRejoin(peerUrl, targetId);
-      assertAnsweredBy("/cluster/heartbeat", peerUrl, response.from, targetId);
+      Workgroup.assertAnsweredBy("/cluster/heartbeat", peerUrl, response.from, targetId);
       this.membership.observeInbound(response.from);
       this.membership.observeOutboundOk(response.from);
       if (response.members) this.membership.mergeRemote(response.members);
       this.emitMembersIfChanged();
       return response;
     } catch (error) {
-      if (isAdmissionRejection(error)) {
+      if (Workgroup.isAdmissionRejection(error)) {
         // This peer still uses another password: stop answering it and forget the
         // record (§7.1). Its own heartbeats to us fail identically, so the whole
         // old mesh drops the changed node instead of keeping it "online" forever.
@@ -274,5 +244,40 @@ export class Workgroup {
     } catch {
       return false;
     }
+  }
+
+  /** A 401 proves the peer no longer shares this password (§7.1). */
+  private static isAdmissionRejection(error: unknown): boolean {
+    return error instanceof PodError && error.status === 401;
+  }
+
+  /**
+   * The response carries no signature of its own, so it must not be able to
+   * speak for a node other than the one we dialed (§7.1). First contact is TOFU:
+   * with nothing to compare it with, any answer is taken.
+   */
+  private static assertAnsweredBy(
+    route: string,
+    peerUrl: string,
+    claimed: OrcaNodeId,
+    expected: OrcaNodeId | undefined,
+  ): void {
+    if (expected !== undefined && claimed !== expected) {
+      throw new Error(`${route} from ${peerUrl} claimed ${claimed} but ${expected} was expected`);
+    }
+  }
+
+  /** The roster fields a panel renders; two rosters with the same signature need no event. */
+  private static signatureOf(peers: PeerView[]): string {
+    return peers
+      .map((peer) => {
+        const model = peer.default_model ? `${peer.default_model.provider}/${peer.default_model.model}` : "";
+        return (
+          `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
+          `:${peer.models?.length ?? 0}:${model}:${peer.default_reasoning_effort ?? ""}`
+        );
+      })
+      .sort()
+      .join("|");
   }
 }

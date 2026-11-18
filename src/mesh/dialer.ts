@@ -1,7 +1,7 @@
 import type { NodeLogger } from "../core/events.ts";
 import type { OrcaNodeId, PeerView } from "../core/wire/peer.ts";
 import type { Membership } from "./membership.ts";
-import { candidateEndpointAllowed, type DialPolicy } from "./screening.ts";
+import { screenEndpoint, type DialPolicy } from "./screening.ts";
 
 /** How long one candidate-endpoint screening verdict is reused (§7.7). */
 const VERDICT_TTL_MS = 60_000;
@@ -56,7 +56,7 @@ export class EndpointDialer {
     const now = Date.now();
     let verdict = this.verdicts.get(endpoint);
     if (verdict === undefined || verdict.until <= now) {
-      const allowed = await candidateEndpointAllowed(endpoint, this.policy);
+      const allowed = (await screenEndpoint(endpoint, this.policy)) === "allowed";
       verdict = { allowed, until: now + VERDICT_TTL_MS };
       this.verdicts.set(endpoint, verdict);
     }

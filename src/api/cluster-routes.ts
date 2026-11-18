@@ -47,29 +47,6 @@ const SCREENING_TTL_MS = 60_000;
 
 const ack: z.infer<typeof AckSchema> = { ok: true };
 
-/**
- * The endpoints of a joining node this node is willing to dial back (§7.7).
- * The joiner proved the password, so public addresses are fine, but what it
- * declares is still input: link-local (cloud metadata), multicast and
- * unspecified addresses are dropped, and so are loopback addresses unless the
- * join itself came over loopback (a remote machine cannot be reached at our
- * 127.0.0.1, so such an endpoint could only aim our heartbeats at a local
- * service). Screening happens in exactly two places: here, for join-declared
- * endpoints, and before each dial of a candidate endpoint; the transport itself
- * never screens.
- */
-async function dialableEndpoints(declared: string[], request: FastifyRequest): Promise<string[]> {
-  const policy = { ...EXPLICIT_DIAL_POLICY, allowLoopbackPeers: isDirectLoopbackRequest(request) };
-  // A name that does not resolve from here is kept: it is not known to be bad.
-  // It is dialed as-is if it resolves later; only candidates are re-screened.
-  const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, policy)));
-  const allowed = declared.filter((_, index) => verdicts[index] !== "refused");
-  if (allowed.length === 0) {
-    throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
-  }
-  return allowed;
-}
-
 /** Join, heartbeat and the inspection routes of the workgroup (§3, §7.1). */
 export class ClusterRoutes {
   /**
@@ -211,7 +188,7 @@ export class ClusterRoutes {
     const previous = this.screened.get(caller);
     const reusable =
       reuseScreening && previous !== undefined && previous.key === key && Date.now() - previous.atMs < SCREENING_TTL_MS;
-    const endpoints = reusable ? previous.allowed : await dialableEndpoints(declared, request);
+    const endpoints = reusable ? previous.allowed : await ClusterRoutes.dialableEndpoints(declared, request);
     if (!reusable) this.screened.set(caller, { key, allowed: endpoints, atMs: Date.now() });
     const runtime = described.runtime ?? null;
     return {
@@ -224,5 +201,28 @@ export class ClusterRoutes {
       default_model: described.default_model,
       default_reasoning_effort: described.default_reasoning_effort,
     };
+  }
+
+  /**
+   * The endpoints of a joining node this node is willing to dial back (§7.7).
+   * The joiner proved the password, so public addresses are fine, but what it
+   * declares is still input: link-local (cloud metadata), multicast and
+   * unspecified addresses are dropped, and so are loopback addresses unless the
+   * join itself came over loopback (a remote machine cannot be reached at our
+   * 127.0.0.1, so such an endpoint could only aim our heartbeats at a local
+   * service). Screening happens in exactly two places: here, for join-declared
+   * endpoints, and before each dial of a candidate endpoint; the transport itself
+   * never screens.
+   */
+  private static async dialableEndpoints(declared: string[], request: FastifyRequest): Promise<string[]> {
+    const policy = { ...EXPLICIT_DIAL_POLICY, allowLoopbackPeers: isDirectLoopbackRequest(request) };
+    // A name that does not resolve from here is kept: it is not known to be bad.
+    // It is dialed as-is if it resolves later; only candidates are re-screened.
+    const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, policy)));
+    const allowed = declared.filter((_, index) => verdicts[index] !== "refused");
+    if (allowed.length === 0) {
+      throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
+    }
+    return allowed;
   }
 }

@@ -26,13 +26,7 @@ import { errorMessage, isMissingFile } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
 import { describeModelRequest } from "../../core/wire/model.ts";
 import type { AcpMcpServer } from "./config.ts";
-import {
-  AcpConnection,
-  HANDSHAKE_TIMEOUT_MS,
-  spawnAcpChild,
-  type AcpSpawnSpec,
-  type SessionRoute,
-} from "./connection.ts";
+import { AcpConnection, HANDSHAKE_TIMEOUT_MS, type AcpSpawnSpec, type SessionRoute } from "./connection.ts";
 
 /** JSON-RPC code ACP agents use for a session they do not know. */
 const RESOURCE_NOT_FOUND: ErrorCode = -32002;
@@ -168,7 +162,7 @@ export class AcpSessionPool {
 
   private async connect(cwd: string): Promise<{ connection: AcpConnection; sessions: Map<string, AcpSession> }> {
     if (this.current === null || this.current.connection.isClosed()) {
-      this.current = { connection: new AcpConnection(spawnAcpChild({ ...this.spawn, cwd })), sessions: new Map() };
+      this.current = { connection: AcpConnection.spawn({ ...this.spawn, cwd }), sessions: new Map() };
     }
     const joined = this.current;
     await joined.connection.ready;

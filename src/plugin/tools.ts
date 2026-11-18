@@ -45,10 +45,6 @@ const METHODS_HELP =
   "members (no arguments) lists this node and its peers; " +
   `connect (peer; bare host or host:port defaults to ${DEFAULT_PORT}) joins a peer into the mesh.`;
 
-function renderJson(_args: unknown, value: unknown): ContentBlock[] {
-  return [{ type: "text", text: JSON.stringify(value, null, 2) }];
-}
-
 // ---- what a call carries ----
 
 const METHOD_NAMES = ["send", "status", "cancel", "members", "connect"] as const;
@@ -98,19 +94,6 @@ const PARAMETERS = {
 type ToolArgs = InferArgs<typeof PARAMETERS>;
 type TextKey = "peer" | "text" | "task_id" | "reasoning_effort";
 
-/** A text argument with its whitespace trimmed; blank counts as absent. */
-function optional(args: ToolArgs, key: TextKey): string | undefined {
-  const value = args[key]?.trim();
-  return value === undefined || value.length === 0 ? undefined : value;
-}
-
-/** A text argument the method needs. */
-function need(args: ToolArgs, key: TextKey): string {
-  const value = optional(args, key);
-  if (value === undefined) throw new Error(`${key} must be a non-empty string`);
-  return value;
-}
-
 type PeerArgs = { peer: string };
 type TaskArgs = PeerArgs & { task_id: string };
 type SendArgs = PeerArgs & {
@@ -128,36 +111,6 @@ type PodCall =
   | { method: "connect"; args: PeerArgs }
   | { method: "members" };
 
-function parseCall(args: ToolArgs): PodCall {
-  const { method } = args;
-  switch (method) {
-    case "send": {
-      if (args.reasoning_effort !== undefined && optional(args, "reasoning_effort") === undefined) {
-        throw new Error("reasoning_effort must not be blank");
-      }
-      const effort = optional(args, "reasoning_effort");
-      return {
-        method,
-        args: {
-          peer: need(args, "peer"),
-          text: need(args, "text"),
-          echo: args.echo,
-          permission_mode: args.permission_mode,
-          model: args.model,
-          reasoning_effort: effort === undefined ? undefined : ReasoningEffortId(effort),
-        },
-      };
-    }
-    case "status":
-    case "cancel":
-      return { method, args: { peer: need(args, "peer"), task_id: need(args, "task_id") } };
-    case "connect":
-      return { method, args: { peer: need(args, "peer") } };
-    case "members":
-      return { method };
-  }
-}
-
 // ---- what a call answers ----
 
 /** A node as `members` and `connect` list it. */
@@ -170,99 +123,6 @@ type SendResult = { task_id: string; state: TaskState; peer: string };
 type TaskStatusResult = TaskView & { terminal: boolean };
 type ConnectResult = { peer: string; members: PeerSummary[]; members_digest: string };
 type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
-
-const taskStatus = (view: TaskView): TaskStatusResult => ({ ...view, terminal: isTerminal(view.status.state) });
-
-function peerSummary(peer: PeerView): PeerSummary {
-  return {
-    orca_node_id: peer.orca_node_id,
-    display_name: peer.display_name,
-    endpoints: peer.endpoints,
-    state: peer.state,
-    busy: peer.busy,
-    runtime: peer.runtime,
-    last_recv_at: peer.last_recv_at,
-    max_task_ttl_s: peer.max_task_ttl_s,
-  };
-}
-
-/**
- * The dispatching session's sandbox mode (`ctx.sandboxPolicy` resolves it, and
- * its `SandboxMode` values match the orca node permission modes, so a task
- * inherits the session setting verbatim). Undefined without the service or a
- * session; the task then starts read-only.
- */
-export function sessionSandboxMode(
-  policy: SandboxPolicyService | undefined,
-  exec: ToolExecution,
-): SandboxMode | undefined {
-  const session = exec.agent?.session;
-  if (policy === undefined || session === undefined) return undefined;
-  return policy.resolve({ session }).mode;
-}
-
-/**
- * The mode a dispatched task starts with: the session's, or a narrower one the
- * caller names (P1). A wider one is refused: the target asks the origin for an
- * upgrade when the task needs it (§7.12). A session whose mode cannot be read
- * counts as read-only.
- */
-function taskMode(explicit: SandboxMode | undefined, session: SandboxMode | undefined): SandboxMode {
-  const ceiling = session ?? "read-only";
-  if (explicit === undefined) return ceiling;
-  if (narrowPermissionMode(ceiling, explicit) !== explicit) {
-    throw new Error(
-      `permission_mode ${explicit} is wider than this session's ${ceiling}; a task can only start narrower, and asks for an upgrade when it needs one`,
-    );
-  }
-  return explicit;
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw abortError("cancelled by the caller");
-}
-
-/**
- * Wait for something this call does not own (startup), or stop waiting when
- * the caller's turn is cancelled. Never wrap the call's own work in this: a
- * tool settles only after its work has stopped (dsh-tools `execute`), so the
- * methods forward the signal to their requests and finish on their own.
- */
-function waitUnlessAborted<T>(wait: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(abortError("cancelled by the caller"));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(abortError("cancelled by the caller"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    wait.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
-/**
- * Wrap an error with the operation that failed, keeping the pod error code (and
- * its status) when the failure came from a pod call.
- */
-export function describeError(operation: string, error: unknown): Error {
-  if (error instanceof PodError) {
-    return new PodError(error.code, `${operation} [${error.code}]: ${error.message}`, error.status);
-  }
-  return new Error(`${operation}: ${errorMessage(error)}`);
-}
-
-/** A result as the lossless JSON DSH stores; every method answers with data read from JSON. */
-function json(value: unknown): JsonValue {
-  const snapshot = snapshotJsonValue(value);
-  if (snapshot === undefined) throw new Error("the result is not lossless JSON");
-  return snapshot as JsonValue;
-}
 
 /** The single `orca_pod` tool, bound to one pod lifecycle. */
 export class PodTool {
@@ -282,22 +142,22 @@ export class PodTool {
         ASYNC_NOTE,
       parameters: PARAMETERS,
       // Output differs per method (task views, a roster): unconstrained JSON.
-      output: { schema: { type: "json", description: "JSON payload rendered as text." }, render: renderJson },
+      output: { schema: { type: "json", description: "JSON payload rendered as text." }, render: PodTool.renderJson },
       execute: async (args, exec) => {
-        const call = parseCall(args);
+        const call = PodTool.parseCall(args);
         try {
-          throwIfAborted(exec.signal);
+          PodTool.throwIfAborted(exec.signal);
           // The call's own work observes the signal and settles when it stops (B20).
-          return json(await this.run(call, exec));
+          return PodTool.json(await this.run(call, exec));
         } catch (error) {
-          throw describeError("orca_pod", error);
+          throw PodTool.describeError("orca_pod", error);
         }
       },
     });
   }
 
   /** Dispatch a task and track it for the dispatching agent. */
-  async send(args: SendArgs, exec: ToolRunContext): Promise<SendResult> {
+  private async send(args: SendArgs, exec: ToolRunContext): Promise<SendResult> {
     // Tasks are single-hop: a session the task executor spawned never dispatches (§7.9).
     if (runningInTask()) {
       throw new Error(
@@ -306,7 +166,10 @@ export class PodTool {
     }
     const { signal } = exec;
     const peer = normalizePeerUrl(args.peer);
-    const permissionMode = taskMode(args.permission_mode, sessionSandboxMode(this.sandbox?.current(), exec));
+    const permissionMode = PodTool.taskMode(
+      args.permission_mode,
+      PodTool.sessionSandboxMode(this.sandbox?.current(), exec),
+    );
     const model =
       args.model === undefined ? undefined : (parseModelSpec(args.model, args.reasoning_effort) ?? undefined);
     if (args.model !== undefined && model === undefined) {
@@ -324,7 +187,7 @@ export class PodTool {
         },
       },
     };
-    throwIfAborted(signal);
+    PodTool.throwIfAborted(signal);
     const view = await orcaNode.delegation.sendTask(peer, input, signal);
     if (signal.aborted) {
       // The remote accepted the task after the caller's turn was cancelled: the
@@ -339,35 +202,35 @@ export class PodTool {
     return { task_id: view.id, state: view.status.state, peer };
   }
 
-  async status(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
+  private async status(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
     const orcaNode = await this.requireNode(signal);
-    return taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, signal));
+    return PodTool.taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, signal));
   }
 
-  async cancel(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
+  private async cancel(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
     const orcaNode = await this.requireNode(signal);
-    return taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal));
+    return PodTool.taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal));
   }
 
-  async members(signal: AbortSignal): Promise<MembersResult> {
+  private async members(signal: AbortSignal): Promise<MembersResult> {
     const orcaNode = await this.requireNode(signal);
     return {
-      self: peerSummary(orcaNode.profile.record()),
-      members: orcaNode.membership.list().map(peerSummary),
+      self: PodTool.peerSummary(orcaNode.profile.record()),
+      members: orcaNode.membership.list().map(PodTool.peerSummary),
       members_digest: orcaNode.mesh.digest(),
     };
   }
 
-  async connect(args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
+  private async connect(args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
     const peer = normalizePeerUrl(args.peer);
     await this.requireNode(signal);
     // Joining persists the peer; do not start it for a turn that is already gone.
-    throwIfAborted(signal);
+    PodTool.throwIfAborted(signal);
     await this.lifecycle.addPeer(peer);
     const orcaNode = await this.requireNode(signal);
     return {
       peer,
-      members: orcaNode.membership.list().map(peerSummary),
+      members: orcaNode.membership.list().map(PodTool.peerSummary),
       members_digest: orcaNode.mesh.digest(),
     };
   }
@@ -397,7 +260,149 @@ export class PodTool {
    * waiting for it right away.
    */
   private async requireNode(signal: AbortSignal): Promise<OrcaNode> {
-    await waitUnlessAborted(this.lifecycle.ready, signal);
+    await PodTool.waitUnlessAborted(this.lifecycle.ready, signal);
     return this.lifecycle.requireNode();
+  }
+
+  private static renderJson(_args: unknown, value: unknown): ContentBlock[] {
+    return [{ type: "text", text: JSON.stringify(value, null, 2) }];
+  }
+
+  /** A text argument with its whitespace trimmed; blank counts as absent. */
+  private static optional(args: ToolArgs, key: TextKey): string | undefined {
+    const value = args[key]?.trim();
+    return value === undefined || value.length === 0 ? undefined : value;
+  }
+
+  /** A text argument the method needs. */
+  private static need(args: ToolArgs, key: TextKey): string {
+    const value = PodTool.optional(args, key);
+    if (value === undefined) throw new Error(`${key} must be a non-empty string`);
+    return value;
+  }
+
+  private static parseCall(args: ToolArgs): PodCall {
+    const { method } = args;
+    switch (method) {
+      case "send": {
+        if (args.reasoning_effort !== undefined && PodTool.optional(args, "reasoning_effort") === undefined) {
+          throw new Error("reasoning_effort must not be blank");
+        }
+        const effort = PodTool.optional(args, "reasoning_effort");
+        return {
+          method,
+          args: {
+            peer: PodTool.need(args, "peer"),
+            text: PodTool.need(args, "text"),
+            echo: args.echo,
+            permission_mode: args.permission_mode,
+            model: args.model,
+            reasoning_effort: effort === undefined ? undefined : ReasoningEffortId(effort),
+          },
+        };
+      }
+      case "status":
+      case "cancel":
+        return { method, args: { peer: PodTool.need(args, "peer"), task_id: PodTool.need(args, "task_id") } };
+      case "connect":
+        return { method, args: { peer: PodTool.need(args, "peer") } };
+      case "members":
+        return { method };
+    }
+  }
+
+  private static peerSummary(peer: PeerView): PeerSummary {
+    return {
+      orca_node_id: peer.orca_node_id,
+      display_name: peer.display_name,
+      endpoints: peer.endpoints,
+      state: peer.state,
+      busy: peer.busy,
+      runtime: peer.runtime,
+      last_recv_at: peer.last_recv_at,
+      max_task_ttl_s: peer.max_task_ttl_s,
+    };
+  }
+
+  /**
+   * The mode a dispatched task starts with: the session's, or a narrower one the
+   * caller names (P1). A wider one is refused: the target asks the origin for an
+   * upgrade when the task needs it (§7.12). A session whose mode cannot be read
+   * counts as read-only.
+   */
+  private static taskMode(explicit: SandboxMode | undefined, session: SandboxMode | undefined): SandboxMode {
+    const ceiling = session ?? "read-only";
+    if (explicit === undefined) return ceiling;
+    if (narrowPermissionMode(ceiling, explicit) !== explicit) {
+      throw new Error(
+        `permission_mode ${explicit} is wider than this session's ${ceiling}; a task can only start narrower, and asks for an upgrade when it needs one`,
+      );
+    }
+    return explicit;
+  }
+
+  private static throwIfAborted(signal: AbortSignal): void {
+    if (signal.aborted) throw abortError("cancelled by the caller");
+  }
+
+  /**
+   * Wait for something this call does not own (startup), or stop waiting when
+   * the caller's turn is cancelled. Never wrap the call's own work in this: a
+   * tool settles only after its work has stopped (dsh-tools `execute`), so the
+   * methods forward the signal to their requests and finish on their own.
+   */
+  private static waitUnlessAborted<T>(wait: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(abortError("cancelled by the caller"));
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => reject(abortError("cancelled by the caller"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      wait.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  /**
+   * Wrap an error with the operation that failed, keeping the pod error code (and
+   * its status) when the failure came from a pod call.
+   */
+  private static describeError(operation: string, error: unknown): Error {
+    if (error instanceof PodError) {
+      return new PodError(error.code, `${operation} [${error.code}]: ${error.message}`, error.status);
+    }
+    return new Error(`${operation}: ${errorMessage(error)}`);
+  }
+
+  /** A result as the lossless JSON DSH stores; every method answers with data read from JSON. */
+  private static json(value: unknown): JsonValue {
+    const snapshot = snapshotJsonValue(value);
+    if (snapshot === undefined) throw new Error("the result is not lossless JSON");
+    return snapshot as JsonValue;
+  }
+
+  /**
+   * The dispatching session's sandbox mode (`ctx.sandboxPolicy` resolves it, and
+   * its `SandboxMode` values match the orca node permission modes, so a task
+   * inherits the session setting verbatim). Undefined without the service or a
+   * session; the task then starts read-only.
+   */
+  private static sessionSandboxMode(
+    policy: SandboxPolicyService | undefined,
+    exec: ToolExecution,
+  ): SandboxMode | undefined {
+    const session = exec.agent?.session;
+    if (policy === undefined || session === undefined) return undefined;
+    return policy.resolve({ session }).mode;
+  }
+
+  private static taskStatus(view: TaskView): TaskStatusResult {
+    return { ...view, terminal: isTerminal(view.status.state) };
   }
 }

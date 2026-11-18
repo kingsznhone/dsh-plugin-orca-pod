@@ -5,12 +5,12 @@ import type { DispatchEntry, TaskView } from "../src/task/wire.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
-import type { ToolDefinition, ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
+import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodLifecycle } from "../src/plugin/lifecycle.ts";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import type { OptionalService } from "../src/plugin/services.ts";
-import { PodTool, sessionSandboxMode } from "../src/plugin/tools.ts";
+import { PodTool } from "../src/plugin/tools.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
 import { idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
@@ -349,21 +349,31 @@ describe("orca_pod tool", () => {
     expect(sent).toBe(0);
   });
 
-  it("reads sandbox modes from the session's sandbox policy", () => {
-    const session = {};
-    const agent = {
-      id: "session-1",
-      status: "running" as const,
-      session,
-      inject: () => {},
-      followup: () => {},
-    };
+  it("starts a task read-only when the session or its sandbox policy cannot be read", async () => {
+    const sent: unknown[] = [];
+    const fakeNode = {
+      delegation: {
+        sendTask: async (_peer: string, input: unknown) => {
+          sent.push(input);
+          return { id: "task-1", status: { state: "submitted" } };
+        },
+      },
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     /** The policy service the host exposes as `ctx.sandboxPolicy`. */
     const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxPolicyService;
-    expect(sessionSandboxMode(policy, { agent } as unknown as ToolExecution)).toBe("danger-full-access");
-    expect(sessionSandboxMode(undefined, { agent } as unknown as ToolExecution)).toBeUndefined();
-    expect(sessionSandboxMode(policy, {} as unknown as ToolExecution)).toBeUndefined();
-    expect(sessionSandboxMode(policy, { agent: {} } as unknown as ToolExecution)).toBeUndefined();
+    const sendTools = createPodTools(lifecycleWithNode(fakeNode), tracker, () => policy);
+    const call = { method: "send", peer: "http://127.0.0.1:11811", text: "hi" } as const;
+    const agentWithout = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
+
+    // No agent, or an agent that has no session: there is no mode to inherit.
+    await run(sendTools, call, {});
+    await run(sendTools, call, { agent: agentWithout });
+    // A session the policy resolves is inherited.
+    await run(sendTools, call, { agent: { ...agentWithout, session: {} } });
+    const modes = sent.map(
+      (input) => (input as { metadata?: { pod?: { permission_mode?: string } } }).metadata?.pod?.permission_mode,
+    );
+    expect(modes).toEqual(["read-only", "read-only", "danger-full-access"]);
   });
 
   it("joins a peer and returns the refreshed members", async () => {
@@ -436,7 +446,7 @@ describe("tracker recovery (8.3)", () => {
         (agentId) => (agentId === "live-session" ? agent : undefined),
       );
       expect(restored).toBe(2);
-      expect(tracker.size()).toBe(2);
+      expect(tracker.list()).toHaveLength(2);
     } finally {
       tracker.stop();
     }

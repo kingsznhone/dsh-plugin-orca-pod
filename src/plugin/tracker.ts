@@ -90,10 +90,6 @@ const MAX_RETRY_DELAY_MS = 30_000;
 /** Remote results are third-party text; keep the quoted body short and inert. */
 const UNTRUSTED_RESULT_MAX_CHARS = 800;
 
-function denyUntrustedBlockBreak(text: string): string {
-  return text.replaceAll("</untrusted-remote-result>", "<\\/untrusted-remote-result>");
-}
-
 /** One terminal task reduced to the line shown to the agent. */
 export function taskNoticeLine(view: TaskView, peer: string, node?: string): string {
   const text = view.status.message === undefined ? undefined : messageText(view.status.message).trim();
@@ -118,18 +114,11 @@ export function taskNoticeLine(view: TaskView, peer: string, node?: string): str
   if (text) {
     const clipped =
       text.length <= UNTRUSTED_RESULT_MAX_CHARS ? text : `${text.slice(0, UNTRUSTED_RESULT_MAX_CHARS - 1)}…`;
-    line += `\n<untrusted-remote-result>\n${denyUntrustedBlockBreak(clipped)}\n</untrusted-remote-result>`;
+    // The quoted body must not be able to close its own block.
+    const inert = clipped.replaceAll("</untrusted-remote-result>", "<\\/untrusted-remote-result>");
+    line += `\n<untrusted-remote-result>\n${inert}\n</untrusted-remote-result>`;
   }
   return line;
-}
-
-/**
- * One task the tracker had to abandon, reduced to the line shown to the agent.
- * The remote task may still be running, so this must not read like a terminal
- * state — it points the agent at `orca_pod` `status` instead.
- */
-function trackingInterruptedLine(taskId: string, peer: string, reason: string): string {
-  return `tracking of task ${taskId} on ${peer} was interrupted: ${reason}; the task may still be running — call orca_pod with method "status" to check it`;
 }
 
 /**
@@ -212,11 +201,6 @@ class NoticeDelivery {
     this.timer.unref();
   }
 
-  /** Notices waiting to be delivered. */
-  size(): number {
-    return this.finished.length;
-  }
-
   /** Give the agent a fresh wake budget (the user just spoke to it). */
   resetWakes(agentId: string): void {
     this.awake.delete(agentId);
@@ -242,7 +226,7 @@ class NoticeDelivery {
       const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [] };
       batch.lines.push(
         task.kind === "interrupted"
-          ? trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
+          ? NoticeDelivery.trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
           : taskNoticeLine(task.view, task.peer, this.lifecycle.node?.client.idOf(task.peer)),
       );
       batches.set(task.agent.id, batch);
@@ -280,6 +264,15 @@ class NoticeDelivery {
     }
     agent.followup(message);
     this.awake.set(agent.id, count + 1);
+  }
+
+  /**
+   * One task the tracker had to abandon, reduced to the line shown to the agent.
+   * The remote task may still be running, so this must not read like a terminal
+   * state — it points the agent at `orca_pod` `status` instead.
+   */
+  private static trackingInterruptedLine(taskId: string, peer: string, reason: string): string {
+    return `tracking of task ${taskId} on ${peer} was interrupted: ${reason}; the task may still be running — call orca_pod with method "status" to check it`;
   }
 }
 
@@ -381,11 +374,6 @@ export class Tracker {
     this.delivery.stop();
     this.pending.clear();
     this.abandoned.clear();
-  }
-
-  /** Number of tasks still being watched or waiting to be reported (tests and diagnostics). */
-  size(): number {
-    return this.pending.size + this.delivery.size();
   }
 
   /** Snapshot of watched tasks, for the UI task/approval panels (§9.2). */

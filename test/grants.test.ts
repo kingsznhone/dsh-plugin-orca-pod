@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { signGrant, GrantLedger, parseSignedGrant, type GrantExpectation } from "../src/task/grants.ts";
+import { signGrant, GrantLedger, type GrantExpectation } from "../src/task/grants.ts";
+import { parseResume } from "../src/task/meta.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
 import type { Grant, PermissionRequest } from "../src/core/wire/grant.ts";
 
@@ -78,14 +79,16 @@ describe("GrantLedger.accept", () => {
   });
 });
 
-describe("boundary parsers", () => {
-  it("parses a grant once and rejects malformed ones", () => {
+describe("a grant in a resume message", () => {
+  const resume = (value: unknown) => parseResume({ role: "user", parts: [{ kind: "data", data: { grant: value } }] });
+
+  it("is parsed once and malformed ones are rejected", () => {
     const signed = grant();
-    expect(parseSignedGrant(JSON.parse(JSON.stringify(signed)))).toEqual(signed);
-    expect(() => parseSignedGrant("nope")).toThrowError(/expected object/);
-    expect(() => parseSignedGrant({ ...signed, request_id: "" })).toThrowError(/request_id/);
-    expect(() => parseSignedGrant({ ...signed, sig: undefined })).toThrowError(/sig/);
-    expect(() => parseSignedGrant({ ...signed, expires_at: "soon" })).toThrowError(/expires_at/);
-    expect(() => parseSignedGrant({ ...signed, permission_mode: "root" })).toThrowError(/permission_mode/);
+    expect(resume(JSON.parse(JSON.stringify(signed)))).toEqual({ kind: "grant", grant: signed });
+    expect(() => resume("nope")).toThrowError(/expected object/);
+    expect(() => resume({ ...signed, request_id: "" })).toThrowError(/request_id/);
+    expect(() => resume({ ...signed, sig: undefined })).toThrowError(/sig/);
+    expect(() => resume({ ...signed, expires_at: "soon" })).toThrowError(/expires_at/);
+    expect(() => resume({ ...signed, permission_mode: "root" })).toThrowError(/permission_mode/);
   });
 });

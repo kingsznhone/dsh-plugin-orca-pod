@@ -148,16 +148,6 @@ export function sha256Tap(): { stream: Transform; digest(): { sha: string; size:
   return { stream, digest: () => ({ sha: hash.digest("hex"), size }) };
 }
 
-async function hashFile(path: string): Promise<{ sha: string; size: number }> {
-  const tap = sha256Tap();
-  await pipeline(createReadStream(path), tap.stream, async (source: AsyncIterable<Buffer>) => {
-    for await (const _chunk of source) {
-      // Only the digest is wanted; the bytes are dropped.
-    }
-  });
-  return tap.digest();
-}
-
 /**
  * File-backed blob registry (§5.6).
  *
@@ -177,7 +167,7 @@ export class DiskBlobRegistry implements FileBlobRegistry {
 
   async register(path: string, ttlS: number = DEFAULT_BLOB_TTL_S): Promise<FileBlob> {
     const absolute = resolve(path);
-    const { sha, size } = await hashFile(absolute);
+    const { sha, size } = await DiskBlobRegistry.hashFile(absolute);
     const blob: FileBlob = {
       blob_id: sha,
       path: absolute,
@@ -203,5 +193,15 @@ export class DiskBlobRegistry implements FileBlobRegistry {
     if (file.expires_at !== null && Date.parse(file.expires_at) <= Date.now()) throw new PodError("blob_expired");
     if (!existsSync(file.path)) throw new PodError("blob_file_missing");
     return { stream: createReadStream(file.path), size: file.size };
+  }
+
+  private static async hashFile(path: string): Promise<{ sha: string; size: number }> {
+    const tap = sha256Tap();
+    await pipeline(createReadStream(path), tap.stream, async (source: AsyncIterable<Buffer>) => {
+      for await (const _chunk of source) {
+        // Only the digest is wanted; the bytes are dropped.
+      }
+    });
+    return tap.digest();
   }
 }

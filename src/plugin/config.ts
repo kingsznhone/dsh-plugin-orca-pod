@@ -19,7 +19,7 @@ import { isRecord } from "../core/schema.ts";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 
 /** Parse a plugin config: the shared settings parser, minus the plaintext password. */
-export function validatePluginConfig(input: unknown): StandardSchemaV1.Result<Settings> {
+function validatePluginConfig(input: unknown): StandardSchemaV1.Result<Settings> {
   if (isRecord(input) && typeof input.workgroup_password === "string" && input.workgroup_password.length > 0) {
     return {
       issues: [
@@ -34,7 +34,7 @@ export function validatePluginConfig(input: unknown): StandardSchemaV1.Result<Se
   return safeParseSettings(input);
 }
 
-/** Create the Standard Schema validator Cordis consumes as the plugin `Config`. */
-export function createConfigSchema(): StandardSchemaV1<unknown, Settings> {
-  return { "~standard": { version: 1, vendor: "orca-pod", validate: validatePluginConfig } };
-}
+/** Standard Schema config consumed by Cordis before `apply` runs: the node `Settings`, without the password. */
+export const Config: StandardSchemaV1<unknown, Settings> = {
+  "~standard": { version: 1, vendor: "orca-pod", validate: validatePluginConfig },
+};

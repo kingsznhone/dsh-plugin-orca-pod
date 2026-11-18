@@ -67,14 +67,6 @@ function addressAllowed(address: string, policy: DialPolicy): boolean {
   }
 }
 
-/**
- * True when an endpoint may be dialed under this policy right now (§7.7). The
- * answer can change with DNS, so callers keep it only briefly.
- */
-export async function candidateEndpointAllowed(endpoint: string, policy: DialPolicy = {}): Promise<boolean> {
-  return (await screenEndpoint(endpoint, policy)) === "allowed";
-}
-
 /** What screening an endpoint concluded: it may be dialed, must not be, or its name does not resolve from here. */
 export type ScreenVerdict = "allowed" | "refused" | "unresolved";
 

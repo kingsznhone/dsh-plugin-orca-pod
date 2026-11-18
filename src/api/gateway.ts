@@ -21,17 +21,6 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 
 const BUSY_RETRY_AFTER_S = 30;
 
-/** Anything that is not already a PodError is either the caller's malformed input or a bug. */
-function toPodError(error: unknown): PodError {
-  if (error instanceof PodError) return error;
-  const { code } = error as FastifyError;
-  if (code === "FST_ERR_CTP_BODY_TOO_LARGE") {
-    return new PodError("body_too_large", "request body exceeds the size limit");
-  }
-  if (error instanceof SyntaxError) return new PodError("bad_request", "invalid JSON body");
-  return new PodError("internal", "internal server error");
-}
-
 /**
  * The inbound HTTP surface of an orca node (§4): the signed routes of the
  * workgroup, the A2A task API and the file routes, behind one access policy and
@@ -105,7 +94,7 @@ export class Gateway {
    * JSON-RPC error envelope; a busy node also reports its holder and when to retry.
    */
   private handleError(error: unknown, request: FastifyRequest, reply: FastifyReply): FastifyReply {
-    const pod = toPodError(error);
+    const pod = Gateway.toPodError(error);
     const busy = pod.code === "orca_node_busy";
     const body = {
       code: pod.code,
@@ -121,5 +110,16 @@ export class Gateway {
           ? { jsonrpc: "2.0", id: rpcId, error: { code: -32000, message: pod.code, data: body } }
           : body,
       );
+  }
+
+  /** Anything that is not already a PodError is either the caller's malformed input or a bug. */
+  private static toPodError(error: unknown): PodError {
+    if (error instanceof PodError) return error;
+    const { code } = error as FastifyError;
+    if (code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+      return new PodError("body_too_large", "request body exceeds the size limit");
+    }
+    if (error instanceof SyntaxError) return new PodError("bad_request", "invalid JSON body");
+    return new PodError("internal", "internal server error");
   }
 }

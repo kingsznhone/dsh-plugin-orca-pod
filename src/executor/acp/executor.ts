@@ -13,8 +13,7 @@ import type { NodeLogger } from "../../core/events.ts";
 import type { ModelCatalog } from "../../core/model-catalog.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
-import { KILL_GRACE_MS } from "../process.ts";
-import type { SessionRoute } from "./connection.ts";
+import { KILL_GRACE_MS, type SessionRoute } from "./connection.ts";
 import {
   CANCELLED,
   escalationFor,
