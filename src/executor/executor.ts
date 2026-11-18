@@ -4,11 +4,78 @@
  */
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import type { EchoScript } from "./echo.ts";
+import { z } from "zod";
+
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import type { RequestedAccess } from "../core/wire/grant.ts";
+import { RequestedAccessSchema, type RequestedAccess } from "../core/wire/grant.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
+import { SandboxModeSchema } from "../core/wire/permission.ts";
+
+const ECHO_LIMITS = {
+  max_steps: 8,
+  max_total_ms: 60_000,
+  max_text_bytes: 8 * 1024,
+  max_artifacts: 4,
+  max_artifact_bytes: 4 * 1024,
+} as const;
+
+const byteLength = (text: string): number => Buffer.byteLength(text, "utf8");
+
+/** A string that is at most `max` bytes in UTF-8. */
+const boundedText = (max: number) => z.string().refine((text) => byteLength(text) <= max, `must be <= ${max} bytes`);
+
+const EchoSuspendSchema = z.strictObject({
+  kind: z.literal("permission", 'must be "permission"'),
+  tool: z.string(),
+  requested: RequestedAccessSchema,
+  /** The mode the scripted task asks to be upgraded to. */
+  mode: SandboxModeSchema.default("danger-full-access"),
+});
+
+const EchoStepSchema = z.strictObject({
+  at_ms: z
+    .number("must be a non-negative integer")
+    .int("must be a non-negative integer")
+    .min(0, "must be a non-negative integer")
+    .max(ECHO_LIMITS.max_total_ms, `must be <= ${ECHO_LIMITS.max_total_ms}`),
+  suspend: EchoSuspendSchema,
+});
+
+const EchoFinalSchema = z.strictObject({
+  state: z.enum(["completed", "failed", "hang"], 'must be "completed", "failed" or "hang"'),
+  text: boundedText(ECHO_LIMITS.max_text_bytes).default(""),
+});
+
+const EchoArtifactSchema = z.strictObject({
+  name: z
+    .string()
+    .min(1, "must be a plain file name")
+    .regex(/^[^\\/]+$/, "must be a plain file name"),
+  content: boundedText(ECHO_LIMITS.max_artifact_bytes),
+});
+
+/**
+ * An echo script: when to suspend for a permission, how the task ends, which
+ * artifacts it leaves. It rides in `metadata.echo`, so it is a wire shape:
+ * anything unknown, out of order or over a limit is refused (§6.3).
+ */
+export const EchoScriptSchema = z.strictObject({
+  steps: z
+    .array(EchoStepSchema)
+    .max(ECHO_LIMITS.max_steps, `must be <= ${ECHO_LIMITS.max_steps}`)
+    .refine(
+      (steps) => steps.every((step, index) => index === 0 || step.at_ms > (steps[index - 1]?.at_ms ?? -1)),
+      "at_ms must strictly increase",
+    )
+    .default([]),
+  final: EchoFinalSchema.default({ state: "completed", text: "echo" }),
+  artifacts: z
+    .array(EchoArtifactSchema)
+    .max(ECHO_LIMITS.max_artifacts, `must be <= ${ECHO_LIMITS.max_artifacts}`)
+    .default([]),
+});
+export type EchoScript = z.output<typeof EchoScriptSchema>;
 
 /**
  * Why a running task stops to wait for someone else. The only reason is a

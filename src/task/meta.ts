@@ -5,7 +5,8 @@
  */
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import { parseEchoScript, type EchoScript } from "../executor/echo.ts";
+import { parseEchoScript } from "../executor/echo.ts";
+import type { EchoScript } from "../executor/executor.ts";
 import type { A2AMessage, TaskMetadata } from "./wire.ts";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";

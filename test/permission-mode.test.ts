@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createAcpExecutor } from "../src/executor/acp/executor.ts";
+import { AcpExecutor, type AcpExecutorOptions } from "../src/executor/acp/executor.ts";
+import { ModelCatalog } from "../src/core/model-catalog.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { parsePodMetadata } from "../src/task/meta.ts";
@@ -16,6 +17,9 @@ import { narrowPermissionMode } from "../src/core/wire/permission.ts";
 import { escalationFor, modeAllows } from "../src/executor/acp/permissions.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { labelId, wg } from "./fixtures/ids.ts";
+
+/** An ACP executor with the defaults of an empty model catalog and a silent logger. */
+const acpExecutor = (config: AcpExecutorOptions) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 
@@ -91,7 +95,7 @@ describe("permission modes", () => {
 describe("permission mode execution", () => {
   it("acp refuses a write without asking when the local ceiling is read-only", async () => {
     const root = await tempDir();
-    const executor = createAcpExecutor({
+    const executor = acpExecutor({
       command: process.execPath,
       extra_args: [FAKE_ACP, "permission", join(root, "acp.log")],
     });
@@ -108,7 +112,7 @@ describe("permission mode execution", () => {
 
   it("acp asks once to upgrade a read-only task, then runs the rest of it in the granted mode", async () => {
     const root = await tempDir();
-    const executor = createAcpExecutor({
+    const executor = acpExecutor({
       command: process.execPath,
       extra_args: [FAKE_ACP, "permission-twice", join(root, "acp.log")],
     });
@@ -125,7 +129,7 @@ describe("permission mode execution", () => {
 
   it("acp auto-allows writes when the inherited mode is workspace-write", async () => {
     const root = await tempDir();
-    const executor = createAcpExecutor({
+    const executor = acpExecutor({
       command: process.execPath,
       extra_args: [FAKE_ACP, "permission", join(root, "acp.log")],
     });
@@ -139,7 +143,7 @@ describe("permission mode execution", () => {
 
   it("acp suspends a request outside workspace-write for the origin to decide", async () => {
     const root = await tempDir();
-    const executor = createAcpExecutor({
+    const executor = acpExecutor({
       command: process.execPath,
       extra_args: [FAKE_ACP, "permission-fetch", join(root, "acp.log")],
     });

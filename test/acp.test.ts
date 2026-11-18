@@ -8,11 +8,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
 import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
-import { createAcpExecutor } from "../src/executor/acp/executor.ts";
+import { AcpExecutor, type AcpExecutorOptions } from "../src/executor/acp/executor.ts";
+import { ModelCatalog } from "../src/core/model-catalog.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
+
+/** An ACP executor with the defaults of an empty model catalog and a silent logger. */
+const acpExecutor = (config: AcpExecutorOptions) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const LIVE: OrcaNode[] = [];
@@ -326,7 +330,7 @@ describe("AcpExecutor", () => {
 
   it("reports a spawn failure instead of hanging", async () => {
     const pod = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const executor = createAcpExecutor({ command: join(pod, "missing-acp"), profile: "acp" });
+    const executor = acpExecutor({ command: join(pod, "missing-acp"), profile: "acp" });
     const events: ExecutorEvent[] = [];
     const input: ExecuteInput = {
       taskId: "t1",

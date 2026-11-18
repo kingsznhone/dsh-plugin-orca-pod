@@ -16,7 +16,7 @@ import { NonceCache } from "../core/signing.ts";
 import { loadIdentity } from "../core/identity.ts";
 import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../task/delegation.ts";
 import { EchoExecutor } from "../executor/echo.ts";
-import { createAcpExecutor } from "../executor/acp/executor.ts";
+import { AcpExecutor } from "../executor/acp/executor.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
 import { DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
 import { EventBus } from "../core/events.ts";
@@ -238,12 +238,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const executor: LocalExecutor =
     options.executor ??
     (config.executor === "acp"
-      ? createAcpExecutor({
-          ...config.acp,
-          data_root: config.data_root,
-          modelDefaults: () => models.defaults(),
-          logger,
-        })
+      ? new AcpExecutor({ ...config.acp, data_root: config.data_root }, models, logger)
       : new EchoExecutor());
 
   const membership = new Membership(config.orca_node_id, { timings: options.timings, clock: options.clock });

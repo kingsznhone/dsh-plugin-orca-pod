@@ -16,13 +16,14 @@ import type {
 import { CLI_PATH, IN_TASK_ENV } from "../../core/entry.ts";
 import { errorMessage, abortError } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
+import type { ModelCatalog } from "../../core/model-catalog.ts";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { describeModelRequest, type ModelDefaults } from "../../core/wire/model.ts";
+import { describeModelRequest } from "../../core/wire/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
 import { KILL_GRACE_MS } from "../process.ts";
-import type { AcpConnection, SessionRoute } from "./connection.ts";
+import type { SessionRoute } from "./connection.ts";
 import {
   CANCELLED,
   escalationFor,
@@ -32,18 +33,10 @@ import {
   type AcpPermissionAsk,
 } from "./permissions.ts";
 import type { AcpExecutorConfig } from "./config.ts";
-import { createAcpSessions, type OpenSession } from "./session.ts";
+import { AcpSessionPool, type OpenSession } from "./session.ts";
 
-/** Extra executor-local options not part of the DSH-facing config. */
-type AcpExecutorOptions = AcpExecutorConfig & {
-  data_root?: string;
-  /**
-   * Local defaults for a task that names no model or effort. ACP always gets
-   * them, so a resumed session cannot keep a previous task's selection (§6.15).
-   */
-  modelDefaults?: () => ModelDefaults;
-  logger?: NodeLogger;
-};
+/** The DSH-facing ACP config plus what the node adds to it. */
+export type AcpExecutorOptions = AcpExecutorConfig & { data_root?: string };
 
 /** Stop reasons that end a prompt without an answer (§6.14); anything else completes the task. */
 const FAILED_STOP_REASONS: Partial<Record<StopReason, string>> = {
@@ -116,80 +109,6 @@ async function selectModel(
   }
 }
 
-/** Replies the ACP child still waits for. */
-type OpenReplies = Set<(outcome: RequestPermissionResponse) => void>;
-
-/**
- * What one run listens for from the child: message chunks are collected into
- * the transcript; a permission the inherited mode covers is answered at once,
- * any other is queued for the origin and remembered in `open`.
- */
-/** The run's effective mode; a grant from the origin widens it for the rest of the task (§7.12). */
-type ModeHolder = { current: SandboxMode };
-
-function makeRoute(
-  input: ExecuteInput,
-  mode: ModeHolder,
-  events: AsyncQueue<RunEvent>,
-  open: OpenReplies,
-  transcript: { text: string },
-): SessionRoute {
-  return {
-    update: (update) => {
-      transcript.text += textOf(update);
-    },
-    permission: (params) => {
-      const request = parsePermissionRequest(params);
-      if (modeAllows(mode.current, request.kind)) return Promise.resolve(outcomeFor(request.options, "allow"));
-      // Past this node's ceiling nobody may allow it: refuse without asking.
-      if (escalationFor(mode.current, input.permissionCeiling, request.kind) === null) {
-        return Promise.resolve(outcomeFor(request.options, "reject"));
-      }
-      return new Promise((resolve) => {
-        const reply = (outcome: RequestPermissionResponse): void => {
-          open.delete(reply);
-          resolve(outcome);
-        };
-        open.add(reply);
-        events.push({ kind: "permission", request, reply });
-      });
-    },
-  };
-}
-
-/**
- * Cancel the run when `signal` aborts: answer the waiting permissions (an
- * unanswered one would leave the child prompt waiting forever), cancel the
- * prompt, and force-close the child if this run is still attached after the
- * grace period. The child is shared with later tasks, hence the check.
- */
-function armAbort(
-  signal: AbortSignal,
-  run: { connection: AcpConnection; sessionId: string; route: SessionRoute; open: OpenReplies },
-): { wasAborted(): boolean; disarm(): void } {
-  const { connection, sessionId, route, open } = run;
-  let aborted = false;
-  let forceClose: NodeJS.Timeout | undefined;
-  const onAbort = (): void => {
-    aborted = true;
-    for (const reply of [...open]) reply(CANCELLED);
-    connection.cancel(sessionId);
-    forceClose = setTimeout(() => {
-      if (connection.isAttached(sessionId, route)) void connection.close();
-    }, KILL_GRACE_MS);
-    forceClose.unref();
-  };
-  if (signal.aborted) onAbort();
-  else signal.addEventListener("abort", onAbort, { once: true });
-  return {
-    wasAborted: () => aborted,
-    disarm() {
-      signal.removeEventListener("abort", onAbort);
-      clearTimeout(forceClose);
-    },
-  };
-}
-
 /** Suspending sets the task to input-required; coming back means the origin granted the mode (a denial aborts the run). */
 function suspensionFor(request: AcpPermissionAsk, requestedMode: SandboxMode): Suspension {
   return {
@@ -203,92 +122,179 @@ function suspensionFor(request: AcpPermissionAsk, requestedMode: SandboxMode): S
   };
 }
 
-export function createAcpExecutor(options: AcpExecutorOptions = {}): LocalExecutor {
-  const sessions = createAcpSessions({
-    spawn: {
-      command: options.command ?? "dsh",
-      args: [...(options.extra_args ?? []), "--profile", options.profile ?? "acp"],
-      // Sessions spawned by this executor get the CLI path for publish/fetch, and
-      // the in-task marker that makes the CLI and the plugin refuse to send (§7.9).
-      env: {
-        ...process.env,
-        [IN_TASK_ENV]: "1",
-        ORCA_POD_CLI: CLI_PATH,
-        ...(options.data_root === undefined ? {} : { ORCA_POD_DATA_ROOT: options.data_root }),
-      },
-    },
-    mcpServers: options.mcp_servers ?? [],
-    logger: options.logger ?? { warn() {} },
-  });
+/**
+ * One task run on an open session. It owns what the run accumulates: the queue
+ * of what the child said, the permission replies the child still waits for, the
+ * transcript, the effective mode and the abort state.
+ */
+class AcpRun {
+  private readonly events = new AsyncQueue<RunEvent>();
+  /** Permission requests the child still waits on; an abort answers them all. */
+  private readonly open = new Set<(outcome: RequestPermissionResponse) => void>();
+  private readonly route: SessionRoute;
+  private transcript = "";
+  /** The run's effective mode; a grant from the origin widens it for the rest of the task (§7.12). */
+  private mode: SandboxMode;
+  private aborted = false;
 
-  return {
-    close: sessions.close,
+  constructor(
+    private readonly input: ExecuteInput,
+    private readonly session: OpenSession,
+  ) {
+    this.mode = input.permissionMode;
+    this.route = this.makeRoute();
+  }
 
-    async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
-      const session = await sessions.open(input);
-      const { connection, sessionId } = session;
-      const defaults = options.modelDefaults?.();
-      const failure = await selectModel(
-        session,
-        input.model ?? defaults?.model ?? undefined,
-        input.reasoningEffort ?? defaults?.reasoningEffort ?? undefined,
-      );
-      if (failure !== null) {
-        yield { type: "failed", text: failure, reason: "model_unavailable" };
-        return;
-      }
+  /** Drive the prompt to its end; a suspension is yielded and answered with the granted mode. */
+  async *drive(signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+    const { connection, sessionId } = this.session;
+    const detach = connection.attach(sessionId, this.route);
+    const disarm = this.armAbort(signal);
 
-      const events = new AsyncQueue<RunEvent>();
-      /** Permission requests the child still waits on; an abort answers them all. */
-      const open: OpenReplies = new Set();
-      const transcript = { text: "" };
-      const mode: ModeHolder = { current: input.permissionMode };
-      const route = makeRoute(input, mode, events, open, transcript);
-      const detach = connection.attach(sessionId, route);
-      const abort = armAbort(signal, { connection, sessionId, route, open });
+    connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text: this.input.prompt }] }).then(
+      (result) => this.events.push({ kind: "prompt-done", result }),
+      (error: Error) => this.events.push({ kind: "prompt-error", error }),
+    );
 
-      connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text: input.prompt }] }).then(
-        (result) => events.push({ kind: "prompt-done", result }),
-        (error: Error) => events.push({ kind: "prompt-error", error }),
-      );
-
-      // The task runner never resumes a generator after a terminal event, so the
-      // route is released before that event is yielded, not in a `finally` after it.
-      let terminal: ExecutorEvent;
-      try {
-        for (;;) {
-          const event = await events.next();
-          if (event.kind === "prompt-error") throw event.error;
-          if (event.kind === "prompt-done") {
-            const stop = stopReasonOf(event.result);
-            if (abort.wasAborted() || stop === "cancelled") throw abortError();
-            const reason = FAILED_STOP_REASONS[stop];
-            terminal =
-              reason === undefined ? { type: "completed", text: transcript.text } : { type: "failed", text: reason };
-            break;
-          }
-          const { request, reply } = event;
-          // A grant for an earlier request may already cover one queued behind it.
-          if (modeAllows(mode.current, request.kind)) {
-            reply(outcomeFor(request.options, "allow"));
-            continue;
-          }
-          const requestedMode = escalationFor(mode.current, input.permissionCeiling, request.kind);
-          if (requestedMode === null) {
-            reply(outcomeFor(request.options, "reject"));
-            continue;
-          }
-          // Suspending sets the task to input-required; coming back means the
-          // origin granted the mode (a denial aborts the run instead), and the
-          // rest of the task runs under it.
-          mode.current = (yield { type: "suspend", suspend: suspensionFor(request, requestedMode) }) ?? requestedMode;
-          reply(outcomeFor(request.options, "allow"));
+    // The task runner never resumes a generator after a terminal event, so the
+    // route is released before that event is yielded, not in a `finally` after it.
+    let terminal: ExecutorEvent;
+    try {
+      for (;;) {
+        const event = await this.events.next();
+        if (event.kind === "prompt-error") throw event.error;
+        if (event.kind === "prompt-done") {
+          const stop = stopReasonOf(event.result);
+          if (this.aborted || stop === "cancelled") throw abortError();
+          const reason = FAILED_STOP_REASONS[stop];
+          terminal =
+            reason === undefined ? { type: "completed", text: this.transcript } : { type: "failed", text: reason };
+          break;
         }
-      } finally {
-        abort.disarm();
-        detach();
+        const { request, reply } = event;
+        // A grant for an earlier request may already cover one queued behind it.
+        if (modeAllows(this.mode, request.kind)) {
+          reply(outcomeFor(request.options, "allow"));
+          continue;
+        }
+        const requestedMode = escalationFor(this.mode, this.input.permissionCeiling, request.kind);
+        if (requestedMode === null) {
+          reply(outcomeFor(request.options, "reject"));
+          continue;
+        }
+        // Suspending sets the task to input-required; coming back means the
+        // origin granted the mode (a denial aborts the run instead), and the
+        // rest of the task runs under it.
+        this.mode = (yield { type: "suspend", suspend: suspensionFor(request, requestedMode) }) ?? requestedMode;
+        reply(outcomeFor(request.options, "allow"));
       }
-      yield terminal;
-    },
-  };
+    } finally {
+      disarm();
+      detach();
+    }
+    yield terminal;
+  }
+
+  /**
+   * What this run listens for from the child: message chunks are collected into
+   * the transcript; a permission the inherited mode covers is answered at once,
+   * any other is queued for the origin and remembered in `open`.
+   */
+  private makeRoute(): SessionRoute {
+    return {
+      update: (update) => {
+        this.transcript += textOf(update);
+      },
+      permission: (params) => {
+        const request = parsePermissionRequest(params);
+        if (modeAllows(this.mode, request.kind)) return Promise.resolve(outcomeFor(request.options, "allow"));
+        // Past this node's ceiling nobody may allow it: refuse without asking.
+        if (escalationFor(this.mode, this.input.permissionCeiling, request.kind) === null) {
+          return Promise.resolve(outcomeFor(request.options, "reject"));
+        }
+        return new Promise((resolve) => {
+          const reply = (outcome: RequestPermissionResponse): void => {
+            this.open.delete(reply);
+            resolve(outcome);
+          };
+          this.open.add(reply);
+          this.events.push({ kind: "permission", request, reply });
+        });
+      },
+    };
+  }
+
+  /**
+   * Cancel the run when `signal` aborts: answer the waiting permissions (an
+   * unanswered one would leave the child prompt waiting forever), cancel the
+   * prompt, and force-close the child if this run is still attached after the
+   * grace period. The child is shared with later tasks, hence the check.
+   * Returns the function that disarms it.
+   */
+  private armAbort(signal: AbortSignal): () => void {
+    const { connection, sessionId } = this.session;
+    let forceClose: NodeJS.Timeout | undefined;
+    const onAbort = (): void => {
+      this.aborted = true;
+      for (const reply of [...this.open]) reply(CANCELLED);
+      connection.cancel(sessionId);
+      forceClose = setTimeout(() => {
+        if (connection.isAttached(sessionId, this.route)) void connection.close();
+      }, KILL_GRACE_MS);
+      forceClose.unref();
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    return () => {
+      signal.removeEventListener("abort", onAbort);
+      clearTimeout(forceClose);
+    };
+  }
+}
+
+export class AcpExecutor implements LocalExecutor {
+  private readonly sessions: AcpSessionPool;
+
+  constructor(
+    config: AcpExecutorOptions,
+    /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (§6.15). */
+    private readonly models: ModelCatalog,
+    logger: NodeLogger,
+  ) {
+    this.sessions = new AcpSessionPool(
+      {
+        command: config.command ?? "dsh",
+        args: [...(config.extra_args ?? []), "--profile", config.profile ?? "acp"],
+        // Sessions spawned by this executor get the CLI path for publish/fetch, and
+        // the in-task marker that makes the CLI and the plugin refuse to send (§7.9).
+        env: {
+          ...process.env,
+          [IN_TASK_ENV]: "1",
+          ORCA_POD_CLI: CLI_PATH,
+          ...(config.data_root === undefined ? {} : { ORCA_POD_DATA_ROOT: config.data_root }),
+        },
+      },
+      config.mcp_servers ?? [],
+      logger,
+    );
+  }
+
+  close(): Promise<void> {
+    return this.sessions.close();
+  }
+
+  async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+    const session = await this.sessions.open(input);
+    const defaults = this.models.defaults();
+    const failure = await selectModel(
+      session,
+      input.model ?? defaults.model ?? undefined,
+      input.reasoningEffort ?? defaults.reasoningEffort ?? undefined,
+    );
+    if (failure !== null) {
+      yield { type: "failed", text: failure, reason: "model_unavailable" };
+      return;
+    }
+    yield* new AcpRun(input, session).drive(signal);
+  }
 }
