@@ -8,7 +8,7 @@ import type { SubmitTaskInput, TaskRunner } from "../src/task/wire.ts";
 import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
 import { admissionProof } from "../src/mesh/admission.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore } from "../src/core/blobs.ts";
+import { DiskBlobRegistry, MemoryFileBlobStore } from "../src/core/blobs.ts";
 import { createGateway } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -64,7 +64,7 @@ function harness() {
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,
-    fileBlobs: createFileBlobRegistry(createMemoryFileBlobStore()),
+    fileBlobs: new DiskBlobRegistry(new MemoryFileBlobStore()),
   });
   const post = (signer: NodeIdentity, url: string, body: unknown) => {
     const payload = JSON.stringify(body);

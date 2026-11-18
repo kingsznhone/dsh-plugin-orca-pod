@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createSqliteTaskStore } from "../src/task/task-store.ts";
+import { SqliteTaskStore } from "../src/task/task-store.ts";
 import type { PersistedTask } from "../src/task/task-store.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { labelId } from "./fixtures/ids.ts";
@@ -48,11 +48,11 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 describe("sqlite task store", () => {
   it("persists records across close and reopen", () => {
     const path = join(tempDir(), "tasks.db");
-    const first = createSqliteTaskStore(path);
+    const first = new SqliteTaskStore(path);
     first.save(storedTask("completed"));
     first.close();
 
-    const second = createSqliteTaskStore(path);
+    const second = new SqliteTaskStore(path);
     expect(second.load("TASK0001")?.view.status.state).toBe("completed");
     expect(second.list()).toHaveLength(1);
     second.close();
@@ -60,7 +60,7 @@ describe("sqlite task store", () => {
 
   it("keeps a completed task readable from a new runner", async () => {
     const path = join(tempDir(), "tasks.db");
-    const store = createSqliteTaskStore(path);
+    const store = new SqliteTaskStore(path);
     const runner = createTestRunner({ store });
     const view = runner.submit({
       message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
@@ -68,7 +68,7 @@ describe("sqlite task store", () => {
     });
     await waitFor(() => runner.get(view.id)?.status.state === "completed");
 
-    const reopenedStore = createSqliteTaskStore(path);
+    const reopenedStore = new SqliteTaskStore(path);
     const reopened = createTestRunner({ store: reopenedStore });
     expect(reopened.get(view.id)?.status.state).toBe("completed");
     reopenedStore.close();
@@ -77,7 +77,7 @@ describe("sqlite task store", () => {
 
   it("fails unfinished tasks as node_restart on recover", () => {
     const path = join(tempDir(), "tasks.db");
-    const store = createSqliteTaskStore(path);
+    const store = new SqliteTaskStore(path);
     store.save(storedTask("working", "WORKING1"));
     store.save(storedTask("completed", "DONE1"));
 

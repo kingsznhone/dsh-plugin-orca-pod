@@ -10,7 +10,7 @@ import type { TaskRunner } from "../src/task/wire.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
 import { createMembership } from "../src/mesh/membership.ts";
 import type { PeerStore } from "../src/mesh/membership.ts";
-import { createMemoryFileBlobStore, createFileBlobRegistry } from "../src/core/blobs.ts";
+import { MemoryFileBlobStore, DiskBlobRegistry } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -74,7 +74,7 @@ function createHarness(): Harness {
   const identity = generateNodeIdentity();
   const orcaNodeId = identity.orcaNodeId;
   const peers = createMembership({ selfOrcaNodeId: orcaNodeId }).peers;
-  const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
+  const fileBlobs = new DiskBlobRegistry(new MemoryFileBlobStore());
   const deps: GatewayDeps = {
     orcaNode: {
       orca_node_id: orcaNodeId,

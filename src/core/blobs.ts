@@ -11,11 +11,12 @@ import { createReadStream, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import type { StatementSync } from "node:sqlite";
 
 import { z } from "zod";
 
 import { PodError } from "./errors.ts";
-import { openDb } from "./sqlite.ts";
+import { SqliteDb } from "./sqlite.ts";
 import { type OrcaNodeId, OrcaNodeIdSchema } from "./wire/peer.ts";
 
 /** A blob id is the sha256 of the file, as lowercase hex. */
@@ -54,35 +55,38 @@ export type FileBlob = {
   expires_at: string | null;
 };
 
-/** Mapping storage; the durable implementation lives in `sqlite.ts`. */
-export type FileBlobStore = {
+/** Mapping storage; the durable implementation is `SqliteFileBlobStore`. */
+export interface FileBlobStore {
   save(blob: FileBlob): void;
   get(blobId: string): FileBlob | undefined;
   /** SQLite handles need closing so Windows can delete the data dir. */
   close(): void;
-};
+}
 
 /** A published file, open for streaming. */
 export type OpenedBlob = { stream: Readable; size: number | undefined };
 
-export type FileBlobRegistry = {
+export interface FileBlobRegistry {
   register(path: string, ttlS?: number): Promise<FileBlob>;
   get(blobId: string): FileBlob | undefined;
   has(blobId: string): boolean;
   /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (§5.6). */
   open(blobId: string): OpenedBlob;
-};
+}
 
 /** A mapping that lives as long as the process: unit tests and in-memory orca nodes. */
-export function createMemoryFileBlobStore(): FileBlobStore {
-  const entries = new Map<string, FileBlob>();
-  return {
-    save(blob) {
-      entries.set(blob.blob_id, blob);
-    },
-    get: (blobId) => entries.get(blobId),
-    close() {},
-  };
+export class MemoryFileBlobStore implements FileBlobStore {
+  private readonly entries = new Map<string, FileBlob>();
+
+  save(blob: FileBlob): void {
+    this.entries.set(blob.blob_id, blob);
+  }
+
+  get(blobId: string): FileBlob | undefined {
+    return this.entries.get(blobId);
+  }
+
+  close(): void {}
 }
 
 /**
@@ -90,31 +94,40 @@ export function createMemoryFileBlobStore(): FileBlobStore {
  * `data_root` holds all node state. The CLI writes rows directly; the gateway
  * reads them, which is why publishing needs no network route at all.
  */
-export function createSqliteFileBlobStore(path: string): FileBlobStore {
-  const handle = openDb(path);
-  handle.db.exec(
-    `CREATE TABLE IF NOT EXISTS file_blobs (
-       blob_id TEXT PRIMARY KEY,
-       path TEXT NOT NULL,
-       size INTEGER NOT NULL,
-       expires_at TEXT
-     )`,
-  );
-  const upsert = handle.db.prepare(
-    `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
-  );
-  const selectOne = handle.db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?");
-  return {
-    save(blob: FileBlob): void {
-      if (!handle.closed()) upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
-    },
-    get(blobId: string): FileBlob | undefined {
-      const row = handle.closed() ? undefined : (selectOne.get(blobId) as FileBlob | undefined);
-      return row && { ...row, size: Number(row.size) };
-    },
-    close: handle.close,
-  };
+export class SqliteFileBlobStore implements FileBlobStore {
+  private readonly handle: SqliteDb;
+  private readonly upsert: StatementSync;
+  private readonly selectOne: StatementSync;
+
+  constructor(path: string) {
+    this.handle = new SqliteDb(path);
+    this.handle.db.exec(
+      `CREATE TABLE IF NOT EXISTS file_blobs (
+         blob_id TEXT PRIMARY KEY,
+         path TEXT NOT NULL,
+         size INTEGER NOT NULL,
+         expires_at TEXT
+       )`,
+    );
+    this.upsert = this.handle.db.prepare(
+      `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
+    );
+    this.selectOne = this.handle.db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?");
+  }
+
+  save(blob: FileBlob): void {
+    if (!this.handle.closed) this.upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
+  }
+
+  get(blobId: string): FileBlob | undefined {
+    const row = this.handle.closed ? undefined : (this.selectOne.get(blobId) as FileBlob | undefined);
+    return row && { ...row, size: Number(row.size) };
+  }
+
+  close(): void {
+    this.handle.close();
+  }
 }
 
 /**
@@ -160,33 +173,36 @@ async function hashFile(path: string): Promise<{ sha: string; size: number }> {
   return tap.digest();
 }
 
-export function createFileBlobRegistry(store: FileBlobStore): FileBlobRegistry {
-  return {
-    async register(path: string, ttlS: number = DEFAULT_BLOB_TTL_S): Promise<FileBlob> {
-      const absolute = resolve(path);
-      const { sha, size } = await hashFile(absolute);
-      const blob: FileBlob = {
-        blob_id: sha,
-        path: absolute,
-        size,
-        expires_at: ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null,
-      };
-      store.save(blob);
-      return { ...blob };
-    },
-    get(blobId: string): FileBlob | undefined {
-      const blob = store.get(blobId);
-      return blob && { ...blob };
-    },
-    has(blobId: string): boolean {
-      return store.get(blobId) !== undefined;
-    },
-    open(blobId: string) {
-      const file = store.get(blobId);
-      if (!file) throw new PodError("blob_not_found");
-      if (file.expires_at !== null && Date.parse(file.expires_at) <= Date.now()) throw new PodError("blob_expired");
-      if (!existsSync(file.path)) throw new PodError("blob_file_missing");
-      return { stream: createReadStream(file.path), size: file.size };
-    },
-  };
+export class DiskBlobRegistry implements FileBlobRegistry {
+  constructor(private readonly store: FileBlobStore) {}
+
+  async register(path: string, ttlS: number = DEFAULT_BLOB_TTL_S): Promise<FileBlob> {
+    const absolute = resolve(path);
+    const { sha, size } = await hashFile(absolute);
+    const blob: FileBlob = {
+      blob_id: sha,
+      path: absolute,
+      size,
+      expires_at: ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null,
+    };
+    this.store.save(blob);
+    return { ...blob };
+  }
+
+  get(blobId: string): FileBlob | undefined {
+    const blob = this.store.get(blobId);
+    return blob && { ...blob };
+  }
+
+  has(blobId: string): boolean {
+    return this.store.get(blobId) !== undefined;
+  }
+
+  open(blobId: string): OpenedBlob {
+    const file = this.store.get(blobId);
+    if (!file) throw new PodError("blob_not_found");
+    if (file.expires_at !== null && Date.parse(file.expires_at) <= Date.now()) throw new PodError("blob_expired");
+    if (!existsSync(file.path)) throw new PodError("blob_file_missing");
+    return { stream: createReadStream(file.path), size: file.size };
+  }
 }

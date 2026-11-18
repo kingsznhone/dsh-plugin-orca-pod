@@ -5,8 +5,8 @@ import { afterEach } from "vitest";
 
 import { EchoExecutor } from "../../src/executor/echo.ts";
 import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/task/wire.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore } from "../../src/core/blobs.ts";
-import { createMemoryTaskStore } from "../../src/task/task-store.ts";
+import { DiskBlobRegistry, MemoryFileBlobStore } from "../../src/core/blobs.ts";
+import { MemoryTaskStore } from "../../src/task/task-store.ts";
 import { createTaskRunner, type TaskRunnerDeps } from "../../src/task/runner.ts";
 import { createWorkspaceManager } from "../../src/task/workspace.ts";
 import { labelId, wg } from "./ids.ts";
@@ -34,8 +34,8 @@ export function runnerDeps(overrides: Partial<TaskRunnerDeps> = {}): TaskRunnerD
   const dataRoot = tempDir();
   return {
     executor: new EchoExecutor(),
-    fileBlobs: createFileBlobRegistry(createMemoryFileBlobStore()),
-    store: createMemoryTaskStore(),
+    fileBlobs: new DiskBlobRegistry(new MemoryFileBlobStore()),
+    store: new MemoryTaskStore(),
     workspace: createWorkspaceManager({ dataRoot, workgroupId: wg("runner-test") }).ensure(),
     logger: { warn() {} },
     selfOrcaNodeId: SELF,

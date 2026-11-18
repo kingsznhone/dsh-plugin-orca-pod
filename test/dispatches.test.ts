@@ -9,7 +9,7 @@ import { markInFlightUnknown } from "../src/task/delegation.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import type { DispatchEntry } from "../src/task/wire.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
-import { createSqliteDispatchStore } from "../src/task/dispatch-store.ts";
+import { SqliteDispatchStore } from "../src/task/dispatch-store.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const WORKGROUP = wg("orca-dispatches");
@@ -39,12 +39,12 @@ function tempRoot(): string {
 describe("dispatch store (13.4)", () => {
   it("survives a reopen", () => {
     const file = join(tempRoot(), "tasks.db");
-    const store = createSqliteDispatchStore(file);
+    const store = new SqliteDispatchStore(file);
     store.save(entry({ task_id: "task-1", state: "working" }));
     store.save(entry({ task_id: "task-2", state: "completed" }));
     store.close();
 
-    const reopened = createSqliteDispatchStore(file);
+    const reopened = new SqliteDispatchStore(file);
     const byId = new Map(reopened.list().map((item) => [item.task_id, item]));
     expect(byId.get("task-1")).toMatchObject({ state: "working" });
     expect(byId.get("task-2")).toMatchObject({ state: "completed" });
@@ -54,18 +54,18 @@ describe("dispatch store (13.4)", () => {
 
   it("persists the dispatching agent so tracking can resume after a restart", () => {
     const file = join(tempRoot(), "tasks.db");
-    const store = createSqliteDispatchStore(file);
+    const store = new SqliteDispatchStore(file);
     store.save(entry({ task_id: "task-1", state: "working", agent_id: SessionId("session-7") }));
     store.close();
 
-    const reopened = createSqliteDispatchStore(file);
+    const reopened = new SqliteDispatchStore(file);
     expect(reopened.get("task-1")?.agent_id).toBe("session-7");
     reopened.close();
   });
 
   it("marks only in-flight entries unknown on restart", () => {
     const file = join(tempRoot(), "tasks.db");
-    const store = createSqliteDispatchStore(file);
+    const store = new SqliteDispatchStore(file);
     store.save(entry({ task_id: "running", state: "working" }));
     store.save(entry({ task_id: "parked", state: "input-required" }));
     store.save(entry({ task_id: "done", state: "completed" }));
@@ -80,7 +80,7 @@ describe("dispatch store (13.4)", () => {
   });
 
   it("removes entries", () => {
-    const store = createSqliteDispatchStore(join(tempRoot(), "tasks.db"));
+    const store = new SqliteDispatchStore(join(tempRoot(), "tasks.db"));
     store.save(entry({ task_id: "task-1", state: "working" }));
     store.remove?.("task-1");
     expect(store.list()).toEqual([]);

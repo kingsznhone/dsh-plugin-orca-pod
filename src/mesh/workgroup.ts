@@ -18,9 +18,7 @@ import {
 } from "../core/wire/peer.ts";
 import { AckSchema } from "../core/wire/reply.ts";
 import type { HeartbeatRequest, JoinRequest, SelfDescription, MembersEvent } from "./wire.ts";
-import type { ModelSelection } from "@deepseek-ai/dsh-agent";
-import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import type { ModelDefaults, ModelOffer } from "../core/wire/model.ts";
+import type { ModelCatalog } from "../core/model-catalog.ts";
 import type { PeerClient } from "./peer-client.ts";
 import { candidateEndpointAllowed } from "./screening.ts";
 
@@ -29,10 +27,6 @@ export type WorkgroupConfig = {
   orca_node_id: OrcaNodeId;
   workgroup_id: WorkgroupId;
   display_name: string;
-  /** A model catalog pinned in config.json; it wins over what the host reports (§6.15). */
-  models?: ModelOffer[];
-  default_model?: ModelSelection;
-  default_reasoning_effort?: ReasoningEffortId;
   allow_public_peers?: boolean;
   allow_loopback_peers?: boolean;
 };
@@ -48,6 +42,8 @@ type WorkgroupDeps = {
   /** Advertised per-task budget (§6.9). */
   maxTaskTtlS: number;
   membership: Membership;
+  /** The model routes and default advertised to peers (§6.15). */
+  models: ModelCatalog;
   client: PeerClient;
   logger: NodeLogger;
   /** Advertised dial URLs; they change once the listener is bound. */
@@ -62,14 +58,6 @@ export type Workgroup = {
   self(): SelfRecord;
   members(): PeerView[];
   membersDigest(): string;
-  /** Model routes and default advertised to peers (§6.15); a pin in config.json wins. */
-  setModelCatalog(
-    models: ModelOffer[],
-    defaultModel: ModelSelection | null,
-    reasoningEffort?: ReasoningEffortId | null,
-  ): void;
-  /** What a local ACP session uses when a task names no model. */
-  modelDefaults(): ModelDefaults;
   /** Admit this node at `peerUrl` with the workgroup password; the only call that may reach a stranger. */
   join(peerUrl: string): Promise<JoinResponse>;
   heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
@@ -96,33 +84,11 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
   const selfId = config.orca_node_id;
   const ids = { workgroupId: config.workgroup_id, orcaNodeId: selfId };
 
-  // ---- self record and model catalog ----
-
-  let modelCatalog: ModelOffer[] = [...(config.models ?? [])];
-  // A local pin in config.json wins over whatever the DSH host reports, which
-  // keeps per-node defaults reproducible across UI changes (§6.15).
-  const pinnedModel = config.default_model ?? null;
-  const pinnedEffort = config.default_reasoning_effort ?? config.default_model?.reasoningEffort ?? null;
-  let defaultModel: ModelSelection | null = pinnedModel;
-  let defaultEffort: ReasoningEffortId | null = pinnedEffort;
-
-  function setModelCatalog(
-    models: ModelOffer[],
-    nextDefault: ModelSelection | null,
-    nextEffort?: ReasoningEffortId | null,
-  ): void {
-    const routeOf = (offer: ModelOffer): string => `${offer.provider}/${offer.id}`;
-    modelCatalog = models.filter(
-      (offer, index) => models.findIndex((other) => routeOf(other) === routeOf(offer)) === index,
-    );
-    defaultEffort = pinnedEffort ?? nextEffort ?? nextDefault?.reasoningEffort ?? null;
-    const fallback = pinnedModel ?? nextDefault;
-    defaultModel =
-      fallback !== null && defaultEffort !== null ? { ...fallback, reasoningEffort: defaultEffort } : fallback;
-    emitMembersIfChanged();
-  }
+  // ---- self record ----
 
   function selfPeer(): PeerView {
+    const offers = deps.models.offers();
+    const defaults = deps.models.defaults();
     return {
       orca_node_id: selfId,
       // A fresh node with no display name shows its generated id (§9.2 wizard default).
@@ -134,9 +100,9 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
       busy: deps.busy(),
       last_recv_at: new Date().toISOString(),
       max_task_ttl_s: deps.maxTaskTtlS,
-      models: modelCatalog.length > 0 ? modelCatalog : undefined,
-      default_model: defaultModel,
-      default_reasoning_effort: defaultEffort,
+      models: offers.length > 0 ? offers : undefined,
+      default_model: defaults.model,
+      default_reasoning_effort: defaults.reasoningEffort,
     };
   }
 
@@ -412,8 +378,6 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
     self: () => ({ ...selfPeer(), workgroup_id: config.workgroup_id }),
     members: () => membership.list(),
     membersDigest: digest,
-    setModelCatalog,
-    modelDefaults: () => ({ model: defaultModel, reasoningEffort: defaultEffort }),
     join,
     async heartbeat(peerUrl) {
       return pulse(peerUrl, client.known(peerUrl), true);

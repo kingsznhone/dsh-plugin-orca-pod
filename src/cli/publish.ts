@@ -3,7 +3,7 @@
 import process from "node:process";
 
 import { errorMessage } from "../core/errors.ts";
-import { blobRefText, createFileBlobRegistry, createSqliteFileBlobStore } from "../core/blobs.ts";
+import { blobRefText, DiskBlobRegistry, SqliteFileBlobStore } from "../core/blobs.ts";
 import { storeDbPath } from "../core/sqlite.ts";
 import {
   COMMON_OPTIONS,
@@ -30,8 +30,8 @@ export const maxPositionals = 1;
 export async function run({ flags, positionals }: CommandArgs): Promise<number> {
   const config = await loadNodeConfig(flags);
   const path = positionals[0] ?? required(flags.path, "path");
-  const store = createSqliteFileBlobStore(storeDbPath(config.data_root));
-  const blob = await createFileBlobRegistry(store)
+  const store = new SqliteFileBlobStore(storeDbPath(config.data_root));
+  const blob = await new DiskBlobRegistry(store)
     .register(path, positiveSeconds(flags.ttl, "ttl"))
     .catch((error: unknown) => {
       throw new Error(`cannot publish ${path}: ${errorMessage(error)}`);

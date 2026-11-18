@@ -180,7 +180,7 @@ describe("architecture", () => {
   });
 
   it("constructs SQLite stores only in the assembly points", () => {
-    const construction = /(?<!function )createSqlite\w+\(|(?<![\w.])new Sqlite\w+\(/;
+    const construction = /(?<!function )createSqlite\w+\(|(?<![\w.])new Sqlite(?!Db)\w+\(/;
     const offenders = files
       .filter((file) => !ASSEMBLY.has(contextOf(toKey(file))))
       .filter((file) => construction.test(readFileSync(file, "utf8")))

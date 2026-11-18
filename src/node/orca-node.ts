@@ -5,14 +5,9 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import {
-  BLOB_ID_PATTERN,
-  createFileBlobRegistry,
-  createMemoryFileBlobStore,
-  createSqliteFileBlobStore,
-} from "../core/blobs.ts";
-import { createMemoryDispatchStore, createSqliteDispatchStore } from "../task/dispatch-store.ts";
-import { createMemoryTaskStore, createSqliteTaskStore } from "../task/task-store.ts";
+import { BLOB_ID_PATTERN, DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../core/blobs.ts";
+import { MemoryDispatchStore, SqliteDispatchStore } from "../task/dispatch-store.ts";
+import { MemoryTaskStore, SqliteTaskStore } from "../task/task-store.ts";
 import type { FileBlobStore, OpenedBlob } from "../core/blobs.ts";
 import type { DispatchStore } from "../task/dispatch-store.ts";
 import type { TaskStore } from "../task/task-store.ts";
@@ -23,7 +18,8 @@ import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "..
 import { EchoExecutor } from "../executor/echo.ts";
 import { createAcpExecutor } from "../executor/acp/executor.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
-import { createEventBus } from "../core/events.ts";
+import { EventBus } from "../core/events.ts";
+import { ModelCatalog } from "../core/model-catalog.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import type { NodeLogger } from "../core/events.ts";
 import { bindUrl, detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../core/net.ts";
@@ -84,9 +80,9 @@ export type OrcaNodeStorage = {
  */
 export function createPersistentStorage(config: OrcaNodeConfig): OrcaNodeStorage {
   return {
-    taskStore: createSqliteTaskStore(storeDbPath(config.data_root)),
-    fileBlobStore: createSqliteFileBlobStore(storeDbPath(config.data_root)),
-    dispatchStore: createSqliteDispatchStore(storeDbPath(config.data_root)),
+    taskStore: new SqliteTaskStore(storeDbPath(config.data_root)),
+    fileBlobStore: new SqliteFileBlobStore(storeDbPath(config.data_root)),
+    dispatchStore: new SqliteDispatchStore(storeDbPath(config.data_root)),
   };
 }
 
@@ -225,11 +221,12 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   if (identity === null || identity.orcaNodeId !== config.orca_node_id) {
     throw new Error("identity.json is missing or does not match config.orca_node_id");
   }
-  const taskStore = storage?.taskStore ?? createMemoryTaskStore();
-  const fileBlobStore = storage?.fileBlobStore ?? createMemoryFileBlobStore();
-  const fileBlobs = createFileBlobRegistry(fileBlobStore);
-  const dispatches = storage?.dispatchStore ?? createMemoryDispatchStore();
-  const events = createEventBus<PodEventInput>();
+  const taskStore = storage?.taskStore ?? new MemoryTaskStore();
+  const fileBlobStore = storage?.fileBlobStore ?? new MemoryFileBlobStore();
+  const fileBlobs = new DiskBlobRegistry(fileBlobStore);
+  const dispatches = storage?.dispatchStore ?? new MemoryDispatchStore();
+  const events = new EventBus<PodEventInput>();
+  const models = new ModelCatalog(config);
   const workspaceManager = createWorkspaceManager({ dataRoot: config.data_root, workgroupId: config.workgroup_id });
   const workspace = workspaceManager.ensure();
   const logger = options.logger ?? SILENT;
@@ -241,7 +238,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       ? createAcpExecutor({
           ...config.acp,
           data_root: config.data_root,
-          modelDefaults: () => group.modelDefaults(),
+          modelDefaults: () => models.defaults(),
           logger,
         })
       : new EchoExecutor());
@@ -267,11 +264,12 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     runtime: options.runtime ?? collectRuntime(),
     maxTaskTtlS,
     membership,
+    models,
     client,
     logger,
     endpoints: () => endpoints,
     busy: () => tasks.busy(),
-    emit: events.emit,
+    emit: (event) => events.emit(event),
     adaptiveHeartbeat: options.timings?.intervalMs === undefined,
   });
   const tasks = createTaskRunner({
@@ -301,7 +299,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     client,
     membership,
     dispatches,
-    emit: events.emit,
+    emit: (event) => events.emit(event),
   });
   const app = createGateway({
     orcaNode: {
@@ -318,6 +316,9 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     tasks,
     fileBlobs,
   });
+
+  // A new catalog changes what this node announces about itself (§6.15).
+  models.changes.subscribe(() => group.emitMembersIfChanged());
 
   async function fetchBlob(nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal): Promise<OpenedBlob> {
     if (!BLOB_ID_PATTERN.test(blobId)) throw new PodError("bad_request", "a blob id is a lowercase sha256 hex digest");
@@ -386,7 +387,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     self: group.self,
     members: group.members,
     membersDigest: group.membersDigest,
-    setModelCatalog: group.setModelCatalog,
+    setModelCatalog: (offers, defaultModel, defaultEffort) => models.update(offers, defaultModel, defaultEffort),
     join: group.join,
     heartbeat: group.heartbeat,
     leave: group.leave,
@@ -398,7 +399,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     listDispatches: delegation.listDispatches,
     annotateDispatch: delegation.annotateDispatch,
     listTasks: (limit = 200) => tasks.list(limit),
-    subscribe: events.subscribe,
+    subscribe: (listener) => events.subscribe(listener),
     fetchBlob,
     nodeIdOf: (endpoint) => client.idOf(endpoint),
     workspacePaths() {

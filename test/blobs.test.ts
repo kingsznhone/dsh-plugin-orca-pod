@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Readable } from "node:stream";
 import { NonceCache, buildAuthHeader, bodySha256 } from "../src/core/signing.ts";
-import { createFileBlobRegistry, createMemoryFileBlobStore, createSqliteFileBlobStore } from "../src/core/blobs.ts";
+import { DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { PodError } from "../src/core/errors.ts";
 import { runtimeDigest, type BusyState, type SelfRecord } from "../src/core/wire/peer.ts";
@@ -75,7 +75,7 @@ const noFetch: FetchBlob = async () => {
 
 function createHarness(
   tasks: TaskRunner = idleTasks,
-  fileBlobs: FileBlobRegistry = createFileBlobRegistry(createMemoryFileBlobStore()),
+  fileBlobs: FileBlobRegistry = new DiskBlobRegistry(new MemoryFileBlobStore()),
   fetchBlob: FetchBlob = noFetch,
 ): Harness {
   const key = randomBytes(32);
@@ -110,7 +110,7 @@ async function published(content: Buffer): Promise<{ harness: Harness; blobId: s
   const dir = await mkdtemp(join(tmpdir(), "orca-blob-route-"));
   const path = join(dir, "result.bin");
   await writeFile(path, content);
-  const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
+  const fileBlobs = new DiskBlobRegistry(new MemoryFileBlobStore());
   const { blob_id: blobId } = await fileBlobs.register(path, 120);
   return { harness: createHarness(idleTasks, fileBlobs), blobId, path };
 }
@@ -209,7 +209,7 @@ describe("file blobs registered by the local CLI", () => {
     const content = Buffer.from("# findings\n");
     await writeFile(filePath, content);
 
-    const fileBlobs = createFileBlobRegistry(createMemoryFileBlobStore());
+    const fileBlobs = new DiskBlobRegistry(new MemoryFileBlobStore());
     const blob = await fileBlobs.register(filePath, 120);
     expect(blob.blob_id).toBe(bodySha256(content));
     expect(blob.size).toBe(content.length);
@@ -231,12 +231,12 @@ describe("file blobs registered by the local CLI", () => {
     await writeFile(filePath, Buffer.from([1, 2, 3, 4]));
     const dbPath = join(dir, "tasks.db");
 
-    const writer = createSqliteFileBlobStore(dbPath);
-    const blob = await createFileBlobRegistry(writer).register(filePath, 60);
+    const writer = new SqliteFileBlobStore(dbPath);
+    const blob = await new DiskBlobRegistry(writer).register(filePath, 60);
     writer.close();
 
-    const reader = createSqliteFileBlobStore(dbPath);
-    const seen = createFileBlobRegistry(reader).get(blob.blob_id);
+    const reader = new SqliteFileBlobStore(dbPath);
+    const seen = new DiskBlobRegistry(reader).get(blob.blob_id);
     reader.close();
     expect(seen?.path).toBe(filePath);
     expect(seen?.size).toBe(4);
@@ -245,9 +245,7 @@ describe("file blobs registered by the local CLI", () => {
 
   it("refuses a missing path instead of registering it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
-    await expect(
-      createFileBlobRegistry(createMemoryFileBlobStore()).register(join(dir, "absent.txt")),
-    ).rejects.toThrow();
+    await expect(new DiskBlobRegistry(new MemoryFileBlobStore()).register(join(dir, "absent.txt"))).rejects.toThrow();
   });
 });
 

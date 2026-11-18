@@ -2,7 +2,7 @@
 
 import process from "node:process";
 
-import { createSqliteDispatchStore } from "../task/dispatch-store.ts";
+import { SqliteDispatchStore } from "../task/dispatch-store.ts";
 import { storeDbPath } from "../core/sqlite.ts";
 import { COMMON_OPTIONS, loadNodeConfig, type CommandArgs, type OptionName } from "./shared.ts";
 
@@ -12,7 +12,7 @@ export async function run({ flags }: CommandArgs): Promise<number> {
   const config = await loadNodeConfig(flags);
   // Read the origin-side dispatch log straight from SQLite: the node may be down,
   // and a restart is exactly when this listing matters (§8.3).
-  const store = createSqliteDispatchStore(storeDbPath(config.data_root));
+  const store = new SqliteDispatchStore(storeDbPath(config.data_root));
   try {
     const entries = store.list().sort((left, right) => left.updated_at.localeCompare(right.updated_at));
     if (flags.json === true) {

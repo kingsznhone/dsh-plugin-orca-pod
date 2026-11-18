@@ -1,10 +1,8 @@
 /** Durable and in-memory task stores (§5.5). */
 
-import { jsonTable, openDb } from "../core/sqlite.ts";
+import { JsonTable, SqliteDb } from "../core/sqlite.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import type { TaskView } from "./wire.ts";
-
-// Tasks (§5.5)
 
 /**
  * Durable task record (§5.5). The view is the A2A `TaskView` the gateway
@@ -29,37 +27,60 @@ export interface TaskStore {
   close(): void;
 }
 
-function cloneTask(task: PersistedTask): PersistedTask {
-  return structuredClone(task);
-}
-
 /** Protocol tests and harness orca nodes use this; the CLI/plugin wire SQLite. */
-export function createMemoryTaskStore(initial: readonly PersistedTask[] = []): TaskStore {
-  const tasks = new Map<string, PersistedTask>();
-  for (const task of initial) tasks.set(task.view.id, cloneTask(task));
-  return {
-    save(task: PersistedTask): void {
-      tasks.set(task.view.id, cloneTask(task));
-    },
-    load(taskId: string): PersistedTask | undefined {
-      const task = tasks.get(taskId);
-      return task ? cloneTask(task) : undefined;
-    },
-    list(): PersistedTask[] {
-      return [...tasks.values()].map(cloneTask).sort((left, right) => left.updated_at.localeCompare(right.updated_at));
-    },
-    close() {},
-  };
+export class MemoryTaskStore implements TaskStore {
+  private readonly tasks = new Map<string, PersistedTask>();
+
+  constructor(initial: readonly PersistedTask[] = []) {
+    for (const task of initial) this.tasks.set(task.view.id, structuredClone(task));
+  }
+
+  save(task: PersistedTask): void {
+    this.tasks.set(task.view.id, structuredClone(task));
+  }
+
+  load(taskId: string): PersistedTask | undefined {
+    const task = this.tasks.get(taskId);
+    return task ? structuredClone(task) : undefined;
+  }
+
+  list(): PersistedTask[] {
+    return [...this.tasks.values()]
+      .map((task) => structuredClone(task))
+      .sort((left, right) => left.updated_at.localeCompare(right.updated_at));
+  }
+
+  close(): void {}
 }
 
 /** Durable task store (§5.5). */
-export function createSqliteTaskStore(path: string): TaskStore {
-  const handle = openDb(path);
-  const table = jsonTable<PersistedTask>(
-    handle,
-    "tasks",
-    (task) => task.view.id,
-    (task) => task.updated_at,
-  );
-  return { save: table.save, load: table.get, list: table.list, close: handle.close };
+export class SqliteTaskStore implements TaskStore {
+  private readonly handle: SqliteDb;
+  private readonly table: JsonTable<PersistedTask>;
+
+  constructor(path: string) {
+    this.handle = new SqliteDb(path);
+    this.table = new JsonTable<PersistedTask>(
+      this.handle,
+      "tasks",
+      (task) => task.view.id,
+      (task) => task.updated_at,
+    );
+  }
+
+  save(task: PersistedTask): void {
+    this.table.save(task);
+  }
+
+  load(taskId: string): PersistedTask | undefined {
+    return this.table.get(taskId);
+  }
+
+  list(): PersistedTask[] {
+    return this.table.list();
+  }
+
+  close(): void {
+    this.handle.close();
+  }
 }
