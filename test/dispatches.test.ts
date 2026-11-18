@@ -5,11 +5,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { markInFlightUnknown } from "../src/tasks/delegation.ts";
+import { markInFlightUnknown } from "../src/task/delegation.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import type { DispatchEntry } from "../src/protocol/dispatch.ts";
+import type { DispatchEntry } from "../src/task/wire.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
-import { createSqliteDispatchStore } from "../src/storage/sqlite.ts";
+import { createSqliteDispatchStore } from "../src/task/dispatch-store.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const WORKGROUP = wg("orca-dispatches");

@@ -2,7 +2,8 @@
 
 import process from "node:process";
 
-import { createSqliteDispatchStore, storeDbPath } from "../storage/sqlite.ts";
+import { createSqliteDispatchStore } from "../task/dispatch-store.ts";
+import { storeDbPath } from "../core/sqlite.ts";
 import { COMMON_OPTIONS, loadNodeConfig, type CommandArgs, type OptionName } from "./shared.ts";
 
 export const options: readonly OptionName[] = [...COMMON_OPTIONS, "json"];

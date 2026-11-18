@@ -1,11 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import { bodySha256 } from "../src/security/crypto.ts";
-import { errorMessage } from "../src/kernel/errors.ts";
+import { bodySha256 } from "../src/core/signing.ts";
+import { errorMessage } from "../src/core/errors.ts";
 import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../src/node/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
-import { DEFAULT_PORT } from "../src/protocol/constants.ts";
-import { WorkgroupIdSchema } from "../src/protocol/peer.ts";
+import { DEFAULT_PORT } from "../src/core/constants.ts";
+import { WorkgroupIdSchema } from "../src/core/wire/peer.ts";
 
 const SERVE = {
   workgroup: { type: "string" },

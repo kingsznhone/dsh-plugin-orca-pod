@@ -5,8 +5,8 @@ import {
   HEARTBEAT_INTERVAL_MAX_MS,
   HEARTBEAT_INTERVAL_MIN_MS,
   heartbeatIntervalMsFor,
-} from "../src/membership/membership.ts";
-import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
+} from "../src/mesh/membership.ts";
+import type { PeerView, OrcaNodeId } from "../src/core/wire/peer.ts";
 import { createMesh, waitFor } from "./support/harness.ts";
 import { labelId } from "./fixtures/ids.ts";
 

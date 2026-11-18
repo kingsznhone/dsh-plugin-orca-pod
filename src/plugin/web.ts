@@ -22,10 +22,10 @@ import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import type { PodAdmin } from "./admin.ts";
 import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads, type PodState } from "./panel-api.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
-import { isDirectLoopbackRequest } from "../transport/net.ts";
-import { describeIssue, isRecord, parseSchema } from "../kernel/schema.ts";
-import { errorMessage } from "../kernel/errors.ts";
-import { parseBlobRef } from "../protocol/blob.ts";
+import { isDirectLoopbackRequest } from "../core/net.ts";
+import { describeIssue, isRecord, parseSchema } from "../core/schema.ts";
+import { errorMessage } from "../core/errors.ts";
+import { parseBlobRef } from "../core/blobs.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 export const POD_API_PREFIX = "/orca-api";

@@ -18,8 +18,8 @@ import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
 import type { LlmModelInfo, LlmProviderInfo, LlmReasoningEffortInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
 
-import { errorMessage } from "../kernel/errors.ts";
-import { MAX_MODEL_OFFERS, type ModelOffer } from "../protocol/model.ts";
+import { errorMessage } from "../core/errors.ts";
+import { MAX_MODEL_OFFERS, type ModelOffer } from "../core/wire/model.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodHandle } from "./lifecycle.ts";
 import { optionalService } from "./services.ts";

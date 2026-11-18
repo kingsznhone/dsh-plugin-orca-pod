@@ -7,7 +7,7 @@
 import { z } from "zod";
 
 import type { PanelPatch } from "../node/settings.ts";
-import type { TaskView } from "../protocol/task.ts";
+import type { TaskView } from "../task/wire.ts";
 import type { PodAdmin, PodTaskDetail, PodTaskRow } from "./admin.ts";
 
 const Text = z.string().min(1, "must be a non-empty string");

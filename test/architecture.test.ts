@@ -1,17 +1,17 @@
 /**
- * Architecture guard: the runtime import graph of `src/` stays acyclic and
- * only points downwards through the bounded contexts.
+ * Architecture guard: the import graph of `src/` stays acyclic and only points
+ * downwards through the feature contexts (D41).
  *
- *   kernel ← protocol ← security ← storage ← { membership, tasks, execution }
- *          ← transport ← node ← { plugin, cli }
+ *   core ← { mesh, executor } ← task ← api ← node ← { cli, plugin }
  *
- * - `import type` / `export type` are erased and do not count; an import whose
- *   specifiers are all inline `type` still does (it is emitted as `import {}`).
- * - Contexts in the same layer may use each other; the no-cycle check keeps that honest.
+ * - Runtime imports must point strictly down: two contexts on the same layer
+ *   (`mesh` / `executor`, `cli` / `plugin`) never import each other.
+ * - A type-only import (`import type`, `export type`) is erased and may point
+ *   anywhere, but it still counts for cycles: files must not depend on each
+ *   other in a loop even if only a type closes it.
  * - There are no barrel files: an importer names the file that defines what it
  *   uses, so moving code inside a context means updating its callers.
- * - Storage implementations (every `storage/` file except `stores.ts`, which
- *   declares the contracts) are wired only by the assembly points.
+ * - SQLite stores (`Sqlite*`) are constructed only by the assembly points.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -22,33 +22,39 @@ import { describe, expect, it } from "vitest";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
-/** Layer of each context; a lower layer never imports a higher one. */
+/** Layer of each context; a lower layer never imports a higher or an equal one. */
 const LAYERS: Record<string, number> = {
-  kernel: 0,
-  protocol: 1,
-  security: 2,
-  storage: 3,
-  membership: 4,
-  tasks: 4,
-  execution: 4,
-  transport: 5,
-  node: 6,
-  plugin: 7,
-  cli: 7,
+  core: 0,
+  mesh: 1,
+  executor: 1,
+  task: 2,
+  api: 3,
+  node: 4,
+  cli: 5,
+  plugin: 5,
   /** `src/index.ts`, the package entry. */
-  root: 8,
+  root: 6,
 };
 
-/** The one layer whose contexts collaborate sideways. */
-const PEER_LAYER = 4;
-
+/** Where `Sqlite*` stores may be constructed. */
 const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
 
 /**
  * Known violations, as `from -> to` paths relative to `src/`. Only removals are
  * allowed: a fixed edge must leave this list, and a new violation fails.
  */
-const ALLOWED_VIOLATIONS: string[] = [];
+const ALLOWED_VIOLATIONS: string[] = [
+  // `rpc()` moves into task/delegation.ts with the mesh/ client rewrite (phase 3).
+  "mesh/peer-client.ts -> task/wire.ts",
+];
+
+/** Known cycles that only a type closes, as the sorted file keys joined by `, `. Only removals are allowed. */
+const ALLOWED_TYPE_CYCLES: string[] = [
+  // Cleared by the executor (phase 4), api (phase 6) and plugin (phase 8) rewrites.
+  "executor/echo.ts, executor/executor.ts",
+  "api/a2a-routes.ts, api/access.ts, api/blob-routes.ts, api/cluster-routes.ts, api/gateway.ts",
+  "plugin/lifecycle.ts, plugin/stores.ts",
+];
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -64,12 +70,12 @@ const toKey = (path: string): string => relative(SRC, path).split(sep).join("/")
 const STATEMENT =
   /^[ \t]*(import|export)[ \t]+(type[ \t]+)?(?:\{[^}]*\}|\*(?:[ \t]+as[ \t]+\w+)?|\w+(?:[ \t]*,[ \t]*\{[^}]*\})?)\s*from\s*["']([^"']+)["']|^[ \t]*import[ \t]*["']([^"']+)["']/gm;
 
-/** Runtime imports of one module, as keys relative to `src/`. */
-function runtimeImports(file: string): string[] {
+/** Imports of one module, as keys relative to `src/`; type-only imports only when asked for. */
+function importsOf(file: string, includeTypes: boolean): string[] {
   const text = readFileSync(file, "utf8");
   const targets: string[] = [];
   for (const match of text.matchAll(STATEMENT)) {
-    if (match[2] !== undefined) continue;
+    if (match[2] !== undefined && !includeTypes) continue;
     const specifier = match[3] ?? match[4];
     if (specifier === undefined || !specifier.startsWith(".")) continue;
     targets.push(toKey(resolve(dirname(file), specifier)));
@@ -127,17 +133,15 @@ function violation(from: string, to: string): string | null {
   const targetLayer = LAYERS[target];
   if (sourceLayer === undefined) return `${from} is outside every context`;
   if (targetLayer === undefined) return `${to} is outside every context`;
-  if (targetLayer > sourceLayer || (targetLayer === sourceLayer && sourceLayer !== PEER_LAYER)) {
+  if (targetLayer >= sourceLayer) {
     return `${source} (layer ${sourceLayer}) must not import ${target} (layer ${targetLayer})`;
-  }
-  if (target === "storage" && to !== "storage/stores.ts" && !ASSEMBLY.has(source)) {
-    return "storage implementations are wired only by node/, plugin/ and cli/";
   }
   return null;
 }
 
 const files = sourceFiles(SRC);
-const graph = new Map(files.map((file) => [toKey(file), runtimeImports(file)]));
+const graph = new Map(files.map((file) => [toKey(file), importsOf(file, false)]));
+const typedGraph = new Map(files.map((file) => [toKey(file), importsOf(file, true)]));
 
 describe("architecture", () => {
   it("parses a non-trivial import graph", () => {
@@ -147,8 +151,17 @@ describe("architecture", () => {
     }
   });
 
-  it("has no import cycles", () => {
+  it("has no import cycles, type-only imports included", () => {
     expect(cycles(graph)).toEqual([]);
+    const found = cycles(typedGraph).map((component) => component.join(", "));
+    expect(
+      found.filter((entry) => !ALLOWED_TYPE_CYCLES.includes(entry)),
+      "new type-only cycles",
+    ).toEqual([]);
+    expect(
+      ALLOWED_TYPE_CYCLES.filter((entry) => !found.includes(entry)),
+      "fixed cycles still listed in ALLOWED_TYPE_CYCLES",
+    ).toEqual([]);
   });
 
   it("only lets dependencies point downwards", () => {
@@ -164,5 +177,14 @@ describe("architecture", () => {
     const fixed = ALLOWED_VIOLATIONS.filter((entry) => !found.some((item) => edge(item) === entry));
     expect(unexpected, "new dependency violations").toEqual([]);
     expect(fixed, "fixed violations still listed in ALLOWED_VIOLATIONS").toEqual([]);
+  });
+
+  it("constructs SQLite stores only in the assembly points", () => {
+    const construction = /(?<!function )createSqlite\w+\(|(?<![\w.])new Sqlite\w+\(/;
+    const offenders = files
+      .filter((file) => !ASSEMBLY.has(contextOf(toKey(file))))
+      .filter((file) => construction.test(readFileSync(file, "utf8")))
+      .map(toKey);
+    expect(offenders, "SQLite stores constructed outside node/, plugin/ and cli/").toEqual([]);
   });
 });

@@ -1,20 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { generateNodeIdentity } from "../src/security/identity.ts";
-import type { Grant } from "../src/protocol/grant.ts";
+import { generateNodeIdentity } from "../src/core/identity.ts";
+import type { Grant } from "../src/core/wire/grant.ts";
 import {
   DEFAULT_CLOCK_SKEW_MS,
   NonceCache,
-  admissionProof,
   buildAuthHeader,
   deriveWorkgroupKey,
   parseAuthHeader,
-  signGrant,
-  verifyAdmissionProof,
   verifyAuth,
-  verifyGrant,
   type VerifyAuthOptions,
-} from "../src/security/crypto.ts";
-import { PodError, type PodErrorCode } from "../src/kernel/errors.ts";
+} from "../src/core/signing.ts";
+import { admissionProof, verifyAdmissionProof } from "../src/mesh/admission.ts";
+import { signGrant, verifyGrant } from "../src/task/grants.ts";
+import { PodError, type PodErrorCode } from "../src/core/errors.ts";
 import { wg, fakeNodeId } from "./fixtures/ids.ts";
 
 const WORKGROUP_ID = wg("orca-dev");

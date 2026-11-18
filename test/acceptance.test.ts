@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/transport/peer-client.ts";
+import type { FetchLike } from "../src/mesh/peer-client.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

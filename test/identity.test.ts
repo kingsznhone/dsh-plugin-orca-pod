@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { identityPath, loadIdentity, loadOrCreateIdentity } from "../src/security/identity.ts";
+import { identityPath, loadIdentity, loadOrCreateIdentity } from "../src/core/identity.ts";
 
 const tempRoot = (): string => mkdtempSync(join(tmpdir(), "orca-identity-"));
 

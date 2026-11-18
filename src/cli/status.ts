@@ -1,6 +1,6 @@
 /** `orca-node status`: print one task as its peer reports it. */
 
-import { normalizePeerUrl } from "../transport/net.ts";
+import { normalizePeerUrl } from "../core/net.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,

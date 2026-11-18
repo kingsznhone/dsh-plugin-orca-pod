@@ -19,12 +19,11 @@ import type { Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { boundContextSummary, createUserMessage, type ContextFormed, type UserMessage } from "@deepseek-ai/dsh-llm";
 
-import type { DispatchEntry } from "../protocol/dispatch.ts";
-import { isTerminal, permissionRequestOf } from "../protocol/task.ts";
-import type { PermissionRequest } from "../protocol/grant.ts";
-import type { TaskView } from "../protocol/task.ts";
+import type { DispatchEntry, TaskView } from "../task/wire.ts";
+import { isTerminal, permissionRequestOf } from "../task/wire.ts";
+import type { PermissionRequest } from "../core/wire/grant.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
-import { errorMessage, PodError } from "../kernel/errors.ts";
+import { errorMessage, PodError } from "../core/errors.ts";
 
 declare module "@deepseek-ai/dsh-llm" {
   interface MessageSourceMap {

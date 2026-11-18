@@ -12,8 +12,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath } from "../src/node/config.ts";
-import { shortenNodeId } from "../src/security/identity.ts";
-import { normalizePeerUrl } from "../src/transport/net.ts";
+import { shortenNodeId } from "../src/core/identity.ts";
+import { normalizePeerUrl } from "../src/core/net.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodAdmin } from "../src/plugin/admin.ts";
 import type { Logger } from "@deepseek-ai/cordis";

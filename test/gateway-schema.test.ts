@@ -1,15 +1,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import { PodError } from "../src/kernel/errors.ts";
-import { createMembership } from "../src/membership/membership.ts";
-import { runtimeDigest, type SelfRecord } from "../src/protocol/peer.ts";
-import type { SubmitTaskInput, TaskRunner } from "../src/protocol/task.ts";
-import { NonceCache, admissionProof, buildAuthHeader } from "../src/security/crypto.ts";
-import { generateNodeIdentity, type NodeIdentity } from "../src/security/identity.ts";
-import { createFileBlobRegistry } from "../src/storage/file-registry.ts";
-import { createMemoryFileBlobStore } from "../src/storage/memory.ts";
-import { createGateway } from "../src/transport/gateway/gateway.ts";
+import { PodError } from "../src/core/errors.ts";
+import { createMembership } from "../src/mesh/membership.ts";
+import { runtimeDigest, type SelfRecord } from "../src/core/wire/peer.ts";
+import type { SubmitTaskInput, TaskRunner } from "../src/task/wire.ts";
+import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
+import { admissionProof } from "../src/mesh/admission.ts";
+import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
+import { createFileBlobRegistry, createMemoryFileBlobStore } from "../src/core/blobs.ts";
+import { createGateway } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const WORKGROUP = wg("orca-schema");

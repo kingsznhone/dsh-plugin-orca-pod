@@ -2,10 +2,9 @@
 
 import process from "node:process";
 
-import { errorMessage } from "../kernel/errors.ts";
-import { blobRefText } from "../protocol/blob.ts";
-import { createFileBlobRegistry } from "../storage/file-registry.ts";
-import { createSqliteFileBlobStore, storeDbPath } from "../storage/sqlite.ts";
+import { errorMessage } from "../core/errors.ts";
+import { blobRefText, createFileBlobRegistry, createSqliteFileBlobStore } from "../core/blobs.ts";
+import { storeDbPath } from "../core/sqlite.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,

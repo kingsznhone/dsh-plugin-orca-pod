@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/transport/peer-client.ts";
+import type { FetchLike } from "../src/mesh/peer-client.ts";
 import { mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,9 +8,9 @@ import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
-import type { MembershipTimings } from "../src/membership/membership.ts";
+import type { MembershipTimings } from "../src/mesh/membership.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/protocol/peer.ts";
+import type { WorkgroupId } from "../src/core/wire/peer.ts";
 
 const TIMINGS: Partial<MembershipTimings> = {
   intervalMs: 100,

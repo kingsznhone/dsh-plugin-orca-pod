@@ -13,11 +13,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import type { PodEvent } from "../src/protocol/events.ts";
-import type { MembershipTimings } from "../src/membership/membership.ts";
-import type { TaskView } from "../src/protocol/task.ts";
-import { isTerminal } from "../src/protocol/task.ts";
-import { shortenNodeId } from "../src/security/identity.ts";
+import type { PodEvent } from "../src/node/events.ts";
+import type { MembershipTimings } from "../src/mesh/membership.ts";
+import type { TaskView } from "../src/task/wire.ts";
+import { isTerminal } from "../src/task/wire.ts";
+import { shortenNodeId } from "../src/core/identity.ts";
 import { waitFor } from "./support/harness.ts";
 import { createPodAdmin } from "../src/plugin/admin.ts";
 import type { PodTaskRow } from "../src/plugin/admin.ts";
@@ -27,7 +27,7 @@ import { createTracker } from "../src/plugin/tracker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/protocol/peer.ts";
+import type { WorkgroupId } from "../src/core/wire/peer.ts";
 
 const LEAF = fakeNodeId("orca-node-leaf");
 

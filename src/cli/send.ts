@@ -3,10 +3,10 @@
 import process from "node:process";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import { parseEchoScript } from "../execution/echo.ts";
-import { runningInTask } from "../kernel/entry.ts";
-import { parseSchema, describeIssue } from "../kernel/schema.ts";
-import { SandboxModeSchema } from "../protocol/permission.ts";
+import { parseEchoScript } from "../executor/echo.ts";
+import { runningInTask } from "../core/entry.ts";
+import { parseSchema, describeIssue } from "../core/schema.ts";
+import { SandboxModeSchema } from "../core/wire/permission.ts";
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import {
   PodTaskMetadataSchema,
@@ -14,10 +14,10 @@ import {
   type A2AMessage,
   type PodTaskMetadata,
   type TaskMetadata,
-} from "../protocol/task.ts";
+} from "../task/wire.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { parseModelSpec } from "../protocol/model.ts";
-import { normalizePeerUrl } from "../transport/net.ts";
+import { parseModelSpec } from "../core/wire/model.ts";
+import { normalizePeerUrl } from "../core/net.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,

@@ -21,14 +21,14 @@ import { rm } from "node:fs/promises";
 import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../node/orca-node.ts";
 import { parseSettings, passwordRefFor } from "../node/settings.ts";
-import { identityPath } from "../security/identity.ts";
-import { isLoopbackEndpoint, normalizePeerUrl } from "../transport/net.ts";
+import { identityPath } from "../core/identity.ts";
+import { isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { ConfigFields, PanelPatch, Settings } from "../node/settings.ts";
 
 import type { Logger } from "@deepseek-ai/cordis";
 import { loadRememberedPeers, peerStatePath, saveRememberedPeers, type PodStores, type RawConfig } from "./stores.ts";
-import { errorMessage } from "../kernel/errors.ts";
+import { errorMessage } from "../core/errors.ts";
 
 /** Observable state of the pod owned by one plugin fiber. */
 interface PodRuntime {

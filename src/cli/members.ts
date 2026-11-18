@@ -2,8 +2,8 @@
 
 import process from "node:process";
 
-import { MembersResponseSchema } from "../protocol/peer.ts";
-import { normalizePeerUrl } from "../transport/net.ts";
+import { MembersResponseSchema } from "../core/wire/peer.ts";
+import { normalizePeerUrl } from "../core/net.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,

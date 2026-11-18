@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createSqliteTaskStore } from "../src/storage/sqlite.ts";
-import type { PersistedTask } from "../src/storage/stores.ts";
+import { createSqliteTaskStore } from "../src/task/task-store.ts";
+import type { PersistedTask } from "../src/task/task-store.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { labelId } from "./fixtures/ids.ts";
 

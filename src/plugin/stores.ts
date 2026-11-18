@@ -16,10 +16,10 @@ import type { CredentialRef } from "@deepseek-ai/dsh-credentials";
 // `ctx.configEditor` is injected by this plugin; the service package owns the type.
 import type {} from "@deepseek-ai/dsh-config-editor";
 
-import { errorMessage, isMissingFile } from "../kernel/errors.ts";
-import { isRecord } from "../kernel/schema.ts";
+import { errorMessage, isMissingFile } from "../core/errors.ts";
+import { isRecord } from "../core/schema.ts";
 import { parseSettings, type ConfigFields } from "../node/settings.ts";
-import { normalizePeerUrl } from "../transport/net.ts";
+import { normalizePeerUrl } from "../core/net.ts";
 import type { PodHandle } from "./lifecycle.ts";
 
 /**

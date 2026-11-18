@@ -9,7 +9,7 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode } from "../src/node/orca-node.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/protocol/peer.ts";
+import type { WorkgroupId } from "../src/core/wire/peer.ts";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "orca-hb-"));

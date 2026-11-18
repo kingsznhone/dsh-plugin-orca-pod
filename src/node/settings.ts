@@ -7,17 +7,17 @@
 
 import { z } from "zod";
 
-import { normalizePeerUrl } from "../transport/net.ts";
-import { DEFAULT_PORT } from "../protocol/constants.ts";
+import { normalizePeerUrl } from "../core/net.ts";
+import { DEFAULT_PORT } from "../core/constants.ts";
 import { HarnessError } from "@deepseek-ai/dsh-error";
 import { credentialRef, isCredentialRefName, type CredentialRef } from "@deepseek-ai/dsh-credentials";
-import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../protocol/model.ts";
-import { SandboxModeSchema } from "../protocol/permission.ts";
-import { WorkgroupIdSchema, normalizeEndpoints } from "../protocol/peer.ts";
-import { errorMessage } from "../kernel/errors.ts";
-import { isRecord, parseSchema, type SchemaIssue } from "../kernel/schema.ts";
-import { EXECUTOR_KINDS } from "../execution/kinds.ts";
-import { AcpExecutorConfigSchema } from "../execution/acp/config.ts";
+import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../core/wire/model.ts";
+import { SandboxModeSchema } from "../core/wire/permission.ts";
+import { WorkgroupIdSchema, normalizeEndpoints } from "../core/wire/peer.ts";
+import { errorMessage } from "../core/errors.ts";
+import { isRecord, parseSchema, type SchemaIssue } from "../core/schema.ts";
+import { EXECUTOR_KINDS } from "../executor/kinds.ts";
+import { AcpExecutorConfigSchema } from "../executor/acp/config.ts";
 
 const NonEmpty = z.string().min(1);
 const PositiveNumber = z.number().positive();

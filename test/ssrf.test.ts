@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { createMembership } from "../src/membership/membership.ts";
-import { candidateEndpointAllowed } from "../src/membership/screening.ts";
+import { createMembership } from "../src/mesh/membership.ts";
+import { candidateEndpointAllowed } from "../src/mesh/screening.ts";
 import {
   bindUrl,
   detectLocalEndpoints,
   isBlockedFetchPort,
   isLoopbackEndpoint,
   pickFreePort,
-} from "../src/transport/net.ts";
-import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
+} from "../src/core/net.ts";
+import type { PeerView, OrcaNodeId } from "../src/core/wire/peer.ts";
 import { labelId } from "./fixtures/ids.ts";
 
 function peer(orcaNodeId: OrcaNodeId, endpoint: string): PeerView {

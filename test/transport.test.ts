@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/transport/peer-client.ts";
+import type { FetchLike } from "../src/mesh/peer-client.ts";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,10 +9,10 @@ import { describe, expect, it } from "vitest";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createMesh } from "./support/harness.ts";
 import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
-import type { MembershipTimings } from "../src/membership/membership.ts";
-import type { TaskView } from "../src/protocol/task.ts";
+import type { MembershipTimings } from "../src/mesh/membership.ts";
+import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/protocol/peer.ts";
+import type { WorkgroupId } from "../src/core/wire/peer.ts";
 
 /**
  * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，

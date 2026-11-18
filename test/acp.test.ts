@@ -7,10 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
-import { permissionRequestOf, type TaskView } from "../src/protocol/task.ts";
-import { createAcpExecutor } from "../src/execution/acp/executor.ts";
-import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
-import { parseEchoScript } from "../src/execution/echo.ts";
+import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
+import { createAcpExecutor } from "../src/executor/acp/executor.ts";
+import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
+import { parseEchoScript } from "../src/executor/echo.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
 

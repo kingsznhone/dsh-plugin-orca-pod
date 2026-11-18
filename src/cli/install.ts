@@ -18,8 +18,8 @@ import { dirname, join } from "node:path";
 
 import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
 import { parseSettings, type Settings } from "../node/settings.ts";
-import { bindChoices } from "../transport/net.ts";
-import { errorMessage } from "../kernel/errors.ts";
+import { bindChoices } from "../core/net.ts";
+import { errorMessage } from "../core/errors.ts";
 import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
 import { isCredentialRefName } from "@deepseek-ai/dsh-credentials";
 import { runNativeCommand, type NativeCommandRunner } from "@deepseek-ai/dsh-native-command";

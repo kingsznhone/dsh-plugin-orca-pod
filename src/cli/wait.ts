@@ -2,8 +2,8 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { isTerminal } from "../protocol/task.ts";
-import { normalizePeerUrl } from "../transport/net.ts";
+import { isTerminal } from "../task/wire.ts";
+import { normalizePeerUrl } from "../core/net.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,

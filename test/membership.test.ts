@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { CANDIDATE_MAX_FAILURES, createMembership, type MembershipTimings } from "../src/membership/membership.ts";
-import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
+import { CANDIDATE_MAX_FAILURES, createMembership, type MembershipTimings } from "../src/mesh/membership.ts";
+import type { PeerView, OrcaNodeId } from "../src/core/wire/peer.ts";
 import { labelId } from "./fixtures/ids.ts";
 
 const TIMINGS: MembershipTimings = {

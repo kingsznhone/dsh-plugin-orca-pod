@@ -5,25 +5,32 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { BLOB_ID_PATTERN } from "../protocol/blob.ts";
-import { createFileBlobRegistry } from "../storage/file-registry.ts";
-import { createMemoryFileBlobStore, createMemoryDispatchStore, createMemoryTaskStore } from "../storage/memory.ts";
-import type { FileBlobStore, DispatchStore, OpenedBlob, TaskStore } from "../storage/stores.ts";
-import type { DispatchEntry } from "../protocol/dispatch.ts";
-import { NonceCache } from "../security/crypto.ts";
-import { loadIdentity } from "../security/identity.ts";
-import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../tasks/delegation.ts";
-import { EchoExecutor } from "../execution/echo.ts";
-import { createAcpExecutor } from "../execution/acp/executor.ts";
-import type { LocalExecutor } from "../execution/executor.ts";
-import { createEventBus } from "../kernel/events.ts";
-import { errorMessage, PodError } from "../kernel/errors.ts";
-import type { NodeLogger } from "../kernel/events.ts";
-import { bindUrl, detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/net.ts";
-import { createGateway } from "../transport/gateway/gateway.ts";
-import { createPeerClient, type FetchLike } from "../transport/peer-client.ts";
-import { createWorkgroup, type LeaveResult } from "../membership/mesh.ts";
-import { createMembership, type MembershipClock, type MembershipTimings } from "../membership/membership.ts";
+import {
+  BLOB_ID_PATTERN,
+  createFileBlobRegistry,
+  createMemoryFileBlobStore,
+  createSqliteFileBlobStore,
+} from "../core/blobs.ts";
+import { createMemoryDispatchStore, createSqliteDispatchStore } from "../task/dispatch-store.ts";
+import { createMemoryTaskStore, createSqliteTaskStore } from "../task/task-store.ts";
+import type { FileBlobStore, OpenedBlob } from "../core/blobs.ts";
+import type { DispatchStore } from "../task/dispatch-store.ts";
+import type { TaskStore } from "../task/task-store.ts";
+import type { DispatchEntry, SubmitTaskInput, TaskView } from "../task/wire.ts";
+import { NonceCache } from "../core/signing.ts";
+import { loadIdentity } from "../core/identity.ts";
+import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../task/delegation.ts";
+import { EchoExecutor } from "../executor/echo.ts";
+import { createAcpExecutor } from "../executor/acp/executor.ts";
+import type { LocalExecutor } from "../executor/executor.ts";
+import { createEventBus } from "../core/events.ts";
+import { errorMessage, PodError } from "../core/errors.ts";
+import type { NodeLogger } from "../core/events.ts";
+import { bindUrl, detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../core/net.ts";
+import { createGateway } from "../api/gateway.ts";
+import { createPeerClient, type FetchLike } from "../mesh/peer-client.ts";
+import { createWorkgroup, type LeaveResult } from "../mesh/workgroup.ts";
+import { createMembership, type MembershipClock, type MembershipTimings } from "../mesh/membership.ts";
 import type {
   HeartbeatResponse,
   JoinResponse,
@@ -31,20 +38,14 @@ import type {
   RuntimeInfo,
   SelfRecord,
   OrcaNodeId,
-} from "../protocol/peer.ts";
+} from "../core/wire/peer.ts";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import type { ModelOffer } from "../protocol/model.ts";
-import type { PodEventInput, PodEventListener } from "../protocol/events.ts";
-import type { SubmitTaskInput, TaskView } from "../protocol/task.ts";
-import {
-  createSqliteDispatchStore,
-  createSqliteFileBlobStore,
-  createSqliteTaskStore,
-  storeDbPath,
-} from "../storage/sqlite.ts";
-import { createTaskRunner } from "../tasks/runner.ts";
-import { createWorkspaceManager, type WorkspacePaths } from "../tasks/workspace.ts";
+import type { ModelOffer } from "../core/wire/model.ts";
+import type { PodEventInput, PodEventListener } from "./events.ts";
+import { storeDbPath } from "../core/sqlite.ts";
+import { createTaskRunner } from "../task/runner.ts";
+import { createWorkspaceManager, type WorkspacePaths } from "../task/workspace.ts";
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
 function collectRuntime(): RuntimeInfo {

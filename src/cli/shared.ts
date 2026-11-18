@@ -4,12 +4,12 @@ import process from "node:process";
 import { parseArgs } from "node:util";
 
 import { configPath, defaultDataRoot, loadConfig, type OrcaNodeConfig } from "../node/config.ts";
-import { MembersResponseSchema, type PeerView } from "../protocol/peer.ts";
-import type { PeerClient } from "../protocol/client.ts";
-import type { TaskView } from "../protocol/task.ts";
-import { loadIdentity, type NodeIdentity } from "../security/identity.ts";
-import { createPeerClient } from "../transport/peer-client.ts";
-import { bindUrl } from "../transport/net.ts";
+import { MembersResponseSchema, type PeerView } from "../core/wire/peer.ts";
+import type { PeerClient } from "../mesh/peer-client.ts";
+import type { TaskView } from "../task/wire.ts";
+import { loadIdentity, type NodeIdentity } from "../core/identity.ts";
+import { createPeerClient } from "../mesh/peer-client.ts";
+import { bindUrl } from "../core/net.ts";
 
 export const OPTIONS = {
   config: { type: "string" },

@@ -10,8 +10,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/execution/executor.ts";
-import { isTerminal, type TaskRunner, type TaskView } from "../src/protocol/task.ts";
+import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/executor/executor.ts";
+import { isTerminal, type TaskRunner, type TaskView } from "../src/task/wire.ts";
 import { runnerDeps, createTestRunner } from "./fixtures/runner.ts";
 
 function message(text = "do the work") {

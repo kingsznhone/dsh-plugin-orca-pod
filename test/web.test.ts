@@ -8,10 +8,10 @@ import { PassThrough, Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import type { PodAdmin, PodApproval, PodPeer, PodTaskRow } from "../src/plugin/admin.ts";
-import type { SelfRecord } from "../src/protocol/peer.ts";
-import type { TaskView } from "../src/protocol/task.ts";
+import type { SelfRecord } from "../src/core/wire/peer.ts";
+import type { TaskView } from "../src/task/wire.ts";
 import type { Logger } from "@deepseek-ai/cordis";
-import { isDirectLoopbackRequest } from "../src/transport/net.ts";
+import { isDirectLoopbackRequest } from "../src/core/net.ts";
 import { createPodApiHandler, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 

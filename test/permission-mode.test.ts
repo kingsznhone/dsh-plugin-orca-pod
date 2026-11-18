@@ -4,17 +4,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createAcpExecutor } from "../src/execution/acp/executor.ts";
-import { parseEchoScript } from "../src/execution/echo.ts";
+import { createAcpExecutor } from "../src/executor/acp/executor.ts";
+import { parseEchoScript } from "../src/executor/echo.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { parsePodMetadata } from "../src/tasks/meta.ts";
-import { parseSchema } from "../src/kernel/schema.ts";
-import { permissionRequestOf } from "../src/protocol/task.ts";
-import { TaskMetadataSchema } from "../src/protocol/task.ts";
-import type { ExecuteInput, ExecutorEvent } from "../src/execution/executor.ts";
+import { parsePodMetadata } from "../src/task/meta.ts";
+import { parseSchema } from "../src/core/schema.ts";
+import { permissionRequestOf, TaskMetadataSchema } from "../src/task/wire.ts";
+import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
-import { narrowPermissionMode } from "../src/protocol/permission.ts";
-import { escalationFor, modeAllows } from "../src/execution/acp/permissions.ts";
+import { narrowPermissionMode } from "../src/core/wire/permission.ts";
+import { escalationFor, modeAllows } from "../src/executor/acp/permissions.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { labelId, wg } from "./fixtures/ids.ts";
 

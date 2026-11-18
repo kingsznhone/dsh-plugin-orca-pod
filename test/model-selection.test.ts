@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { ModelOffersSchema, ModelSelectionSchema } from "../src/protocol/model.ts";
-import { parseSchema } from "../src/kernel/schema.ts";
+import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
+import { parseSchema } from "../src/core/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/catalog.ts";
 import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";

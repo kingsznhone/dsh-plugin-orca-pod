@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateNodeIdentity, shortenNodeId } from "../src/security/identity.ts";
+import { generateNodeIdentity, shortenNodeId } from "../src/core/identity.ts";
 import {
   isHttpEndpoint,
   isOrcaNodeId,
@@ -10,8 +10,8 @@ import {
   type PeerView,
   type RuntimeInfo,
   type OrcaNodeId,
-} from "../src/protocol/peer.ts";
-import { newTaskId } from "../src/protocol/task.ts";
+} from "../src/core/wire/peer.ts";
+import { newTaskId } from "../src/task/wire.ts";
 import { labelId } from "./fixtures/ids.ts";
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.

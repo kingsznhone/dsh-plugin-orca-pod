@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
-import type { DispatchEntry } from "../src/protocol/dispatch.ts";
+import type { DispatchEntry, TaskView } from "../src/task/wire.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import type { TaskView } from "../src/protocol/task.ts";
 import { createPodTools, sessionSandboxMode, type SandboxReader } from "../src/plugin/tools.ts";
 import type { TrackerAgent } from "../src/plugin/tracker.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";

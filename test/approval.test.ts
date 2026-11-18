@@ -2,15 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildAuthHeader, signGrant } from "../src/security/crypto.ts";
-import { loadIdentity, type NodeIdentity } from "../src/security/identity.ts";
+import { buildAuthHeader } from "../src/core/signing.ts";
+import { signGrant } from "../src/task/grants.ts";
+import { loadIdentity, type NodeIdentity } from "../src/core/identity.ts";
 import { createMesh, type Mesh } from "./support/harness.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import { permissionRequestOf } from "../src/protocol/task.ts";
-import type { A2AMessage, TaskState, TaskView } from "../src/protocol/task.ts";
-import type { Grant, SignedGrant } from "../src/protocol/grant.ts";
+import { permissionRequestOf } from "../src/task/wire.ts";
+import type { A2AMessage, TaskState, TaskView } from "../src/task/wire.ts";
+import type { Grant, SignedGrant } from "../src/core/wire/grant.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { OrcaNodeId } from "../src/protocol/peer.ts";
+import type { OrcaNodeId } from "../src/core/wire/peer.ts";
 
 const WORKGROUP = wg("orca-approval");
 const PASSWORD = "approval-secret";

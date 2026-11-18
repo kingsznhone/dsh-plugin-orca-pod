@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
 
-import { EchoExecutor } from "../../src/execution/echo.ts";
-import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/protocol/task.ts";
-import { createFileBlobRegistry } from "../../src/storage/file-registry.ts";
-import { createMemoryFileBlobStore, createMemoryTaskStore } from "../../src/storage/memory.ts";
-import { createTaskRunner, type TaskRunnerDeps } from "../../src/tasks/runner.ts";
-import { createWorkspaceManager } from "../../src/tasks/workspace.ts";
+import { EchoExecutor } from "../../src/executor/echo.ts";
+import type { SubmitTaskInput, TaskRunner, TaskView } from "../../src/task/wire.ts";
+import { createFileBlobRegistry, createMemoryFileBlobStore } from "../../src/core/blobs.ts";
+import { createMemoryTaskStore } from "../../src/task/task-store.ts";
+import { createTaskRunner, type TaskRunnerDeps } from "../../src/task/runner.ts";
+import { createWorkspaceManager } from "../../src/task/workspace.ts";
 import { labelId, wg } from "./ids.ts";
-import type { OrcaNodeId } from "../../src/protocol/peer.ts";
+import type { OrcaNodeId } from "../../src/core/wire/peer.ts";
 
 const dirs: string[] = [];
 

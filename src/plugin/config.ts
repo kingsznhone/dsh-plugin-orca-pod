@@ -14,7 +14,7 @@
 
 import { safeParseSettings } from "../node/settings.ts";
 import type { Settings } from "../node/settings.ts";
-import { isRecord } from "../kernel/schema.ts";
+import { isRecord } from "../core/schema.ts";
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 

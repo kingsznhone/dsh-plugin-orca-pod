@@ -7,10 +7,10 @@ import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
 import { PROFILES_DIR } from "@deepseek-ai/dsh-app-boot";
 import { DSH_HOME_ENV, resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 
-import { deriveWorkgroupKey } from "../security/crypto.ts";
-import { loadOrCreateIdentity, shortenNodeId } from "../security/identity.ts";
-import { describeIssue, parseSchema } from "../kernel/schema.ts";
-import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId } from "../protocol/peer.ts";
+import { deriveWorkgroupKey } from "../core/signing.ts";
+import { loadOrCreateIdentity, shortenNodeId } from "../core/identity.ts";
+import { describeIssue, parseSchema } from "../core/schema.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId } from "../core/wire/peer.ts";
 import { nodeSettings, parseSettings, type NodeSettings, type Settings } from "./settings.ts";
 
 /** What `config.json` holds: the node settings plus the identity and the derived workgroup key. */

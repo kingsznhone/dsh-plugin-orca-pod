@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { CLI_PATH, siblingEntry } from "../src/kernel/entry.ts";
+import { CLI_PATH, siblingEntry } from "../src/core/entry.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 

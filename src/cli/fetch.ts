@@ -8,8 +8,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
-import { parseBlobRef } from "../protocol/blob.ts";
-import { sha256Tap } from "../storage/file-registry.ts";
+import { parseBlobRef, sha256Tap } from "../core/blobs.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,

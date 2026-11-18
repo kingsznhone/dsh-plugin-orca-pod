@@ -4,7 +4,7 @@
 import { DEFAULT_DSH_HOME_DISPLAY, DSH_HOME_ENV } from "@deepseek-ai/dsh-home-paths";
 import process from "node:process";
 
-import { errorMessage } from "../kernel/errors.ts";
+import { errorMessage } from "../core/errors.ts";
 import * as fetch from "./fetch.ts";
 import * as log from "./log.ts";
 import * as members from "./members.ts";

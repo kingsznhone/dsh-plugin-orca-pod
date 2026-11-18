@@ -10,12 +10,12 @@ import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createMesh } from "./support/harness.ts";
 import { createOrcaNode, joinRoster } from "../src/node/orca-node.ts";
 import type { OrcaNodeConfig } from "../src/node/config.ts";
-import { generateNodeIdentity } from "../src/security/identity.ts";
-import type { MembershipTimings } from "../src/membership/membership.ts";
+import { generateNodeIdentity } from "../src/core/identity.ts";
+import type { MembershipTimings } from "../src/mesh/membership.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
-import type { TaskView } from "../src/protocol/task.ts";
+import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/protocol/peer.ts";
+import type { WorkgroupId } from "../src/core/wire/peer.ts";
 
 const FAST: Partial<MembershipTimings> = {
   intervalMs: 50,

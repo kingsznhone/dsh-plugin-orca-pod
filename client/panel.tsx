@@ -15,7 +15,7 @@ import {
 import React, { type ReactNode } from "react";
 import { ApprovalList } from "./approvals.tsx";
 import { short } from "./format.ts";
-import { DEFAULT_PORT } from "../src/protocol/constants.ts";
+import { DEFAULT_PORT } from "../src/core/constants.ts";
 import { t, useLocale } from "./i18n.ts";
 import { Members, NodeDetail, Workspace } from "./members.tsx";
 import css from "./panel.module.css";

@@ -11,8 +11,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { OrcaNode } from "../node/orca-node.ts";
-import type { PermissionRequest } from "../protocol/grant.ts";
-import type { TaskView } from "../protocol/task.ts";
+import type { PermissionRequest } from "../core/wire/grant.ts";
+import type { TaskView } from "../task/wire.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
 interface ApprovalPrompt {

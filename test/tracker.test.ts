@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { PodError } from "../src/kernel/errors.ts";
-import type { TaskState, TaskView } from "../src/protocol/task.ts";
+import { PodError } from "../src/core/errors.ts";
+import type { TaskState, TaskView, DispatchEntry } from "../src/task/wire.ts";
 import { createApprovalBroker } from "../src/plugin/broker.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import type { DispatchEntry } from "../src/protocol/dispatch.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
 import type { TrackerAgent, TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";

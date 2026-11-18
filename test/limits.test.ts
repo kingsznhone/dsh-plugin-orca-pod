@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
-import { isTerminal, type TaskView } from "../src/protocol/task.ts";
+import { isTerminal, type TaskView } from "../src/task/wire.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { wg } from "./fixtures/ids.ts";
 

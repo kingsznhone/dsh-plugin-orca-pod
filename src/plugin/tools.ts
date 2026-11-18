@@ -8,14 +8,14 @@
  * and callers poll `status` for the result.
  */
 
-import { normalizePeerUrl } from "../transport/net.ts";
-import { DEFAULT_PORT } from "../protocol/constants.ts";
-import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../protocol/task.ts";
-import { parseModelSpec } from "../protocol/model.ts";
-import { narrowPermissionMode } from "../protocol/permission.ts";
-import type { PeerView } from "../protocol/peer.ts";
-import { runningInTask } from "../kernel/entry.ts";
-import { abortError, errorMessage, PodError } from "../kernel/errors.ts";
+import { normalizePeerUrl } from "../core/net.ts";
+import { DEFAULT_PORT } from "../core/constants.ts";
+import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../task/wire.ts";
+import { parseModelSpec } from "../core/wire/model.ts";
+import { narrowPermissionMode } from "../core/wire/permission.ts";
+import type { PeerView } from "../core/wire/peer.ts";
+import { runningInTask } from "../core/entry.ts";
+import { abortError, errorMessage, PodError } from "../core/errors.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";

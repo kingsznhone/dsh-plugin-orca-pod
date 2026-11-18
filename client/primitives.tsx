@@ -4,7 +4,7 @@ import { Modal, StateDot, Tag, fileSizeText } from "@deepseek-ai/dsh-client-ui-p
 import React, { type ReactNode } from "react";
 import { ageOf, stateDot, stateLabel, type ShownState } from "./format.ts";
 import { t } from "./i18n.ts";
-import { errorMessage } from "../src/kernel/errors.ts";
+import { errorMessage } from "../src/core/errors.ts";
 import { downloadBlob, store } from "./store.ts";
 import type { ModelOffer, ModelSelection, PodArtifact } from "./types.ts";
 import ui from "./ui.module.css";

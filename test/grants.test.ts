@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { signGrant } from "../src/security/crypto.ts";
-import { checkGrant, createGrantLedger, parseSignedGrant, type GrantExpectation } from "../src/security/grants.ts";
-import { generateNodeIdentity } from "../src/security/identity.ts";
-import type { Grant, PermissionRequest } from "../src/protocol/grant.ts";
+import {
+  signGrant,
+  checkGrant,
+  createGrantLedger,
+  parseSignedGrant,
+  type GrantExpectation,
+} from "../src/task/grants.ts";
+import { generateNodeIdentity } from "../src/core/identity.ts";
+import type { Grant, PermissionRequest } from "../src/core/wire/grant.ts";
 
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 
