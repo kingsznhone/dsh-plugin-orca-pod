@@ -293,7 +293,7 @@ export class PodAdmin {
   /** Effective config plus setup state; the password itself is never returned. */
   config(): PodConfigView {
     const { lifecycle } = this;
-    const config = lifecycle.config;
+    const config = lifecycle.settings;
     const { run, status } = lifecycle;
     const current = run?.node ?? null;
     const self = current?.profile.record() ?? null;
@@ -326,7 +326,7 @@ export class PodAdmin {
         default_reasoning_effort: config.default_reasoning_effort ?? null,
         executor: config.executor ?? null,
       },
-      password_set: config.workgroup_password.length > 0,
+      password_set: lifecycle.passwordSet,
       running: current !== null,
       error: status.kind === "failed" ? status.error.message : null,
     };

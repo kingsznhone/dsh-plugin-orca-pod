@@ -96,7 +96,7 @@ describe("panel configuration lifecycle", () => {
       await handle.reconfigure({ display_name: "renamed node", workgroup_password: PASSWORD });
 
       expect(handle.configured).toBe(true);
-      expect(handle.config.display_name).toBe("renamed node");
+      expect(handle.settings.display_name).toBe("renamed node");
       expect(handle.status.kind).not.toBe("failed");
       expect(stores.secrets.get(REF)).toBe(PASSWORD);
       expect(stores.raw()).toMatchObject({ display_name: "renamed node" });
@@ -129,11 +129,14 @@ describe("panel configuration lifecycle", () => {
     const { handle, stores } = await started(bundle(root));
     try {
       const before = stores.raw();
+      const firstRun = handle.run;
       await handle.reconfigure({ workgroup_password: "rotated" });
       expect(stores.secrets.get(REF)).toBe("rotated");
       expect(stores.raw()).toEqual(before);
-      expect(handle.config.workgroup_password).toBe("rotated");
+      // Nothing was written, so no host restart follows: the pod restarts itself on the new password.
+      expect(handle.passwordSet).toBe(true);
       expect(handle.run).not.toBeNull();
+      expect(handle.run).not.toBe(firstRun);
     } finally {
       await handle.stop();
     }
@@ -206,6 +209,30 @@ describe("panel configuration lifecycle", () => {
     }
   });
 
+  it("leaves the restart to the host when a config write makes it restart the plugin", async () => {
+    const root = await tempRoot("orca-panel-");
+    const { handle, stores } = await started(bundle(root));
+    try {
+      // A DSH-like host: after a write it disposes this instance and loads a new one.
+      Object.defineProperty(stores, "restartsOnWrite", { value: true });
+      const run = handle.run;
+
+      await handle.reconfigure({ display_name: "host restarts me" });
+      // The write is durable, and this instance does nothing more with it.
+      expect(stores.raw()).toMatchObject({ display_name: "host restarts me" });
+      expect(handle.status.kind).toBe("running");
+      expect(handle.run).toBe(run);
+      expect(handle.settings.display_name).toBe("panel node");
+
+      // Only the password changed: nothing is written, so no host restart follows and the pod restarts itself.
+      await handle.reconfigure({ workgroup_password: "rotated" });
+      expect(handle.run).not.toBe(run);
+      expect(handle.status.kind).toBe("running");
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it("keeps the lifecycle queue usable after a rejected reconfigure", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle } = await started(bundle(root));
@@ -214,7 +241,7 @@ describe("panel configuration lifecycle", () => {
       // The failed operation must not poison the serial lane.
       await handle.reconfigure({ display_name: "recovered" });
       expect(handle.run).not.toBeNull();
-      expect(handle.config.display_name).toBe("recovered");
+      expect(handle.settings.display_name).toBe("recovered");
     } finally {
       await handle.stop();
     }
@@ -226,12 +253,12 @@ describe("panel configuration lifecycle", () => {
     try {
       // The panel route parses the body first: keys the panel may not edit never reach the handle.
       await handle.reconfigure(PanelPatchSchema.parse({ data_root: "/elsewhere", display_name: "kept" }));
-      expect(handle.config.data_root).toBe(root);
-      expect(handle.config.task_timeout_s).toBe(90);
-      expect(handle.config.display_name).toBe("kept");
+      expect(handle.settings.data_root).toBe(root);
+      expect(handle.settings.task_timeout_s).toBe(90);
+      expect(handle.settings.display_name).toBe("kept");
 
       await handle.reconfigure({ task_timeout_s: null });
-      expect(handle.config.task_timeout_s).toBeUndefined();
+      expect(handle.settings.task_timeout_s).toBeUndefined();
       expect(stores.raw()).not.toHaveProperty("task_timeout_s");
       expect((await readJson(configPath(root))).task_timeout_s).toBeUndefined();
     } finally {
@@ -455,7 +482,7 @@ describe("panel admin configuration", () => {
       expect(view.workgroup_id).toBe("wg-other");
       expect(view.password_set).toBe(true);
       expect(stores.secrets.get("ORCA_POD_PASSWORD_WG_OTHER")).toBe(PASSWORD);
-      expect(handle.config.workgroup_password).toBe(PASSWORD);
+      expect(handle.passwordSet).toBe(true);
       expect(handle.run!.node.orcaNodeId).toBe(firstId);
       expect((await readJson(configPath(root))).workgroup_id).toBe("wg-other");
     } finally {

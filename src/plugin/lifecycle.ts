@@ -62,9 +62,10 @@ export class PodLifecycle {
   private readonly dataRoot: string;
   private readonly queue = new SerialQueue();
   private readonly peers: RememberedPeers;
-  /** The plugin config as the host gave it; the password is resolved separately. */
-  private pluginConfig: RootedSettings;
-  private effective: RootedSettings;
+  /** The plugin config as the host stored it; it never holds the password, which is resolved apart. */
+  private saved: RootedSettings;
+  /** The stored workgroup password as the last start read it; in memory only. */
+  private password: string | undefined;
   /** Where the last finished (re)start left the pod; only the queue writes it. */
   private outcome: Exclude<PodStatus, { kind: "starting" }> = { kind: "unconfigured" };
   /** Restarts that are queued or have not brought their node up yet. */
@@ -84,8 +85,7 @@ export class PodLifecycle {
     // Every later read (peer state, node config, panel) then sees the same path.
     this.dataRoot = config.data_root ?? defaultRoot ?? defaultDataRoot();
     this.peers = new RememberedPeers(this.dataRoot, logger);
-    this.pluginConfig = this.rooted(config);
-    this.effective = this.pluginConfig;
+    this.saved = this.rooted(config);
   }
 
   /** What the pod is doing now. A queued restart counts as `starting`: the node it replaces is about to go. */
@@ -109,14 +109,19 @@ export class PodLifecycle {
     return PodLifecycle.runOf(this.status);
   }
 
-  /** Effective config: the plugin config plus the resolved password (in memory only). */
-  get config(): RootedSettings {
-    return this.effective;
+  /** The stored plugin config with `data_root` fixed; it never holds the password. */
+  get settings(): RootedSettings {
+    return this.saved;
   }
 
   /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
   get configured(): boolean {
-    return Boolean(this.effective.workgroup_id && this.effective.workgroup_password);
+    return Boolean(this.saved.workgroup_id) && this.passwordSet;
+  }
+
+  /** True while a workgroup password is stored (as the last start read it). */
+  get passwordSet(): boolean {
+    return this.password !== undefined;
   }
 
   /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
@@ -155,29 +160,20 @@ export class PodLifecycle {
       throw new Error("a workgroup password is required; a passwordless mesh is not supported");
     }
     // Validate the whole result first, so a bad patch changes nothing.
-    // The plugin config without the in-memory password is what may be persisted.
-    const { workgroup_password: _password, ...persisted } = this.effective;
-    const preview = parseSettings(PodLifecycle.applyPanelFields(persisted, fields));
+    const preview = parseSettings(PodLifecycle.applyPanelFields(this.saved, fields));
     const ref = passwordRefFor(preview);
     if (ref === undefined) throw new Error("a workgroup id is required");
     // Switching workgroups keeps the current password unless a new one is
     // given: the password is a local secret, not a claim tied to one group.
-    const carried =
-      ref !== passwordRefFor(this.effective) && this.effective.workgroup_password.length > 0
-        ? this.effective.workgroup_password
-        : undefined;
+    const carried = ref !== passwordRefFor(this.saved) ? this.password : undefined;
     const secret = typeof password === "string" ? password : carried;
-    // The secret goes first: in DSH the config write restarts the plugin, and
-    // the new instance must already find the password.
+    // The secret is stored before the config is committed, so whatever runs on
+    // the committed config (a restarted plugin included) already finds it.
     if (secret !== undefined) await this.stores.writeSecret(ref, secret);
     else if ((await this.stores.readSecret(ref)) === undefined) {
       throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
     }
-    // Outside the queue on purpose: a host restart waits for the queue to drain.
-    const changed = await this.persist((raw) => PodLifecycle.applyPanelFields(raw, fields));
-    // Nothing to persist (only the password changed, or the bundle already
-    // names the workgroup): no host restart follows, so restart in place.
-    if (!changed) await this.restart();
+    await this.commit((raw) => PodLifecycle.applyPanelFields(raw, fields));
   }
 
   /** `join` one peer now and remember it in the peer state file. */
@@ -201,49 +197,43 @@ export class PodLifecycle {
       await this.peers.clear();
     });
     // Startup peers named in the plugin config are forgotten too.
-    if (this.effective.peers.length > 0)
-      await this.persist((raw) => PodLifecycle.applyPanelFields(raw, { peers: null }));
+    if (this.saved.peers.length > 0) await this.commit((raw) => PodLifecycle.applyPanelFields(raw, { peers: null }));
   }
 
   /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
   async reset(): Promise<void> {
-    const ref = passwordRefFor(this.effective);
+    const ref = passwordRefFor(this.saved);
     await this.queue.run(async () => {
       await this.stopNode();
       for (const path of [configPath(this.dataRoot), identityPath(this.dataRoot)]) {
         await this.removeQuietly(path);
       }
       await this.peers.remove();
+      this.password = undefined;
     });
     if (ref !== undefined) await this.stores.clearSecret(ref);
-    const changed = await this.persist((raw) =>
-      PodLifecycle.applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
-    );
     // Back to the first-run wizard: without a stored password nothing starts,
     // even when an inherited config layer still names a workgroup.
-    if (!changed) await this.restart();
-  }
-
-  /**
-   * Take a config the host persisted, as a plugin restart would: stop the node
-   * and start again from `config`. A host that restarts the plugin itself never
-   * calls it.
-   */
-  adopt(config: Settings): Promise<void> {
-    this.pluginConfig = this.rooted(config);
-    return this.restart();
+    await this.commit((raw) =>
+      PodLifecycle.applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
+    );
   }
 
   private rooted(config: Settings): RootedSettings {
     return { ...config, data_root: config.data_root ?? this.dataRoot, workgroup_password: "" };
   }
 
-  /** Write a config change; true when something was stored (the host restarts the plugin, or we adopt it here). */
-  private async persist(change: (raw: RawConfig) => RawConfig): Promise<boolean> {
+  /**
+   * Make a panel action durable, then run the pod on the result. When the host
+   * restarts the plugin on a config write, this instance is about to be disposed
+   * and does nothing more; otherwise it restarts in place on what was stored.
+   */
+  private async commit(change: (raw: RawConfig) => RawConfig): Promise<void> {
+    // The write is not queued: a host restart waits for the queue to drain.
     const written = await this.stores.writeConfig(change);
-    if (written === null) return false;
-    if (!this.stores.restartsOnWrite) await this.adopt(parseSettings(written));
-    return true;
+    if (written !== null && this.stores.restartsOnWrite) return;
+    if (written !== null) this.saved = this.rooted(parseSettings(written));
+    await this.restart();
   }
 
   /**
@@ -257,7 +247,7 @@ export class PodLifecycle {
     return done;
   }
 
-  /** (Re)start from `pluginConfig`: bring the node up, then rejoin the peers. Queue only. */
+  /** (Re)start from the saved settings: bring the node up, then rejoin the peers. Queue only. */
   private async boot(): Promise<void> {
     const rejoin = await this.bringUp();
     if (rejoin !== null) await this.joinPeers(rejoin.node, rejoin.peers, rejoin.self);
@@ -272,24 +262,25 @@ export class PodLifecycle {
     try {
       if (this.outcome.kind === "stopped") return null;
       await this.stopNode();
-      const password = await this.readPassword(this.pluginConfig);
-      this.effective = { ...this.pluginConfig, workgroup_password: password ?? "" };
+      // An empty password counts as none.
+      const password = (await this.readPassword(this.saved)) || undefined;
+      this.password = password;
       // A panel-configured orca node needs both a workgroup and a password. Empty
       // values mean "not configured yet" and keep the node idle instead of opening
       // a passwordless mesh; the first-run wizard fills them in.
-      if (!this.configured) {
+      if (password === undefined || this.saved.workgroup_id === undefined) {
         // The panel shows its first-run wizard and calls `reconfigure` once the
         // user has picked a workgroup, password and listen address.
         this.logger.info("orca-pod: waiting for workgroup setup from the panel");
         return null;
       }
       try {
-        const run = await this.startNode(this.effective);
+        const run = await this.startNode(password);
         this.outcome = { kind: "running", run };
         // Startup peers from the config, then the ones joined at runtime.
         return {
           node: run.node,
-          peers: new Set([...this.effective.peers, ...this.peers.list()]),
+          peers: new Set([...this.saved.peers, ...this.peers.list()]),
           self: normalizePeerUrl(run.node.profile.endpoints[0] ?? ""),
         };
       } catch (error) {
@@ -316,7 +307,8 @@ export class PodLifecycle {
   }
 
   /** Create, start and equip a node. One that cannot listen is stopped and dropped, and the failure thrown. */
-  private async startNode(config: RootedSettings): Promise<PodRun> {
+  private async startNode(password: string): Promise<PodRun> {
+    const config = { ...this.saved, workgroup_password: password };
     const dataRoot = config.data_root;
     // The plugin runs real DSH sessions by default. A loopback-only advertise list
     // is useless across machines, so it means "derive from the listen address".
