@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { TaskView } from "../task/wire.ts";
-import type { PodLifecycle } from "./lifecycle.ts";
+import type { Pod } from "./pod.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
 export interface ApprovalPrompt {
@@ -41,8 +41,8 @@ export const taskKey = (peer: string, taskId: string): string => `${peer}|${task
 export class ApprovalBroker {
   private readonly parked = new Map<string, Parked>();
 
-  /** The lifecycle owns the running node, which carries a decision to the remote task. */
-  constructor(private readonly lifecycle: PodLifecycle) {}
+  /** The pod owns the running node, which carries a decision to the remote task. */
+  constructor(private readonly pod: Pod) {}
 
   /**
    * Park a request seen on a tracked task. The tracker polls while the task stays
@@ -106,8 +106,8 @@ export class ApprovalBroker {
     taskId: string,
     act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
   ): Promise<TaskView> {
-    await this.lifecycle.settled();
-    const { node } = this.lifecycle.requireRun();
+    await this.pod.settled();
+    const { node } = this.pod.requireRun();
     const key = taskKey(peer, taskId);
     const entry = this.parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");

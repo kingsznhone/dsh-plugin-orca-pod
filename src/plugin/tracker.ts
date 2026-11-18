@@ -23,7 +23,7 @@ import type { DispatchEntry, TaskView } from "../task/wire.ts";
 import { isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
-import type { PodLifecycle } from "./lifecycle.ts";
+import type { Pod } from "./pod.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 
@@ -270,7 +270,7 @@ class NoticeDelivery {
 
 /**
  * Tracks the tasks this node dispatched for DSH sessions, bound to the running
- * node of one lifecycle. Polling is lazy: tasks are watched only while at least
+ * node of one pod. Polling is lazy: tasks are watched only while at least
  * one is pending, so an idle DSH session performs no work.
  */
 export class Tracker {
@@ -288,7 +288,7 @@ export class Tracker {
   private stopped = false;
 
   constructor(
-    private readonly lifecycle: PodLifecycle,
+    private readonly pod: Pod,
     private readonly broker: ApprovalBroker,
     private readonly logger: Logger,
     options: TrackerOptions = {},
@@ -376,7 +376,7 @@ export class Tracker {
   }
 
   private async poll(): Promise<void> {
-    const run = this.lifecycle.run;
+    const run = this.pod.run;
     if (run === null) return;
     for (const [key, entry] of [...this.pending]) {
       // Exponential backoff after transient failures; the timer keeps running so

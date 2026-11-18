@@ -6,7 +6,7 @@
  * `window.__ModuleLoader__`. The factory's `require` resolves only the shell's
  * platform module table (`react`, `react/jsx-runtime` and DSH's shared UI
  * primitives); host code is reached through the same-origin `/orca-api`
- * routes registered by `src/plugin/web.ts`.
+ * routes registered by `src/plugin/panel-routes.ts`.
  *
  * The host sends ready-to-render data (names, labels, links, what is
  * cancellable); the client only draws it and posts the user's actions back.

@@ -11,7 +11,7 @@ import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.
 import { parseSchema } from "../src/core/schema.ts";
 import { parseSettings, type Settings } from "../src/node/settings.ts";
 import { ModelCatalogFeed, type HostModelCatalog } from "../src/plugin/catalog.ts";
-import { PodLifecycle } from "../src/plugin/lifecycle.ts";
+import { Pod } from "../src/plugin/pod.ts";
 import { MemoryPodStores } from "../src/plugin/stores.ts";
 import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -239,7 +239,7 @@ describe("model catalog", () => {
     stores.secrets.set("ORCA_POD_PASSWORD_WG_CATALOG", "pw");
     const feed = new ModelCatalogFeed(ctx, logger);
     await feed.refresh();
-    const pod = new PodLifecycle(parseSettings(stores.raw()), logger, stores, feed);
+    const pod = new Pod(parseSettings(stores.raw()), logger, stores, feed);
     pod.start();
     try {
       await pod.settled();

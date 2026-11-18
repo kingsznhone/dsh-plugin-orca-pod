@@ -1,5 +1,5 @@
 /**
- * Node lifecycle for the Orca pod DSH bundle.
+ * The pod of the Orca DSH bundle: its settings, password, peers and orca node.
  *
  * The DSH host must not block on an orca node: `start()` returns at once and
  * performs config resolution, `orcaNode.start()` and the initial `join`s on a
@@ -32,7 +32,7 @@ import type { ModelCatalogFeed } from "./catalog.ts";
 import { RememberedPeers } from "./peers-file.ts";
 import type { PodStores, RawConfig } from "./stores.ts";
 
-/** Settings with the data directory resolved: the lifecycle fixes it once, at start (DX13). */
+/** Settings with the data directory resolved: the pod fixes it once, at start (DX13). */
 export type RootedSettings = Settings & { data_root: string };
 
 /** One started node; replaced as a whole on every restart, never mutated. */
@@ -58,7 +58,7 @@ export type PodStatus =
  * replaced as a whole on every restart. Consumers read the current run through
  * `run` (display, background work) or `settled()` and `requireRun()` (actions).
  */
-export class PodLifecycle {
+export class Pod {
   private readonly dataRoot: string;
   private readonly queue = new SerialQueue();
   private readonly peers: RememberedPeers;
@@ -111,7 +111,7 @@ export class PodLifecycle {
 
   /** The current run, or an error that names the status. */
   requireRun(): PodRun {
-    return PodLifecycle.runOf(this.status);
+    return Pod.runOf(this.status);
   }
 
   /** The stored plugin config with `data_root` fixed; it never holds the password. */
@@ -165,7 +165,7 @@ export class PodLifecycle {
       throw new Error("a workgroup password is required; a passwordless mesh is not supported");
     }
     // Validate the whole result first, so a bad patch changes nothing.
-    const preview = parseSettings(PodLifecycle.applyPanelFields(this.saved, fields));
+    const preview = parseSettings(Pod.applyPanelFields(this.saved, fields));
     const ref = passwordRefFor(preview);
     if (ref === undefined) throw new Error("a workgroup id is required");
     // Switching workgroups keeps the current password unless a new one is
@@ -178,13 +178,13 @@ export class PodLifecycle {
     else if ((await this.stores.readSecret(ref)) === undefined) {
       throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
     }
-    await this.commit((raw) => PodLifecycle.applyPanelFields(raw, fields));
+    await this.commit((raw) => Pod.applyPanelFields(raw, fields));
   }
 
   /** `join` one peer now and remember it in the peer state file. */
   addPeer(peer: string): Promise<void> {
     return this.queue.run(async () => {
-      await PodLifecycle.runOf(this.outcome).node.mesh.join(peer);
+      await Pod.runOf(this.outcome).node.mesh.join(peer);
       await this.peers.add(peer);
     });
   }
@@ -202,7 +202,7 @@ export class PodLifecycle {
       await this.peers.clear();
     });
     // Startup peers named in the plugin config are forgotten too.
-    if (this.saved.peers.length > 0) await this.commit((raw) => PodLifecycle.applyPanelFields(raw, { peers: null }));
+    if (this.saved.peers.length > 0) await this.commit((raw) => Pod.applyPanelFields(raw, { peers: null }));
   }
 
   /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
@@ -220,7 +220,7 @@ export class PodLifecycle {
     // Back to the first-run wizard: without a stored password nothing starts,
     // even when an inherited config layer still names a workgroup.
     await this.commit((raw) =>
-      PodLifecycle.applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
+      Pod.applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
     );
   }
 
@@ -291,7 +291,7 @@ export class PodLifecycle {
           self: normalizePeerUrl(run.node.profile.endpoints[0] ?? ""),
         };
       } catch (error) {
-        const failure = PodLifecycle.toError(error);
+        const failure = Pod.toError(error);
         this.outcome = { kind: "failed", error: failure };
         this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
         return null;

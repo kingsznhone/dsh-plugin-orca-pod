@@ -4,7 +4,7 @@ import { vi } from "vitest";
 import { parseSettings } from "../../src/node/settings.ts";
 import type { OrcaNode } from "../../src/node/orca-node.ts";
 import { ModelCatalogFeed } from "../../src/plugin/catalog.ts";
-import { PodLifecycle } from "../../src/plugin/lifecycle.ts";
+import { Pod } from "../../src/plugin/pod.ts";
 import { MemoryPodStores } from "../../src/plugin/stores.ts";
 
 export const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
@@ -14,21 +14,17 @@ export function catalogFeed(): ModelCatalogFeed {
   return new ModelCatalogFeed({ inject() {} } as unknown as Pick<Context, "inject">, logger);
 }
 
-/** A real lifecycle that was never started: no node, nothing configured. */
-export function idleLifecycle(
-  config: Record<string, unknown> = {},
-  stores = new MemoryPodStores(),
-  root?: string,
-): PodLifecycle {
-  return new PodLifecycle(parseSettings(config), logger, stores, catalogFeed(), root);
+/** A real pod that was never started: no node, nothing configured. */
+export function idlePod(config: Record<string, unknown> = {}, stores = new MemoryPodStores(), root?: string): Pod {
+  return new Pod(parseSettings(config), logger, stores, catalogFeed(), root);
 }
 
 /**
- * A lifecycle that is running the given node, the way one that started it
+ * A pod that is running the given node, the way one that started it
  * would be. Tests pass the few parts of a node they exercise.
  */
-export function lifecycleWithNode(node: unknown): PodLifecycle {
-  const lifecycle = idleLifecycle();
-  vi.spyOn(lifecycle, "status", "get").mockReturnValue({ kind: "running", run: { node: node as OrcaNode, port: 0 } });
-  return lifecycle;
+export function podRunning(node: unknown): Pod {
+  const pod = idlePod();
+  vi.spyOn(pod, "status", "get").mockReturnValue({ kind: "running", run: { node: node as OrcaNode, port: 0 } });
+  return pod;
 }

@@ -1,5 +1,5 @@
 /**
- * What the pod lifecycle keeps behind `PodStores` and what must outlive a node
+ * What the pod keeps behind `PodStores` and what must outlive a node
  * restart (§7.3, §9.2): the workgroup password and the plugin config (the DSH
  * credential store and config editor, or memory without a host). The peers
  * joined at runtime are `peers-file.ts`.
@@ -24,14 +24,14 @@ import { parseSettings, type ConfigFields } from "../node/settings.ts";
 export type RawConfig = ConfigFields & { [key: string]: unknown };
 
 /**
- * Persistence the lifecycle needs from its host. In DSH these are the
+ * Persistence the pod needs from its host. In DSH these are the
  * credential seam and the config editor (`HostPodStores`); without a host,
  * `MemoryPodStores` keeps both in memory.
  */
 export interface PodStores {
   /**
    * Whether the host restarts the plugin by itself after a config write (the DSH
-   * Loader does). When it does not, the lifecycle applies the written config
+   * Loader does). When it does not, the pod applies the written config
    * itself.
    */
   readonly restartsOnWrite: boolean;
@@ -42,15 +42,15 @@ export interface PodStores {
   /**
    * Persist the next plugin config, derived from the stored raw one. Resolves to
    * the stored config, or to null when `change` changes nothing. With
-   * `restartsOnWrite` the host restarts the plugin (the lifecycle is disposed
-   * before the promise settles). Never call it from inside the lifecycle queue:
+   * `restartsOnWrite` the host restarts the plugin (the pod is disposed
+   * before the promise settles). Never call it from inside the pod's queue:
    * a host restart waits for that queue to drain.
    */
   writeConfig(change: (raw: RawConfig) => RawConfig): Promise<RawConfig | null>;
 }
 
 /**
- * The lifecycle's persistence on a DSH host (§7.3): the password in the
+ * The pod's persistence on a DSH host (§7.3): the password in the
  * credential store, settings in this plugin's profile entry. A config write goes
  * through `configEditor.edit`, which validates it with `Config`, writes the
  * profile patch and has the Loader restart this plugin with the new config.
@@ -87,7 +87,7 @@ export class HostPodStores implements PodStores {
 /**
  * Stores for a pod without a DSH host (tests, smoke runs): the raw config and
  * the secrets live in memory. Nothing restarts the plugin after a write, so the
- * lifecycle applies the config itself.
+ * pod applies the config itself.
  */
 export class MemoryPodStores implements PodStores {
   readonly restartsOnWrite = false;

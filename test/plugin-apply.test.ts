@@ -242,7 +242,7 @@ describe("plugin apply", () => {
     expect(host.claims).toHaveLength(1);
     expect(host.created).toHaveLength(1);
     expect(host.configured).toEqual([{ auto: false }]);
-    // The plugin itself owns only the node lifecycle; the panel route and the
+    // The plugin itself owns only the pod; the panel route and the
     // settings-page policy live in their own inject scopes.
     expect(host.disposers).toHaveLength(1);
     // agents, permission presets, panel route, settings page, llm, default model.

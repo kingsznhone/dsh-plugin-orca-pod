@@ -8,7 +8,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { Tracker, taskNoticeLine } from "../src/plugin/tracker.ts";
-import { idleLifecycle, logger } from "./fixtures/pod.ts";
+import { idlePod, logger } from "./fixtures/pod.ts";
 import type { TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 
@@ -95,7 +95,7 @@ function fakeNode(views: Map<string, TaskView>): FakeTaskNode {
   };
 }
 
-const broker = new ApprovalBroker(idleLifecycle());
+const broker = new ApprovalBroker(idlePod());
 
 /** The task ids the tracker read from the node, in order: what it is still watching shows up here. */
 const reads: string[] = [];
@@ -106,10 +106,10 @@ beforeEach(() => {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** A real tracker whose lifecycle answers with a node that can only read tasks. */
+/** A real tracker whose pod answers with a node that can only read tasks. */
 function createTracker(getNode: () => FakeTaskNode | null, options?: TrackerOptions) {
-  const lifecycle = idleLifecycle();
-  vi.spyOn(lifecycle, "status", "get").mockImplementation(() => {
+  const pod = idlePod();
+  vi.spyOn(pod, "status", "get").mockImplementation(() => {
     const node = getNode();
     return node === null
       ? { kind: "unconfigured" }
@@ -129,7 +129,7 @@ function createTracker(getNode: () => FakeTaskNode | null, options?: TrackerOpti
           },
         };
   });
-  return new Tracker(lifecycle, broker, logger, options);
+  return new Tracker(pod, broker, logger, options);
 }
 
 function waitFor(check: () => boolean, timeoutMs = 500): Promise<void> {

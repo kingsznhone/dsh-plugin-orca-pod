@@ -30,7 +30,7 @@ import {
   type ToolExecution,
   type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
-import type { PodLifecycle } from "./lifecycle.ts";
+import type { Pod } from "./pod.ts";
 import type { OptionalService } from "./services.ts";
 import type { Tracker } from "./tracker.ts";
 
@@ -124,10 +124,10 @@ type TaskStatusResult = TaskView & { terminal: boolean };
 type ConnectResult = { peer: string; members: PeerSummary[]; members_digest: string };
 type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
 
-/** The single `orca_pod` tool, bound to one pod lifecycle. */
+/** The single `orca_pod` tool, bound to one pod. */
 export class PodTool {
   constructor(
-    private readonly pod: PodLifecycle,
+    private readonly pod: Pod,
     private readonly tracker: Tracker,
     private readonly sandbox?: OptionalService<"sandboxPolicy">,
   ) {}

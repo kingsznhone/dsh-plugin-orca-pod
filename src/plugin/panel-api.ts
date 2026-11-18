@@ -1,14 +1,135 @@
 /**
  * What the Orca panel and its host half say to each other over `/orca-api`
- * (§9.2): request bodies as schemas the host parses, response shapes as types
- * the client imports (type-only, so they are erased from the bundle).
+ * (§9.2), in one place: request bodies as schemas the host parses, response
+ * shapes as types the client imports (type-only, so they are erased from the
+ * bundle). `panel.ts` fills the shapes, `panel-routes.ts` serves them.
  */
 
+import type { LlmReasoningEffortInfo, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { z } from "zod";
 
+import type { PeerView, SelfRecord } from "../core/wire/peer.ts";
+import type { ExecutorKind } from "../executor/kinds.ts";
 import type { PanelPatch } from "../node/settings.ts";
-import type { TaskView } from "../task/wire.ts";
-import type { PodState, PodTaskDetail, PodTaskRow } from "./admin.ts";
+import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
+
+/** One artifact attached to a task: a file its node published (§5.6). */
+export interface PodArtifact {
+  name: string;
+  blob_id: string;
+  bytes: number;
+  /** The node that published it; null when this node cannot tell which member runs the task. */
+  node: string | null;
+}
+
+/** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
+export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | null };
+
+/** One permission request waiting for the human. */
+export interface PodApproval {
+  /** `peer|task_id`: stable across polls. */
+  id: string;
+  peer: string;
+  task_id: string;
+  tool: string;
+  /** Short preview of the requested arguments. */
+  requested: string;
+  /** Label of the node that needs the permission. */
+  from: string;
+  /** The task's mode now, and the mode it asks to continue with until it ends. */
+  current_mode: SandboxMode;
+  requested_mode: SandboxMode;
+  /** DSH session that dispatched the task. */
+  agent_id: string;
+}
+
+/** One row of the task tables: a task this node runs, or one it dispatched. */
+export interface PodTaskRow {
+  id: string;
+  /** Where details and cancel are addressed: this node's URL for local tasks, the target for dispatched ones. */
+  peer: string;
+  state: TaskState | "unknown";
+  /** Origin of a local task, target of a dispatched one, as a display label. */
+  who: string;
+  who_title: string;
+  at: string;
+  artifacts: PodArtifact[];
+  cancellable: boolean;
+}
+
+/** Everything the task detail dialog shows. */
+export interface PodTaskDetail {
+  task: TaskView;
+  origin: string;
+  dispatch: DispatchEntry | null;
+  artifacts: PodArtifact[];
+}
+
+/** Workspace directories plus a shallow listing for the UI browser. */
+export interface WorkspaceView {
+  root: string;
+  notes: string;
+  state: string;
+  /** Top-level files a later task will see in its appendix (`notes/<name>`). */
+  notes_files: string[];
+}
+
+/** Advanced local controls the panel may edit; null means "not overridden". */
+export interface PodAdvancedConfig {
+  task_timeout_s: number | null;
+  approval_timeout_s: number | null;
+  result_max_bytes: number | null;
+  max_workspace_bytes: number;
+  max_workspace_files: number;
+  allow_public_peers: boolean | null;
+  allow_loopback_peers: boolean | null;
+  permission_mode: SandboxMode | null;
+  default_reasoning_effort: ReasoningEffortId | null;
+  executor: ExecutorKind | null;
+}
+
+/** Effective pod configuration as the panel may see it (never the password). */
+export interface PodConfigView {
+  /** True once a workgroup and its stored password exist (first-run setup done). */
+  configured: boolean;
+  workgroup_id: string;
+  /** This node's orca node id (also the default display name), null before first start. */
+  node_id: string | null;
+  display_name: string | null;
+  /** Listen address the node actually uses. */
+  bind_host: string;
+  port: number;
+  /** Currently advertised dial URLs (the node's own list when it is running). */
+  endpoints: string[];
+  /** Dial URLs the form starts from: the usable advertised ones, else this machine's detected addresses. */
+  suggested_endpoints: string[];
+  /** The permission modes this DSH accepts, in rank order (read from DSH itself). */
+  permission_modes: readonly SandboxMode[];
+  /** The efforts the host's default model offers, least to most (read from DSH's `llm`). */
+  reasoning_efforts: readonly LlmReasoningEffortInfo[];
+  /** Listen addresses the form offers. */
+  bind_choices: string[];
+  peers: string[];
+  data_root: string;
+  /** Local connection/timeout controls; null means the bundle default applies. */
+  advanced: PodAdvancedConfig;
+  password_set: boolean;
+  running: boolean;
+  error: string | null;
+}
+
+/** Panel state snapshot: everything the status page and the approval cards render in one poll. */
+export interface PodState {
+  self: PodPeer<SelfRecord> | null;
+  config: PodConfigView;
+  members: PodPeer[];
+  mesh: { reachable: number };
+  approvals: PodApproval[];
+  approval_count: number;
+  recent: PodTaskRow[];
+  workspace: WorkspaceView | null;
+}
 
 const Text = z.string().min(1, "must be a non-empty string");
 
@@ -34,8 +155,6 @@ export type PodActions = {
   deny: DenyBody;
   cancel: PeerTaskBody;
 };
-
-export type { PodState };
 
 /** `GET /orca-api/tasks`: every task this node knows about, for the "all tasks" view. */
 export type PodTasksResponse = { recent: PodTaskRow[] };

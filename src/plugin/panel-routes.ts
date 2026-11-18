@@ -19,7 +19,7 @@ import type { z } from "zod";
 import type { Context } from "@deepseek-ai/cordis";
 import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
-import type { PodAdmin } from "./admin.ts";
+import type { PanelModel } from "./panel.ts";
 import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads } from "./panel-api.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
 import { readAll } from "../core/stream.ts";
@@ -47,43 +47,43 @@ const answer = <K extends keyof PodReads>(_route: K, body: PodReads[K]["response
 const NOT_FOUND: Reply = { status: 404, body: { error: "not_found" } };
 
 /** One POST action: the schema its JSON body must satisfy (`null`: it reads none) and what it does with it. */
-type PostAction = { body: z.ZodType | null; run(admin: PodAdmin, body: unknown): Promise<unknown> };
+type PostAction = { body: z.ZodType | null; run(panel: PanelModel, body: unknown): Promise<unknown> };
 
 /** An action that takes a body; `handlePost` parses it with the same schema before `run` sees it. */
 function withBody<S extends z.ZodType>(
   body: S,
-  run: (admin: PodAdmin, parsed: z.output<S>) => Promise<unknown>,
+  run: (panel: PanelModel, parsed: z.output<S>) => Promise<unknown>,
 ): PostAction {
-  return { body, run: (admin, parsed) => run(admin, parsed as z.output<S>) };
+  return { body, run: (panel, parsed) => run(panel, parsed as z.output<S>) };
 }
 
 const POST_ACTIONS: Record<string, PostAction> = {
   // The panel sends typed values (`null` clears a field); the settings
   // parser behind `saveConfig` checks the merged result.
-  config: withBody(PanelPatchSchema, (admin, patch) => admin.saveConfig(patch)),
-  connect: withBody(ConnectBodySchema, (admin, { peer }) => admin.connect(peer)),
-  disconnect: { body: null, run: (admin) => admin.disconnect() },
-  reset: { body: null, run: (admin) => admin.reset() },
-  approve: withBody(PeerTaskBodySchema, async (admin, { peer, task_id }) => ({
-    task: await admin.approve(peer, task_id),
+  config: withBody(PanelPatchSchema, (panel, patch) => panel.saveConfig(patch)),
+  connect: withBody(ConnectBodySchema, (panel, { peer }) => panel.connect(peer)),
+  disconnect: { body: null, run: (panel) => panel.disconnect() },
+  reset: { body: null, run: (panel) => panel.reset() },
+  approve: withBody(PeerTaskBodySchema, async (panel, { peer, task_id }) => ({
+    task: await panel.approve(peer, task_id),
   })),
-  deny: withBody(DenyBodySchema, async (admin, { peer, task_id, reason }) => ({
-    task: await admin.deny(peer, task_id, reason),
+  deny: withBody(DenyBodySchema, async (panel, { peer, task_id, reason }) => ({
+    task: await panel.deny(peer, task_id, reason),
   })),
-  cancel: withBody(PeerTaskBodySchema, async (admin, { peer, task_id }) => ({
-    task: await admin.cancel(peer, task_id),
+  cancel: withBody(PeerTaskBodySchema, async (panel, { peer, task_id }) => ({
+    task: await panel.cancel(peer, task_id),
   })),
 };
 
-/** The panel's HTTP API (`/orca-api`) over one admin surface. */
-export class PodApi {
-  constructor(private readonly admin: PodAdmin) {}
+/** The panel's HTTP API (`/orca-api`) over one panel model. */
+export class PanelRoutes {
+  constructor(private readonly panel: PanelModel) {}
 
   /** Route handler for `/orca-api`. */
   async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const refused = PodApi.rejection(request);
+    const refused = PanelRoutes.rejection(request);
     if (refused !== null) {
-      PodApi.sendJson(response, refused.status, refused.body);
+      PanelRoutes.sendJson(response, refused.status, refused.body);
       return;
     }
     const url = new URL(request.url ?? POD_API_PREFIX, "http://localhost");
@@ -99,7 +99,7 @@ export class PodApi {
     } catch (error) {
       reply = { status: 400, body: { error: errorMessage(error) } };
     }
-    PodApi.sendJson(response, reply.status, reply.body);
+    PanelRoutes.sendJson(response, reply.status, reply.body);
   }
 
   /**
@@ -120,21 +120,21 @@ export class PodApi {
   }
 
   private async handleGet(url: URL): Promise<Reply> {
-    const { admin } = this;
+    const { panel } = this;
     switch (url.pathname.slice(POD_API_PREFIX.length)) {
       case "/state":
-        return answer("state", admin.state());
+        return answer("state", panel.state());
       case "/task": {
         const peer = url.searchParams.get("peer");
         const taskId = url.searchParams.get("task");
         if (peer === null || taskId === null) return { status: 400, body: { error: "peer and task are required" } };
-        return answer("task", await admin.task(peer, taskId));
+        return answer("task", await panel.task(peer, taskId));
       }
       // Every task this node knows about, for the panel's "all tasks" view.
       case "/tasks": {
         const rawLimit = Number(url.searchParams.get("limit") ?? "500");
         const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
-        return answer("tasks", { recent: admin.recent(limit) });
+        return answer("tasks", { recent: panel.recent(limit) });
       }
       default:
         return NOT_FOUND;
@@ -145,13 +145,13 @@ export class PodApi {
     const name = url.pathname.slice(POD_API_PREFIX.length + 1);
     const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
     if (action === undefined) return NOT_FOUND;
-    if (action.body === null) return ok(await action.run(this.admin, undefined));
+    if (action.body === null) return ok(await action.run(this.panel, undefined));
     const body = parseOrThrow(
       action.body,
-      await PodApi.readJsonBody(request),
+      await PanelRoutes.readJsonBody(request),
       (issue) => new Error(describeIssue(issue)),
     );
-    return ok(await action.run(this.admin, body));
+    return ok(await action.run(this.panel, body));
   }
 
   /**
@@ -162,16 +162,16 @@ export class PodApi {
   private async sendBlob(url: URL, response: ServerResponse): Promise<void> {
     const ref = parseBlobRef(`${url.searchParams.get("node") ?? ""}/${url.searchParams.get("blob") ?? ""}`);
     if (ref === null) {
-      PodApi.sendJson(response, 400, { error: "node and blob must name a published file" });
+      PanelRoutes.sendJson(response, 400, { error: "node and blob must name a published file" });
       return;
     }
     let opened: OpenedBlob;
     try {
-      opened = await this.admin.blob(ref.node, ref.blob);
+      opened = await this.panel.blob(ref.node, ref.blob);
     } catch (error) {
       const status =
         error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;
-      PodApi.sendJson(response, status, { error: errorMessage(error) });
+      PanelRoutes.sendJson(response, status, { error: errorMessage(error) });
       return;
     }
     response.statusCode = 200;
@@ -205,19 +205,19 @@ export class PodApi {
    * cross-origin without a CORS preflight, which this route never approves.
    */
   private static isSameOriginPanelRequest(request: IncomingMessage): boolean {
-    const host = PodApi.headerOf(request, "host");
-    if (host === undefined || !PodApi.isLocalHostHeader(host)) return false;
-    const origin = PodApi.headerOf(request, "origin");
+    const host = PanelRoutes.headerOf(request, "host");
+    if (host === undefined || !PanelRoutes.isLocalHostHeader(host)) return false;
+    const origin = PanelRoutes.headerOf(request, "origin");
     if (origin !== undefined && (!URL.canParse(origin) || new URL(origin).host !== host.trim().toLowerCase())) {
       return false;
     }
-    const site = PodApi.headerOf(request, "sec-fetch-site");
+    const site = PanelRoutes.headerOf(request, "sec-fetch-site");
     if (site !== undefined && site !== "same-origin") return false;
-    return PodApi.headerOf(request, PANEL_HEADER) === "1";
+    return PanelRoutes.headerOf(request, PANEL_HEADER) === "1";
   }
 
   private static hasJsonContentType(request: IncomingMessage): boolean {
-    return (PodApi.headerOf(request, "content-type") ?? "").toLowerCase().startsWith("application/json");
+    return (PanelRoutes.headerOf(request, "content-type") ?? "").toLowerCase().startsWith("application/json");
   }
 
   private static sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -243,8 +243,8 @@ export class PodApi {
   /** The first gate a request fails, as the answer to send; null when it may proceed. */
   private static rejection(request: IncomingMessage): Reply | null {
     if (!isDirectLoopbackRequest(request)) return { status: 403, body: { error: "local_only" } };
-    if (!PodApi.isSameOriginPanelRequest(request)) return { status: 403, body: { error: "cross_origin" } };
-    if (request.method !== "GET" && !PodApi.hasJsonContentType(request))
+    if (!PanelRoutes.isSameOriginPanelRequest(request)) return { status: 403, body: { error: "cross_origin" } };
+    if (request.method !== "GET" && !PanelRoutes.hasJsonContentType(request))
       return { status: 403, body: { error: "json_required" } };
     return null;
   }

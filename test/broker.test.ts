@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PodAdmin } from "../src/plugin/admin.ts";
+import { PanelModel } from "../src/plugin/panel.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
 import type { PermissionRequest } from "../src/core/wire/grant.ts";
@@ -8,7 +8,7 @@ import type { TaskView } from "../src/task/wire.ts";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, labelId } from "./fixtures/ids.ts";
-import { catalogFeed, idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
+import { catalogFeed, idlePod, podRunning, logger } from "./fixtures/pod.ts";
 
 const PEER = "http://127.0.0.1:11812";
 
@@ -66,7 +66,7 @@ function fakeNode(): {
     approved: [] as TaskView[],
     denied: [] as Array<{ view: TaskView; reason?: string }>,
     failNext: false,
-    // What the admin surface reads to label the nodes in an approval.
+    // What the panel model reads to label the nodes in an approval.
     profile: { record: () => ({ orca_node_id: labelId("SELF00"), display_name: "self", endpoints: [] as string[] }) },
     membership: { list: () => [] as unknown[] },
     client: { idOf: () => undefined },
@@ -97,7 +97,7 @@ const park = (broker: ApprovalBroker, request = REQUEST) =>
 
 describe("approval broker", () => {
   it("keeps one prompt per request id and replaces it when the request changes", () => {
-    const broker = new ApprovalBroker(idleLifecycle());
+    const broker = new ApprovalBroker(idlePod());
     park(broker);
     const first = broker.list()[0]!;
     expect(first).toMatchObject({
@@ -119,7 +119,7 @@ describe("approval broker", () => {
 
   it("approves the parked request on the remote task and withdraws the prompt", async () => {
     const node = fakeNode();
-    const broker = new ApprovalBroker(lifecycleWithNode(node));
+    const broker = new ApprovalBroker(podRunning(node));
     park(broker);
     const task = await broker.approve(PEER, TASK);
     expect(task.status.state).toBe("working");
@@ -130,7 +130,7 @@ describe("approval broker", () => {
 
   it("denies with the given reason, or a default one", async () => {
     const node = fakeNode();
-    const broker = new ApprovalBroker(lifecycleWithNode(node));
+    const broker = new ApprovalBroker(podRunning(node));
     park(broker);
     await broker.deny(PEER, TASK, "not this time");
     park(broker);
@@ -141,7 +141,7 @@ describe("approval broker", () => {
 
   it("keeps the prompt when the remote call fails so the user can retry", async () => {
     const node = fakeNode();
-    const broker = new ApprovalBroker(lifecycleWithNode(node));
+    const broker = new ApprovalBroker(podRunning(node));
     park(broker);
     node.failNext = true;
     await expect(broker.approve(PEER, TASK)).rejects.toThrow(/peer unreachable/);
@@ -151,13 +151,13 @@ describe("approval broker", () => {
   });
 
   it("rejects a decision without a pending prompt or a running node", async () => {
-    const broker = new ApprovalBroker(lifecycleWithNode(fakeNode()));
+    const broker = new ApprovalBroker(podRunning(fakeNode()));
     await expect(broker.approve(PEER, TASK)).rejects.toThrow(/no pending permission request/);
-    await expect(new ApprovalBroker(idleLifecycle()).deny(PEER, TASK)).rejects.toThrow(/not running/);
+    await expect(new ApprovalBroker(idlePod()).deny(PEER, TASK)).rejects.toThrow(/not running/);
   });
 
   it("drops a prompt on withdraw and every prompt on clear", () => {
-    const broker = new ApprovalBroker(idleLifecycle());
+    const broker = new ApprovalBroker(idlePod());
     park(broker);
     expect(broker.list()).toHaveLength(1);
     broker.withdraw(PEER, TASK);
@@ -171,14 +171,14 @@ describe("approval broker", () => {
     expect(broker.list()).toEqual([]);
   });
 
-  it("is what the panel admin approves and denies through", async () => {
+  it("is what the panel model approves and denies through", async () => {
     const node = fakeNode();
-    const lifecycle = lifecycleWithNode(node);
-    const broker = new ApprovalBroker(lifecycle);
-    const admin = new PodAdmin(lifecycle, broker, catalogFeed());
+    const pod = podRunning(node);
+    const broker = new ApprovalBroker(pod);
+    const panel = new PanelModel(pod, broker, catalogFeed());
 
     park(broker);
-    expect(admin.approvals()).toEqual([
+    expect(panel.approvals()).toEqual([
       {
         id: `${PEER}|${TASK}`,
         peer: PEER,
@@ -191,29 +191,29 @@ describe("approval broker", () => {
         agent_id: "session-1",
       },
     ]);
-    expect((await admin.approve(PEER, TASK)).status.state).toBe("working");
-    expect(admin.approvals()).toEqual([]);
+    expect((await panel.approve(PEER, TASK)).status.state).toBe("working");
+    expect(panel.approvals()).toEqual([]);
 
     park(broker);
-    await admin.deny(PEER, TASK, "no");
+    await panel.deny(PEER, TASK, "no");
     expect(node.denied.at(-1)!.reason).toBe("no");
   });
 
   it("shows an answered request no more, even though the tracker has not polled since", async () => {
     const node = fakeNode();
-    const lifecycle = lifecycleWithNode(node);
-    const broker = new ApprovalBroker(lifecycle);
-    const tracker = new Tracker(lifecycle, broker, logger, { intervalMs: 60_000 });
-    const admin = new PodAdmin(lifecycle, broker, catalogFeed());
+    const pod = podRunning(node);
+    const broker = new ApprovalBroker(pod);
+    const tracker = new Tracker(pod, broker, logger, { intervalMs: 60_000 });
+    const panel = new PanelModel(pod, broker, catalogFeed());
     try {
       const agent = { id: SessionId("session-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent;
       tracker.track(agent, PEER, TASK);
       await waitFor(() => broker.list().length === 1);
-      expect(admin.approvals()).toHaveLength(1);
+      expect(panel.approvals()).toHaveLength(1);
 
-      await admin.approve(PEER, TASK);
+      await panel.approve(PEER, TASK);
       // The next poll is a minute away: until then nothing but the broker may speak for this task.
-      expect(admin.approvals()).toEqual([]);
+      expect(panel.approvals()).toEqual([]);
     } finally {
       tracker.stop();
     }

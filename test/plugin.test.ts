@@ -6,22 +6,22 @@ import { ApprovalBroker } from "../src/plugin/broker.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
-import type { PodLifecycle } from "../src/plugin/lifecycle.ts";
+import type { Pod } from "../src/plugin/pod.ts";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import type { OptionalService } from "../src/plugin/services.ts";
 import { PodTool } from "../src/plugin/tools.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
-import { idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
+import { idlePod, podRunning, logger } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
-/** A real tracker whose lifecycle answers with a node that can only read tasks. */
+/** A real tracker whose pod answers with a node that can only read tasks. */
 function createTracker(
   getNode: () => { getTask(peer: string, taskId: string): Promise<TaskView> } | null,
   options: { intervalMs?: number; coalesceMs?: number },
 ) {
-  const lifecycle = idleLifecycle();
-  vi.spyOn(lifecycle, "status", "get").mockImplementation(() => {
+  const pod = idlePod();
+  vi.spyOn(pod, "status", "get").mockImplementation(() => {
     const node = getNode();
     return node === null
       ? { kind: "unconfigured" }
@@ -36,19 +36,15 @@ function createTracker(
           },
         };
   });
-  return new Tracker(lifecycle, new ApprovalBroker(lifecycle), logger, options);
+  return new Tracker(pod, new ApprovalBroker(pod), logger, options);
 }
 
-/** The `orca_pod` tool of a lifecycle; `policy` is the host's sandbox policy, when it has one. */
-function createPodTools(
-  lifecycle: PodLifecycle,
-  tracker: Tracker,
-  policy?: () => SandboxPolicyService | undefined,
-): ToolDefinition[] {
+/** The `orca_pod` tool of a pod; `policy` is the host's sandbox policy, when it has one. */
+function createPodTools(pod: Pod, tracker: Tracker, policy?: () => SandboxPolicyService | undefined): ToolDefinition[] {
   // The host's optional service, reduced to the one read the tool makes.
   const sandbox =
     policy === undefined ? undefined : ({ current: policy } as unknown as OptionalService<"sandboxPolicy">);
-  return [new PodTool(lifecycle, tracker, sandbox).definition()];
+  return [new PodTool(pod, tracker, sandbox).definition()];
 }
 
 function tool(result: ReturnType<typeof createPodTools>) {
@@ -144,7 +140,7 @@ describe("plugin config", () => {
 });
 
 describe("orca_pod tool", () => {
-  const handle = idleLifecycle({ workgroup_id: "wg-a", workgroup_password: "pw" });
+  const handle = idlePod({ workgroup_id: "wg-a", workgroup_password: "pw" });
   const tracker = createTracker(() => null, { intervalMs: 60_000 });
   const tools = createPodTools(handle, tracker);
 
@@ -220,7 +216,7 @@ describe("orca_pod tool", () => {
         },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = lifecycleWithNode(fakeNode);
+    const handleForSend = podRunning(fakeNode);
     const session = {};
     const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxPolicyService;
     const sendTools = createPodTools(handleForSend, tracker, () => sandbox);
@@ -273,7 +269,7 @@ describe("orca_pod tool", () => {
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const watched: Array<[unknown, string]> = [];
     const recorder = { track: (agent: unknown, _peer: string, taskId: string) => watched.push([agent, taskId]) > 0 };
-    const sendTools = createPodTools(lifecycleWithNode(fakeNode), recorder as unknown as typeof tracker);
+    const sendTools = createPodTools(podRunning(fakeNode), recorder as unknown as typeof tracker);
     const agent = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
 
     await run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
@@ -304,7 +300,7 @@ describe("orca_pod tool", () => {
         },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = lifecycleWithNode(fakeNode);
+    const handleForSend = podRunning(fakeNode);
     const watched: string[] = [];
     const recorder = { track: (_agent: unknown, _peer: string, taskId: string) => watched.push(taskId) > 0 };
     const sendTools = createPodTools(handleForSend, recorder as unknown as typeof tracker);
@@ -341,7 +337,7 @@ describe("orca_pod tool", () => {
         cancelTask: async (_peer: string, taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = lifecycleWithNode(fakeNode);
+    const handleForSend = podRunning(fakeNode);
     const sendTools = createPodTools(handleForSend, tracker);
     let settled = false;
     const call = run(
@@ -372,7 +368,7 @@ describe("orca_pod tool", () => {
         },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = lifecycleWithNode(fakeNode);
+    const handleForSend = podRunning(fakeNode);
     const sendTools = createPodTools(handleForSend, tracker);
     await expect(
       run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { signal: AbortSignal.abort() }),
@@ -392,7 +388,7 @@ describe("orca_pod tool", () => {
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     /** The policy service the host exposes as `ctx.sandboxPolicy`. */
     const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxPolicyService;
-    const sendTools = createPodTools(lifecycleWithNode(fakeNode), tracker, () => policy);
+    const sendTools = createPodTools(podRunning(fakeNode), tracker, () => policy);
     const call = { method: "send", peer: "http://127.0.0.1:11811", text: "hi" } as const;
     const agentWithout = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
 
@@ -413,7 +409,7 @@ describe("orca_pod tool", () => {
       membership: { list: () => [] },
       mesh: { digest: () => "digest" },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForConnect = lifecycleWithNode(fakeNode);
+    const handleForConnect = podRunning(fakeNode);
     vi.spyOn(handleForConnect, "addPeer").mockImplementation(async (peer: string) => {
       seen.push(peer);
     });

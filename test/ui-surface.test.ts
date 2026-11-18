@@ -17,11 +17,11 @@ import type { TaskView } from "../src/task/wire.ts";
 import { isTerminal } from "../src/task/wire.ts";
 import { shortenNodeId } from "../src/core/identity.ts";
 import { waitFor } from "./support/harness.ts";
-import { PodAdmin } from "../src/plugin/admin.ts";
-import type { PodTaskRow } from "../src/plugin/admin.ts";
+import { PanelModel } from "../src/plugin/panel.ts";
+import type { PodTaskRow } from "../src/plugin/panel-api.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
 import { Tracker, type TrackerOptions } from "../src/plugin/tracker.ts";
-import { catalogFeed, lifecycleWithNode } from "./fixtures/pod.ts";
+import { catalogFeed, podRunning } from "./fixtures/pod.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { SessionId } from "@deepseek-ai/dsh-session";
@@ -100,12 +100,12 @@ async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
   return { a, b };
 }
 
-/** A pod over an already running node: its lifecycle, approval broker, tracker and admin surface. */
+/** A pod over an already running node: the pod, its approval broker, tracker and panel model. */
 function podOver(node: OrcaNode, options?: TrackerOptions) {
-  const lifecycle = lifecycleWithNode(node);
-  const broker = new ApprovalBroker(lifecycle);
-  const tracker = new Tracker(lifecycle, broker, logger, options);
-  return { lifecycle, broker, tracker, admin: new PodAdmin(lifecycle, broker, catalogFeed()) };
+  const pod = podRunning(node);
+  const broker = new ApprovalBroker(pod);
+  const tracker = new Tracker(pod, broker, logger, options);
+  return { pod, broker, tracker, panel: new PanelModel(pod, broker, catalogFeed()) };
 }
 
 describe("UI data surface", () => {
@@ -173,12 +173,12 @@ describe("UI data surface", () => {
     await expect(a.blobs.fetch(b.orcaNodeId, "0".repeat(64))).rejects.toMatchObject({ code: "blob_not_found" });
   });
 
-  it("exposes workspace paths, notes and artifact links through the admin surface", async () => {
+  it("exposes workspace paths, notes and artifact links through the panel model", async () => {
     const { a, b } = await startPair();
-    const { admin } = podOver(b);
-    writeFileSync(join(admin.workspace()!.notes, "STATUS.md"), "handoff notes");
+    const { panel } = podOver(b);
+    writeFileSync(join(panel.workspace()!.notes, "STATUS.md"), "handoff notes");
 
-    const workspace = admin.workspace()!;
+    const workspace = panel.workspace()!;
     expect(workspace.notes_files).toEqual(["STATUS.md"]);
 
     const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
@@ -186,7 +186,7 @@ describe("UI data surface", () => {
       metadata: ARTIFACT,
     });
     const rows = await waitFor(
-      () => admin.recent(10),
+      () => panel.recent(10),
       (list: PodTaskRow[]) => list.some((row) => row.id === submitted.id && isTerminal(row.state)),
       { label: "artifact task completes" },
     );
@@ -199,29 +199,29 @@ describe("UI data surface", () => {
     expect(row.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
     // The panel saves it through this node.
     const artifact = row.artifacts[0]!;
-    expect(await readAll((await admin.blob(b.orcaNodeId, artifact.blob_id)).stream)).toBe("hello");
+    expect(await readAll((await panel.blob(b.orcaNodeId, artifact.blob_id)).stream)).toBe("hello");
 
-    expect(admin.members().map((peer) => peer.orca_node_id)).toContain(a.orcaNodeId);
+    expect(panel.members().map((peer) => peer.orca_node_id)).toContain(a.orcaNodeId);
   });
 
   it("merges local tasks and dispatches into one list and tells where each can be cancelled", async () => {
     const { a, b } = await startPair();
-    const { admin: adminA } = podOver(a);
-    const { admin: adminB } = podOver(b);
+    const { panel: panelA } = podOver(a);
+    const { panel: panelB } = podOver(b);
 
     const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
       message: text("keep working"),
       metadata: { echo: { final: { state: "hang", text: "" } } },
     });
     await waitFor(
-      () => adminB.recent(10),
+      () => panelB.recent(10),
       (list: PodTaskRow[]) => list.some((row) => row.id === submitted.id && row.cancellable),
       { label: "task runs on b" },
     );
 
     // The origin knows it only through its dispatch log: the target is the peer's URL and
     // there are no artifact links this node could sign.
-    const dispatched = adminA.recent(10).find((row) => row.id === submitted.id)!;
+    const dispatched = panelA.recent(10).find((row) => row.id === submitted.id)!;
     expect(dispatched).toMatchObject({
       peer: b.profile.endpoints[0],
       who: b.profile.record().display_name,
@@ -230,14 +230,14 @@ describe("UI data surface", () => {
     });
 
     // The target runs it locally: the row addresses its own URL, and a call there works.
-    const local = adminB.recent(10).find((row) => row.id === submitted.id)!;
+    const local = panelB.recent(10).find((row) => row.id === submitted.id)!;
     expect(local.peer).toBe(b.profile.endpoints[0]);
-    expect(adminB.recent(10).filter((row) => row.id === submitted.id)).toHaveLength(1);
-    const detail = await adminB.task(local.peer, local.id);
+    expect(panelB.recent(10).filter((row) => row.id === submitted.id)).toHaveLength(1);
+    const detail = await panelB.task(local.peer, local.id);
     expect(detail).toMatchObject({ origin: a.profile.record().display_name, dispatch: null });
-    expect((await adminB.cancel(local.peer, local.id)).status.state).toBe("canceled");
+    expect((await panelB.cancel(local.peer, local.id)).status.state).toBe("canceled");
     await waitFor(
-      () => adminB.recent(10),
+      () => panelB.recent(10),
       (list: PodTaskRow[]) =>
         list.some((row) => row.id === submitted.id && row.state === "canceled" && !row.cancellable),
       { label: "cancelled on b" },
@@ -246,7 +246,7 @@ describe("UI data surface", () => {
 
   it("serves a remote task with its dispatch record and no artifact link this node cannot sign", async () => {
     const { a, b } = await startPair();
-    const { admin: adminA } = podOver(a);
+    const { panel: panelA } = podOver(a);
     const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
       message: text("produce an artifact"),
       metadata: ARTIFACT,
@@ -257,7 +257,7 @@ describe("UI data surface", () => {
       { label: "task completes on b" },
     );
 
-    const detail = await adminA.task(b.profile.endpoints[0]!, submitted.id);
+    const detail = await panelA.task(b.profile.endpoints[0]!, submitted.id);
     expect(detail.task.id).toBe(submitted.id);
     expect(detail.dispatch).toMatchObject({ task_id: submitted.id, peer: b.profile.endpoints[0] });
     expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
@@ -295,14 +295,14 @@ describe("UI data surface", () => {
       },
     };
     vi.spyOn(b.delegation, "getTask").mockResolvedValue(suspended);
-    const { tracker, admin } = podOver(b, { intervalMs: 20 });
+    const { tracker, panel } = podOver(b, { intervalMs: 20 });
     tracker.track(
       { id: SessionId("agent-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent,
       "http://127.0.0.1:1",
       suspended.id,
     );
     const approvals = await waitFor(
-      () => admin.approvals(),
+      () => panel.approvals(),
       (list) => list.length === 1,
       { label: "pending approval appears" },
     );
@@ -325,6 +325,6 @@ describe("UI data surface", () => {
       (tasks) => tasks.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
       { label: "task completes" },
     );
-    await expect(admin.approve(b.profile.endpoints[0]!, submitted.id)).rejects.toThrow(/no pending permission request/);
+    await expect(panel.approve(b.profile.endpoints[0]!, submitted.id)).rejects.toThrow(/no pending permission request/);
   });
 });

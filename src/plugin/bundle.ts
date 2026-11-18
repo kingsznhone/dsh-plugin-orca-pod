@@ -19,16 +19,16 @@ import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
 // `ctx.settings` is this plugin's own injection; the service package owns the type.
 import type {} from "@deepseek-ai/dsh-settings";
 
-import { PodAdmin } from "./admin.ts";
+import { PanelModel } from "./panel.ts";
 import { ApprovalBroker } from "./broker.ts";
 import { ModelCatalogFeed } from "./catalog.ts";
-import { PodLifecycle } from "./lifecycle.ts";
+import { Pod } from "./pod.ts";
 import { OptionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
 import { HostPodStores } from "./stores.ts";
 import { PodTool } from "./tools.ts";
 import { Tracker } from "./tracker.ts";
-import { PodApi } from "./web.ts";
+import { PanelRoutes } from "./panel-routes.ts";
 import { DATA_ROOT_ENV, defaultDataRoot } from "../node/config.ts";
 import type { Settings } from "../node/settings.ts";
 
@@ -42,21 +42,21 @@ export { Config } from "./config.ts";
 export const inject: Inject<Context> = ["tools", "credentials", "configEditor"];
 
 /**
- * Compose the plugin: lifecycle, approval broker, tracker, tool, panel route.
+ * Compose the plugin: pod, approval broker, tracker, tool, panel route.
  *
  * Startup is asynchronous and never throws into the host: a failed orca node start
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  */
 export function apply(ctx: Context, config: Settings): void {
-  new PodPlugin(ctx, config);
+  new PodBundle(ctx, config);
 }
 
 /** One plugin fiber: it builds what the pod is made of and hooks it into the host. */
-class PodPlugin {
+class PodBundle {
   private readonly logger: Logger;
   private readonly feed: ModelCatalogFeed;
-  private readonly lifecycle: PodLifecycle;
+  private readonly pod: Pod;
   private readonly broker: ApprovalBroker;
   private readonly tracker: Tracker;
   private readonly agents: OptionalService<"agents">;
@@ -71,13 +71,13 @@ class PodPlugin {
     const env = Object.fromEntries(DATA_ROOT_ENV.map((name) => [name, launch.get(name)?.value]));
     const defaultRoot = defaultDataRoot(env, ctx.baseUrl, ctx.dshHomePath?.());
     this.feed = new ModelCatalogFeed(ctx, this.logger);
-    this.lifecycle = new PodLifecycle(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
-    this.lifecycle.start();
-    this.broker = new ApprovalBroker(this.lifecycle);
-    this.tracker = new Tracker(this.lifecycle, this.broker, this.logger);
+    this.pod = new Pod(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
+    this.pod.start();
+    this.broker = new ApprovalBroker(this.pod);
+    this.tracker = new Tracker(this.pod, this.broker, this.logger);
     this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
       if (service !== undefined)
-        void this.lifecycle.settled().then(() => this.restore((id) => this.agents.current()?.get(id)));
+        void this.pod.settled().then(() => this.restore((id) => this.agents.current()?.get(id)));
     });
 
     // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
@@ -99,9 +99,9 @@ class PodPlugin {
 
     // The tool is only visible once the workgroup credentials exist: before that
     // every call would fail with "not configured" and clutter the tool list.
-    const tool = new PodTool(this.lifecycle, this.tracker, sandbox);
-    ctx.tools.register(tool.definition(), { when: () => this.lifecycle.configured });
-    new PodApi(new PodAdmin(this.lifecycle, this.broker, this.feed)).register(ctx);
+    const tool = new PodTool(this.pod, this.tracker, sandbox);
+    ctx.tools.register(tool.definition(), { when: () => this.pod.configured });
+    new PanelRoutes(new PanelModel(this.pod, this.broker, this.feed)).register(ctx);
 
     // The skill ships inside the package and is registered in memory; no copy is
     // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
@@ -126,14 +126,14 @@ class PodPlugin {
    * watched or abandoned tasks are left alone.
    */
   private restore(resolveAgent: (id: SessionId) => Agent | undefined): void {
-    const run = this.lifecycle.run;
+    const run = this.pod.run;
     if (run === null) return;
     this.tracker.restore(run.node.delegation.log.list(), resolveAgent);
   }
 
   private onAgentCreated(agent: Agent): void {
     agent.ctx.effect(() => () => this.tracker.forget(agent.id), "orca-pod.track");
-    void this.lifecycle.settled().then(() => this.restore((id) => (id === agent.id ? agent : undefined)));
+    void this.pod.settled().then(() => this.restore((id) => (id === agent.id ? agent : undefined)));
   }
 
   private onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {
@@ -143,6 +143,6 @@ class PodPlugin {
   private async dispose(): Promise<void> {
     this.broker.clear();
     this.tracker.stop();
-    await this.lifecycle.stop();
+    await this.pod.stop();
   }
 }
