@@ -10,7 +10,7 @@ import { loadIdentity, type NodeIdentity } from "../core/identity.ts";
 import { ModelCatalog } from "../core/model-catalog.ts";
 import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
 import { storeDbPath } from "../core/sqlite.ts";
-import type { OrcaNodeId, RuntimeInfo, SelfRecord } from "../core/wire/peer.ts";
+import type { OrcaNodeId, RuntimeInfo } from "../core/wire/peer.ts";
 import { AcpExecutor } from "../executor/acp/executor.ts";
 import { EchoExecutor } from "../executor/echo.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
@@ -187,8 +187,7 @@ export class OrcaNode {
     });
     this.mesh = new Workgroup(key, this.membership, this.client, this.profile, {
       logger,
-      allow_public_peers: config.allow_public_peers,
-      allow_loopback_peers: config.allow_loopback_peers,
+      dial: { allowPublicPeers: config.allow_public_peers, allowLoopbackPeers: config.allow_loopback_peers },
     });
     this.heartbeatLoop = new HeartbeatLoop(this.membership, this.mesh, options.timings?.intervalMs === undefined);
     this.delegation = new Delegation(identity, this.client, this.membership, this.dispatchStore, {
@@ -213,11 +212,6 @@ export class OrcaNode {
 
   get orcaNodeId(): OrcaNodeId {
     return this.config.orca_node_id;
-  }
-
-  /** This node as a member record, the way peers list it. */
-  self(): SelfRecord {
-    return this.mesh.self();
   }
 
   /** Bind the listener and start the heartbeat; resolves with the URL peers should dial. */

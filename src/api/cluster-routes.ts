@@ -136,7 +136,7 @@ export class ClusterRoutes {
     const body = parseInput(HeartbeatRequestSchema, request.body, "body");
     const caller = request.auth.orcaNodeId;
     this.admit("heartbeat", caller, body);
-    if (caller !== this.profile.orcaNodeId && !this.membership.touch(caller)) {
+    if (!this.membership.observeInbound(caller)) {
       throw new PodError("unknown_orca_node");
     }
     const peer = this.membership.get(caller);

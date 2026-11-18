@@ -354,7 +354,7 @@ export class PodTool {
   async members(signal: AbortSignal): Promise<MembersResult> {
     const orcaNode = await this.requireNode(signal);
     return {
-      self: peerSummary(orcaNode.self()),
+      self: peerSummary(orcaNode.profile.record()),
       members: orcaNode.membership.list().map(peerSummary),
       members_digest: orcaNode.mesh.digest(),
     };

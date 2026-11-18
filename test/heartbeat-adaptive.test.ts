@@ -46,6 +46,10 @@ describe("adaptive membership windows", () => {
       timings: { intervalMs: 5000 },
       clock: { monotonicMs: () => nowMs, wallIso: () => new Date(0).toISOString() },
     });
+    const stateAfterEvaluate = () => {
+      membership.evaluate();
+      return membership.get(labelId("PEER01"))?.state;
+    };
     membership.upsert(peer(labelId("PEER01")));
     // The first inbound heartbeat is what makes the peer online.
     membership.observeInbound(labelId("PEER01"));
@@ -56,17 +60,16 @@ describe("adaptive membership windows", () => {
     expect(membership.timings.offlineAfterMs).toBe(15_000);
 
     nowMs = 6249;
-    expect(membership.evaluate()[0]?.state).toBe("online");
+    expect(stateAfterEvaluate()).toBe("online");
 
     nowMs = 6250;
-    const suspect = membership.evaluate()[0];
-    expect(suspect?.state).toBe("suspect");
+    expect(stateAfterEvaluate()).toBe("suspect");
 
     nowMs = 14_999;
-    expect(membership.evaluate()[0]?.state).toBe("suspect");
+    expect(stateAfterEvaluate()).toBe("suspect");
 
     nowMs = 15_000;
-    expect(membership.evaluate()[0]?.state).toBe("offline");
+    expect(stateAfterEvaluate()).toBe("offline");
   });
 });
 

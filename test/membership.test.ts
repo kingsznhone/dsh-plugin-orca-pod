@@ -29,6 +29,11 @@ function peerView(orcaNodeId: OrcaNodeId, overrides: Partial<PeerView> = {}): Pe
   };
 }
 
+/** Whether a heartbeat to the member is due now. */
+function isDue(membership: Membership, orcaNodeId: OrcaNodeId): boolean {
+  return membership.due().some((peer) => peer.orca_node_id === orcaNodeId);
+}
+
 function setup() {
   let now = 1000;
   const membership = new Membership(labelId("AAAAAA"), {
@@ -50,7 +55,7 @@ describe("membership watchdog", () => {
 
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("unknown");
     expect(membership.get(labelId("BBBBBB"))?.last_recv_at).toBeNull();
-    expect(membership.needsProbe(labelId("BBBBBB"), membership.now())).toBe(true);
+    expect(isDue(membership, labelId("BBBBBB"))).toBe(true);
   });
 
   it("does not let a third-party roster overwrite a known member", () => {
@@ -125,7 +130,7 @@ describe("membership watchdog", () => {
     membership.mergeRemote([peerView(labelId("BBBBBB"))]);
     membership.observeInbound(labelId("BBBBBB"));
     expect(membership.get(labelId("BBBBBB"))).toBeUndefined();
-    expect(membership.touch(labelId("BBBBBB"))).toBe(false);
+    expect(membership.observeInbound(labelId("BBBBBB"))).toBe(false);
   });
 
   it("lets a removed node back in through its own join, while stale lists stay blocked", () => {
@@ -139,7 +144,7 @@ describe("membership watchdog", () => {
     membership.upsert(peerView(labelId("BBBBBB")));
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("online");
     expect(membership.isTombstoned(labelId("BBBBBB"))).toBe(false);
-    expect(membership.touch(labelId("BBBBBB"))).toBe(true);
+    expect(membership.observeInbound(labelId("BBBBBB"))).toBe(true);
 
     membership.remove(labelId("BBBBBB"));
     membership.mergeRemote([peerView(labelId("BBBBBB"))]);
@@ -153,12 +158,12 @@ describe("membership watchdog", () => {
     advance(1300);
     membership.evaluate();
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("offline");
-    expect(membership.needsProbe(labelId("BBBBBB"), membership.now())).toBe(true);
+    expect(isDue(membership, labelId("BBBBBB"))).toBe(true);
 
     membership.observeOutboundFail(labelId("BBBBBB"));
-    expect(membership.needsProbe(labelId("BBBBBB"), membership.now())).toBe(false);
+    expect(isDue(membership, labelId("BBBBBB"))).toBe(false);
     advance(TIMINGS.recoverProbeMs);
-    expect(membership.needsProbe(labelId("BBBBBB"), membership.now())).toBe(true);
+    expect(isDue(membership, labelId("BBBBBB"))).toBe(true);
   });
 
   it("backs off an unreached candidate like an offline peer and drops it after five failures (B24)", () => {
@@ -166,9 +171,9 @@ describe("membership watchdog", () => {
     const d = labelId("DDDDDD");
     membership.mergeRemote([peerView(d)]);
     for (let attempt = 1; attempt < CANDIDATE_MAX_FAILURES; attempt += 1) {
-      expect(membership.needsProbe(d, membership.now())).toBe(true);
+      expect(isDue(membership, d)).toBe(true);
       membership.observeOutboundFail(d);
-      expect(membership.needsProbe(d, membership.now())).toBe(false);
+      expect(isDue(membership, d)).toBe(false);
       advance(TIMINGS.maxRecoverProbeMs);
     }
     membership.observeOutboundFail(d);
@@ -217,8 +222,8 @@ describe("membership watchdog", () => {
       c.advance(TIMINGS.maxRecoverProbeMs);
       a.membership.evaluate();
       c.membership.evaluate();
-      if (c.membership.needsProbe(d, c.membership.now())) c.membership.observeOutboundFail(d);
-      if (a.membership.needsProbe(d, a.membership.now())) a.membership.observeOutboundFail(d);
+      if (isDue(c.membership, d)) c.membership.observeOutboundFail(d);
+      if (isDue(a.membership, d)) a.membership.observeOutboundFail(d);
       // They keep exchanging directories every round.
       a.membership.mergeRemote(c.membership.directory());
       c.membership.mergeRemote(a.membership.directory());

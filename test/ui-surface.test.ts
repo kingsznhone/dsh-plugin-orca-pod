@@ -93,7 +93,7 @@ async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
   await a.mesh.join(b.profile.endpoints[0]!);
   await waitFor(
     () => a.membership.list(),
-    (members) => members.some((peer) => peer.orca_node_id === b.self().orca_node_id && peer.state === "online"),
+    (members) => members.some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"),
     { label: "a sees b online" },
   );
   return { a, b };
@@ -190,13 +190,17 @@ describe("UI data surface", () => {
       { label: "artifact task completes" },
     );
     const row = rows.find((entry) => entry.id === submitted.id)!;
-    expect(row).toMatchObject({ peer: b.profile.endpoints[0], cancellable: false, who: a.self().display_name });
+    expect(row).toMatchObject({
+      peer: b.profile.endpoints[0],
+      cancellable: false,
+      who: a.profile.record().display_name,
+    });
     expect(row.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
     // The panel saves it through this node.
     const artifact = row.artifacts[0]!;
     expect(await readAll((await admin.blob(b.orcaNodeId, artifact.blob_id)).stream)).toBe("hello");
 
-    expect(admin.members().map((peer) => peer.orca_node_id)).toContain(a.self().orca_node_id);
+    expect(admin.members().map((peer) => peer.orca_node_id)).toContain(a.orcaNodeId);
   });
 
   it("merges local tasks and dispatches into one list and tells where each can be cancelled", async () => {
@@ -219,7 +223,7 @@ describe("UI data surface", () => {
     const dispatched = adminA.recent(10).find((row) => row.id === submitted.id)!;
     expect(dispatched).toMatchObject({
       peer: b.profile.endpoints[0],
-      who: b.self().display_name,
+      who: b.profile.record().display_name,
       cancellable: true,
       artifacts: [],
     });
@@ -229,7 +233,7 @@ describe("UI data surface", () => {
     expect(local.peer).toBe(b.profile.endpoints[0]);
     expect(adminB.recent(10).filter((row) => row.id === submitted.id)).toHaveLength(1);
     const detail = await adminB.task(local.peer, local.id);
-    expect(detail).toMatchObject({ origin: a.self().display_name, dispatch: null });
+    expect(detail).toMatchObject({ origin: a.profile.record().display_name, dispatch: null });
     expect((await adminB.cancel(local.peer, local.id)).status.state).toBe("canceled");
     await waitFor(
       () => adminB.recent(10),
@@ -256,7 +260,7 @@ describe("UI data surface", () => {
     expect(detail.task.id).toBe(submitted.id);
     expect(detail.dispatch).toMatchObject({ task_id: submitted.id, peer: b.profile.endpoints[0] });
     expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
-    expect(detail.origin).toBe(a.self().display_name);
+    expect(detail.origin).toBe(a.profile.record().display_name);
   });
 
   it("lists pending approvals from tracked remote tasks", async () => {

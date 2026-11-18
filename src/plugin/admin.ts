@@ -158,7 +158,7 @@ function preview(value: unknown): string {
 
 /** Display names for node ids and endpoint URLs, resolved against one roster snapshot. */
 function labeller(current: OrcaNode | null): (key: string | undefined) => string {
-  const peers: PeerView[] = current === null ? [] : [current.self(), ...current.membership.list()];
+  const peers: PeerView[] = current === null ? [] : [current.profile.record(), ...current.membership.list()];
   return (key) => {
     if (key === undefined || key.length === 0) return "-";
     const known = peers.find((peer) => peer.orca_node_id === key || peer.endpoints.includes(key));
@@ -225,7 +225,7 @@ export class PodAdmin {
   self(): PodPeer<SelfRecord> | null {
     const current = this.lifecycle.node;
     if (current === null) return null;
-    const self = current.self();
+    const self = current.profile.record();
     return { ...self, busy_from: self.busy === null ? null : labeller(current)(self.busy.origin_orca_node) };
   }
 
@@ -318,7 +318,7 @@ export class PodAdmin {
     const { lifecycle } = this;
     const config = lifecycle.config;
     const current = lifecycle.node;
-    const self = current?.self() ?? null;
+    const self = current?.profile.record() ?? null;
     const port = lifecycle.port ?? config.port;
     const endpoints = [...(current?.profile.endpoints ?? config.endpoints)];
     const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));

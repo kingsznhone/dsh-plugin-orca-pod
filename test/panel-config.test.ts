@@ -100,9 +100,9 @@ describe("panel configuration lifecycle", () => {
       expect(JSON.stringify(stores.raw())).not.toContain(PASSWORD);
       expect(await readFile(configPath(root), "utf8")).not.toContain(PASSWORD);
 
-      const firstId = handle.node!.self().orca_node_id;
+      const firstId = handle.node!.orcaNodeId;
       await handle.reconfigure({ display_name: "renamed again" });
-      expect(handle.node!.self().orca_node_id).toBe(firstId);
+      expect(handle.node!.orcaNodeId).toBe(firstId);
     } finally {
       await handle.stop();
     }
@@ -257,7 +257,7 @@ describe("panel configuration lifecycle", () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started(bundle(root));
     try {
-      const before = handle.node!.self().orca_node_id;
+      const before = handle.node!.orcaNodeId;
       expect(handle.configured).toBe(true);
 
       await handle.reset();
@@ -272,7 +272,7 @@ describe("panel configuration lifecycle", () => {
 
       const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-panel"), workgroup_password: PASSWORD });
       expect(view.running).toBe(true);
-      expect(handle.node!.self().orca_node_id).not.toBe(before);
+      expect(handle.node!.orcaNodeId).not.toBe(before);
     } finally {
       await handle.stop();
     }
@@ -281,7 +281,7 @@ describe("panel configuration lifecycle", () => {
   it("keeps the configuration and the orca node id on the next start", async () => {
     const root = await tempRoot("orca-panel-");
     const first = await started(bundle(root));
-    const firstId = first.handle.node!.self().orca_node_id;
+    const firstId = first.handle.node!.orcaNodeId;
     await first.handle.stop();
 
     const second = launch({}, {}, first.stores);
@@ -289,7 +289,7 @@ describe("panel configuration lifecycle", () => {
     try {
       expect(second.handle.configured).toBe(true);
       expect(second.handle.error).toBeNull();
-      expect(second.handle.node!.self().orca_node_id).toBe(firstId);
+      expect(second.handle.node!.orcaNodeId).toBe(firstId);
     } finally {
       await second.handle.stop();
     }
@@ -326,7 +326,7 @@ describe("panel configuration lifecycle", () => {
       await writeFile(peerStatePath(rootA), JSON.stringify({ peers: [peerUrl] }), "utf8");
       const a = await started(bundle(rootA));
       try {
-        const want = b.handle.node!.self().orca_node_id;
+        const want = b.handle.node!.orcaNodeId;
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
           if (a.handle.node!.membership.list().some((member) => member.state === "online")) break;
@@ -377,7 +377,7 @@ describe("panel admin configuration", () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started(bundle(root));
     try {
-      const firstId = handle.node!.self().orca_node_id;
+      const firstId = handle.node!.orcaNodeId;
 
       const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-other") });
 
@@ -385,7 +385,7 @@ describe("panel admin configuration", () => {
       expect(view.password_set).toBe(true);
       expect(stores.secrets.get("ORCA_POD_PASSWORD_WG_OTHER")).toBe(PASSWORD);
       expect(handle.config.workgroup_password).toBe(PASSWORD);
-      expect(handle.node!.self().orca_node_id).toBe(firstId);
+      expect(handle.node!.orcaNodeId).toBe(firstId);
       expect((await readJson(configPath(root))).workgroup_id).toBe("wg-other");
     } finally {
       await handle.stop();

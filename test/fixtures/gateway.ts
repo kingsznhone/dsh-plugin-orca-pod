@@ -70,7 +70,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     },
     timeoutMs: 1000,
   });
-  const mesh = new Workgroup(key, membership, client, profile, { logger: { warn() {} } });
+  const mesh = new Workgroup(key, membership, client, profile, { logger: { warn() {} }, dial: {} });
   const blobs = options.blobs ?? new DiskBlobRegistry(new MemoryFileBlobStore());
   const files = new BlobFetcher(blobs, mesh, client, identity.orcaNodeId);
   const tasks = options.tasks ?? createTestRunner();

@@ -53,7 +53,7 @@ function fakeNode(): {
     denied: [] as Array<{ view: TaskView; reason?: string }>,
     failNext: false,
     // What the admin surface reads to label the nodes in an approval.
-    self: () => ({ orca_node_id: labelId("SELF00"), display_name: "self", endpoints: [] as string[] }),
+    profile: { record: () => ({ orca_node_id: labelId("SELF00"), display_name: "self", endpoints: [] as string[] }) },
     membership: { list: () => [] as unknown[] },
     delegation: {
       async approveTask(_peer: string, view: TaskView) {

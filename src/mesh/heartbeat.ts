@@ -42,11 +42,7 @@ export class HeartbeatLoop {
     // §3.3: cadence follows mesh size (one pulse per node per second) so cluster traffic stays linear.
     if (this.adaptive) membership.setIntervalMs(heartbeatIntervalMsFor(membership.list().length + 1));
     membership.evaluate();
-    const now = membership.now();
-    const due = membership
-      .list()
-      .filter((peer) => peer.endpoints.length > 0 && membership.needsProbe(peer.orca_node_id, now));
-    await Promise.allSettled(due.map((peer) => workgroup.heartbeatPeer(peer)));
+    await Promise.allSettled(membership.due().map((peer) => workgroup.heartbeatPeer(peer)));
     workgroup.emitMembersIfChanged();
     this.schedule();
   }

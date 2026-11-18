@@ -52,7 +52,7 @@ describe("A2A task surface", () => {
     expect(["submitted", "working"]).toContain(submitted.status.state);
     // The view names the node that dispatched the task, so the panel can show it
     // without a second lookup (§9.2).
-    expect(submitted.metadata?.pod?.origin_orca_node).toBe(origin.self().orca_node_id);
+    expect(submitted.metadata?.pod?.origin_orca_node).toBe(origin.orcaNodeId);
 
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("hello pod");

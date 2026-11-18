@@ -262,7 +262,7 @@ describe("grant binding (§7.11)", () => {
     const { origin, targetUrl, identity } = await threeNodes();
     const view = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
-    const grant = grantFor(suspended, origin.self().orca_node_id);
+    const grant = grantFor(suspended, origin.orcaNodeId);
     const tampered = signGrant(identity, { ...grant, request_id: randomUUID() });
 
     await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: tampered }));
@@ -288,7 +288,7 @@ describe("grant binding (§7.11)", () => {
     const { origin, targetUrl, identity } = await threeNodes();
     const view = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
-    const grant = grantFor(suspended, origin.self().orca_node_id);
+    const grant = grantFor(suspended, origin.orcaNodeId);
     const elsewhere = signGrant(identity, { ...grant, task_id: "another-task" });
 
     await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: elsewhere }));

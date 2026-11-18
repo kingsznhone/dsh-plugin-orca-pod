@@ -8,22 +8,15 @@ import {
   type JoinResponse,
   type OrcaNodeId,
   type PeerView,
-  type SelfRecord,
 } from "../core/wire/peer.ts";
 import { AckSchema } from "../core/wire/reply.ts";
 import { createAdmission } from "./admission.ts";
 import { EndpointDialer } from "./dialer.ts";
 import type { Membership } from "./membership.ts";
 import type { HttpPeerClient } from "./peer-client.ts";
+import type { DialPolicy } from "./screening.ts";
 import type { SelfProfile } from "./self-profile.ts";
 import type { HeartbeatRequest, JoinRequest, MembersEvent } from "./wire.ts";
-
-/** What a workgroup reads from the node config besides who the node is (that is the profile's). */
-export type WorkgroupOptions = {
-  logger: NodeLogger;
-  allow_public_peers?: boolean;
-  allow_loopback_peers?: boolean;
-};
 
 /** A 401 proves the peer no longer shares this password (§7.1). */
 function isAdmissionRejection(error: unknown): boolean {
@@ -74,18 +67,11 @@ export class Workgroup {
     private readonly membership: Membership,
     private readonly client: HttpPeerClient,
     private readonly profile: SelfProfile,
-    options: WorkgroupOptions,
+    options: { logger: NodeLogger; dial: DialPolicy },
   ) {
     this.logger = options.logger;
     this.events = new EventBus(options.logger);
-    this.dialer = new EndpointDialer(membership, options.logger, {
-      allowPublicPeers: options.allow_public_peers,
-      allowLoopbackPeers: options.allow_loopback_peers,
-    });
-  }
-
-  self(): SelfRecord {
-    return this.profile.record();
+    this.dialer = new EndpointDialer(membership, options.logger, options.dial);
   }
 
   /** What this node passes on (§3.5): itself and the members it hears from; its digest is what peers compare. */
@@ -139,7 +125,13 @@ export class Workgroup {
 
   /** One heartbeat to a URL the node already knows. */
   async heartbeat(peerUrl: string): Promise<HeartbeatResponse> {
-    return this.pulse(peerUrl, this.client.known(peerUrl), true);
+    const targetId = this.client.known(peerUrl);
+    try {
+      return await this.pulse(peerUrl, targetId);
+    } catch (error) {
+      if (!isAdmissionRejection(error)) this.membership.observeOutboundFail(targetId);
+      throw error;
+    }
   }
 
   /**
@@ -149,7 +141,7 @@ export class Workgroup {
   async heartbeatPeer(peer: PeerView): Promise<void> {
     for (const endpoint of await this.dialer.dialOrder(peer)) {
       try {
-        await this.pulse(endpoint, peer.orca_node_id, false);
+        await this.pulse(endpoint, peer.orca_node_id);
         this.dialer.prefer(peer.orca_node_id, endpoint);
         return;
       } catch (error) {
@@ -231,8 +223,8 @@ export class Workgroup {
     }
   }
 
-  /** `observeFailure: false` lets the caller count one failure per peer, not per URL. */
-  private async pulse(peerUrl: string, targetId: OrcaNodeId, observeFailure: boolean): Promise<HeartbeatResponse> {
+  /** One heartbeat to one URL; counting a failure is the caller's call, once per peer rather than once per URL. */
+  private async pulse(peerUrl: string, targetId: OrcaNodeId): Promise<HeartbeatResponse> {
     try {
       const response = await this.heartbeatWithRejoin(peerUrl, targetId);
       assertAnsweredBy("/cluster/heartbeat", peerUrl, response.from, targetId);
@@ -247,8 +239,6 @@ export class Workgroup {
         // record (§7.1). Its own heartbeats to us fail identically, so the whole
         // old mesh drops the changed node instead of keeping it "online" forever.
         this.dropPeer(targetId, "workgroup admission rejected");
-      } else if (observeFailure) {
-        this.membership.observeOutboundFail(targetId);
       }
       throw error;
     }

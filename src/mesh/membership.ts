@@ -1,4 +1,4 @@
-import type { OrcaNodeId, PeerState, PeerView } from "../core/wire/peer.ts";
+import type { OrcaNodeId, PeerView } from "../core/wire/peer.ts";
 
 /**
  * Membership bookkeeping (§3.3): the only evidence that a peer is online is the
@@ -74,19 +74,157 @@ export type MembershipOptions = {
 /** How this orca node learned about a peer (§3.5, §7.7). */
 export type PeerOrigin = "explicit" | "candidate";
 
-type PeerRecord = {
-  view: PeerView;
-  /** Explicit: joined or configured directly. Candidate: only seen in a remote list. */
-  origin: PeerOrigin;
-  last_ok_at: string | null;
-  fails: number;
-  suspect_reason: SuspectReason | null;
-  last_recv_ms: number | null;
-  last_ok_ms: number | null;
-  probe_fails: number;
-  next_probe_ms: number;
-  offline_since_ms: number | null;
-};
+/**
+ * What this node knows about one peer: the view it lists plus the evidence
+ * behind its state. The transitions live here; `Membership` keeps the
+ * directory, the tombstones and the clock.
+ */
+class PeerEntry {
+  private fails = 0;
+  private suspectReason: SuspectReason | null = null;
+  private probeFails = 0;
+  private nextProbeMs = 0;
+  private offlineSinceMs: number | null = null;
+
+  private constructor(
+    private readonly view: PeerView,
+    /** Explicit: joined or configured directly. Candidate: only seen in a remote list. */
+    private origin: PeerOrigin,
+    private lastRecvMs: number | null,
+  ) {}
+
+  /** A node that proved itself with a verified join (or whose answer to ours we verified). */
+  static explicit(view: PeerView, nowMs: number, wallIso: string): PeerEntry {
+    return new PeerEntry({ ...view, state: "online", last_recv_at: wallIso }, "explicit", nowMs);
+  }
+
+  /** A node only seen in somebody else's list: never reached, so `unknown`. */
+  static candidate(view: PeerView): PeerEntry {
+    return new PeerEntry({ ...view, state: "unknown", last_recv_at: null }, "candidate", null);
+  }
+
+  get isCandidate(): boolean {
+    return this.origin === "candidate";
+  }
+
+  get listed(): boolean {
+    return this.view.state === "online" || this.view.state === "suspect";
+  }
+
+  snapshot(): PeerView {
+    return { ...this.view };
+  }
+
+  /**
+   * The node's own latest self-description replaces the recorded one, model
+   * catalog included: a catalog it no longer advertises must not linger here
+   * (§3.3). A node describing itself is an explicit member.
+   */
+  describe(view: PeerView): void {
+    this.view.display_name = view.display_name;
+    this.view.endpoints = view.endpoints;
+    this.view.runtime = view.runtime;
+    this.view.runtime_digest = view.runtime_digest;
+    this.view.busy = view.busy ?? null;
+    if (view.max_task_ttl_s !== undefined) this.view.max_task_ttl_s = view.max_task_ttl_s;
+    this.view.models = view.models;
+    this.view.default_model = view.default_model ?? null;
+    this.view.default_reasoning_effort = view.default_reasoning_effort ?? null;
+    this.origin = "explicit";
+  }
+
+  /** A signed message from the node arrived. */
+  heard(nowMs: number, wallIso: string): void {
+    this.view.state = "online";
+    this.view.last_recv_at = wallIso;
+    this.suspectReason = null;
+    this.lastRecvMs = nowMs;
+    this.fails = 0;
+    this.probeFails = 0;
+    this.nextProbeMs = 0;
+    this.offlineSinceMs = null;
+  }
+
+  /** Our request to the node got an answer. */
+  answered(): void {
+    this.fails = 0;
+    this.probeFails = 0;
+    this.nextProbeMs = 0;
+    if (this.view.state === "suspect" && this.suspectReason === "unreachable") {
+      this.view.state = "online";
+      this.suspectReason = null;
+    }
+    if (this.view.state === "offline") {
+      this.view.state = "online";
+      this.offlineSinceMs = null;
+    }
+  }
+
+  /**
+   * Our request to the node failed on every URL. A candidate never reached is
+   * given up after a few tries instead of dialing someone else's memory
+   * forever (§3.5); the caller removes it and tombstones the id.
+   */
+  missed(nowMs: number, timings: MembershipTimings): "drop" | "kept" {
+    this.fails += 1;
+    if (this.view.state === "unknown" && this.fails >= CANDIDATE_MAX_FAILURES) return "drop";
+    if (this.view.state === "offline" || this.view.state === "unknown") {
+      this.probeFails += 1;
+      const backoff = timings.recoverProbeMs * 2 ** (this.probeFails - 1);
+      this.nextProbeMs = nowMs + Math.min(backoff, timings.maxRecoverProbeMs);
+      return "kept";
+    }
+    const recentlyHeard = this.lastRecvMs !== null && nowMs - this.lastRecvMs <= timings.offlineAfterMs;
+    const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
+    if (this.fails >= missThreshold && recentlyHeard) {
+      this.view.state = "suspect";
+      this.suspectReason = "unreachable";
+    }
+    return "kept";
+  }
+
+  /** Move between online, suspect and offline by how long the node has been quiet. */
+  reassess(nowMs: number, timings: MembershipTimings): void {
+    if (this.view.state === "offline" || this.lastRecvMs === null) return;
+    const age = nowMs - this.lastRecvMs;
+    if (age >= timings.offlineAfterMs) {
+      this.view.state = "offline";
+      this.suspectReason = null;
+      this.offlineSinceMs = nowMs;
+      this.nextProbeMs = nowMs;
+      return;
+    }
+    if (age >= timings.suspectAfterMs) {
+      if (this.view.state === "online") {
+        this.view.state = "suspect";
+        this.suspectReason = "quiet";
+      } else if (this.suspectReason === "unreachable") {
+        this.suspectReason = "quiet";
+      }
+      return;
+    }
+    if (this.view.state === "suspect") {
+      this.view.state = "online";
+      this.suspectReason = null;
+    }
+  }
+
+  /** A node that has been offline for the record TTL is forgotten. */
+  expired(nowMs: number, timings: MembershipTimings): boolean {
+    return (
+      this.view.state === "offline" &&
+      this.offlineSinceMs !== null &&
+      nowMs - this.offlineSinceMs >= timings.recordTtlMs
+    );
+  }
+
+  /** Whether a heartbeat is due: offline nodes and unreached candidates are probed on the backoff schedule. */
+  due(nowMs: number): boolean {
+    if (this.view.endpoints.length === 0) return false;
+    if (this.view.state !== "offline" && this.view.state !== "unknown") return true;
+    return nowMs >= this.nextProbeMs;
+  }
+}
 
 function resolveTimings(overrides: Partial<MembershipTimings> = {}): MembershipTimings {
   const merged = { ...DEFAULT_MEMBERSHIP_TIMINGS, ...overrides };
@@ -96,66 +234,11 @@ function resolveTimings(overrides: Partial<MembershipTimings> = {}): MembershipT
   return merged;
 }
 
-function toView(record: PeerRecord): PeerView {
-  return { ...record.view };
-}
-
-/**
- * The node's latest self-description replaces the recorded one, model catalog
- * included: a catalog it no longer advertises must not linger here (§3.3).
- */
-function profilePatch(record: PeerRecord, view: PeerView): void {
-  record.view.display_name = view.display_name;
-  record.view.endpoints = view.endpoints;
-  record.view.runtime = view.runtime;
-  record.view.runtime_digest = view.runtime_digest;
-  record.view.busy = view.busy ?? null;
-  if (view.max_task_ttl_s !== undefined) record.view.max_task_ttl_s = view.max_task_ttl_s;
-  record.view.models = view.models;
-  record.view.default_model = view.default_model ?? null;
-  record.view.default_reasoning_effort = view.default_reasoning_effort ?? null;
-}
-
-/** Move a record between online, suspect and offline by how long it has been quiet. */
-function reassess(record: PeerRecord, nowMs: number, timings: MembershipTimings): void {
-  if (record.view.state === "offline" || record.last_recv_ms === null) return;
-  const age = nowMs - record.last_recv_ms;
-  if (age >= timings.offlineAfterMs) {
-    record.view.state = "offline";
-    record.suspect_reason = null;
-    record.offline_since_ms = nowMs;
-    record.next_probe_ms = nowMs;
-    return;
-  }
-  if (age >= timings.suspectAfterMs) {
-    if (record.view.state === "online") {
-      record.view.state = "suspect";
-      record.suspect_reason = "quiet";
-    } else if (record.suspect_reason === "unreachable") {
-      record.suspect_reason = "quiet";
-    }
-    return;
-  }
-  if (record.view.state === "suspect") {
-    record.view.state = "online";
-    record.suspect_reason = null;
-  }
-}
-
-/** A node that has been offline for the record TTL is forgotten. */
-function shouldPrune(record: PeerRecord, nowMs: number, timings: MembershipTimings): boolean {
-  return (
-    record.view.state === "offline" &&
-    record.offline_since_ms !== null &&
-    nowMs - record.offline_since_ms >= timings.recordTtlMs
-  );
-}
-
 export class Membership {
   private readonly current: MembershipTimings;
   private readonly monotonicMs: () => number;
   private readonly wallIso: () => string;
-  private readonly records = new Map<OrcaNodeId, PeerRecord>();
+  private readonly records = new Map<OrcaNodeId, PeerEntry>();
   private readonly tombstones = new Map<OrcaNodeId, number>();
 
   constructor(
@@ -169,11 +252,6 @@ export class Membership {
 
   get timings(): Readonly<MembershipTimings> {
     return this.current;
-  }
-
-  /** Monotonic clock used by this instance (same source as the watchdog). */
-  now(): number {
-    return this.monotonicMs();
   }
 
   /**
@@ -195,10 +273,8 @@ export class Membership {
   upsert(peer: PeerView): void {
     if (peer.orca_node_id === this.selfOrcaNodeId) return;
     const existing = this.records.get(peer.orca_node_id);
-    const nowMs = this.monotonicMs();
     if (existing) {
-      profilePatch(existing, peer);
-      existing.origin = "explicit";
+      existing.describe(peer);
       return;
     }
     // An explicit upsert is the node itself, admitted by a verified join (or
@@ -206,18 +282,15 @@ export class Membership {
     // reviving a removed id; they must not lock out a node that rejoins on its
     // own, or the gateway would answer 200 and then reject its every request.
     this.tombstones.delete(peer.orca_node_id);
-    this.records.set(peer.orca_node_id, this.createRecord(peer, "online", nowMs, "explicit"));
+    this.records.set(peer.orca_node_id, PeerEntry.explicit(peer, this.monotonicMs(), this.wallIso()));
   }
 
   get(orcaNodeId: OrcaNodeId): PeerView | undefined {
-    const record = this.records.get(orcaNodeId);
-    return record ? toView(record) : undefined;
+    return this.records.get(orcaNodeId)?.snapshot();
   }
 
   list(): PeerView[] {
-    return [...this.records.values()]
-      .map(toView)
-      .sort((left, right) => left.orca_node_id.localeCompare(right.orca_node_id));
+    return this.sorted().map((entry) => entry.snapshot());
   }
 
   /**
@@ -226,7 +299,17 @@ export class Membership {
    * nodes gone quiet stay in `list()` but are never passed on.
    */
   directory(): PeerView[] {
-    return this.list().filter((peer) => peer.state === "online" || peer.state === "suspect");
+    return this.sorted()
+      .filter((entry) => entry.listed)
+      .map((entry) => entry.snapshot());
+  }
+
+  /** The members a heartbeat is due to: they have an address and are online, or their probe backoff has run out. */
+  due(): PeerView[] {
+    const nowMs = this.monotonicMs();
+    return this.sorted()
+      .filter((entry) => entry.due(nowMs))
+      .map((entry) => entry.snapshot());
   }
 
   /** Forget a node; its id is tombstoned so a stale remote list cannot bring it back. */
@@ -235,17 +318,10 @@ export class Membership {
     this.tombstones.set(orcaNodeId, this.monotonicMs() + this.current.tombstoneMs);
   }
 
-  /** Mark a peer as recently heard from. Returns false when the orca node is unknown. */
-  touch(orcaNodeId: OrcaNodeId): boolean {
-    const record = this.records.get(orcaNodeId);
-    if (!record) return false;
-    this.markOnline(record, this.monotonicMs());
-    return true;
-  }
-
   /** Whether a peer was joined explicitly or only seen in a remote list (§7.7). */
   originOf(orcaNodeId: OrcaNodeId): PeerOrigin | null {
-    return this.records.get(orcaNodeId)?.origin ?? null;
+    const entry = this.records.get(orcaNodeId);
+    return entry === undefined ? null : entry.isCandidate ? "candidate" : "explicit";
   }
 
   isTombstoned(orcaNodeId: OrcaNodeId): boolean {
@@ -258,64 +334,29 @@ export class Membership {
 
   // ---- evidence ----
 
-  /** Record an inbound signed message from `orcaNodeId`; returns false when unknown. */
+  /** Record an inbound signed message from `orcaNodeId`; returns false when it is not a member. */
   observeInbound(orcaNodeId: OrcaNodeId): boolean {
     if (orcaNodeId === this.selfOrcaNodeId) return true;
-    const record = this.records.get(orcaNodeId);
-    if (!record) return false;
-    this.markOnline(record, this.monotonicMs());
+    const entry = this.records.get(orcaNodeId);
+    if (!entry) return false;
+    entry.heard(this.monotonicMs(), this.wallIso());
     return true;
   }
 
   observeOutboundOk(orcaNodeId: OrcaNodeId): void {
-    const record = this.records.get(orcaNodeId);
-    if (!record) return;
-    record.last_ok_ms = this.monotonicMs();
-    record.last_ok_at = this.wallIso();
-    record.fails = 0;
-    record.probe_fails = 0;
-    record.next_probe_ms = 0;
-    if (record.view.state === "suspect" && record.suspect_reason === "unreachable") {
-      record.view.state = "online";
-      record.suspect_reason = null;
-    }
-    if (record.view.state === "offline") {
-      record.view.state = "online";
-      record.offline_since_ms = null;
-    }
+    this.records.get(orcaNodeId)?.answered();
   }
 
   observeOutboundFail(orcaNodeId: OrcaNodeId): void {
-    const record = this.records.get(orcaNodeId);
-    if (!record) return;
-    record.fails += 1;
-    const nowMs = this.monotonicMs();
-    const timings = this.current;
-    // A candidate never reached: give up after a few tries instead of dialing
-    // someone else's memory forever; the tombstone keeps a stale list from
-    // adding it straight back (§3.5).
-    if (record.view.state === "unknown" && record.fails >= CANDIDATE_MAX_FAILURES) {
+    const entry = this.records.get(orcaNodeId);
+    if (entry?.missed(this.monotonicMs(), this.current) === "drop") {
+      // The tombstone keeps a stale list from adding it straight back (§3.5).
       this.remove(orcaNodeId);
-      return;
-    }
-    if (record.view.state === "offline" || record.view.state === "unknown") {
-      record.probe_fails += 1;
-      const backoff = timings.recoverProbeMs * 2 ** (record.probe_fails - 1);
-      record.next_probe_ms = nowMs + Math.min(backoff, timings.maxRecoverProbeMs);
-      return;
-    }
-    const recentlyHeard = record.last_recv_ms !== null && nowMs - record.last_recv_ms <= timings.offlineAfterMs;
-    const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
-    if (record.fails >= missThreshold && recentlyHeard) {
-      record.view.state = "suspect";
-      record.suspect_reason = "unreachable";
     }
   }
 
   /** Remote lists only add records; they never touch online state. */
-  mergeRemote(members: readonly PeerView[] | null | undefined): void {
-    if (!members) return;
-    const nowMs = this.monotonicMs();
+  mergeRemote(members: readonly PeerView[]): void {
     for (const member of members) {
       if (member.orca_node_id === this.selfOrcaNodeId) continue;
       if (this.isTombstoned(member.orca_node_id)) continue;
@@ -323,55 +364,21 @@ export class Membership {
       // Once a record exists, only that node's own signed self-description may
       // update its endpoints or profile; otherwise any member could redirect
       // everyone's traffic to itself.
-      if (this.records.get(member.orca_node_id)) continue;
-      this.records.set(member.orca_node_id, this.createRecord(member, "unknown", nowMs, "candidate"));
+      if (this.records.has(member.orca_node_id)) continue;
+      this.records.set(member.orca_node_id, PeerEntry.candidate(member));
     }
   }
 
   /** Apply timeout transitions and prune stale records. */
-  evaluate(): PeerView[] {
+  evaluate(): void {
     const nowMs = this.monotonicMs();
-    for (const [orcaNodeId, record] of [...this.records]) {
-      reassess(record, nowMs, this.current);
-      if (shouldPrune(record, nowMs, this.current)) {
-        this.records.delete(orcaNodeId);
-        this.tombstones.set(orcaNodeId, nowMs + this.current.tombstoneMs);
-      }
+    for (const [orcaNodeId, entry] of [...this.records]) {
+      entry.reassess(nowMs, this.current);
+      if (entry.expired(nowMs, this.current)) this.remove(orcaNodeId);
     }
-    return [...this.records.values()].map(toView);
   }
 
-  needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean {
-    const record = this.records.get(orcaNodeId);
-    if (!record) return false;
-    // Offline nodes and unreached candidates are probed on the backoff schedule.
-    if (record.view.state !== "offline" && record.view.state !== "unknown") return true;
-    return nowMs >= record.next_probe_ms;
-  }
-
-  private createRecord(view: PeerView, state: PeerState, nowMs: number, origin: PeerOrigin): PeerRecord {
-    return {
-      view: { ...view, state, last_recv_at: state === "unknown" ? null : this.wallIso() },
-      origin,
-      last_ok_at: null,
-      fails: 0,
-      suspect_reason: null,
-      last_recv_ms: state === "unknown" ? null : nowMs,
-      last_ok_ms: null,
-      probe_fails: 0,
-      next_probe_ms: 0,
-      offline_since_ms: state === "offline" ? nowMs : null,
-    };
-  }
-
-  private markOnline(record: PeerRecord, nowMs: number): void {
-    record.view.state = "online";
-    record.view.last_recv_at = this.wallIso();
-    record.suspect_reason = null;
-    record.last_recv_ms = nowMs;
-    record.fails = 0;
-    record.probe_fails = 0;
-    record.next_probe_ms = 0;
-    record.offline_since_ms = null;
+  private sorted(): PeerEntry[] {
+    return [...this.records.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, entry]) => entry);
   }
 }
