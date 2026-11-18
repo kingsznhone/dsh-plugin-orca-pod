@@ -10,13 +10,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PodAdmin, type PodApproval, type PodPeer, type PodTaskRow } from "../src/plugin/admin.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
-import { Tracker } from "../src/plugin/tracker.ts";
 import type { SelfRecord } from "../src/core/wire/peer.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { isDirectLoopbackRequest } from "../src/core/net.ts";
 import { PodApi, POD_API_PREFIX } from "../src/plugin/web.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
-import { catalogFeed, idleLifecycle, logger } from "./fixtures/pod.ts";
+import { catalogFeed, idleLifecycle } from "./fixtures/pod.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"], artifacts: TaskView["artifacts"] = []): TaskView {
   return {
@@ -70,7 +69,7 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin & { calls: strin
   const calls: string[] = [];
   const lifecycle = idleLifecycle();
   const broker = new ApprovalBroker(lifecycle);
-  const admin = new PodAdmin(lifecycle, new Tracker(lifecycle, broker, logger), broker, catalogFeed());
+  const admin = new PodAdmin(lifecycle, broker, catalogFeed());
   const stubs: Partial<PodAdmin> = {
     self: () =>
       ({

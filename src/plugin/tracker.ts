@@ -21,7 +21,7 @@ import { boundContextSummary, createUserMessage, type ContextFormed, type UserMe
 
 import type { DispatchEntry, TaskView } from "../task/wire.ts";
 import { isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
-import type { PermissionRequest } from "../core/wire/grant.ts";
+import type { OrcaNodeId } from "../core/wire/peer.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodLifecycle } from "./lifecycle.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
@@ -49,22 +49,10 @@ export interface TrackerOptions {
   maxTransientFailures?: number;
 }
 
-/** One tracked dispatch, as the UI approval inbox sees it (§9.2). */
-interface TrackedTask {
-  peer: string;
-  taskId: string;
-  /** Latest observed view; null before the first successful poll. */
-  view: TaskView | null;
-  /** Permission request the remote task is blocked on, if any. */
-  request: PermissionRequest | null;
-}
-
 interface PendingTask {
   agent: Agent;
   peer: string;
   taskId: string;
-  /** Latest view observed during polling; null until the first successful poll. */
-  view: TaskView | null;
   /** Consecutive transient poll failures. */
   failures: number;
   /** Don't poll again before this time (exponential backoff). */
@@ -73,7 +61,12 @@ interface PendingTask {
 
 type FinishedTask = PendingTask &
   (
-    | { kind: "terminal"; view: TaskView }
+    | {
+        kind: "terminal";
+        view: TaskView;
+        /** The node that runs the task, as the origin knows it; undefined when its id is not known. */
+        publisher: OrcaNodeId | undefined;
+      }
     | {
         kind: "interrupted";
         /** Why tracking stopped. */
@@ -185,7 +178,6 @@ class NoticeDelivery {
   private timer: NodeJS.Timeout | undefined;
 
   constructor(
-    private readonly lifecycle: PodLifecycle,
     private readonly logger: Logger,
     private readonly options: { coalesceMs: number; maxConsecutiveWakes: number },
   ) {}
@@ -227,7 +219,7 @@ class NoticeDelivery {
       batch.lines.push(
         task.kind === "interrupted"
           ? NoticeDelivery.trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
-          : taskNoticeLine(task.view, task.peer, this.lifecycle.run?.node.client.idOf(task.peer)),
+          : taskNoticeLine(task.view, task.peer, task.publisher),
       );
       batches.set(task.agent.id, batch);
     }
@@ -308,7 +300,7 @@ export class Tracker {
       () => this.poll(),
       () => this.pending.size > 0,
     );
-    this.delivery = new NoticeDelivery(lifecycle, logger, {
+    this.delivery = new NoticeDelivery(logger, {
       coalesceMs: options.coalesceMs ?? DEFAULT_COALESCE_MS,
       maxConsecutiveWakes: options.maxConsecutiveWakes ?? DEFAULT_MAX_CONSECUTIVE_WAKES,
     });
@@ -316,27 +308,21 @@ export class Tracker {
 
   /**
    * Start watching a task dispatched by the given agent. Idempotent: a task
-   * that is already watched keeps its state. Returns true when watching started.
-   * `record: false` marks a restore from the dispatch log, which skips tasks
-   * this process already gave up on.
+   * that is already watched keeps its backoff. Returns true when watching
+   * started. A task this process already gave up on is not taken up again (task
+   * ids are unique, so a new dispatch never meets an abandoned key).
    */
-  track(agent: Agent, peer: string, taskId: string, options: { record?: boolean } = {}): boolean {
+  track(agent: Agent, peer: string, taskId: string): boolean {
     if (this.stopped) return false;
     const key = taskKey(peer, taskId);
     const existing = this.pending.get(key);
     if (existing !== undefined) {
-      // Already watched: keep its backoff and last view. A resumed session is
-      // a new agent object with the same id; deliver to the live one.
+      // A resumed session is a new agent object with the same id; deliver to the live one.
       if (existing.agent.id === agent.id) existing.agent = agent;
       return false;
     }
-    // Restoring from the dispatch log must not revive a task this process gave up on.
-    if (options.record === false && this.abandoned.has(key)) return false;
-    this.abandoned.delete(key);
-    this.pending.set(key, { agent, peer, taskId, view: null, failures: 0, nextAttemptAt: 0 });
-    // Persist the dispatching session so a host restart can resume tracking
-    // (§8.3). Restored entries already carry it and skip the write.
-    if (options.record !== false) this.lifecycle.run?.node.delegation.log.annotate(taskId, agent.id);
+    if (this.abandoned.has(key)) return false;
+    this.pending.set(key, { agent, peer, taskId, failures: 0, nextAttemptAt: 0 });
     this.loop.schedule(0);
     return true;
   }
@@ -346,22 +332,17 @@ export class Tracker {
    * restart the in-memory tracker is empty, but the log still remembers
    * non-terminal tasks and the DSH session that dispatched them; sessions the host
    * does not run are skipped (the task stays visible through `status` and the
-   * panel). With `onlyAgentId`, only that session's dispatches are considered —
-   * used when one session is (re)created while the host runs. Safe to repeat:
-   * tasks already watched or abandoned in this process are left alone.
+   * panel). `resolveAgent` decides which sessions count: all the host runs, or
+   * just one that was (re)created. Safe to repeat: tasks already watched or
+   * abandoned in this process are left alone.
    */
-  restore(
-    dispatches: readonly DispatchEntry[],
-    resolveAgent: (agentId: SessionId) => Agent | undefined,
-    onlyAgentId?: SessionId,
-  ): number {
+  restore(dispatches: readonly DispatchEntry[], resolveAgent: (agentId: SessionId) => Agent | undefined): number {
     let restored = 0;
     for (const entry of dispatches) {
       if (entry.agent_id === undefined || isTerminal(entry.state)) continue;
-      if (onlyAgentId !== undefined && entry.agent_id !== onlyAgentId) continue;
       const agent = resolveAgent(entry.agent_id);
       if (agent === undefined) continue;
-      if (this.track(agent, entry.peer, entry.task_id, { record: false })) restored += 1;
+      if (this.track(agent, entry.peer, entry.task_id)) restored += 1;
     }
     if (restored > 0) this.logger.info(`orca-pod: resumed tracking ${restored} dispatched task(s)`);
     return restored;
@@ -374,16 +355,6 @@ export class Tracker {
     this.delivery.stop();
     this.pending.clear();
     this.abandoned.clear();
-  }
-
-  /** Snapshot of watched tasks, for the UI task/approval panels (§9.2). */
-  list(): TrackedTask[] {
-    return [...this.pending.values()].map((entry) => ({
-      peer: entry.peer,
-      taskId: entry.taskId,
-      view: entry.view,
-      request: entry.view === null ? null : permissionRequestOf(entry.view),
-    }));
   }
 
   /** Give the agent a fresh wake budget (the user just spoke to it). */
@@ -421,7 +392,6 @@ export class Tracker {
       const view = await node.delegation.getTask(entry.peer, entry.taskId);
       // The entry may have been dropped (agent disposed) while the read ran.
       if (this.pending.get(key) !== entry) return;
-      entry.view = view;
       entry.failures = 0;
       entry.nextAttemptAt = 0;
       const request = permissionRequestOf(view);
@@ -435,7 +405,7 @@ export class Tracker {
       this.broker.withdraw(entry.peer, entry.taskId);
       if (isTerminal(view.status.state)) {
         this.pending.delete(key);
-        this.delivery.add({ ...entry, kind: "terminal", view });
+        this.delivery.add({ ...entry, kind: "terminal", view, publisher: node.client.idOf(entry.peer) });
       }
     } catch (error) {
       // A vanished task (404) or a rejected read is final; a network timeout or
@@ -471,6 +441,6 @@ export class Tracker {
     this.abandoned.add(key);
     this.broker.withdraw(entry.peer, entry.taskId);
     this.logger.warn(`orca-pod: gave up tracking ${entry.taskId} on ${entry.peer}: ${reason}`);
-    this.delivery.add({ ...entry, kind: "interrupted", view: entry.view, reason });
+    this.delivery.add({ ...entry, kind: "interrupted", reason });
   }
 }

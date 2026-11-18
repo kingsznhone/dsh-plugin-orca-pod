@@ -13,6 +13,7 @@
 
 import type { Context, Inject, Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { SessionId } from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-app-boot";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
 // `ctx.settings` is this plugin's own injection; the service package owns the type.
@@ -75,7 +76,8 @@ class PodPlugin {
     this.broker = new ApprovalBroker(this.lifecycle);
     this.tracker = new Tracker(this.lifecycle, this.broker, this.logger);
     this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
-      if (service !== undefined) void this.lifecycle.settled().then(() => this.restore());
+      if (service !== undefined)
+        void this.lifecycle.settled().then(() => this.restore((id) => this.agents.current()?.get(id)));
     });
 
     // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
@@ -99,7 +101,7 @@ class PodPlugin {
     // every call would fail with "not configured" and clutter the tool list.
     const tool = new PodTool(this.lifecycle, this.tracker, sandbox);
     ctx.tools.register(tool.definition(), { when: () => this.lifecycle.configured });
-    new PodApi(new PodAdmin(this.lifecycle, this.tracker, this.broker, this.feed)).register(ctx);
+    new PodApi(new PodAdmin(this.lifecycle, this.broker, this.feed)).register(ctx);
 
     // The skill ships inside the package and is registered in memory; no copy is
     // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
@@ -118,24 +120,20 @@ class PodPlugin {
   }
 
   /**
-   * Resume tracking from the dispatch log (§8.3). Without `agent`, every session
-   * the host already runs is considered (startup, or the agent registry
-   * appearing); with `agent`, only that session's own dispatches. Repeating it
-   * is harmless: watched or abandoned tasks are left alone.
+   * Resume tracking from the dispatch log (§8.3) for the sessions `resolveAgent`
+   * knows: every one the host already runs (startup, or the agent registry
+   * appearing), or just the one that was created. Repeating it is harmless:
+   * watched or abandoned tasks are left alone.
    */
-  private restore(agent?: Agent): void {
+  private restore(resolveAgent: (id: SessionId) => Agent | undefined): void {
     const run = this.lifecycle.run;
     if (run === null) return;
-    this.tracker.restore(
-      run.node.delegation.log.list(),
-      (id) => (agent !== undefined ? agent : this.agents.current()?.get(id)),
-      agent?.id,
-    );
+    this.tracker.restore(run.node.delegation.log.list(), resolveAgent);
   }
 
   private onAgentCreated(agent: Agent): void {
     agent.ctx.effect(() => () => this.tracker.forget(agent.id), "orca-pod.track");
-    void this.lifecycle.settled().then(() => this.restore(agent));
+    void this.lifecycle.settled().then(() => this.restore((id) => (id === agent.id ? agent : undefined)));
   }
 
   private onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {

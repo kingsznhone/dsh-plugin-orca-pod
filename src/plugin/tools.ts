@@ -188,7 +188,7 @@ export class PodTool {
       },
     };
     PodTool.throwIfAborted(signal);
-    const view = await orcaNode.delegation.sendTask(peer, input, signal);
+    const view = await orcaNode.delegation.sendTask(peer, input, { signal, agentId: exec.agent?.id });
     if (signal.aborted) {
       // The remote accepted the task after the caller's turn was cancelled: the
       // caller never learns its id, so it must not keep running unobserved.

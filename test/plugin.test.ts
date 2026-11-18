@@ -29,7 +29,7 @@ function createTracker(
           kind: "running",
           run: {
             node: {
-              delegation: { getTask: node.getTask, log: { annotate() {} } },
+              delegation: { getTask: node.getTask },
               client: { idOf: () => undefined },
             } as unknown as OrcaNode,
             port: 0,
@@ -261,14 +261,39 @@ describe("orca_pod tool", () => {
     );
   });
 
+  it("hands the dispatching session to the dispatch, so the log has it from the start", async () => {
+    const options: unknown[] = [];
+    const fakeNode = {
+      delegation: {
+        sendTask: async (_peer: string, _input: unknown, given: unknown) => {
+          options.push(given);
+          return { id: "task-1", status: { state: "submitted" } };
+        },
+      },
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    const watched: Array<[unknown, string]> = [];
+    const recorder = { track: (agent: unknown, _peer: string, taskId: string) => watched.push([agent, taskId]) > 0 };
+    const sendTools = createPodTools(lifecycleWithNode(fakeNode), recorder as unknown as typeof tracker);
+    const agent = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
+
+    await run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
+    expect(options[0]).toMatchObject({ agentId: "session-1" });
+    expect(watched).toEqual([[agent, "task-1"]]);
+
+    // A call without a session (the CLI, a host without sessions) dispatches without one, and tracks nothing.
+    await run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, {});
+    expect((options[1] as { agentId?: string }).agentId).toBeUndefined();
+    expect(watched).toHaveLength(1);
+  });
+
   it("forwards the caller's abort signal and cancels a task accepted after the turn was cancelled", async () => {
     const controller = new AbortController();
     const signals: Array<AbortSignal | undefined> = [];
     const cancelled: string[] = [];
     const fakeNode = {
       delegation: {
-        sendTask: async (_peer: string, _input: unknown, signal?: AbortSignal) => {
-          signals.push(signal);
+        sendTask: async (_peer: string, _input: unknown, options?: { signal?: AbortSignal }) => {
+          signals.push(options?.signal);
           // The remote accepts, but the user cancels the turn before the reply lands.
           controller.abort();
           return { id: "task-late", status: { state: "submitted" } };
@@ -303,7 +328,7 @@ describe("orca_pod tool", () => {
     let sendSettled = false;
     const fakeNode = {
       delegation: {
-        sendTask: (_peer: string, _input: unknown, signal: AbortSignal) =>
+        sendTask: (_peer: string, _input: unknown, { signal }: { signal: AbortSignal }) =>
           new Promise((resolve) => {
             // The outbound request notices the abort but takes a moment to wind down.
             signal.addEventListener("abort", () => {
@@ -432,9 +457,11 @@ describe("tracker recovery (8.3)", () => {
       inject: () => {},
       followup: () => {},
     } as unknown as Agent;
+    const polled = new Set<string>();
     const tracker = createTracker(
       () => ({
         async getTask(_peer: string, taskId: string): Promise<TaskView> {
+          polled.add(taskId);
           return view(taskId);
         },
       }),
@@ -452,7 +479,10 @@ describe("tracker recovery (8.3)", () => {
         (agentId) => (agentId === "live-session" ? agent : undefined),
       );
       expect(restored).toBe(2);
-      expect(tracker.list()).toHaveLength(2);
+      await vi.waitFor(() => expect(polled).toEqual(new Set(["running", "parked"])));
+      // The ones that are over, unattributed or without a live session are never read.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(polled).toEqual(new Set(["running", "parked"]));
     } finally {
       tracker.stop();
     }

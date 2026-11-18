@@ -71,7 +71,6 @@ function fakeNode(): {
     membership: { list: () => [] as unknown[] },
     client: { idOf: () => undefined },
     delegation: {
-      log: { annotate() {} },
       // The task stays suspended in what the tracker reads: it has not polled again since the decision.
       async getTask() {
         return suspended({ ...REQUEST, requested_by: fakeNodeId("NODE02") });
@@ -176,8 +175,7 @@ describe("approval broker", () => {
     const node = fakeNode();
     const lifecycle = lifecycleWithNode(node);
     const broker = new ApprovalBroker(lifecycle);
-    const tracker = new Tracker(lifecycle, broker, logger);
-    const admin = new PodAdmin(lifecycle, tracker, broker, catalogFeed());
+    const admin = new PodAdmin(lifecycle, broker, catalogFeed());
 
     park(broker);
     expect(admin.approvals()).toEqual([
@@ -201,13 +199,12 @@ describe("approval broker", () => {
     expect(node.denied.at(-1)!.reason).toBe("no");
   });
 
-  // Known gap until the approvals have one source (refactor3 step 4).
-  it.fails("shows an answered request no more, even while the tracker still holds the suspended view it polled", async () => {
+  it("shows an answered request no more, even though the tracker has not polled since", async () => {
     const node = fakeNode();
     const lifecycle = lifecycleWithNode(node);
     const broker = new ApprovalBroker(lifecycle);
     const tracker = new Tracker(lifecycle, broker, logger, { intervalMs: 60_000 });
-    const admin = new PodAdmin(lifecycle, tracker, broker, catalogFeed());
+    const admin = new PodAdmin(lifecycle, broker, catalogFeed());
     try {
       const agent = { id: SessionId("session-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent;
       tracker.track(agent, PEER, TASK);

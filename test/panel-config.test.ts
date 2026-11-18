@@ -73,8 +73,7 @@ async function started(raw: Record<string, unknown>): Promise<Pod> {
 const urlOf = (handle: PodLifecycle): string => handle.run!.node.profile.endpoints[0]!;
 
 function adminFor(handle: PodLifecycle): PodAdmin {
-  const broker = new ApprovalBroker(handle);
-  return new PodAdmin(handle, new Tracker(handle, broker, logger, { intervalMs: 60_000 }), broker, catalogFeed());
+  return new PodAdmin(handle, new ApprovalBroker(handle), catalogFeed());
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {

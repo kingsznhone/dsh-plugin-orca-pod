@@ -105,7 +105,7 @@ function podOver(node: OrcaNode, options?: TrackerOptions) {
   const lifecycle = lifecycleWithNode(node);
   const broker = new ApprovalBroker(lifecycle);
   const tracker = new Tracker(lifecycle, broker, logger, options);
-  return { lifecycle, broker, tracker, admin: new PodAdmin(lifecycle, tracker, broker, catalogFeed()) };
+  return { lifecycle, broker, tracker, admin: new PodAdmin(lifecycle, broker, catalogFeed()) };
 }
 
 describe("UI data surface", () => {
@@ -306,7 +306,7 @@ describe("UI data surface", () => {
       (list) => list.length === 1,
       { label: "pending approval appears" },
     );
-    // The tracker and the broker both know the task: one entry, answerable by the UI.
+    // The broker holds what the tracker saw: one entry, answerable by the UI.
     expect(approvals).toMatchObject([
       {
         id: `http://127.0.0.1:1|${suspended.id}`,

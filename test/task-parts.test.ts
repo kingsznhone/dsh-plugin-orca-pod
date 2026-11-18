@@ -45,13 +45,15 @@ describe("DispatchLog", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("stamps the dispatching session only on an existing entry", () => {
+  it("stores the dispatching session with the entry and keeps it through later reads", () => {
     const { log: dispatches, store } = log();
-    dispatches.annotate("missing", SessionId("session-1"));
-    expect(store.list()).toEqual([]);
+    dispatches.recordSend("http://peer", view("t1", "working"), SessionId("session-1"));
+    expect(store.get("t1")?.agent_id).toBe("session-1");
+    dispatches.refresh(view("t1", "completed"));
+    expect(store.get("t1")).toMatchObject({ state: "completed", agent_id: "session-1" });
 
-    dispatches.recordSend("http://peer", view("t1", "working"));
-    dispatches.annotate("t1", SessionId("session-1"));
-    expect(dispatches.list()[0]?.agent_id).toBe("session-1");
+    // A dispatch without a session (the CLI, a host without sessions) records none.
+    dispatches.recordSend("http://peer", view("t2", "working"));
+    expect(store.get("t2")).not.toHaveProperty("agent_id");
   });
 });

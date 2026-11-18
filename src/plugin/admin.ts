@@ -17,14 +17,12 @@ import { shortenNodeId } from "../core/identity.ts";
 import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
 import { isTerminal } from "../task/wire.ts";
 import type { OrcaNodeId, PeerView, SelfRecord } from "../core/wire/peer.ts";
-import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { LlmReasoningEffortInfo, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { ExecutorKind } from "../executor/kinds.ts";
 import type { PanelPatch } from "../node/settings.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
 import type { PodLifecycle } from "./lifecycle.ts";
-import type { Tracker } from "./tracker.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 
 /** One artifact attached to a task: a file its node published (§5.6). */
@@ -39,7 +37,7 @@ export interface PodArtifact {
 /** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
 export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | null };
 
-/** One permission request waiting for the human (tracker and broker views merged). */
+/** One permission request waiting for the human. */
 export interface PodApproval {
   /** `peer|task_id`: stable across polls. */
   id: string;
@@ -53,8 +51,8 @@ export interface PodApproval {
   /** The task's mode now, and the mode it asks to continue with until it ends. */
   current_mode: SandboxMode;
   requested_mode: SandboxMode;
-  /** DSH session that dispatched the task; null when only the tracker has seen the request. */
-  agent_id: string | null;
+  /** DSH session that dispatched the task. */
+  agent_id: string;
 }
 
 /** One row of the task tables: a task this node runs, or one it dispatched. */
@@ -165,17 +163,13 @@ class RosterLabels {
   }
 }
 
-/** A permission request waiting for the human, whoever saw it first. */
-type PendingApproval = { peer: string; taskId: string; request: PermissionRequest; agentId: string | null };
-
 /**
  * The data surface of the UI panel plus the approval actions, over one pod
- * lifecycle: its running node, the tracker and the approval broker.
+ * lifecycle (its running node) and the approval broker.
  */
 export class PodAdmin {
   constructor(
     private readonly lifecycle: PodLifecycle,
-    private readonly tracker: Tracker,
     private readonly broker: ApprovalBroker,
     /** The host's model catalog; without one the panel offers no effort to pick. */
     private readonly catalog: ModelCatalogFeed,
@@ -243,16 +237,16 @@ export class PodAdmin {
   /** Permission requests waiting for the human, one per task. */
   approvals(): PodApproval[] {
     const labels = new RosterLabels(this.lifecycle.run?.node ?? null);
-    return [...this.waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => ({
-      id,
+    return this.broker.list().map(({ peer, task_id, request, agent_id }) => ({
+      id: taskKey(peer, task_id),
       peer,
-      task_id: taskId,
+      task_id,
       tool: request.tool,
       requested: PodAdmin.preview(request.requested),
       from: labels.label(request.requested_by),
       current_mode: request.current_mode,
       requested_mode: request.requested_mode,
-      agent_id: agentId,
+      agent_id,
     }));
   }
 
@@ -364,25 +358,6 @@ export class PodAdmin {
     return this.lifecycle.requireRun().node;
   }
 
-  /** The broker's parked prompts plus requests only the tracker has seen, one per task. */
-  private waitingApprovals(): Map<string, PendingApproval> {
-    const waiting = new Map<string, PendingApproval>();
-    for (const prompt of this.broker.list()) {
-      waiting.set(taskKey(prompt.peer, prompt.task_id), {
-        peer: prompt.peer,
-        taskId: prompt.task_id,
-        request: prompt.request,
-        agentId: prompt.agent_id,
-      });
-    }
-    for (const tracked of this.tracker.list()) {
-      const key = taskKey(tracked.peer, tracked.taskId);
-      if (tracked.request !== null && !waiting.has(key)) {
-        waiting.set(key, { peer: tracked.peer, taskId: tracked.taskId, request: tracked.request, agentId: null });
-      }
-    }
-    return waiting;
-  }
   private static podOf(view: TaskView): PodTaskMetadata {
     return view.metadata?.pod ?? {};
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
 import type { TaskState, TaskView, DispatchEntry } from "../src/task/wire.ts";
@@ -97,6 +97,15 @@ function fakeNode(views: Map<string, TaskView>): FakeTaskNode {
 
 const broker = new ApprovalBroker(idleLifecycle());
 
+/** The task ids the tracker read from the node, in order: what it is still watching shows up here. */
+const reads: string[] = [];
+
+beforeEach(() => {
+  reads.length = 0;
+});
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** A real tracker whose lifecycle answers with a node that can only read tasks. */
 function createTracker(getNode: () => FakeTaskNode | null, options?: TrackerOptions) {
   const lifecycle = idleLifecycle();
@@ -108,7 +117,12 @@ function createTracker(getNode: () => FakeTaskNode | null, options?: TrackerOpti
           kind: "running",
           run: {
             node: {
-              delegation: { getTask: node.getTask, log: { annotate() {} } },
+              delegation: {
+                getTask: (peer: string, taskId: string) => {
+                  reads.push(taskId);
+                  return node.getTask(peer, taskId);
+                },
+              },
               client: { idOf: () => undefined },
             } as unknown as OrcaNode,
             port: 0,
@@ -182,12 +196,14 @@ describe("createTracker", () => {
     const views = new Map([["01TASK", taskView("01TASK", "completed", "done")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
     tracker.track(agent, "http://peer:11811", "01TASK");
-    expect(tracker.list()).toHaveLength(1);
     await waitFor(() => agent.followed.length === 1);
     expect(agent.injected).toHaveLength(0);
     expect(noticeText(agent.followed[0]!)).toContain("01TASK");
     expect(agent.followed[0]!.source.kind).toBe("orca-pod");
-    expect(tracker.list()).toHaveLength(0);
+    // A finished task is not read again.
+    const readsWhenDone = reads.length;
+    await sleep(40);
+    expect(reads).toHaveLength(readsWhenDone);
     tracker.stop();
   });
 
@@ -254,7 +270,6 @@ describe("createTracker", () => {
     // The raw request text never enters the chat; the UI card carries it.
     expect(agent.followed).toHaveLength(0);
     expect(agent.injected).toHaveLength(0);
-    expect(tracker.list()).toHaveLength(1);
 
     // A new request id replaces the prompt.
     views.set("01TASK", permissionView("01TASK", "req-2"));
@@ -279,7 +294,9 @@ describe("createTracker", () => {
 
     views.set("01TASK", taskView("01TASK", "working"));
     await waitFor(() => broker.list().length === 0);
-    expect(tracker.list()).toHaveLength(1);
+    // The task is not over: it is still being read.
+    const readsNow = reads.length;
+    await waitFor(() => reads.length > readsNow + 1);
     tracker.stop();
   });
 
@@ -338,7 +355,10 @@ describe("createTracker", () => {
     const text = noticeText(agent.followed[0]!);
     expect(text).toContain("interrupted");
     expect(text).toContain("01TASK");
-    expect(tracker.list()).toHaveLength(0);
+    // Tracking ended: the task is not read again.
+    const readsWhenGivenUp = reads.length;
+    await sleep(40);
+    expect(reads).toHaveLength(readsWhenGivenUp);
     tracker.stop();
   });
 
@@ -362,20 +382,34 @@ describe("tracking restore and poll rounds", () => {
     return { task_id: taskId, peer, state: "unknown", agent_id: agentId, created_at: now, updated_at: now };
   }
 
-  it("keeps an already watched task as it is when it is tracked again", async () => {
-    const agent = fakeAgent();
+  it("watches a task once, and delivers to the live agent object when a resumed session tracks it again", async () => {
+    const first = fakeAgent();
+    const resumed = fakeAgent();
     const views = new Map([["01RUN", taskView("01RUN", "working")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
-    expect(tracker.track(agent, peer, "01RUN")).toBe(true);
-    await waitFor(() => tracker.list()[0]?.view !== null);
-    expect(tracker.track(agent, peer, "01RUN", { record: false })).toBe(false);
-    // The observed view survives the second call instead of being reset.
-    expect(tracker.list()[0]?.view?.status.state).toBe("working");
+    expect(tracker.track(first, peer, "01RUN")).toBe(true);
+    // The session was resumed: a new agent object with the same id.
+    expect(tracker.track(resumed, peer, "01RUN")).toBe(false);
+
+    views.set("01RUN", taskView("01RUN", "completed", "done"));
+    await waitFor(() => resumed.followed.length === 1);
+    expect(first.followed).toHaveLength(0);
     tracker.stop();
   });
 
-  it("restores only the named session's dispatches", () => {
-    const tracker = createTracker(() => fakeNode(new Map()), { intervalMs: 60_000 });
+  it("restores the dispatches of the sessions the resolver knows", async () => {
+    const tracker = createTracker(
+      () =>
+        fakeNode(
+          new Map([
+            ["01A", taskView("01A", "working")],
+            ["01B", taskView("01B", "working")],
+          ]),
+        ),
+      {
+        intervalMs: 60_000,
+      },
+    );
     const agentWith = (id: string) =>
       ({ id: SessionId(id), status: "idle", inject() {}, followup() {} }) as unknown as Agent;
     const one = agentWith("agent-1");
@@ -385,10 +419,12 @@ describe("tracking restore and poll rounds", () => {
       ["agent-2", two],
     ]);
     const log = [dispatch("01A", SessionId("agent-1")), dispatch("01B", SessionId("agent-2"))];
-    expect(tracker.restore(log, (id) => agents.get(id), SessionId("agent-2"))).toBe(1);
-    expect(tracker.list().map((task) => task.taskId)).toEqual(["01B"]);
-    // Restoring everything afterwards only adds what is not watched yet.
+    expect(tracker.restore(log, (id) => (id === two.id ? two : undefined))).toBe(1);
+    await waitFor(() => reads.includes("01B"));
+    expect(reads).toEqual(["01B"]);
+    // Restoring everyone afterwards only adds what is not watched yet.
     expect(tracker.restore(log, (id) => agents.get(id))).toBe(1);
+    await waitFor(() => reads.includes("01A"));
     tracker.stop();
   });
 
@@ -406,8 +442,8 @@ describe("tracking restore and poll rounds", () => {
     expect(tracker.restore(log, () => agent)).toBe(0);
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(agent.followed).toHaveLength(1);
-    // A fresh dispatch of the same id (an explicit track) is still accepted.
-    expect(tracker.track(agent, peer, "01GONE")).toBe(true);
+    // Task ids are unique: the same key is the same task, whoever asks again.
+    expect(tracker.track(agent, peer, "01GONE")).toBe(false);
     tracker.stop();
   });
 

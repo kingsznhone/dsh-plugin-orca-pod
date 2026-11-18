@@ -108,15 +108,19 @@ describe("origin dispatch log (13.4)", () => {
     nodes.push(origin);
     await origin.mesh.join(peer.profile.endpoints[0]!);
 
-    const view = await origin.delegation.sendTask(peer.profile.endpoints[0]!, {
-      message: { role: "user", parts: [{ kind: "text", text: "slow echo" }] },
-      metadata: {
-        echo: {
-          steps: [{ at_ms: 30, suspend: { kind: "permission", tool: "write_file", requested: {} } }],
-          final: { state: "completed", text: "done" },
+    const view = await origin.delegation.sendTask(
+      peer.profile.endpoints[0]!,
+      {
+        message: { role: "user", parts: [{ kind: "text", text: "slow echo" }] },
+        metadata: {
+          echo: {
+            steps: [{ at_ms: 30, suspend: { kind: "permission", tool: "write_file", requested: {} } }],
+            final: { state: "completed", text: "done" },
+          },
         },
       },
-    });
+      { agentId: SessionId("session-1") },
+    );
 
     const deadline = Date.now() + 5000;
     let record = origin.delegation.log.list().find((item) => item.task_id === view.id);
@@ -125,7 +129,8 @@ describe("origin dispatch log (13.4)", () => {
       record = origin.delegation.log.list().find((item) => item.task_id === view.id);
     }
     // The target answers `submitted` while it prepares the task, `working` once the executor runs.
-    expect(record).toMatchObject({ peer: peer.profile.endpoints[0]! });
+    // The dispatching session is written with the entry, not added afterwards.
+    expect(record).toMatchObject({ peer: peer.profile.endpoints[0]!, agent_id: "session-1" });
     expect(["submitted", "working"]).toContain(record?.state);
 
     // Restart the origin: in-flight dispatches become unknown, never "failed".
@@ -140,6 +145,7 @@ describe("origin dispatch log (13.4)", () => {
       state: "unknown",
       last_error: "origin_restart",
       peer: peer.profile.endpoints[0]!,
+      agent_id: "session-1",
     });
   });
 });

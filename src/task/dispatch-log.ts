@@ -28,14 +28,19 @@ export class DispatchLog {
     return this.store.list();
   }
 
-  /** Only `sendTask` means "this origin dispatched it": reads must never create entries. */
-  recordSend(peerUrl: string, view: TaskView): void {
+  /**
+   * Only `sendTask` means "this origin dispatched it": reads must never create
+   * entries. `agentId` is the DSH session that dispatched it, remembered so the
+   * host can resume background tracking after a restart.
+   */
+  recordSend(peerUrl: string, view: TaskView, agentId?: SessionId): void {
     const previous = this.store.get(view.id);
     const now = new Date().toISOString();
     this.save({
       ...previous,
       task_id: view.id,
       peer: peerUrl,
+      ...(agentId === undefined ? {} : { agent_id: agentId }),
       context_id: view.contextId,
       state: view.status.state,
       last_error: view.status.reason,
@@ -55,16 +60,6 @@ export class DispatchLog {
       last_error: view.status.reason,
       updated_at: new Date().toISOString(),
     });
-  }
-
-  /**
-   * Remember which DSH session dispatched a task, so the host can resume
-   * background tracking after a restart (§8.3). The entry must already exist;
-   * unknown ids are ignored.
-   */
-  annotate(taskId: string, agentId: SessionId): void {
-    const entry = this.store.get(taskId);
-    if (entry !== undefined && entry.agent_id !== agentId) this.save({ ...entry, agent_id: agentId });
   }
 
   /**

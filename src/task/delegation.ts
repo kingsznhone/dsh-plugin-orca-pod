@@ -10,6 +10,8 @@ import type { Grant, ResumeControl } from "../core/wire/grant.ts";
 import type { WorkgroupId } from "../core/wire/peer.ts";
 import { ErrorReplySchema } from "../core/wire/reply.ts";
 import type { Membership } from "../mesh/membership.ts";
+import type { SessionId } from "@deepseek-ai/dsh-session";
+
 import { remoteError, type CallOptions, type HttpPeerClient } from "../mesh/peer-client.ts";
 import type { DispatchStore } from "./dispatch-store.ts";
 import { DispatchLog } from "./dispatch-log.ts";
@@ -99,13 +101,19 @@ export class Delegation {
    * Dispatch a task to a known member. A stranger is not joined implicitly: the
    * URL would receive the admission proof just because a tool call named it.
    * Add a member with `join` (the plugin's `connect`, the CLI's `serve --peer`) first.
+   * `agentId` is the DSH session that dispatches it; it goes into the dispatch
+   * log with the entry, so tracking can resume after a host restart (§8.3).
    */
-  async sendTask(peerUrl: string, input: SubmitTaskInput, signal?: AbortSignal): Promise<TaskView> {
+  async sendTask(
+    peerUrl: string,
+    input: SubmitTaskInput,
+    options: { signal?: AbortSignal; agentId?: SessionId } = {},
+  ): Promise<TaskView> {
     const peerId = this.client.known(peerUrl);
     const state = peerId === this.identity.orcaNodeId ? "online" : (this.membership.get(peerId)?.state ?? "gone");
     if (state !== "online") throw new PodError("peer_not_online", `peer ${peerId} is ${state}`);
-    const view = await rpc(this.client, peerUrl, "message/send", input, { signal });
-    this.log.recordSend(peerUrl, view);
+    const view = await rpc(this.client, peerUrl, "message/send", input, { signal: options.signal });
+    this.log.recordSend(peerUrl, view, options.agentId);
     return view;
   }
 
