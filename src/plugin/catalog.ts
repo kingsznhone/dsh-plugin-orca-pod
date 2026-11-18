@@ -19,8 +19,8 @@ import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-mod
 import type { LlmModelInfo, LlmProviderInfo, LlmReasoningEffortInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
 
 import { errorMessage } from "../core/errors.ts";
+import { ChangeSignal } from "../core/events.ts";
 import { MAX_MODEL_OFFERS, type ModelOffer } from "../core/wire/model.ts";
-import type { OrcaNode } from "../node/orca-node.ts";
 import { OptionalService } from "./services.ts";
 
 export type HostModelCatalog = {
@@ -30,70 +30,56 @@ export type HostModelCatalog = {
   reasoningEfforts: readonly LlmReasoningEffortInfo[];
 };
 
-/** What the feed needs to know about the pod: the node it runs, and when its startup is over. */
-export type CatalogHost = { readonly node: OrcaNode | null; readonly ready: Promise<void> };
-
 /**
- * Feeds the host's model catalog to whichever node the pod runs. The host owns
- * the real catalog, the node only advertises it: the catalog is read once the
- * node is up and installed on the running node (and on every later panel
- * restart, before its first join).
+ * Reads the host's model catalog. The host owns the real catalog and the pod
+ * installs it on its node; the feed only reads it and says when it changed.
+ * The catalog is empty until the first `refresh` finishes.
  */
 export class ModelCatalogFeed {
-  private readonly catalog: HostModelCatalog = { models: [], defaultModel: null, reasoningEfforts: [] };
+  /** Fires when a refresh produced a catalog; the pod installs it on its node. */
+  readonly changes = new ChangeSignal();
+  private catalog: HostModelCatalog = { models: [], defaultModel: null, reasoningEfforts: [] };
   /** The host's `llm` service, while it offers one; absent on CLI-only hosts. */
   private llm?: LlmRuntime;
   /** The host's `agent-default-model` service, while it offers one. */
   private defaultModel?: AgentDefaultModelConfig;
-  private host: CatalogHost | null = null;
   /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
   private generation = 0;
 
-  constructor(
-    private readonly ctx: Pick<Context, "inject">,
-    private readonly logger: Logger,
-  ) {}
-
   /**
-   * Install the current catalog on a node. The lifecycle calls it for every
-   * start, before the first `join`, so the self record peers receive already
-   * advertises it.
+   * Follows the host's catalog services from construction on (a documented
+   * exception to "constructors touch nothing outside").
    */
-  advertise(orcaNode: OrcaNode): void {
-    const { models, defaultModel } = this.catalog;
-    orcaNode.models.update(models, defaultModel);
-  }
-
-  /** The efforts the host's default model offers, for the panel's node-default choice. */
-  reasoningEfforts(): readonly LlmReasoningEffortInfo[] {
-    return this.catalog.reasoningEfforts;
-  }
-
-  /** Follow the host's catalog services for this pod and re-advertise on change. */
-  watch(host: CatalogHost): void {
-    this.host = host;
+  constructor(
+    ctx: Pick<Context, "inject">,
+    private readonly logger: Logger,
+  ) {
     // The two catalog services are optional and independent: follow each one
     // separately, so a host that offers only one still advertises what it has;
     // the catalog is rebuilt when either appears, is replaced or goes away.
-    new OptionalService(this.ctx, "llm", "orca-pod.catalog-llm", (llm) => {
+    new OptionalService(ctx, "llm", "orca-pod.catalog-llm", (llm) => {
       this.llm = llm;
       void this.refresh();
     });
-    new OptionalService(this.ctx, "agentDefaultModel", "orca-pod.catalog-default-model", (defaultModel) => {
+    new OptionalService(ctx, "agentDefaultModel", "orca-pod.catalog-default-model", (defaultModel) => {
       this.defaultModel = defaultModel;
       void this.refresh();
     });
-    void host.ready.then(() => this.refresh());
   }
 
-  private async refresh(): Promise<void> {
-    const current = ++this.generation;
+  /** The catalog as the last refresh read it: the routes, the default and the efforts the panel may pick from. */
+  current(): HostModelCatalog {
+    return this.catalog;
+  }
+
+  /** Read the catalog from the host again; a slower, older read never overwrites a newer one. */
+  async refresh(): Promise<void> {
+    const generation = ++this.generation;
     const next = await this.discover();
-    if (current !== this.generation) return;
-    Object.assign(this.catalog, next);
-    const orcaNode = this.host?.node ?? null;
-    if (orcaNode !== null) this.advertise(orcaNode);
-    if (this.catalog.models.length > 0) this.logger.info(`orca-pod: advertising ${this.catalog.models.length} models`);
+    if (generation !== this.generation) return;
+    this.catalog = next;
+    if (next.models.length > 0) this.logger.info(`orca-pod: advertising ${next.models.length} models`);
+    this.changes.notify();
   }
 
   /**

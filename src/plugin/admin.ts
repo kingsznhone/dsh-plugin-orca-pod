@@ -310,7 +310,7 @@ export class PodAdmin {
       endpoints,
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
       permission_modes: SANDBOX_MODES,
-      reasoning_efforts: this.catalog.reasoningEfforts(),
+      reasoning_efforts: this.catalog.current().reasoningEfforts,
       bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
       peers: [...new Set([...config.peers, ...lifecycle.rememberedPeers])],
       data_root: config.data_root,

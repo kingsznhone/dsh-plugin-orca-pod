@@ -86,6 +86,11 @@ export class PodLifecycle {
     this.dataRoot = config.data_root ?? defaultRoot ?? defaultDataRoot();
     this.peers = new RememberedPeers(this.dataRoot, logger);
     this.saved = this.rooted(config);
+    // The host's model catalog changes while the pod lives: install it on whichever node runs.
+    catalog.changes.subscribe(() => {
+      const run = this.run;
+      if (run !== null) this.advertise(run.node);
+    });
   }
 
   /** What the pod is doing now. A queued restart counts as `starting`: the node it replaces is about to go. */
@@ -277,6 +282,8 @@ export class PodLifecycle {
       try {
         const run = await this.startNode(password);
         this.outcome = { kind: "running", run };
+        // The host's providers may have finished loading since the last read.
+        void this.catalog.refresh();
         // Startup peers from the config, then the ones joined at runtime.
         return {
           node: run.node,
@@ -336,14 +343,20 @@ export class PodLifecycle {
       `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
     );
 
-    // Install the model catalog before the first join so the joined self record
-    // and every heartbeat carry it from the start (§6.15).
+    // The node carries the catalog from its first join on, so the self record
+    // peers receive and every heartbeat advertise it (§6.15).
+    this.advertise(node);
+    return { node, port: info.port };
+  }
+
+  /** Install the host's current model catalog on a node; the one place it is installed. */
+  private advertise(node: OrcaNode): void {
+    const { models, defaultModel } = this.catalog.current();
     try {
-      this.catalog.advertise(node);
+      node.models.update(models, defaultModel);
     } catch (error) {
       this.logger.warn(`orca-pod: advertising the model catalog failed: ${errorMessage(error)}`);
     }
-    return { node, port: info.port };
   }
 
   /** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */

@@ -72,13 +72,6 @@ class PodPlugin {
     this.feed = new ModelCatalogFeed(ctx, this.logger);
     this.lifecycle = new PodLifecycle(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
     this.lifecycle.start();
-    const lifecycle = this.lifecycle;
-    this.feed.watch({
-      get node() {
-        return lifecycle.run?.node ?? null;
-      },
-      ready: lifecycle.settled(),
-    });
     this.broker = new ApprovalBroker(this.lifecycle);
     this.tracker = new Tracker(this.lifecycle, this.broker, this.logger);
     this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {

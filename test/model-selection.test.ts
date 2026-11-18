@@ -4,14 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Context, Logger } from "@deepseek-ai/cordis";
-import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { ModelOffersSchema, ModelSelectionSchema, type ModelOffer } from "../src/core/wire/model.ts";
+import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
 import { parseSchema } from "../src/core/schema.ts";
-import type { Settings } from "../src/node/settings.ts";
-import { ModelCatalogFeed } from "../src/plugin/catalog.ts";
+import { parseSettings, type Settings } from "../src/node/settings.ts";
+import { ModelCatalogFeed, type HostModelCatalog } from "../src/plugin/catalog.ts";
+import { PodLifecycle } from "../src/plugin/lifecycle.ts";
+import { MemoryPodStores } from "../src/plugin/stores.ts";
 import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -202,22 +203,64 @@ describe("model catalog", () => {
       },
     } as unknown as Pick<Context, "inject">;
     const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
-    const advertised: Array<{ models: ModelOffer[]; defaultModel: ModelSelection | null }> = [];
-    const node = {
-      models: {
-        update: (models: ModelOffer[], defaultModel: ModelSelection | null) =>
-          advertised.push({ models, defaultModel }),
-      },
-    } as unknown as OrcaNode;
-
     const feed = new ModelCatalogFeed(ctx, logger);
-    feed.watch({ node, ready: Promise.resolve() });
-    await vi.waitFor(() => expect(advertised.at(-1)?.models).toHaveLength(2));
-    const catalog = { ...advertised.at(-1)!, reasoningEfforts: feed.reasoningEfforts() };
+    const told: HostModelCatalog[] = [];
+    feed.changes.subscribe(() => told.push(feed.current()));
+    await vi.waitFor(() => expect(feed.current().models).toHaveLength(2));
+    // Whoever follows the feed is told when a catalog arrived, and reads it from the feed.
+    expect(told.length).toBeGreaterThan(0);
+    expect(told.at(-1)).toBe(feed.current());
+    const catalog = feed.current();
     expect(catalog.models.map((model) => model.id)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(catalog.models[0]?.description).toBe("fast");
     expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });
     // The panel offers the efforts the host's default model reports, not a list of its own.
     expect(catalog.reasoningEfforts.map((effort) => effort.id)).toEqual(["high", "max"]);
+  });
+
+  it("installs the host's catalog on every node the pod runs and on every later change", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orca-catalog-"));
+    ROOTS.push(root);
+    const services = {
+      llm: {
+        listProviders: () => [{ id: "deepseek", name: "DeepSeek" }],
+        listModels: async (provider: string) => [{ provider, id: "deepseek-flash", name: "Flash" }],
+        resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: "high", name: "High" }] } }),
+      },
+    };
+    const ctx = {
+      inject: (keys: string[], scope: (scope: unknown) => void) => {
+        const [key] = keys;
+        if (key === "llm") scope({ llm: services.llm, effect: () => {} });
+      },
+    } as unknown as Pick<Context, "inject">;
+    const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
+    const stores = new MemoryPodStores({ workgroup_id: wg("wg-catalog"), data_root: root, port: 0 });
+    stores.secrets.set("ORCA_POD_PASSWORD_WG_CATALOG", "pw");
+    const feed = new ModelCatalogFeed(ctx, logger);
+    await feed.refresh();
+    const pod = new PodLifecycle(parseSettings(stores.raw()), logger, stores, feed);
+    pod.start();
+    try {
+      await pod.settled();
+      const first = pod.requireRun().node;
+      expect(first.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash"]);
+
+      // An in-place restart makes a new node, which gets the catalog as well.
+      await pod.reconfigure({ workgroup_password: "rotated" });
+      const second = pod.requireRun().node;
+      expect(second).not.toBe(first);
+      expect(second.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash"]);
+
+      // A later change in the host reaches the running node through the feed alone.
+      services.llm.listModels = async (provider: string) => [
+        { provider, id: "deepseek-flash", name: "Flash" },
+        { provider, id: "deepseek-v4-pro", name: "Pro" },
+      ];
+      await feed.refresh();
+      expect(second.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    } finally {
+      await pod.stop();
+    }
   });
 });
