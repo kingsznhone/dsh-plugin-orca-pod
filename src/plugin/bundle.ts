@@ -76,7 +76,7 @@ class PodPlugin {
     this.lifecycle = new PodLifecycle(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
     this.lifecycle.start();
     this.feed.watch(this.lifecycle);
-    this.broker = new ApprovalBroker(this.lifecycle);
+    this.broker = new ApprovalBroker(this.lifecycle, this.logger);
     this.tracker = new Tracker(this.lifecycle, this.broker, this.logger);
     this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
       if (service !== undefined) void this.lifecycle.ready.then(() => this.restore());

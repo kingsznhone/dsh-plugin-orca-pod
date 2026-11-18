@@ -157,7 +157,7 @@ export class OrcaNode {
     /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
     const maxTaskTtlS = config.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
 
-    this.models = new ModelCatalog(config);
+    this.models = new ModelCatalog(config, logger);
     this.membership = new Membership(config.orca_node_id, { timings: options.timings, clock: options.clock });
     this.profile = new SelfProfile(config, options.runtime ?? collectRuntime(), this.models);
     this.profile.setEndpoints(endpointsFrom(config, config.port));

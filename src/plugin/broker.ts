@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { ChangeSignal } from "../core/events.ts";
+import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { TaskView } from "../task/wire.ts";
@@ -41,10 +41,16 @@ export const taskKey = (peer: string, taskId: string): string => `${peer}|${task
 
 export class ApprovalBroker {
   private readonly parked = new Map<string, Parked>();
-  private readonly changes = new ChangeSignal();
+  private readonly changes: ChangeSignal;
 
   /** The lifecycle owns the running node, which carries a decision to the remote task. */
-  constructor(private readonly lifecycle: PodLifecycle) {}
+  constructor(
+    private readonly lifecycle: PodLifecycle,
+    /** Hears about a subscriber that threw while being told of a change. */
+    logger?: NodeLogger,
+  ) {
+    this.changes = new ChangeSignal(logger);
+  }
 
   /**
    * Park a request seen on a tracked task. The tracker polls while the task stays

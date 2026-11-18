@@ -1,3 +1,5 @@
+import { errorMessage } from "./errors.ts";
+
 /**
  * In-process notifications (§9.2).
  *
@@ -48,6 +50,9 @@ export class EventBus<E extends object> {
 export class ChangeSignal {
   private readonly listeners = new Set<() => void>();
 
+  /** `logger`, when given, hears about a listener that threw; without it the failure is silent. */
+  constructor(private readonly logger?: NodeLogger) {}
+
   /** Subscribe; returns an unsubscribe function. */
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -56,13 +61,14 @@ export class ChangeSignal {
     };
   }
 
-  /** Tell every subscriber; one that throws does not stop the rest or the caller. */
+  /** Tell every subscriber; one that throws does not stop the rest or the caller, but is reported. */
   notify(): void {
     for (const listener of [...this.listeners]) {
       try {
         listener();
-      } catch {
+      } catch (error) {
         // A UI listener must not break the code that changed the state.
+        this.logger?.warn(`orca-pod: a change listener threw: ${errorMessage(error)}`);
       }
     }
   }

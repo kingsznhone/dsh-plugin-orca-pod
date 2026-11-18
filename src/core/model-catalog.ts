@@ -1,7 +1,7 @@
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 
-import { ChangeSignal } from "./events.ts";
+import { ChangeSignal, type NodeLogger } from "./events.ts";
 import type { ModelDefaults, ModelOffer } from "./wire/model.ts";
 
 /** What `config.json` may pin about models (§6.15). */
@@ -20,7 +20,7 @@ export type ModelPins = {
  */
 export class ModelCatalog {
   /** Fires after `update`; the node re-announces itself. */
-  readonly changes = new ChangeSignal();
+  readonly changes: ChangeSignal;
 
   private offered: ModelOffer[];
   private readonly pinnedModel: ModelSelection | null;
@@ -28,7 +28,8 @@ export class ModelCatalog {
   private defaultModel: ModelSelection | null;
   private defaultEffort: ReasoningEffortId | null;
 
-  constructor(pins: ModelPins = {}) {
+  constructor(pins: ModelPins = {}, logger?: NodeLogger) {
+    this.changes = new ChangeSignal(logger);
     this.offered = [...(pins.models ?? [])];
     this.pinnedModel = pins.default_model ?? null;
     this.pinnedEffort = pins.default_reasoning_effort ?? pins.default_model?.reasoningEffort ?? null;

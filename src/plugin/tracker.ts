@@ -308,7 +308,7 @@ export class Tracker {
    * abandoned task is not picked up again and reported a second time.
    */
   private readonly abandoned = new Set<string>();
-  private readonly changes = new ChangeSignal();
+  private readonly changes: ChangeSignal;
   private readonly loop: PollLoop;
   private readonly delivery: NoticeDelivery;
   private readonly intervalMs: number;
@@ -321,6 +321,7 @@ export class Tracker {
     private readonly logger: Logger,
     options: TrackerOptions = {},
   ) {
+    this.changes = new ChangeSignal(logger);
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.maxTransientFailures = options.maxTransientFailures ?? DEFAULT_MAX_TRANSIENT_FAILURES;
     this.loop = new PollLoop(

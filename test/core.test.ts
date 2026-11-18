@@ -57,6 +57,21 @@ describe("ChangeSignal", () => {
     expect(calls).toBe(1);
   });
 
+  it("reports a throwing subscriber to the logger it was given", () => {
+    const warnings: string[] = [];
+    const signal = new ChangeSignal({ warn: (message) => warnings.push(message) });
+    let reached = false;
+    signal.subscribe(() => {
+      throw new Error("ui bug");
+    });
+    signal.subscribe(() => {
+      reached = true;
+    });
+    expect(() => signal.notify()).not.toThrow();
+    expect(reached).toBe(true);
+    expect(warnings).toEqual(["orca-pod: a change listener threw: ui bug"]);
+  });
+
   it("lets a listener unsubscribe itself while being notified", () => {
     const signal = new ChangeSignal();
     const seen: string[] = [];
