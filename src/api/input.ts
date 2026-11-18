@@ -1,7 +1,7 @@
 import type { z } from "zod";
 
 import { PodError } from "../core/errors.ts";
-import { describeIssue, parseSchema } from "../core/schema.ts";
+import { describeIssue, parseOrThrow } from "../core/schema.ts";
 
 /**
  * Validate one part of a request inside its handler. Routes register no
@@ -10,10 +10,7 @@ import { describeIssue, parseSchema } from "../core/schema.ts";
  * parsed value (unknown keys dropped) is what the handler uses.
  */
 export function parseInput<T extends z.ZodType>(schema: T, raw: unknown, part: string): z.output<T> {
-  const result = parseSchema(schema, raw);
-  if (result.ok) return result.value;
-  throw new PodError(
-    "bad_request",
-    `${part}${result.issue.path.length === 0 ? " " : "."}${describeIssue(result.issue)}`,
-  );
+  return parseOrThrow(schema, raw, (issue) => {
+    return new PodError("bad_request", `${part}${issue.path.length === 0 ? " " : "."}${describeIssue(issue)}`);
+  });
 }

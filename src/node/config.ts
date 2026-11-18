@@ -9,7 +9,7 @@ import { DSH_HOME_ENV, resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 
 import { deriveWorkgroupKey } from "../core/signing.ts";
 import { loadOrCreateIdentity, shortenNodeId } from "../core/identity.ts";
-import { describeIssue, parseSchema } from "../core/schema.ts";
+import { describeIssue, parseOrThrow } from "../core/schema.ts";
 import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId } from "../core/wire/peer.ts";
 import { nodeSettings, parseSettings, type NodeSettings, type Settings } from "./settings.ts";
 
@@ -122,13 +122,12 @@ const PersistedIdentitySchema = z.object({ orca_node_id: OrcaNodeIdSchema, key_b
 /** Read a persisted config: the same field parser as every other source, plus the identity and key. */
 export function validateConfig(value: unknown): OrcaNodeConfig {
   const settings = parseSettings(value);
-  const identity = parseSchema(PersistedIdentitySchema, value);
-  if (!identity.ok) throw new Error(`config.${describeIssue(identity.issue)}`);
+  const identity = parseOrThrow(PersistedIdentitySchema, value, (issue) => new Error(`config.${describeIssue(issue)}`));
   const { workgroup_id, display_name, data_root } = settings;
   if (workgroup_id === undefined) throw new Error("config.workgroup_id is required");
   if (display_name === undefined) throw new Error("config.display_name is required");
   if (data_root === undefined) throw new Error("config.data_root is required");
-  return { ...nodeSettings(settings), workgroup_id, display_name, data_root, ...identity.value };
+  return { ...nodeSettings(settings), workgroup_id, display_name, data_root, ...identity };
 }
 
 /** Write atomically; the file holds the workgroup key, so it is owner-only from the start. */

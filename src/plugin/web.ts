@@ -22,8 +22,9 @@ import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import type { PodAdmin } from "./admin.ts";
 import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads } from "./panel-api.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
+import { readAll } from "../core/stream.ts";
 import { isDirectLoopbackRequest } from "../core/net.ts";
-import { describeIssue, isRecord, parseSchema } from "../core/schema.ts";
+import { describeIssue, isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
 import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
 
@@ -145,9 +146,12 @@ export class PodApi {
     const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
     if (action === undefined) return NOT_FOUND;
     if (action.body === null) return ok(await action.run(this.admin, undefined));
-    const parsed = parseSchema(action.body, await PodApi.readJsonBody(request));
-    if (!parsed.ok) throw new Error(describeIssue(parsed.issue));
-    return ok(await action.run(this.admin, parsed.value));
+    const body = parseOrThrow(
+      action.body,
+      await PodApi.readJsonBody(request),
+      (issue) => new Error(describeIssue(issue)),
+    );
+    return ok(await action.run(this.admin, body));
   }
 
   /**
@@ -228,16 +232,10 @@ export class PodApi {
   }
 
   private static async readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for await (const chunk of request) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-      total += buffer.byteLength;
-      if (total > MAX_BODY_BYTES) throw new Error("request body is too large");
-      chunks.push(buffer);
-    }
-    if (chunks.length === 0) return {};
-    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const bytes = await readAll(request, MAX_BODY_BYTES);
+    if (bytes === null) throw new Error("request body is too large");
+    if (bytes.length === 0) return {};
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
     if (!isRecord(parsed)) throw new Error("request body must be a JSON object");
     return parsed;
   }

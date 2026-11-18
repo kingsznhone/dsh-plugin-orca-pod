@@ -5,7 +5,7 @@ import { z } from "zod";
 import { PodError } from "../core/errors.ts";
 import { EventBus, type NodeLogger } from "../core/events.ts";
 import type { NodeIdentity } from "../core/identity.ts";
-import { describeIssue, parseSchema } from "../core/schema.ts";
+import { describeIssue, parseOrThrow } from "../core/schema.ts";
 import type { Grant, ResumeControl } from "../core/wire/grant.ts";
 import type { WorkgroupId } from "../core/wire/peer.ts";
 import { ErrorReplySchema } from "../core/wire/reply.ts";
@@ -61,11 +61,9 @@ export async function rpc<M extends A2AMethod>(
   );
   const envelope = ErrorReplySchema.safeParse(json);
   if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, 200, envelope.data);
-  const parsed = parseSchema(RpcResultSchema, json);
-  if (!parsed.ok) {
-    throw new PodError("peer_error", `${method} 200: unexpected reply: ${describeIssue(parsed.issue)}`, 502);
-  }
-  return parsed.value.result;
+  return parseOrThrow(RpcResultSchema, json, (issue) => {
+    return new PodError("peer_error", `${method} 200: unexpected reply: ${describeIssue(issue)}`, 502);
+  }).result;
 }
 
 /**

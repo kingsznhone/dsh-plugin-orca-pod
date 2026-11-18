@@ -4,9 +4,10 @@ import process from "node:process";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { parseEchoScript } from "../executor/echo.ts";
+import { readAll } from "../core/stream.ts";
 import { runningInTask } from "../core/entry.ts";
 import { rpc } from "../task/delegation.ts";
-import { parseSchema, describeIssue } from "../core/schema.ts";
+import { parseOrThrow, describeIssue } from "../core/schema.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import {
@@ -44,27 +45,25 @@ export const options: readonly OptionName[] = [
 ];
 
 async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks)
-    .toString("utf8")
-    .replace(/\r?\n$/, "");
+  // No cap: the text is the user's own, piped in on purpose.
+  const bytes = await readAll(process.stdin);
+  return (bytes ?? Buffer.alloc(0)).toString("utf8").replace(/\r?\n$/, "");
 }
 
 /** `--metadata`: a JSON object; its `pod` block is the starting point of the one built below. */
 function parseMetadataFlag(raw: string | undefined): { metadata: TaskMetadata; pod: PodTaskMetadata } {
   if (raw === undefined) return { metadata: {}, pod: {} };
-  const parsed = parseSchema(TaskMetadataSchema, JSON.parse(raw));
-  if (!parsed.ok) throw new Error(`--metadata must be a JSON object (${describeIssue(parsed.issue)})`);
-  const pod = parseSchema(PodTaskMetadataSchema, parsed.value.pod ?? {});
-  if (!pod.ok) throw new Error(`--metadata pod ${describeIssue(pod.issue)}`);
-  return { metadata: parsed.value, pod: pod.value };
+  const metadata = parseOrThrow(TaskMetadataSchema, JSON.parse(raw), (issue) => {
+    return new Error(`--metadata must be a JSON object (${describeIssue(issue)})`);
+  });
+  const pod = parseOrThrow(PodTaskMetadataSchema, metadata.pod ?? {}, (issue) => {
+    return new Error(`--metadata pod ${describeIssue(issue)}`);
+  });
+  return { metadata, pod };
 }
 
 function permissionModeFlag(raw: string): SandboxMode {
-  const parsed = parseSchema(SandboxModeSchema, raw);
-  if (!parsed.ok) throw new Error(`--permission-mode must be ${SANDBOX_MODES.join(", ")}`);
-  return parsed.value;
+  return parseOrThrow(SandboxModeSchema, raw, () => new Error(`--permission-mode must be ${SANDBOX_MODES.join(", ")}`));
 }
 
 /** `--echo`: validated through the executor's own parser, so a bad script fails here and not on the target (§6.3). */

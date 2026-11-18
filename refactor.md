@@ -1,6 +1,6 @@
 # 重构方案（第二轮）：自由函数、包装、类型转发
 
-> 状态：**已实施**（2026-11-18，分支 `refactor/classes`，基于 `64a453f`；提交 `refactor2(0)`–`refactor2(7)` 与文档同步）。可选的 C10、L4（第 8 步）未做；§5.8 G12 的 `withBody` 因被模块常量 `POST_ACTIONS` 在加载时使用而保留为模块函数；`Pick<Context, …>` 的宿主上下文参数（catalog / services / stores / web）保留。K5 选了“删除”。
+> 状态：**已实施**（2026-11-18，分支 `refactor/classes`，基于 `64a453f`；提交 `refactor2(0)`–`refactor2(7)` 与文档同步）。第 8 步的 C10、L4 随后也做了（`parseOrThrow` 的回调收 `SchemaIssue` 而不是字符串，因为 echo 脚本与网关输入要用 path；`parseSchema` 留给 settings 与测试；`core/stream.ts` 的 `readAll` 返回 null 表示超限）；§5.8 G12 的 `withBody` 因被模块常量 `POST_ACTIONS` 在加载时使用而保留为模块函数；`Pick<Context, …>` 的宿主上下文参数（catalog / services / stores / web）保留。K5 选了“删除”。
 > 第一轮（目录重组 + 闭包工厂改 class，D41）已完成，§1 只保留它留下的约束和出入记录。
 > 范围：`src/` 的全部运行期代码、`test/` 跟着改、`biome.json` 一处。线上协议、zod schema、错误码、HTTP 路由、存储表结构都**不变**；行为上的细小变化逐条列在 §8。
 

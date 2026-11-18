@@ -7,7 +7,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { PodError, abortError } from "../core/errors.ts";
-import { parseSchema } from "../core/schema.ts";
+import { parseOrThrow } from "../core/schema.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { describeModelRequest } from "../core/wire/model.ts";
 import {
@@ -23,9 +23,9 @@ import {
  * out of order, or over a limit fails here — before a task is created (§6.3).
  */
 export function parseEchoScript(raw: unknown): EchoScript {
-  const parsed = parseSchema(EchoScriptSchema, raw ?? {});
-  if (parsed.ok) return parsed.value;
-  throw new PodError("bad_echo_script", `${["echo", ...parsed.issue.path].join(".")} ${parsed.issue.message}`);
+  return parseOrThrow(EchoScriptSchema, raw ?? {}, (issue) => {
+    return new PodError("bad_echo_script", `${["echo", ...issue.path].join(".")} ${issue.message}`);
+  });
 }
 
 /** Deterministic executor used for connectivity, protocol, and approval probes (§6.3). */

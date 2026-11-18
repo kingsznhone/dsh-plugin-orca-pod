@@ -30,6 +30,17 @@ export function parseSchema<T extends z.ZodType>(
   };
 }
 
+/** `parseSchema`, for callers that fail on any issue: `fail` turns the first one into the error to throw. */
+export function parseOrThrow<T extends z.ZodType>(
+  schema: T,
+  raw: unknown,
+  fail: (issue: SchemaIssue) => Error,
+): z.output<T> {
+  const parsed = parseSchema(schema, raw);
+  if (!parsed.ok) throw fail(parsed.issue);
+  return parsed.value;
+}
+
 /** `"<path> <message>"`, or the bare message for the value itself. */
 export function describeIssue(issue: SchemaIssue): string {
   return issue.path.length === 0 ? issue.message : `${issue.path.join(".")} ${issue.message}`;

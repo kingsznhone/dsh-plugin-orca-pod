@@ -21,7 +21,7 @@ import {
 import { z } from "zod";
 
 import type { ExecuteInput } from "../executor.ts";
-import { describeIssue, parseSchema } from "../../core/schema.ts";
+import { describeIssue, parseOrThrow } from "../../core/schema.ts";
 import { errorMessage, isMissingFile } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
 import { describeModelRequest } from "../../core/wire/model.ts";
@@ -200,9 +200,9 @@ export class AcpSessionPool {
       if (isMissingFile(error)) return {};
       throw error;
     }
-    const parsed = parseSchema(SessionBindingsSchema, JSON.parse(text));
-    if (!parsed.ok) throw new Error(`${path} is not a map of session ids: ${describeIssue(parsed.issue)}`);
-    return parsed.value;
+    return parseOrThrow(SessionBindingsSchema, JSON.parse(text), (issue) => {
+      return new Error(`${path} is not a map of session ids: ${describeIssue(issue)}`);
+    });
   }
 
   private async saveBindings(podDir: string, bindings: SessionBindings): Promise<void> {

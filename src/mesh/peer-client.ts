@@ -2,8 +2,9 @@ import type { z } from "zod";
 
 import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 
+import { readAll } from "../core/stream.ts";
 import { buildAuthHeader } from "../core/signing.ts";
-import { describeIssue, parseSchema } from "../core/schema.ts";
+import { describeIssue, parseOrThrow } from "../core/schema.ts";
 import { isPodErrorCode, PodError } from "../core/errors.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import { ErrorReplySchema, type ErrorReply } from "../core/wire/reply.ts";
@@ -136,9 +137,9 @@ export class HttpPeerClient {
     const reply = await this.send({ label, endpoint, path, method, body }, options);
     if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply);
     // A peer cannot hand us a shape we did not ask for.
-    const parsed = parseSchema(schema, HttpPeerClient.parseJson(label, reply));
-    if (parsed.ok) return parsed.value;
-    throw new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(parsed.issue)}`, 502);
+    return parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (issue) => {
+      return new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(issue)}`, 502);
+    });
   }
 
   /**
@@ -247,14 +248,9 @@ export class HttpPeerClient {
       await response.body?.cancel();
       throw tooLarge();
     }
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for await (const chunk of response.body ?? []) {
-      size += chunk.byteLength;
-      if (size > MAX_RESPONSE_BYTES) throw tooLarge();
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks).toString("utf8");
+    const bytes = await readAll(response.body ?? [], MAX_RESPONSE_BYTES);
+    if (bytes === null) throw tooLarge();
+    return bytes.toString("utf8");
   }
 
   /** A 2xx body parsed as JSON. */
