@@ -137,25 +137,19 @@ describe("approval broker", () => {
     await expect(new ApprovalBroker(idleLifecycle()).deny(PEER, TASK)).rejects.toThrow(/not running/);
   });
 
-  it("notifies subscribers on park, withdraw and clear", () => {
+  it("drops a prompt on withdraw and every prompt on clear", () => {
     const broker = new ApprovalBroker(idleLifecycle());
-    let notified = 0;
-    const off = broker.subscribe(() => {
-      notified += 1;
-    });
     park(broker);
-    park(broker);
-    expect(notified).toBe(1);
+    expect(broker.list()).toHaveLength(1);
     broker.withdraw(PEER, TASK);
     expect(broker.list()).toEqual([]);
     park(broker);
     broker.clear();
     expect(broker.list()).toEqual([]);
-    expect(notified).toBe(4);
+    // With nothing parked both are harmless.
     broker.withdraw(PEER, TASK);
     broker.clear();
-    expect(notified).toBe(4);
-    off();
+    expect(broker.list()).toEqual([]);
   });
 
   it("is what the panel admin approves and denies through", async () => {

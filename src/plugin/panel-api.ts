@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { PanelPatch } from "../node/settings.ts";
 import type { TaskView } from "../task/wire.ts";
-import type { PodAdmin, PodTaskDetail, PodTaskRow } from "./admin.ts";
+import type { PodState, PodTaskDetail, PodTaskRow } from "./admin.ts";
 
 const Text = z.string().min(1, "must be a non-empty string");
 
@@ -35,17 +35,7 @@ export type PodActions = {
   cancel: PeerTaskBody;
 };
 
-/** Panel state snapshot: everything the status page and the approval cards render in one poll. */
-export interface PodState {
-  self: ReturnType<PodAdmin["self"]>;
-  config: ReturnType<PodAdmin["config"]>;
-  members: ReturnType<PodAdmin["members"]>;
-  mesh: { reachable: number };
-  approvals: ReturnType<PodAdmin["approvals"]>;
-  approval_count: number;
-  recent: ReturnType<PodAdmin["recent"]>;
-  workspace: ReturnType<PodAdmin["workspace"]>;
-}
+export type { PodState };
 
 /** `GET /orca-api/tasks`: every task this node knows about, for the "all tasks" view. */
 export type PodTasksResponse = { recent: PodTaskRow[] };

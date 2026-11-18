@@ -16,7 +16,6 @@ import { shortenNodeId } from "../src/core/identity.ts";
 import { normalizePeerUrl } from "../src/core/net.ts";
 import { PodAdmin } from "../src/plugin/admin.ts";
 import { PodLifecycle } from "../src/plugin/lifecycle.ts";
-import { RememberedPeers } from "../src/plugin/peers-file.ts";
 import { MemoryPodStores } from "../src/plugin/stores.ts";
 import { PanelPatchSchema, parseSettings } from "../src/node/settings.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
@@ -24,7 +23,7 @@ import { Tracker } from "../src/plugin/tracker.ts";
 import { wg } from "./fixtures/ids.ts";
 import { catalogFeed, idleLifecycle, logger } from "./fixtures/pod.ts";
 
-const peerStatePath = (root: string): string => new RememberedPeers(root, logger).path;
+const peerStatePath = (root: string): string => join(root, "peers.json");
 const roots: string[] = [];
 const PASSWORD = "panel-password";
 /** Credential reference derived from the default test workgroup `wg-panel`. */

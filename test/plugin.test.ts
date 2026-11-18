@@ -7,8 +7,11 @@ import type { OrcaNode } from "../src/node/orca-node.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolDefinition, ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodLifecycle } from "../src/plugin/lifecycle.ts";
-import { PodTool, sessionSandboxMode, type SandboxReader } from "../src/plugin/tools.ts";
-import { Tracker, type TrackerAgent } from "../src/plugin/tracker.ts";
+import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
+import type { OptionalService } from "../src/plugin/services.ts";
+import { PodTool, sessionSandboxMode } from "../src/plugin/tools.ts";
+import { Tracker } from "../src/plugin/tracker.ts";
 import { idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
@@ -34,9 +37,12 @@ function createTracker(
 function createPodTools(
   lifecycle: PodLifecycle,
   tracker: Tracker,
-  policy?: () => SandboxReader | undefined,
+  policy?: () => SandboxPolicyService | undefined,
 ): ToolDefinition[] {
-  return [new PodTool(lifecycle, tracker, policy === undefined ? undefined : { current: policy }).definition()];
+  // The host's optional service, reduced to the one read the tool makes.
+  const sandbox =
+    policy === undefined ? undefined : ({ current: policy } as unknown as OptionalService<"sandboxPolicy">);
+  return [new PodTool(lifecycle, tracker, sandbox).definition()];
 }
 
 function tool(result: ReturnType<typeof createPodTools>) {
@@ -210,7 +216,7 @@ describe("orca_pod tool", () => {
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = lifecycleWithNode(fakeNode);
     const session = {};
-    const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxReader;
+    const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxPolicyService;
     const sendTools = createPodTools(handleForSend, tracker, () => sandbox);
     const agent = {
       id: "session-1",
@@ -353,7 +359,7 @@ describe("orca_pod tool", () => {
       followup: () => {},
     };
     /** The policy service the host exposes as `ctx.sandboxPolicy`. */
-    const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxReader;
+    const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxPolicyService;
     expect(sessionSandboxMode(policy, { agent } as unknown as ToolExecution)).toBe("danger-full-access");
     expect(sessionSandboxMode(undefined, { agent } as unknown as ToolExecution)).toBeUndefined();
     expect(sessionSandboxMode(policy, {} as unknown as ToolExecution)).toBeUndefined();
@@ -404,12 +410,12 @@ describe("tracker recovery (8.3)", () => {
   }
 
   it("resumes only non-terminal dispatches with a live dispatching agent", async () => {
-    const agent: TrackerAgent = {
+    const agent = {
       id: SessionId("live-session"),
       status: "idle",
       inject: () => {},
       followup: () => {},
-    };
+    } as unknown as Agent;
     const tracker = createTracker(
       () => ({
         async getTask(_peer: string, taskId: string): Promise<TaskView> {

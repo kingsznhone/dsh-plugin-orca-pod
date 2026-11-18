@@ -4,7 +4,7 @@
  * not settings: remembering a peer must not restart the plugin (§7.3, §9.2).
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { Logger } from "@deepseek-ai/cordis";
@@ -22,14 +22,14 @@ export class RememberedPeers {
     private readonly logger: Logger,
   ) {}
 
-  /** Where the peers are kept, next to the persisted orca node config. */
-  get path(): string {
-    return join(this.dataRoot, "peers.json");
-  }
-
   /** The peers remembered so far, in the order they were added. */
   list(): readonly string[] {
     return this.peers;
+  }
+
+  /** Where the peers are kept, next to the persisted orca node config. */
+  private get path(): string {
+    return join(this.dataRoot, "peers.json");
   }
 
   /** Read the file; a missing or unreadable one means no peers. */
@@ -57,9 +57,10 @@ export class RememberedPeers {
     await this.save();
   }
 
-  /** Forget every peer in memory only; the file is removed by whoever resets the node. */
-  forgetInMemory(): void {
+  /** Forget every peer and delete the file (the node is being reset). */
+  async remove(): Promise<void> {
     this.peers = [];
+    await rm(this.path, { force: true });
   }
 
   private async save(): Promise<void> {

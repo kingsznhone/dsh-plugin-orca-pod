@@ -25,7 +25,6 @@ import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodLifecycle } from "./lifecycle.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
-import { ChangeSignal } from "../core/events.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 
 declare module "@deepseek-ai/dsh-llm" {
@@ -34,9 +33,6 @@ declare module "@deepseek-ai/dsh-llm" {
     "orca-pod": ContextFormed & { readonly kind: "orca-pod" };
   }
 }
-
-/** The DSH Agent surface used to return a notice to the dispatching session. */
-export type TrackerAgent = Pick<Agent, "id" | "status" | "inject" | "followup">;
 
 /** Timing knobs; every value has a production default. */
 export interface TrackerOptions {
@@ -64,7 +60,7 @@ interface TrackedTask {
 }
 
 interface PendingTask {
-  agent: TrackerAgent;
+  agent: Agent;
   peer: string;
   taskId: string;
   /** Latest view observed during polling; null until the first successful poll. */
@@ -229,17 +225,12 @@ class NoticeDelivery {
     this.awake.delete(agentId);
   }
 
-  /** Drop everything held for one agent; true when there was anything. */
-  forget(agentId: string): boolean {
-    let changed = false;
+  /** Drop everything held for one agent. */
+  forget(agentId: string): void {
     for (let index = this.finished.length - 1; index >= 0; index -= 1) {
-      const entry = this.finished[index];
-      if (entry === undefined || entry.agent.id !== agentId) continue;
-      this.finished.splice(index, 1);
-      changed = true;
+      if (this.finished[index]?.agent.id === agentId) this.finished.splice(index, 1);
     }
-    if (this.awake.delete(agentId)) changed = true;
-    return changed;
+    this.awake.delete(agentId);
   }
 
   stop(): void {
@@ -249,7 +240,7 @@ class NoticeDelivery {
   }
 
   private flush(): void {
-    const batches = new Map<string, { agent: TrackerAgent; lines: string[] }>();
+    const batches = new Map<string, { agent: Agent; lines: string[] }>();
     for (const task of this.finished.splice(0)) {
       const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [] };
       batch.lines.push(
@@ -262,7 +253,7 @@ class NoticeDelivery {
     for (const { agent, lines } of batches.values()) this.deliver(agent, lines);
   }
 
-  private deliver(agent: TrackerAgent, lines: string[]): void {
+  private deliver(agent: Agent, lines: string[]): void {
     const text = lines.map((line) => `[orca-pod] ${line}`).join("\n");
     const summary = lines.length === 1 ? (lines[0] ?? "") : `${lines.length} background tasks need attention`;
     const message = createUserMessage({
@@ -277,7 +268,7 @@ class NoticeDelivery {
   }
 
   /** Hand a notice to the agent: into its running turn, or as a follow-up that wakes it while the wake budget lasts. */
-  private wake(agent: TrackerAgent, message: UserMessage): void {
+  private wake(agent: Agent, message: UserMessage): void {
     if (agent.status === "running") {
       agent.inject(message);
       this.awake.set(agent.id, 0);
@@ -308,7 +299,6 @@ export class Tracker {
    * abandoned task is not picked up again and reported a second time.
    */
   private readonly abandoned = new Set<string>();
-  private readonly changes: ChangeSignal;
   private readonly loop: PollLoop;
   private readonly delivery: NoticeDelivery;
   private readonly intervalMs: number;
@@ -321,7 +311,6 @@ export class Tracker {
     private readonly logger: Logger,
     options: TrackerOptions = {},
   ) {
-    this.changes = new ChangeSignal(logger);
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.maxTransientFailures = options.maxTransientFailures ?? DEFAULT_MAX_TRANSIENT_FAILURES;
     this.loop = new PollLoop(
@@ -341,7 +330,7 @@ export class Tracker {
    * `record: false` marks a restore from the dispatch log, which skips tasks
    * this process already gave up on.
    */
-  track(agent: TrackerAgent, peer: string, taskId: string, options: { record?: boolean } = {}): boolean {
+  track(agent: Agent, peer: string, taskId: string, options: { record?: boolean } = {}): boolean {
     if (this.stopped) return false;
     const key = taskKey(peer, taskId);
     const existing = this.pending.get(key);
@@ -358,7 +347,6 @@ export class Tracker {
     // Persist the dispatching session so a host restart can resume tracking
     // (§8.3). Restored entries already carry it and skip the write.
     if (options.record !== false) this.lifecycle.node?.delegation.log.annotate(taskId, agent.id);
-    this.changes.notify();
     this.loop.schedule(0);
     return true;
   }
@@ -374,7 +362,7 @@ export class Tracker {
    */
   restore(
     dispatches: readonly DispatchEntry[],
-    resolveAgent: (agentId: SessionId) => TrackerAgent | undefined,
+    resolveAgent: (agentId: SessionId) => Agent | undefined,
     onlyAgentId?: SessionId,
   ): number {
     let restored = 0;
@@ -396,7 +384,6 @@ export class Tracker {
     this.delivery.stop();
     this.pending.clear();
     this.abandoned.clear();
-    this.changes.clear();
   }
 
   /** Number of tasks still being watched or waiting to be reported (tests and diagnostics). */
@@ -414,11 +401,6 @@ export class Tracker {
     }));
   }
 
-  /** Called when a watched task or its pending approval changed. */
-  subscribe(listener: () => void): () => void {
-    return this.changes.subscribe(listener);
-  }
-
   /** Give the agent a fresh wake budget (the user just spoke to it). */
   resetWakes(agentId: string): void {
     this.delivery.resetWakes(agentId);
@@ -429,36 +411,31 @@ export class Tracker {
    * disposed (its own fiber's cleanup), so a closed session is not polled forever.
    */
   forget(agentId: string): void {
-    let changed = false;
     for (const [key, entry] of this.pending) {
       if (entry.agent.id !== agentId) continue;
       this.pending.delete(key);
       this.broker.withdraw(entry.peer, entry.taskId);
-      changed = true;
     }
-    if (this.delivery.forget(agentId)) changed = true;
-    if (changed) this.changes.notify();
+    this.delivery.forget(agentId);
   }
 
   private async poll(): Promise<void> {
     const node = this.lifecycle.node;
     if (node === null) return;
-    let changed = false;
     for (const [key, entry] of [...this.pending]) {
       // Exponential backoff after transient failures; the timer keeps running so
       // other entries are still polled on schedule.
       if (Date.now() < entry.nextAttemptAt) continue;
-      if (await this.pollEntry(node, key, entry)) changed = true;
+      await this.pollEntry(node, key, entry);
     }
-    if (changed) this.changes.notify();
   }
 
-  /** Read one tracked task and act on what it says. True when something a listener renders changed. */
-  private async pollEntry(node: OrcaNode, key: string, entry: PendingTask): Promise<boolean> {
+  /** Read one tracked task and act on what it says. */
+  private async pollEntry(node: OrcaNode, key: string, entry: PendingTask): Promise<void> {
     try {
       const view = await node.delegation.getTask(entry.peer, entry.taskId);
       // The entry may have been dropped (agent disposed) while the read ran.
-      if (this.pending.get(key) !== entry) return false;
+      if (this.pending.get(key) !== entry) return;
       entry.view = view;
       entry.failures = 0;
       entry.nextAttemptAt = 0;
@@ -467,7 +444,7 @@ export class Tracker {
         // The UI answers a suspended request; the task stays tracked until it
         // finishes. Parking is idempotent per request id.
         this.broker.park({ peer: entry.peer, view, request, agentId: entry.agent.id });
-        return true;
+        return;
       }
       // Not suspended: any earlier prompt was answered elsewhere or the task settled.
       this.broker.withdraw(entry.peer, entry.taskId);
@@ -475,14 +452,12 @@ export class Tracker {
         this.pending.delete(key);
         this.delivery.add({ ...entry, kind: "terminal", view });
       }
-      return true;
     } catch (error) {
       // A vanished task (404) or a rejected read is final; a network timeout or
       // a 5xx is transient and must be retried instead of silently losing the
       // task — the agent was told not to poll (§8.3).
-      if (this.pending.get(key) !== entry) return false;
+      if (this.pending.get(key) !== entry) return;
       this.failPoll(key, entry, error);
-      return true;
     }
   }
 

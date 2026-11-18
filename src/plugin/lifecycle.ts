@@ -139,6 +139,15 @@ export class PodLifecycle {
     return this.isConfigured;
   }
 
+  /** The running node, or an error that says why there is none (startup failed, or it has not been set up). */
+  requireNode(): OrcaNode {
+    const node = this.node;
+    if (node === null) {
+      throw new Error(`orca node is not running${this.failure === null ? "" : `: ${this.failure.message}`}`);
+    }
+    return node;
+  }
+
   /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
   get rememberedPeers(): readonly string[] {
     return this.peers.list();
@@ -214,9 +223,7 @@ export class PodLifecycle {
   /** `join` one peer now and remember it in the peer state file. */
   addPeer(peer: string): Promise<void> {
     return this.queue.run(async () => {
-      const node = this.runningNode;
-      if (node === null) throw new Error("orca node is not running");
-      await node.mesh.join(peer);
+      await this.requireNode().mesh.join(peer);
       await this.peers.add(peer);
     });
   }
@@ -243,10 +250,10 @@ export class PodLifecycle {
     const ref = passwordRefFor(this.effective);
     await this.queue.run(async () => {
       await this.stopNode();
-      for (const path of [configPath(this.dataRoot), identityPath(this.dataRoot), this.peers.path]) {
+      for (const path of [configPath(this.dataRoot), identityPath(this.dataRoot)]) {
         await this.removeQuietly(path);
       }
-      this.peers.forgetInMemory();
+      await this.peers.remove();
       this.failure = null;
     });
     if (ref !== undefined) await this.stores.clearSecret(ref);
@@ -330,11 +337,22 @@ export class PodLifecycle {
     const node = new OrcaNode(nodeConfig, { storage: createPersistentStorage(nodeConfig), logger: this.logger });
     this.runningNode = node;
 
-    const info = await this.startListening(node);
+    let info: { url: string; port: number };
+    try {
+      info = await node.start();
+    } catch (error) {
+      // A node that cannot listen is stopped and dropped; `boot` keeps the failure.
+      this.runningNode = null;
+      try {
+        await node.stop();
+      } catch {
+        // The node never finished starting; nothing useful to report here.
+      }
+      throw error;
+    }
     this.listenUrl = info.url;
     this.listenPort = info.port;
     this.startedAtIso = new Date().toISOString();
-    this.failure = null;
     this.logger.info(
       `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
     );
@@ -349,22 +367,6 @@ export class PodLifecycle {
 
     // Startup peers from the config, then the ones joined at runtime.
     await this.joinPeers(node, new Set([...config.peers, ...this.peers.list()]), normalizePeerUrl(info.url));
-  }
-
-  /** Start listening; a node that cannot is stopped and dropped, and the failure is kept. */
-  private async startListening(node: OrcaNode): Promise<{ url: string; port: number }> {
-    try {
-      return await node.start();
-    } catch (error) {
-      this.failure = toError(error);
-      this.runningNode = null;
-      try {
-        await node.stop();
-      } catch {
-        // The node never finished starting; nothing useful to report here.
-      }
-      throw this.failure;
-    }
   }
 
   /** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */

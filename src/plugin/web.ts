@@ -20,12 +20,12 @@ import type { Context } from "@deepseek-ai/cordis";
 import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
 import type { PodAdmin } from "./admin.ts";
-import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads, type PodState } from "./panel-api.ts";
+import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads } from "./panel-api.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
 import { isDirectLoopbackRequest } from "../core/net.ts";
 import { describeIssue, isRecord, parseSchema } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
-import { parseBlobRef } from "../core/blobs.ts";
+import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 export const POD_API_PREFIX = "/orca-api";
@@ -100,24 +100,6 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (!isRecord(parsed)) throw new Error("request body must be a JSON object");
   return parsed;
-}
-
-/** Rows of the status page's recent-tasks table. */
-const RECENT_LIMIT = 5;
-
-function podState(admin: PodAdmin): PodState {
-  const members = admin.members();
-  const approvals = admin.approvals();
-  return {
-    self: admin.self(),
-    config: admin.config(),
-    members,
-    mesh: { reachable: members.length },
-    approvals,
-    approval_count: approvals.length,
-    recent: admin.recent(RECENT_LIMIT),
-    workspace: admin.workspace(),
-  };
 }
 
 /** An answer: the status it goes out with, and its JSON body. */
@@ -215,7 +197,7 @@ export class PodApi {
     const { admin } = this;
     switch (url.pathname.slice(POD_API_PREFIX.length)) {
       case "/state":
-        return answer("state", podState(admin));
+        return answer("state", admin.state());
       case "/task": {
         const peer = url.searchParams.get("peer");
         const taskId = url.searchParams.get("task");
@@ -254,7 +236,7 @@ export class PodApi {
       sendJson(response, 400, { error: "node and blob must name a published file" });
       return;
     }
-    let opened: Awaited<ReturnType<PodAdmin["blob"]>>;
+    let opened: OpenedBlob;
     try {
       opened = await this.admin.blob(ref.node, ref.blob);
     } catch (error) {

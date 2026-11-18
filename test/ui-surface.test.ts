@@ -23,6 +23,7 @@ import { ApprovalBroker } from "../src/plugin/broker.ts";
 import { Tracker, type TrackerOptions } from "../src/plugin/tracker.ts";
 import { catalogFeed, lifecycleWithNode } from "./fixtures/pod.ts";
 import type { Logger } from "@deepseek-ai/cordis";
+import type { Agent } from "@deepseek-ai/dsh-agent";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/wire/peer.ts";
@@ -295,12 +296,8 @@ describe("UI data surface", () => {
     };
     vi.spyOn(b.delegation, "getTask").mockResolvedValue(suspended);
     const { tracker, admin } = podOver(b, { intervalMs: 20 });
-    let notified = 0;
-    const offAdmin = admin.subscribe(() => {
-      notified += 1;
-    });
     tracker.track(
-      { id: SessionId("agent-1"), status: "idle", inject() {}, followup() {} },
+      { id: SessionId("agent-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent,
       "http://127.0.0.1:1",
       suspended.id,
     );
@@ -319,12 +316,6 @@ describe("UI data surface", () => {
         from: shortenNodeId(LEAF),
       },
     ]);
-    await waitFor(
-      () => notified,
-      (count) => count > 0,
-      { label: "admin listener notified" },
-    );
-    offAdmin();
     tracker.stop();
 
     // Approving a task that is not blocked on a permission request is reported.

@@ -51,11 +51,15 @@ describe("RememberedPeers", () => {
   it("normalizes what it reads and treats an unreadable file as no peers", async () => {
     const root = await tempRoot();
     const peers = new RememberedPeers(root, logger);
-    await writeFile(peers.path, JSON.stringify({ peers: ["10.0.0.2", 7, "http://desk.example.com/"] }), "utf8");
+    await writeFile(
+      join(root, "peers.json"),
+      JSON.stringify({ peers: ["10.0.0.2", 7, "http://desk.example.com/"] }),
+      "utf8",
+    );
     await peers.load();
     expect(peers.list()).toEqual(["http://10.0.0.2:11811", "http://desk.example.com:80"]);
 
-    await writeFile(peers.path, "{ not json", "utf8");
+    await writeFile(join(root, "peers.json"), "{ not json", "utf8");
     await peers.load();
     expect(peers.list()).toEqual([]);
   });

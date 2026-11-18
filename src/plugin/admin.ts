@@ -132,68 +132,41 @@ export interface PodConfigView {
   error: string | null;
 }
 
-const REQUESTED_PREVIEW_CHARS = 160;
-
-const podOf = (view: TaskView): PodTaskMetadata => view.metadata?.pod ?? {};
-
-const isActive = (state: string): boolean => state !== "unknown" && !isTerminal(state);
-
-function preview(value: unknown): string {
-  const text = JSON.stringify(value) ?? "";
-  return text.length > REQUESTED_PREVIEW_CHARS ? `${text.slice(0, REQUESTED_PREVIEW_CHARS - 1)}…` : text;
+/** Panel state snapshot: everything the status page and the approval cards render in one poll. */
+export interface PodState {
+  self: PodPeer<SelfRecord> | null;
+  config: PodConfigView;
+  members: PodPeer[];
+  mesh: { reachable: number };
+  approvals: PodApproval[];
+  approval_count: number;
+  recent: PodTaskRow[];
+  workspace: WorkspaceView | null;
 }
 
+const REQUESTED_PREVIEW_CHARS = 160;
+
+/** Rows of the status page's recent-tasks table. */
+const RECENT_LIMIT = 5;
+
 /** Display names for node ids and endpoint URLs, resolved against one roster snapshot. */
-function labeller(current: OrcaNode | null): (key: string | undefined) => string {
-  const peers: PeerView[] = current === null ? [] : [current.profile.record(), ...current.membership.list()];
-  return (key) => {
+class RosterLabels {
+  private readonly peers: PeerView[];
+
+  constructor(node: OrcaNode | null) {
+    this.peers = node === null ? [] : [node.profile.record(), ...node.membership.list()];
+  }
+
+  label(key: string | undefined): string {
     if (key === undefined || key.length === 0) return "-";
-    const known = peers.find((peer) => peer.orca_node_id === key || peer.endpoints.includes(key));
+    const known = this.peers.find((peer) => peer.orca_node_id === key || peer.endpoints.includes(key));
     if (known !== undefined) return known.display_name;
     return URL.canParse(key) ? new URL(key).host : shortenNodeId(key);
-  };
+  }
 }
 
 /** A permission request waiting for the human, whoever saw it first. */
 type PendingApproval = { peer: string; taskId: string; request: PermissionRequest; agentId: string | null };
-
-function artifactsOf(view: TaskView, node: OrcaNodeId | undefined): PodArtifact[] {
-  return (view.artifacts ?? []).map((artifact) => ({
-    name: artifact.name,
-    blob_id: artifact.artifactId,
-    bytes: artifact.bytes,
-    node: node ?? null,
-  }));
-}
-
-/** A task this node dispatched: its who is the target. */
-function dispatchRow(label: (key: string | undefined) => string, entry: DispatchEntry): PodTaskRow {
-  return {
-    id: entry.task_id,
-    peer: entry.peer,
-    state: entry.state,
-    who: label(entry.peer),
-    who_title: entry.peer,
-    at: entry.updated_at,
-    artifacts: [],
-    cancellable: isActive(entry.state),
-  };
-}
-
-/** A task this node runs: its who is the node that dispatched it. */
-function localRow(current: OrcaNode, label: (key: string | undefined) => string, view: TaskView): PodTaskRow {
-  const origin = podOf(view).origin_orca_node;
-  return {
-    id: view.id,
-    peer: current.profile.endpoints[0] ?? "",
-    state: view.status.state,
-    who: label(origin),
-    who_title: origin ?? "",
-    at: view.status.timestamp,
-    artifacts: artifactsOf(view, current.orcaNodeId),
-    cancellable: isActive(view.status.state),
-  };
-}
 
 /**
  * The data surface of the UI panel plus the approval actions, over one pod
@@ -213,48 +186,70 @@ export class PodAdmin {
     const current = this.lifecycle.node;
     if (current === null) return null;
     const self = current.profile.record();
-    return { ...self, busy_from: self.busy === null ? null : labeller(current)(self.busy.origin_orca_node) };
+    return {
+      ...self,
+      busy_from: self.busy === null ? null : new RosterLabels(current).label(self.busy.origin_orca_node),
+    };
   }
 
   /** Reachable members only: offline records are dropped. */
   members(): PodPeer[] {
     const current = this.lifecycle.node;
     if (current === null) return [];
-    const label = labeller(current);
+    const labels = new RosterLabels(current);
     return current.membership
       .list()
       .filter((member) => member.state !== "offline")
-      .map((member) => ({ ...member, busy_from: member.busy === null ? null : label(member.busy.origin_orca_node) }));
+      .map((member) => ({
+        ...member,
+        busy_from: member.busy === null ? null : labels.label(member.busy.origin_orca_node),
+      }));
   }
 
   /** Local tasks and dispatched tasks merged, newest first. */
   recent(limit: number): PodTaskRow[] {
     const current = this.lifecycle.node;
     if (current === null) return [];
-    const label = labeller(current);
+    const labels = new RosterLabels(current);
     const tasks = current.tasks.list(limit);
     const local = new Set(tasks.map((view) => view.id));
     const rows: PodTaskRow[] = [
-      ...tasks.map((view) => localRow(current, label, view)),
+      ...tasks.map((view) => PodAdmin.localRow(current, labels, view)),
       ...current.delegation.log
         .list()
         .slice(-limit)
         .filter((entry) => !local.has(entry.task_id))
-        .map((entry) => dispatchRow(label, entry)),
+        .map((entry) => PodAdmin.dispatchRow(labels, entry)),
     ];
     return rows.sort((left, right) => right.at.localeCompare(left.at)).slice(0, limit);
   }
 
+  /** Everything the status page and the approval cards render, in one poll. */
+  state(): PodState {
+    const members = this.members();
+    const approvals = this.approvals();
+    return {
+      self: this.self(),
+      config: this.config(),
+      members,
+      mesh: { reachable: members.length },
+      approvals,
+      approval_count: approvals.length,
+      recent: this.recent(RECENT_LIMIT),
+      workspace: this.workspace(),
+    };
+  }
+
   /** Permission requests waiting for the human, one per task. */
   approvals(): PodApproval[] {
-    const label = labeller(this.lifecycle.node);
+    const labels = new RosterLabels(this.lifecycle.node);
     return [...this.waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => ({
       id,
       peer,
       task_id: taskId,
       tool: request.tool,
-      requested: preview(request.requested),
-      from: label(request.requested_by),
+      requested: PodAdmin.preview(request.requested),
+      from: labels.label(request.requested_by),
       current_mode: request.current_mode,
       requested_mode: request.requested_mode,
       agent_id: agentId,
@@ -262,13 +257,13 @@ export class PodAdmin {
   }
 
   async task(peer: string, taskId: string): Promise<PodTaskDetail> {
-    const current = this.requireNode();
+    const current = this.lifecycle.requireNode();
     const task = await current.delegation.getTask(peer, taskId);
     return {
       task,
-      origin: labeller(current)(podOf(task).origin_orca_node),
+      origin: new RosterLabels(current).label(PodAdmin.podOf(task).origin_orca_node),
       dispatch: current.delegation.log.list().find((entry) => entry.task_id === task.id) ?? null,
-      artifacts: artifactsOf(task, current.client.idOf(peer)),
+      artifacts: PodAdmin.artifactsOf(task, current.client.idOf(peer)),
     };
   }
 
@@ -281,7 +276,7 @@ export class PodAdmin {
   }
 
   cancel(peer: string, taskId: string): Promise<TaskView> {
-    return this.requireNode().delegation.cancelTask(peer, taskId);
+    return this.lifecycle.requireNode().delegation.cancelTask(peer, taskId);
   }
 
   workspace(): WorkspaceView | null {
@@ -292,7 +287,7 @@ export class PodAdmin {
 
   /** A file a member published, fetched by this node for the panel (§5.6). */
   blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob> {
-    return this.requireNode().blobs.fetch(node, blobId);
+    return this.lifecycle.requireNode().blobs.fetch(node, blobId);
   }
 
   /** Effective config plus setup state; the password itself is never returned. */
@@ -362,24 +357,6 @@ export class PodAdmin {
     return this.config();
   }
 
-  /** Change notification; subscribes to both node events and tracker updates. */
-  subscribe(listener: () => void): () => void {
-    const offNode = this.lifecycle.node?.events.subscribe(listener) ?? (() => {});
-    const offTracker = this.tracker.subscribe(listener);
-    const offBroker = this.broker.subscribe(listener);
-    return () => {
-      offNode();
-      offTracker();
-      offBroker();
-    };
-  }
-
-  private requireNode(): OrcaNode {
-    const current = this.lifecycle.node;
-    if (current === null) throw new Error("orca node is not running");
-    return current;
-  }
-
   /** The broker's parked prompts plus requests only the tracker has seen, one per task. */
   private waitingApprovals(): Map<string, PendingApproval> {
     const waiting = new Map<string, PendingApproval>();
@@ -398,5 +375,55 @@ export class PodAdmin {
       }
     }
     return waiting;
+  }
+  private static podOf(view: TaskView): PodTaskMetadata {
+    return view.metadata?.pod ?? {};
+  }
+
+  private static isActive(state: string): boolean {
+    return state !== "unknown" && !isTerminal(state);
+  }
+
+  private static preview(value: unknown): string {
+    const text = JSON.stringify(value) ?? "";
+    return text.length > REQUESTED_PREVIEW_CHARS ? `${text.slice(0, REQUESTED_PREVIEW_CHARS - 1)}…` : text;
+  }
+
+  private static artifactsOf(view: TaskView, node: OrcaNodeId | undefined): PodArtifact[] {
+    return (view.artifacts ?? []).map((artifact) => ({
+      name: artifact.name,
+      blob_id: artifact.artifactId,
+      bytes: artifact.bytes,
+      node: node ?? null,
+    }));
+  }
+
+  /** A task this node dispatched: its who is the target. */
+  private static dispatchRow(labels: RosterLabels, entry: DispatchEntry): PodTaskRow {
+    return {
+      id: entry.task_id,
+      peer: entry.peer,
+      state: entry.state,
+      who: labels.label(entry.peer),
+      who_title: entry.peer,
+      at: entry.updated_at,
+      artifacts: [],
+      cancellable: PodAdmin.isActive(entry.state),
+    };
+  }
+
+  /** A task this node runs: its who is the node that dispatched it. */
+  private static localRow(current: OrcaNode, labels: RosterLabels, view: TaskView): PodTaskRow {
+    const origin = PodAdmin.podOf(view).origin_orca_node;
+    return {
+      id: view.id,
+      peer: current.profile.endpoints[0] ?? "",
+      state: view.status.state,
+      who: labels.label(origin),
+      who_title: origin ?? "",
+      at: view.status.timestamp,
+      artifacts: PodAdmin.artifactsOf(view, current.orcaNodeId),
+      cancellable: PodAdmin.isActive(view.status.state),
+    };
   }
 }

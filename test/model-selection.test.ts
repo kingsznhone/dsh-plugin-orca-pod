@@ -1,14 +1,17 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { Context, Logger } from "@deepseek-ai/cordis";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
+import { ModelOffersSchema, ModelSelectionSchema, type ModelOffer } from "../src/core/wire/model.ts";
 import { parseSchema } from "../src/core/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
-import { discoverModelCatalog } from "../src/plugin/catalog.ts";
+import { ModelCatalogFeed } from "../src/plugin/catalog.ts";
 import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -191,15 +194,26 @@ describe("model catalog", () => {
       },
       agentDefaultModel: { currentSelection: () => ({ provider: "deepseek", model: "deepseek-flash" }) },
     };
-    const catalog = await discoverModelCatalog(
-      services as unknown as Parameters<typeof discoverModelCatalog>[0],
-      {
-        info() {},
-        warn() {},
-        error() {},
-        debug() {},
-      } as unknown as import("@deepseek-ai/cordis").Logger,
-    );
+    // A host that offers both services the moment the feed asks for them.
+    const ctx = {
+      inject: (keys: string[], scope: (scope: unknown) => void) => {
+        const [key] = keys;
+        scope({ [key!]: services[key as keyof typeof services], effect: () => {} });
+      },
+    } as unknown as Pick<Context, "inject">;
+    const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
+    const advertised: Array<{ models: ModelOffer[]; defaultModel: ModelSelection | null }> = [];
+    const node = {
+      models: {
+        update: (models: ModelOffer[], defaultModel: ModelSelection | null) =>
+          advertised.push({ models, defaultModel }),
+      },
+    } as unknown as OrcaNode;
+
+    const feed = new ModelCatalogFeed(ctx, logger);
+    feed.watch({ node, ready: Promise.resolve() });
+    await vi.waitFor(() => expect(advertised.at(-1)?.models).toHaveLength(2));
+    const catalog = { ...advertised.at(-1)!, reasoningEfforts: feed.reasoningEfforts() };
     expect(catalog.models.map((model) => model.id)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
     expect(catalog.models[0]?.description).toBe("fast");
     expect(catalog.defaultModel).toEqual({ provider: "deepseek", model: "deepseek-flash" });

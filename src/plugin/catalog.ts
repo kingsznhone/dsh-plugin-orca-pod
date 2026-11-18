@@ -23,90 +23,12 @@ import { MAX_MODEL_OFFERS, type ModelOffer } from "../core/wire/model.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import { OptionalService } from "./services.ts";
 
-/** The host services the catalog reads; either may be absent. */
-export interface CatalogServices {
-  llm?: LlmRuntime;
-  agentDefaultModel?: AgentDefaultModelConfig;
-}
-
 export type HostModelCatalog = {
   models: ModelOffer[];
   defaultModel: ModelSelection | null;
   /** The efforts the default model offers, least to most; the panel picks the node default from them. */
   reasoningEfforts: readonly LlmReasoningEffortInfo[];
 };
-
-async function listProviders(llm: LlmRuntime, logger: Logger): Promise<LlmProviderInfo[]> {
-  try {
-    return llm.listProviders();
-  } catch (error) {
-    logger.warn(`orca-pod: could not list llm providers: ${errorMessage(error)}`);
-    return [];
-  }
-}
-
-async function listModels(llm: LlmRuntime, provider: string, logger: Logger): Promise<LlmModelInfo[]> {
-  try {
-    return await llm.listModels(provider);
-  } catch (error) {
-    logger.warn(`orca-pod: could not list models for ${provider}: ${errorMessage(error)}`);
-    return [];
-  }
-}
-
-/** Every provider/model route the host's `llm` service offers, deduplicated and capped. */
-async function discoverOffers(llm: LlmRuntime, logger: Logger): Promise<ModelOffer[]> {
-  const models: ModelOffer[] = [];
-  const seen = new Set<string>();
-  for (const entry of await listProviders(llm, logger)) {
-    if (models.length >= MAX_MODEL_OFFERS) break;
-    const provider = entry.id;
-    for (const { id, name, description } of await listModels(llm, provider, logger)) {
-      if (models.length >= MAX_MODEL_OFFERS) break;
-      if (seen.has(`${provider}/${id}`)) continue;
-      seen.add(`${provider}/${id}`);
-      models.push({ provider, id, name, ...(description === undefined ? {} : { description }) });
-    }
-  }
-  return models;
-}
-
-/** What a fresh session starts with, when the host says. */
-function defaultSelection(service: AgentDefaultModelConfig | undefined, logger: Logger): ModelSelection | null {
-  try {
-    return service?.currentSelection() ?? null;
-  } catch (error) {
-    logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);
-    return null;
-  }
-}
-
-/** The efforts the default model offers; empty when the host has no `llm` or the adapter exposes none. */
-async function defaultEfforts(
-  llm: LlmRuntime | undefined,
-  selection: ModelSelection | null,
-  logger: Logger,
-): Promise<readonly LlmReasoningEffortInfo[]> {
-  if (llm === undefined || selection === null) return [];
-  try {
-    return (await llm.resolveModelInfo(selection.provider, selection.model)).reasoning?.efforts ?? [];
-  } catch (error) {
-    logger.warn(
-      `orca-pod: could not read the efforts of ${selection.provider}/${selection.model}: ${errorMessage(error)}`,
-    );
-    return [];
-  }
-}
-
-/**
- * Read the catalog from the host. Failures per provider stay local: one broken
- * adapter must not hide the models that other providers report.
- */
-export async function discoverModelCatalog(services: CatalogServices, logger: Logger): Promise<HostModelCatalog> {
-  const models = services.llm === undefined ? [] : await discoverOffers(services.llm, logger);
-  const defaultModel = defaultSelection(services.agentDefaultModel, logger);
-  return { models, defaultModel, reasoningEfforts: await defaultEfforts(services.llm, defaultModel, logger) };
-}
 
 /** What the feed needs to know about the pod: the node it runs, and when its startup is over. */
 export type CatalogHost = { readonly node: OrcaNode | null; readonly ready: Promise<void> };
@@ -119,8 +41,10 @@ export type CatalogHost = { readonly node: OrcaNode | null; readonly ready: Prom
  */
 export class ModelCatalogFeed {
   private readonly catalog: HostModelCatalog = { models: [], defaultModel: null, reasoningEfforts: [] };
-  /** Whatever `llm`/`agent-default-model` the host exposes; empty on CLI-only hosts. */
-  private services: CatalogServices = {};
+  /** The host's `llm` service, while it offers one; absent on CLI-only hosts. */
+  private llm?: LlmRuntime;
+  /** The host's `agent-default-model` service, while it offers one. */
+  private defaultModel?: AgentDefaultModelConfig;
   private host: CatalogHost | null = null;
   /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
   private generation = 0;
@@ -137,7 +61,7 @@ export class ModelCatalogFeed {
    */
   advertise(orcaNode: OrcaNode): void {
     const { models, defaultModel } = this.catalog;
-    orcaNode.models.update(models, defaultModel, defaultModel?.reasoningEffort ?? null);
+    orcaNode.models.update(models, defaultModel);
   }
 
   /** The efforts the host's default model offers, for the panel's node-default choice. */
@@ -152,11 +76,11 @@ export class ModelCatalogFeed {
     // separately, so a host that offers only one still advertises what it has;
     // the catalog is rebuilt when either appears, is replaced or goes away.
     new OptionalService(this.ctx, "llm", "orca-pod.catalog-llm", (llm) => {
-      this.services = { ...this.services, llm };
+      this.llm = llm;
       void this.refresh();
     });
-    new OptionalService(this.ctx, "agentDefaultModel", "orca-pod.catalog-default-model", (agentDefaultModel) => {
-      this.services = { ...this.services, agentDefaultModel };
+    new OptionalService(this.ctx, "agentDefaultModel", "orca-pod.catalog-default-model", (defaultModel) => {
+      this.defaultModel = defaultModel;
       void this.refresh();
     });
     void host.ready.then(() => this.refresh());
@@ -164,11 +88,79 @@ export class ModelCatalogFeed {
 
   private async refresh(): Promise<void> {
     const current = ++this.generation;
-    const next = await discoverModelCatalog(this.services, this.logger);
+    const next = await this.discover();
     if (current !== this.generation) return;
     Object.assign(this.catalog, next);
     const orcaNode = this.host?.node ?? null;
     if (orcaNode !== null) this.advertise(orcaNode);
     if (this.catalog.models.length > 0) this.logger.info(`orca-pod: advertising ${this.catalog.models.length} models`);
+  }
+
+  /**
+   * Read the catalog from the host. Failures per provider stay local: one broken
+   * adapter must not hide the models that other providers report.
+   */
+  private async discover(): Promise<HostModelCatalog> {
+    const models = this.llm === undefined ? [] : await this.discoverOffers(this.llm);
+    const defaultModel = this.defaultSelection();
+    return { models, defaultModel, reasoningEfforts: await this.defaultEfforts(defaultModel) };
+  }
+
+  private listProviders(llm: LlmRuntime): LlmProviderInfo[] {
+    try {
+      return llm.listProviders();
+    } catch (error) {
+      this.logger.warn(`orca-pod: could not list llm providers: ${errorMessage(error)}`);
+      return [];
+    }
+  }
+
+  private async listModels(llm: LlmRuntime, provider: string): Promise<LlmModelInfo[]> {
+    try {
+      return await llm.listModels(provider);
+    } catch (error) {
+      this.logger.warn(`orca-pod: could not list models for ${provider}: ${errorMessage(error)}`);
+      return [];
+    }
+  }
+
+  /** Every provider/model route the host's `llm` service offers, deduplicated and capped. */
+  private async discoverOffers(llm: LlmRuntime): Promise<ModelOffer[]> {
+    const models: ModelOffer[] = [];
+    const seen = new Set<string>();
+    for (const entry of this.listProviders(llm)) {
+      if (models.length >= MAX_MODEL_OFFERS) break;
+      const provider = entry.id;
+      for (const { id, name, description } of await this.listModels(llm, provider)) {
+        if (models.length >= MAX_MODEL_OFFERS) break;
+        if (seen.has(`${provider}/${id}`)) continue;
+        seen.add(`${provider}/${id}`);
+        models.push({ provider, id, name, ...(description === undefined ? {} : { description }) });
+      }
+    }
+    return models;
+  }
+
+  /** What a fresh session starts with, when the host says. */
+  private defaultSelection(): ModelSelection | null {
+    try {
+      return this.defaultModel?.currentSelection() ?? null;
+    } catch (error) {
+      this.logger.warn(`orca-pod: could not read the default model: ${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  /** The efforts the default model offers; empty when the host has no `llm` or the adapter exposes none. */
+  private async defaultEfforts(selection: ModelSelection | null): Promise<readonly LlmReasoningEffortInfo[]> {
+    if (this.llm === undefined || selection === null) return [];
+    try {
+      return (await this.llm.resolveModelInfo(selection.provider, selection.model)).reasoning?.efforts ?? [];
+    } catch (error) {
+      this.logger.warn(
+        `orca-pod: could not read the efforts of ${selection.provider}/${selection.model}: ${errorMessage(error)}`,
+      );
+      return [];
+    }
   }
 }

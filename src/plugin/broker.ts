@@ -10,7 +10,6 @@
 
 import { randomUUID } from "node:crypto";
 
-import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { TaskView } from "../task/wire.ts";
@@ -41,16 +40,9 @@ export const taskKey = (peer: string, taskId: string): string => `${peer}|${task
 
 export class ApprovalBroker {
   private readonly parked = new Map<string, Parked>();
-  private readonly changes: ChangeSignal;
 
   /** The lifecycle owns the running node, which carries a decision to the remote task. */
-  constructor(
-    private readonly lifecycle: PodLifecycle,
-    /** Hears about a subscriber that threw while being told of a change. */
-    logger?: NodeLogger,
-  ) {
-    this.changes = new ChangeSignal(logger);
-  }
+  constructor(private readonly lifecycle: PodLifecycle) {}
 
   /**
    * Park a request seen on a tracked task. The tracker polls while the task stays
@@ -81,7 +73,6 @@ export class ApprovalBroker {
       created_at: new Date().toISOString(),
     };
     this.parked.set(key, { prompt, view });
-    this.changes.notify();
   }
 
   /** Pending prompts, oldest first. */
@@ -101,18 +92,12 @@ export class ApprovalBroker {
 
   /** Drop the prompt of a task that settled or was answered elsewhere. */
   withdraw(peer: string, taskId: string): void {
-    if (this.parked.delete(taskKey(peer, taskId))) this.changes.notify();
+    this.parked.delete(taskKey(peer, taskId));
   }
 
   /** Drop every prompt (plugin unload). */
   clear(): void {
-    if (this.parked.size === 0) return;
     this.parked.clear();
-    this.changes.notify();
-  }
-
-  subscribe(listener: () => void): () => void {
-    return this.changes.subscribe(listener);
   }
 
   /** Run one decision against the remote task, then drop the prompt it answered. */
@@ -121,17 +106,13 @@ export class ApprovalBroker {
     taskId: string,
     act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
   ): Promise<TaskView> {
-    const node = this.lifecycle.node;
-    if (node === null) throw new Error("orca node is not running");
+    const node = this.lifecycle.requireNode();
     const key = taskKey(peer, taskId);
     const entry = this.parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");
     const resumed = await act(node, entry.view);
     // A failed call leaves the prompt for a retry; a newer request keeps its own.
-    if (this.parked.get(key) === entry) {
-      this.parked.delete(key);
-      this.changes.notify();
-    }
+    if (this.parked.get(key) === entry) this.parked.delete(key);
     return resumed;
   }
 }

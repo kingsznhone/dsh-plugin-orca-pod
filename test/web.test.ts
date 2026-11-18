@@ -158,7 +158,6 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin & { calls: strin
       state: "/data/state/wg",
       notes_files: ["STATUS.md"],
     }),
-    subscribe: () => () => {},
     blob: async (node, blobId) => {
       calls.push(`blob:${node}/${blobId}`);
       return { stream: Readable.from([Buffer.from("file bytes")]), size: 10 };

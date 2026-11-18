@@ -31,10 +31,8 @@ import {
   type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import type { PodLifecycle } from "./lifecycle.ts";
+import type { OptionalService } from "./services.ts";
 import type { Tracker } from "./tracker.ts";
-
-/** The sandbox-policy read `sessionSandboxMode` needs; the host service satisfies it. */
-export type SandboxReader = Pick<SandboxPolicyService, "resolve">;
 
 const ASYNC_NOTE =
   'Tasks run asynchronously on the remote orca node: method "send" returns as soon as the remote accepts the task, and method "status" observes the returned task_id.';
@@ -194,7 +192,10 @@ function peerSummary(peer: PeerView): PeerSummary {
  * inherits the session setting verbatim). Undefined without the service or a
  * session; the task then starts read-only.
  */
-export function sessionSandboxMode(policy: SandboxReader | undefined, exec: ToolExecution): SandboxMode | undefined {
+export function sessionSandboxMode(
+  policy: SandboxPolicyService | undefined,
+  exec: ToolExecution,
+): SandboxMode | undefined {
   const session = exec.agent?.session;
   if (policy === undefined || session === undefined) return undefined;
   return policy.resolve({ session }).mode;
@@ -263,15 +264,12 @@ function json(value: unknown): JsonValue {
   return snapshot as JsonValue;
 }
 
-/** The sandbox policy the host offers, when it does. */
-export type SandboxSource = { current(): SandboxReader | undefined };
-
 /** The single `orca_pod` tool, bound to one pod lifecycle. */
 export class PodTool {
   constructor(
     private readonly lifecycle: PodLifecycle,
     private readonly tracker: Tracker,
-    private readonly sandbox?: SandboxSource,
+    private readonly sandbox?: OptionalService<"sandboxPolicy">,
   ) {}
 
   definition(): ToolDefinition {
@@ -400,13 +398,6 @@ export class PodTool {
    */
   private async requireNode(signal: AbortSignal): Promise<OrcaNode> {
     await waitUnlessAborted(this.lifecycle.ready, signal);
-    if (this.lifecycle.error !== null) {
-      throw new Error(`orca node is not running: ${this.lifecycle.error.message}`);
-    }
-    const orcaNode = this.lifecycle.node;
-    if (orcaNode === null) {
-      throw new Error("orca node is not running");
-    }
-    return orcaNode;
+    return this.lifecycle.requireNode();
   }
 }

@@ -5,10 +5,11 @@ import type { TaskState, TaskView, DispatchEntry } from "../src/task/wire.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
 import type { OrcaNode } from "../src/node/orca-node.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { Tracker, taskNoticeLine } from "../src/plugin/tracker.ts";
 import { idleLifecycle, logger } from "./fixtures/pod.ts";
-import type { TrackerAgent, TrackerOptions } from "../src/plugin/tracker.ts";
+import type { TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 
 /** First text block of a notice, for message assertions. */
@@ -17,6 +18,7 @@ function noticeText(message: UserMessage): string {
   return block?.type === "text" ? block.text : "";
 }
 
+/** A recording stand-in for the dispatching session; the tracker only reads `id` and `status` and calls `inject` / `followup`. */
 class FakeAgent {
   readonly id = SessionId("agent-1");
   status: "idle" | "running" = "idle";
@@ -31,6 +33,8 @@ class FakeAgent {
     this.followed.push(message);
   }
 }
+
+const fakeAgent = (): FakeAgent & Agent => new FakeAgent() as unknown as FakeAgent & Agent;
 
 function taskView(id: string, state: TaskState, text?: string): TaskView {
   return {
@@ -168,7 +172,7 @@ describe("task notice", () => {
 
 describe("createTracker", () => {
   it("wakes an idle agent once when a tracked task finishes", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map([["01TASK", taskView("01TASK", "completed", "done")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
     tracker.track(agent, "http://peer:11811", "01TASK");
@@ -182,7 +186,7 @@ describe("createTracker", () => {
   });
 
   it("injects without waking while the agent is running", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     agent.status = "running";
     const views = new Map([["01TASK", taskView("01TASK", "failed")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
@@ -193,7 +197,7 @@ describe("createTracker", () => {
   });
 
   it("coalesces tasks finishing together into one notice", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map([
       ["01A", taskView("01A", "completed")],
       ["01B", taskView("01B", "failed")],
@@ -208,7 +212,7 @@ describe("createTracker", () => {
   });
 
   it("stops waking after the consecutive wake budget and leaves the notice in the inbox", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map<string, TaskView>();
     const tracker = createTracker(() => fakeNode(views), { ...fast, maxConsecutiveWakes: 1 });
 
@@ -224,7 +228,7 @@ describe("createTracker", () => {
   });
 
   it("parks a permission request in the broker instead of notifying the agent", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     agent.status = "running";
     const views = new Map([["01TASK", permissionView("01TASK", "req-1")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
@@ -261,7 +265,7 @@ describe("createTracker", () => {
   });
 
   it("withdraws a prompt answered elsewhere while the task keeps running", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map([["01TASK", permissionView("01TASK", "req-1")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
     tracker.track(agent, "http://peer:11811", "01TASK");
@@ -274,7 +278,7 @@ describe("createTracker", () => {
   });
 
   it("gives the agent a fresh wake budget once the user speaks", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map<string, TaskView>();
     const tracker = createTracker(() => fakeNode(views), { ...fast, maxConsecutiveWakes: 1 });
 
@@ -294,7 +298,7 @@ describe("createTracker", () => {
   });
 
   it("retries a transient poll failure instead of dropping the task", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     let calls = 0;
     const tracker = createTracker(
       () => ({
@@ -314,7 +318,7 @@ describe("createTracker", () => {
   });
 
   it("gives up after repeated transient failures and reports the interruption", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const tracker = createTracker(
       () => ({
         async getTask(): Promise<TaskView> {
@@ -333,7 +337,7 @@ describe("createTracker", () => {
   });
 
   it("drops pending work on stop()", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map([["01TASK", taskView("01TASK", "completed")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
     tracker.track(agent, "http://peer:11811", "01TASK");
@@ -353,7 +357,7 @@ describe("tracking restore and poll rounds", () => {
   }
 
   it("keeps an already watched task as it is when it is tracked again", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const views = new Map([["01RUN", taskView("01RUN", "working")]]);
     const tracker = createTracker(() => fakeNode(views), fast);
     expect(tracker.track(agent, peer, "01RUN")).toBe(true);
@@ -366,12 +370,8 @@ describe("tracking restore and poll rounds", () => {
 
   it("restores only the named session's dispatches", () => {
     const tracker = createTracker(() => fakeNode(new Map()), { intervalMs: 60_000 });
-    const agentWith = (id: string): TrackerAgent => ({
-      id: SessionId(id),
-      status: "idle",
-      inject() {},
-      followup() {},
-    });
+    const agentWith = (id: string) =>
+      ({ id: SessionId(id), status: "idle", inject() {}, followup() {} }) as unknown as Agent;
     const one = agentWith("agent-1");
     const two = agentWith("agent-2");
     const agents = new Map([
@@ -387,7 +387,7 @@ describe("tracking restore and poll rounds", () => {
   });
 
   it("does not revive a task it gave up on when the log is restored again", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     const node: FakeTaskNode = {
       getTask: async () => {
         throw new PodError("task_not_found", "task not found");
@@ -406,7 +406,7 @@ describe("tracking restore and poll rounds", () => {
   });
 
   it("never runs two poll rounds at once, even when tasks are added mid-round", async () => {
-    const agent = new FakeAgent();
+    const agent = fakeAgent();
     let active = 0;
     let peak = 0;
     let reads = 0;
