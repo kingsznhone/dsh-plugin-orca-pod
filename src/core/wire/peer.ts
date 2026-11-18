@@ -11,9 +11,9 @@ import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "
  * An orca node id is the base64url-encoded raw Ed25519 public key (§7.1), so a
  * valid id is self-certifying: whoever signs with the matching private key owns
  * the id, and no shared workgroup secret can stand in for it. 43 characters
- * always decode to exactly 32 bytes.
+ * always decode to exactly 32 bytes. A checked id is only made by
+ * `OrcaNodeIdSchema` (or `isOrcaNodeId`) from a plain string.
  */
-/** A checked orca node id; only `OrcaNodeIdSchema` (or `isOrcaNodeId`) makes one from a plain string. */
 export type OrcaNodeId = Branded<"OrcaNodeId">;
 
 export const OrcaNodeIdSchema = z

@@ -9,5 +9,3 @@ export type PodEventInput = TaskEvent | MembersEvent | DispatchEvent;
 
 /** Emitted event with the wall-clock time it happened. */
 export type PodEvent = Stamped<PodEventInput>;
-
-export type PodEventListener = (event: PodEvent) => void;

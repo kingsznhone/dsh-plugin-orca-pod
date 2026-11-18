@@ -72,12 +72,6 @@ export function isDirectLoopbackRequest(request: {
 }
 
 /**
- * Advertised-URL suggestions for the panel wizard and for nodes that listen on
- * a wildcard address: every non-internal IPv4/IPv6 address of this machine on
- * the given port. IPv4 comes first (the reliable LAN path); link-local IPv6
- * (`fe80:` prefix, needs a zone id) is skipped.
- */
-/**
  * The URL a node bound to `host` is dialed at, by DSH's rule for bind literals
  * (`bindUrlHost`: IPv6 bracketed, mapped loopback canonical, host names as
  * they are); undefined when the address has no URL form (an interface zone id).
@@ -87,6 +81,12 @@ export function bindUrl(host: string, port: number): string | undefined {
   return urlHost === undefined ? undefined : `http://${urlHost}:${port}`;
 }
 
+/**
+ * Advertised-URL suggestions for the panel wizard and for nodes that listen on
+ * a wildcard address: every non-internal IPv4/IPv6 address of this machine on
+ * the given port. IPv4 comes first (the reliable LAN path); link-local IPv6
+ * (`fe80:` prefix, needs a zone id) is skipped.
+ */
 export function detectLocalEndpoints(port: number): string[] {
   const external = Object.values(networkInterfaces())
     .flat()

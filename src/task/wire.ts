@@ -145,8 +145,6 @@ export type SubmitTaskInput = {
 
 // ---- JSON-RPC (§4.7) ----
 
-/** The A2A JSON-RPC surface (§4.7). */
-
 const TaskIdParams = z.looseObject({ id: z.string() });
 
 /**
@@ -179,7 +177,6 @@ export const RpcResultSchema = z.object({ result: TaskViewSchema });
 // ---- dispatch log entries (§8.3) ----
 
 /** What an origin remembers about a task it handed to a peer (§8.3). */
-
 export type DispatchEntry = {
   /** Task id returned by the target. */
   task_id: string;

@@ -8,7 +8,6 @@ export interface DispatchStore {
   save(entry: DispatchEntry): void;
   get(taskId: string): DispatchEntry | undefined;
   list(): DispatchEntry[];
-  remove(taskId: string): void;
   close(): void;
 }
 
@@ -25,10 +24,6 @@ export class MemoryDispatchStore implements DispatchStore {
 
   list(): DispatchEntry[] {
     return [...this.entries.values()].sort((left, right) => left.created_at.localeCompare(right.created_at));
-  }
-
-  remove(taskId: string): void {
-    this.entries.delete(taskId);
   }
 
   close(): void {}
@@ -63,10 +58,6 @@ export class SqliteDispatchStore implements DispatchStore {
 
   list(): DispatchEntry[] {
     return this.table.list();
-  }
-
-  remove(taskId: string): void {
-    this.table.remove(taskId);
   }
 
   close(): void {

@@ -1,8 +1,8 @@
 /**
  * Paths of the package's own executable entries.
  *
- * A source checkout runs the `.ts` modules directly (Node type stripping,
- * vitest); the published package runs the compiled `.js` under `lib/`. The compiler's
+ * vitest and tsx load the `.ts` modules of `src/`; the published package runs the
+ * compiled `.js` under `lib/`. The compiler's
  * `rewriteRelativeImportExtensions` only rewrites import specifiers, never URL
  * strings, so an entry is resolved with the extension of the module asking for
  * it. A hard-coded `../cli/main.ts` would point at a file that does not exist

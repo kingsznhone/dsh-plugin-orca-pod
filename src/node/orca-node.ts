@@ -10,7 +10,7 @@ import { loadIdentity, type NodeIdentity } from "../core/identity.ts";
 import { ModelCatalog } from "../core/model-catalog.ts";
 import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
 import { storeDbPath } from "../core/sqlite.ts";
-import type { OrcaNodeId, RuntimeInfo, SelfRecord, WorkgroupId } from "../core/wire/peer.ts";
+import type { OrcaNodeId, RuntimeInfo, SelfRecord } from "../core/wire/peer.ts";
 import { AcpExecutor } from "../executor/acp/executor.ts";
 import { EchoExecutor } from "../executor/echo.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
@@ -213,10 +213,6 @@ export class OrcaNode {
 
   get orcaNodeId(): OrcaNodeId {
     return this.config.orca_node_id;
-  }
-
-  get workgroupId(): WorkgroupId {
-    return this.config.workgroup_id;
   }
 
   /** This node as a member record, the way peers list it. */

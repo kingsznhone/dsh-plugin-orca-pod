@@ -79,14 +79,6 @@ describe("dispatch store (13.4)", () => {
     expect(store.get("failed")?.state).toBe("failed");
     store.close();
   });
-
-  it("removes entries", () => {
-    const store = new SqliteDispatchStore(join(tempRoot(), "tasks.db"));
-    store.save(entry({ task_id: "task-1", state: "working" }));
-    store.remove?.("task-1");
-    expect(store.list()).toEqual([]);
-    store.close();
-  });
 });
 
 describe("origin dispatch log (13.4)", () => {

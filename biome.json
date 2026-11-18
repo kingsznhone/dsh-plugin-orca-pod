@@ -48,14 +48,6 @@
       }
     },
     {
-      "includes": ["src/transport/gateway/a2a-routes.ts"],
-      "linter": {
-        "rules": {
-          "suspicious": { "noThenProperty": "off" }
-        }
-      }
-    },
-    {
       "includes": ["test/**"],
       "linter": {
         "rules": {

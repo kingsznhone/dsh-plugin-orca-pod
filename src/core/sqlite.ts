@@ -38,7 +38,6 @@ export class JsonTable<T> {
   private readonly upsert: StatementSync;
   private readonly selectOne: StatementSync;
   private readonly selectAll: StatementSync;
-  private readonly removeOne: StatementSync;
 
   constructor(
     private readonly handle: SqliteDb,
@@ -60,7 +59,6 @@ export class JsonTable<T> {
     );
     this.selectOne = db.prepare(`SELECT payload FROM ${table} WHERE task_id = ?`);
     this.selectAll = db.prepare(`SELECT payload FROM ${table} ORDER BY updated_at`);
-    this.removeOne = db.prepare(`DELETE FROM ${table} WHERE task_id = ?`);
   }
 
   save(item: T): void {
@@ -74,10 +72,6 @@ export class JsonTable<T> {
 
   list(): T[] {
     return this.handle.closed ? [] : this.selectAll.all().map((row) => this.parse(row));
-  }
-
-  remove(taskId: string): void {
-    if (!this.handle.closed) this.removeOne.run(taskId);
   }
 
   private parse(row: unknown): T {

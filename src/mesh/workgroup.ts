@@ -25,9 +25,6 @@ export type WorkgroupOptions = {
   allow_loopback_peers?: boolean;
 };
 
-/** Which peers answered a `leave` and so know this node is gone. */
-export type LeaveResult = { left: OrcaNodeId[] };
-
 /** A 401 proves the peer no longer shares this password (§7.1). */
 function isAdmissionRejection(error: unknown): boolean {
   return error instanceof PodError && error.status === 401;
@@ -89,10 +86,6 @@ export class Workgroup {
 
   self(): SelfRecord {
     return this.profile.record();
-  }
-
-  members(): PeerView[] {
-    return this.membership.list();
   }
 
   /** What this node passes on (§3.5): itself and the members it hears from; its digest is what peers compare. */
@@ -173,8 +166,8 @@ export class Workgroup {
     return peer === undefined ? [] : this.dialer.dialOrder(peer);
   }
 
-  /** Leave the workgroup (§9.2): tell each peer, best effort, then clear the roster. */
-  async leave(): Promise<LeaveResult> {
+  /** Leave the workgroup (§9.2): tell each peer, best effort, then clear the roster; resolves to the peers that answered and so know this node is gone. */
+  async leave(): Promise<{ left: OrcaNodeId[] }> {
     const left: OrcaNodeId[] = [];
     for (const peer of this.membership.list()) {
       if (await this.notifyLeave(peer)) left.push(peer.orca_node_id);
