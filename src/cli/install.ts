@@ -84,9 +84,6 @@ const ANSWER_FIELD = {
 /** The answers an install can ask for, named by the flag that supplies them. */
 export type AnswerOption = keyof typeof ANSWER_FIELD;
 
-/** Tells whether a file exists; replaceable so tests need no disk. */
-type PathExists = (path: string) => boolean;
-
 /** One question an interactive install can ask for a value it cannot infer. */
 export interface PromptQuestion {
   option: AnswerOption;
@@ -217,13 +214,9 @@ export async function checkDsh(dshBin: string, run: NativeCommandRunner = runNat
   return { ok: true, version: result.stdout.trim() };
 }
 
-interface ConfigDeps {
-  exists?: PathExists;
-}
-
 /** True when the install would write a fresh node config (or overwrite one). */
-export function needsNodeConfig(plan: InstallPlan, options: InstallOptions, exists: PathExists = existsSync): boolean {
-  return options.force || !exists(plan.configPath);
+export function needsNodeConfig(plan: InstallPlan, options: InstallOptions): boolean {
+  return options.force || !existsSync(plan.configPath);
 }
 
 /**
@@ -231,12 +224,8 @@ export function needsNodeConfig(plan: InstallPlan, options: InstallOptions, exis
  * Optional values (listen address, port) are only asked in interactive mode; a
  * non-interactive install simply keeps their defaults.
  */
-export function installQuestions(
-  plan: InstallPlan,
-  options: InstallOptions,
-  exists: PathExists = existsSync,
-): PromptQuestion[] {
-  if (!needsNodeConfig(plan, options, exists)) return [];
+export function installQuestions(plan: InstallPlan, options: InstallOptions): PromptQuestion[] {
+  if (!needsNodeConfig(plan, options)) return [];
   const questions: PromptQuestion[] = [];
   if (!options.node.workgroup_id) {
     questions.push({ option: "workgroup", message: "Workgroup id" });
@@ -267,10 +256,9 @@ export async function promptForInstall(
   plan: InstallPlan,
   options: InstallOptions,
   prompt: PromptFn,
-  exists: PathExists = existsSync,
 ): Promise<InstallOptions> {
   const answers: Record<string, unknown> = {};
-  const questions = [...installQuestions(plan, options, exists), ...optionalInstallQuestions(options)];
+  const questions = [...installQuestions(plan, options), ...optionalInstallQuestions(options)];
   for (const question of questions) {
     const asked =
       question.choices === undefined || question.choices.length === 0
@@ -288,13 +276,8 @@ export async function promptForInstall(
  * Create `<data_root>/config.json` on first install. The Ed25519 identity is
  * created once per data root, so re-running install keeps the orca node id.
  */
-export async function ensureNodeConfig(
-  plan: InstallPlan,
-  options: InstallOptions,
-  deps: ConfigDeps = {},
-): Promise<{ created: boolean }> {
-  const exists = deps.exists ?? existsSync;
-  if (exists(plan.configPath) && !options.force) return { created: false };
+export async function ensureNodeConfig(plan: InstallPlan, options: InstallOptions): Promise<{ created: boolean }> {
+  if (!needsNodeConfig(plan, options)) return { created: false };
   if (!options.node.workgroup_id || !options.node.workgroup_password) {
     throw new Error(
       "install needs a workgroup id and password to create the node config (pass --workgroup and --password, or answer the interactive prompts)",
@@ -308,12 +291,6 @@ export async function ensureNodeConfig(
   return { created: true };
 }
 
-interface InstallDeps extends ConfigDeps {
-  run?: NativeCommandRunner;
-  mkdir?: (path: string, options?: { recursive?: boolean; mode?: number }) => Promise<unknown>;
-  writeFile?: (path: string, text: string) => Promise<void>;
-}
-
 interface InstallResult {
   plan: InstallPlan;
   unit: string;
@@ -321,22 +298,19 @@ interface InstallResult {
   commands: CommandResult[];
 }
 
-/** Write the unit and activate it; `noStart` stops after the write. */
+/** Write the unit and activate it with `run`; `noStart` stops after the write. */
 export async function installService(
   plan: InstallPlan,
   options: InstallOptions,
-  deps: InstallDeps = {},
+  run: NativeCommandRunner = runNativeCommand,
 ): Promise<InstallResult> {
-  const mkdirp = deps.mkdir ?? mkdir;
-  // The unit can carry `--env` values: owner-only, and replaced in one step.
-  const write = deps.writeFile ?? ((path: string, text: string) => writeFileAtomic(path, text, { mode: 0o600 }));
-  await mkdirp(dirname(plan.unitPath), { recursive: true });
+  await mkdir(dirname(plan.unitPath), { recursive: true });
   const unit = renderUnit(plan);
-  await write(plan.unitPath, unit);
-  const configCreated = (await ensureNodeConfig(plan, options, deps)).created;
+  // The unit can carry `--env` values: owner-only, and replaced in one step.
+  await writeFileAtomic(plan.unitPath, unit, { mode: 0o600 });
+  const configCreated = (await ensureNodeConfig(plan, options)).created;
   const commands: CommandResult[] = [];
   if (!options.noStart) {
-    const run = deps.run ?? runNativeCommand;
     for (const [program = "", ...args] of plan.commands) commands.push(await runCommand(run, program, args));
   }
   return { plan, unit, configCreated, commands };

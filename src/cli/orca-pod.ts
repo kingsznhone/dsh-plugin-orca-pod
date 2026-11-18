@@ -32,7 +32,6 @@ import {
   promptForInstall,
   renderUnit,
   resolveEnvironment,
-  type InstallEnvironment,
   type InstallOptions,
   type InstallPlan,
   type PromptFn,
@@ -130,16 +129,6 @@ export function isInteractiveInvocation(parsed: ParsedArguments): boolean {
   return Object.keys(parsed.values).every((name) => INTERACTIVE_NEUTRAL.has(name));
 }
 
-interface MainDeps {
-  /** Defaults to a readline session on stdin/stdout. */
-  prompt?: PromptFn;
-  /** Defaults to `process.stdin.isTTY`; false never prompts (SSH without -t). */
-  canPrompt?: boolean;
-  environment?: Partial<InstallEnvironment>;
-  write?: (text: string) => void;
-  writeError?: (text: string) => void;
-}
-
 function defaultPrompt(): PromptFn {
   return async (question: PromptQuestion) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
@@ -181,9 +170,14 @@ function printPlan(write: (text: string) => void, answers: InstallOptions, plan:
   if (plan.environment.length > 0) write(`  env:       ${plan.environment.join(" ")}`);
 }
 
-export async function main(argv: string[] = process.argv.slice(2), deps: MainDeps = {}): Promise<number> {
-  const write = deps.write ?? ((text: string) => console.log(text));
-  const writeError = deps.writeError ?? ((text: string) => console.error(text));
+/**
+ * The `orca-pod` command. `prompt` answers the interactive questions; without
+ * one the command reads a readline session on stdin/stdout, and only when stdin
+ * is a terminal (a bare install over SSH without -t never prompts).
+ */
+export async function main(argv: string[] = process.argv.slice(2), prompt?: PromptFn): Promise<number> {
+  const write = (text: string): void => console.log(text);
+  const writeError = (text: string): void => console.error(text);
   const parsed = parseArguments(argv);
   const { values } = parsed;
   if (values.help === true || parsed.command === null) {
@@ -217,13 +211,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
   const environment = resolveEnvironment({
     ...(dshBin === undefined ? {} : { dshBin }),
     packageEntry: CLI_PATH,
-    ...deps.environment,
   });
   const plan = planInstall(options, environment);
 
   let answers: InstallOptions = options;
   const interactive = isInteractiveInvocation(parsed);
-  const canPrompt = deps.canPrompt ?? (deps.prompt !== undefined || process.stdin.isTTY === true);
+  const canPrompt = prompt !== undefined || process.stdin.isTTY === true;
   const questions = installQuestions(plan, answers);
   if (questions.length > 0) {
     if (!interactive || !canPrompt) {
@@ -235,7 +228,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: MainDep
       );
       return 1;
     }
-    answers = await promptForInstall(plan, answers, deps.prompt ?? defaultPrompt());
+    answers = await promptForInstall(plan, answers, prompt ?? defaultPrompt());
   }
 
   const resolvedPlan = planInstall(answers, environment);

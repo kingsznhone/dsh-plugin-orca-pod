@@ -1,7 +1,7 @@
 import type { NativeCommandRunner } from "@deepseek-ai/dsh-native-command";
-import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -32,8 +32,12 @@ async function tempRoot(): Promise<string> {
   return root;
 }
 
+const restoreStdin: Array<() => void> = [];
+
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  for (const restore of restoreStdin.splice(0)) restore();
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
   roots.length = 0;
 });
@@ -213,23 +217,27 @@ describe("host config", () => {
 });
 
 describe("interactive setup", () => {
-  it("asks only when a fresh config has to be written", () => {
-    const root = "/srv/orca-pod";
+  it("asks only when a fresh config has to be written", async () => {
+    const root = join(await tempRoot(), "data");
     const plan = planInstall(hostOptions({}, { data_root: root }), environment("/home/u"));
-    const fresh = installQuestions(plan, bareOptions(root), () => false);
+    const fresh = installQuestions(plan, bareOptions(root));
     expect(fresh.map((question) => question.option)).toEqual(["workgroup", "password"]);
     expect(fresh.find((question) => question.option === "password")?.secret).toBe(true);
     expect(optionalInstallQuestions(bareOptions(root)).map((question) => question.option)).toEqual([
       "bind-host",
       "port",
     ]);
-    expect(installQuestions(plan, hostOptions({}, { data_root: root }), () => true)).toEqual([]);
-    expect(needsNodeConfig(plan, hostOptions({}, { data_root: root }), () => true)).toBe(false);
-    expect(needsNodeConfig(plan, hostOptions({ force: true }, { data_root: root }), () => true)).toBe(true);
+    expect(needsNodeConfig(plan, hostOptions({}, { data_root: root }))).toBe(true);
+    // Once a config exists nothing is asked, unless the install is forced to replace it.
+    await mkdir(root, { recursive: true });
+    await writeFile(plan.configPath, "{}", "utf8");
+    expect(installQuestions(plan, hostOptions({}, { data_root: root }))).toEqual([]);
+    expect(needsNodeConfig(plan, hostOptions({}, { data_root: root }))).toBe(false);
+    expect(needsNodeConfig(plan, hostOptions({ force: true }, { data_root: root }))).toBe(true);
   });
 
   it("fills the answers into the options object", async () => {
-    const root = "/srv/orca-pod";
+    const root = join(await tempRoot(), "data");
     const plan = planInstall(hostOptions({}, { data_root: root }), environment("/home/u"));
     const answers: Record<string, string> = {
       workgroup: "home",
@@ -238,7 +246,7 @@ describe("interactive setup", () => {
       port: "11900",
     };
     const prompt = async (question: PromptQuestion): Promise<string> => answers[question.option] ?? "";
-    const options = await promptForInstall(plan, bareOptions(root), prompt, () => false);
+    const options = await promptForInstall(plan, bareOptions(root), prompt);
     expect(options.node.workgroup_id).toBe("home");
     expect(options.node.workgroup_password).toBe("home-secret");
     expect(options.node.bind_host).toBe("127.0.0.1");
@@ -246,56 +254,42 @@ describe("interactive setup", () => {
   });
 
   it("rejects an invalid port answer", async () => {
-    const root = "/srv/orca-pod";
+    const root = join(await tempRoot(), "data");
     const plan = planInstall(hostOptions({}, { data_root: root }), environment("/home/u"));
     const prompt = async (question: PromptQuestion): Promise<string> =>
       question.option === "port" ? "not-a-port" : "value";
-    await expect(promptForInstall(plan, bareOptions(root), prompt, () => false)).rejects.toThrow(/port/i);
+    await expect(promptForInstall(plan, bareOptions(root), prompt)).rejects.toThrow(/port/i);
   });
 });
 
 describe("service installation", () => {
+  /** A runner that records what it was asked to run instead of running it. */
+  function recordingRunner(commands: string[][]) {
+    return async (command: string, args: readonly string[]) => {
+      commands.push([command, ...args]);
+      return { stdout: "", stderr: "" };
+    };
+  }
+
   it("writes the unit and runs the activation commands", async () => {
     const root = await tempRoot();
-    const written: Array<{ path: string; text: string }> = [];
-    const mkdirs: string[] = [];
     const commands: string[][] = [];
-    const plan = planInstall(hostOptions({}, { data_root: join(root, "data") }), environment(root));
-    const result = await installService(plan, hostOptions({}, { data_root: join(root, "data") }), {
-      mkdir: async (path) => {
-        mkdirs.push(path);
-        return undefined;
-      },
-      writeFile: async (path, text) => {
-        written.push({ path, text });
-      },
-      exists: () => false,
-      run: async (command, args) => {
-        commands.push([command, ...args]);
-        return { stdout: "", stderr: "" };
-      },
-    });
-    expect(mkdirs).toEqual([dirname(plan.unitPath)]);
-    expect(written).toHaveLength(1);
-    expect(written[0]!.path).toBe(plan.unitPath);
-    expect(written[0]!.text).toContain("ExecStart=");
+    const options = hostOptions({}, { data_root: join(root, "data") });
+    const plan = planInstall(options, environment(root));
+    const result = await installService(plan, options, recordingRunner(commands));
+    expect(await readFile(plan.unitPath, "utf8")).toContain("ExecStart=");
     expect(result.configCreated).toBe(true);
+    expect(await readFile(plan.configPath, "utf8")).toContain("workgroup_id");
     expect(commands).toEqual(plan.commands);
   });
 
   it("can write the unit without starting it", async () => {
     const root = await tempRoot();
     const commands: string[][] = [];
-    const plan = planInstall(hostOptions({}, { data_root: join(root, "data") }), environment(root));
-    const result = await installService(plan, hostOptions({ noStart: true }, { data_root: join(root, "data") }), {
-      mkdir: async () => undefined,
-      writeFile: async () => undefined,
-      exists: () => false,
-      run: async (command, args) => {
-        commands.push([command, ...args]);
-        return { stdout: "", stderr: "" };
-      },
-    });
+    const options = hostOptions({ noStart: true }, { data_root: join(root, "data") });
+    const plan = planInstall(options, environment(root));
+    const result = await installService(plan, options, recordingRunner(commands));
+    expect(await readFile(plan.unitPath, "utf8")).toContain("ExecStart=");
     expect(result.commands).toEqual([]);
     expect(commands).toEqual([]);
   });
@@ -338,50 +332,60 @@ describe("install invocation", () => {
     expect(isInteractiveInvocation(parsed)).toBe(false);
   });
 
+  /** What `main` printed on stdout and stderr while `work` ran. */
+  async function captured(work: () => Promise<number>): Promise<{ code: number; out: string; err: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((text: unknown) => void out.push(String(text)));
+    vi.spyOn(console, "error").mockImplementation((text: unknown) => void err.push(String(text)));
+    const code = await work();
+    return { code, out: out.join("\n"), err: err.join("\n") };
+  }
+
+  /** Pin whether stdin is a terminal: under a developer's shell it might be. */
+  function stdinIsTerminal(isTTY: boolean): void {
+    const previous = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: isTTY, configurable: true });
+    restoreStdin.push(() => {
+      if (previous === undefined) Reflect.deleteProperty(process.stdin, "isTTY");
+      else Object.defineProperty(process.stdin, "isTTY", previous);
+    });
+  }
+
   it("fails a flag-driven install that lacks required answers", async () => {
     const root = await tempRoot();
-    const errors: string[] = [];
-    const code = await main(["install", "--dry-run", "--data-root", join(root, "data")], {
-      environment: environment(root),
-      write: () => undefined,
-      writeError: (text) => errors.push(text),
-    });
+    vi.stubEnv("HOME", join(root, "home"));
+    const { code, err } = await captured(() => main(["install", "--dry-run", "--data-root", join(root, "data")]));
     expect(code).toBe(1);
-    expect(errors.join("\n")).toContain("--workgroup");
-    expect(errors.join("\n")).not.toContain("interactively?");
+    expect(err).toContain("--workgroup");
+    expect(err).not.toContain("interactively?");
   });
 
   it("refuses to prompt without a terminal", async () => {
     const root = await tempRoot();
+    vi.stubEnv("HOME", join(root, "home"));
     vi.stubEnv("ORCA_POD_HOME", join(root, "data"));
-    const errors: string[] = [];
-    const code = await main(["install", "--dry-run"], {
-      environment: environment(root),
-      canPrompt: false,
-      write: () => undefined,
-      writeError: (text) => errors.push(text),
-    });
+    stdinIsTerminal(false);
+    const { code, err } = await captured(() => main(["install", "--dry-run"]));
     expect(code).toBe(1);
-    expect(errors.join("\n")).toContain("needs a terminal");
+    expect(err).toContain("needs a terminal");
   });
 
   it("asks the four setup questions for a bare dry-run", async () => {
     const root = await tempRoot();
+    vi.stubEnv("HOME", join(root, "home"));
     vi.stubEnv("ORCA_POD_HOME", join(root, "data"));
-    const output: string[] = [];
     const asked: string[] = [];
     const answers: Record<string, string> = { workgroup: "lab", password: "lab-secret", "bind-host": "", port: "" };
-    const code = await main(["install", "--dry-run"], {
-      environment: environment(root),
-      write: (text) => output.push(text),
-      prompt: async (question: PromptQuestion) => {
+    const { code, out } = await captured(() =>
+      main(["install", "--dry-run"], async (question: PromptQuestion) => {
         asked.push(question.option);
         return answers[question.option] ?? "";
-      },
-    });
+      }),
+    );
     expect(code).toBe(0);
     expect(asked).toEqual(["workgroup", "password", "bind-host", "port"]);
-    expect(output.join("\n")).toContain("[Unit]");
-    expect(output.join("\n")).toContain("listen:    [::]:11811");
+    expect(out).toContain("[Unit]");
+    expect(out).toContain("listen:    [::]:11811");
   });
 });

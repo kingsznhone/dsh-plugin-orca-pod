@@ -14,7 +14,7 @@ export async function run({ flags }: CommandArgs): Promise<number> {
   // and a restart is exactly when this listing matters (§8.3).
   const store = new SqliteDispatchStore(storeDbPath(config.data_root));
   try {
-    const entries = store.list().sort((left, right) => left.updated_at.localeCompare(right.updated_at));
+    const entries = store.list();
     if (flags.json === true) {
       process.stdout.write(`${JSON.stringify(entries, null, 2)}\n`);
       return 0;

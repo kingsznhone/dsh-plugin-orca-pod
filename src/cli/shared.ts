@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 
 import { configPath, defaultDataRoot, loadConfig, type OrcaNodeConfig } from "../node/config.ts";
 import { MembersResponseSchema, type PeerView } from "../core/wire/peer.ts";
-import type { TaskView } from "../task/wire.ts";
+import { messageText, type TaskView } from "../task/wire.ts";
 import { DEFAULT_REQUEST_TIMEOUT_MS } from "../core/constants.ts";
 import { requireIdentity } from "../core/identity.ts";
 import { HttpPeerClient } from "../mesh/peer-client.ts";
@@ -113,8 +113,7 @@ export async function peerClient(config: OrcaNodeConfig, peer: string): Promise<
 }
 
 function statusLine(view: TaskView): string {
-  const part = view.status.message?.parts.find((item) => item.kind === "text");
-  const text = part !== undefined && part.kind === "text" ? part.text : "";
+  const text = view.status.message === undefined ? "" : messageText(view.status.message);
   return `task ${view.id} ${view.status.state}${view.status.reason ? ` (${view.status.reason})` : ""}${text ? `: ${text}` : ""}`;
 }
 

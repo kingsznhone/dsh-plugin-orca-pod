@@ -20,7 +20,7 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { boundContextSummary, createUserMessage, type ContextFormed, type UserMessage } from "@deepseek-ai/dsh-llm";
 
 import type { DispatchEntry, TaskView } from "../task/wire.ts";
-import { isTerminal, permissionRequestOf } from "../task/wire.ts";
+import { isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PodLifecycle } from "./lifecycle.ts";
@@ -96,10 +96,7 @@ function denyUntrustedBlockBreak(text: string): string {
 
 /** One terminal task reduced to the line shown to the agent. */
 export function taskNoticeLine(view: TaskView, peer: string, node?: string): string {
-  const text = view.status.message?.parts
-    ?.map((part) => (part.kind === "text" ? part.text : ""))
-    .join(" ")
-    .trim();
+  const text = view.status.message === undefined ? undefined : messageText(view.status.message).trim();
   // A peer that cannot be reached ends its own task as completed with a
   // "BLOCKED:" report (§6.14); surface that to the origin instead of claiming
   // the work itself finished.
