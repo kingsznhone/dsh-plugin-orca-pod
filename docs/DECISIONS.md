@@ -2,7 +2,7 @@
 
 > 这里只放**无法归入单章**的顶层 / 跨模块决策。章节内的设计取舍已经并入各章正文，不在这里重复一遍。
 >
-> 编号 D1–D41 稳定保留：原编号不改、不复用；“去向”只是索引，正文才是理由所在。
+> 编号 D1–D42 稳定保留：原编号不改、不复用；“去向”只是索引，正文才是理由所在。
 
 ## 顶层决策
 
@@ -15,7 +15,8 @@
 | D37 | `src/` 按限界上下文分目录、依赖只能向下（[§9.1](09-implementation.md#91-单包内的模块划分)），由 `test/architecture.test.ts` 固化；不引入 DI 容器（[§9.6](09-implementation.md#96-工程约定)）。目录划分与服务写法由 D41 修订（8 个功能目录、class） | 缺的是边界：目录 + 架构测试把边界变成可检查的约束（曾要求跨上下文只经各目录的 `index.ts`，后因纯转发层只增加维护成本、对底层上下文几乎没有保护作用而取消，调用方直接引用定义文件）。容器只会带来字符串 key 与隐式生命周期，插件侧已经跑在 Cordis 这个容器里 |
 | D39 | 任务只有一跳：执行任务的 agent 不能再派任务（执行器会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 拒绝）；去掉调用链元数据、grant 转发、逐跳上交及其路由；不做 agent 侧密钥隔离（[§7.9](07-security.md#79-权限跟随发起-orca-node)） | 级联派发把协议、grant 校验、任务状态机和 CLI 都拖进了“谁替谁上交”的复杂度，而局域网里几台机器的编排由有人坐着的根会话来做就够了。agent 与节点同一个 OS 用户，密钥隔离做不成真边界；非对抗性约束挡住守规矩的 agent 转手，代价是一个环境变量 |
 | D40 | DSH 公开导出的类型、常量与工具一律直接用，不在本包重抄、手写或套别名：运行时依赖 DSH 包（清单见 `package.json` 的 `dependencies`）；模型选择的线上形状就是 DSH 的 `ModelSelection` | 手写的副本会和宿主漂移（`PermissionMode` 与 `SandboxMode`、effort 清单、凭据名语法、摘要截断长度都出过这种情况），而且掩盖了宿主已有的保证（类型化返回值被重新解析）。这些包大多不依赖 cordis，独立 CLI 同样能加载 |
-| D41 | `src/` 按功能重组为 8 个上下文 `core ← {mesh, executor} ← task ← api ← node ← {cli, plugin}`（同层互不引用，仅类型的环也算违规）；服务对象用 class，协作者走构造器参数属性，私有协作者由拥有者 `new`，共享对象由创建者传入，子系统间通知用各自的 `readonly events`；不做依赖注入（无容器、`XDeps`、端口接口、Provider），只有多实现时才设接口；关闭 `erasableSyntaxOnly`，`src/` 不再由裸 node 运行（脚本走 `tsx`，harness 跑 `lib/`），`enum` / `namespace` 由 Biome 禁止；测试使用真实对象，设计不为测试让步（`refactor.md`，修订 D37） | 闭包工厂的状态与方法混在一个作用域里（`createWorkgroup` 345 行），接口类型与实现要写两遍，组合根靠声明提升解开循环；按技术层横切的目录让一个功能（组网）散在 5 个目录。参数属性省掉 class 最主要的样板，代价只是不能再裸跑 `src/`，而这并没有换来别的简化。行为差异两条：approval broker 的 listener 异常改为被吞掉（与 tracker 一致），但会经 `NodeLogger` 记一条 warning；工作区目录的创建与首次测量挪到 `start()`。与方案的出入三处：`TaskRecord` 并进 `task/runner.ts`（拆开会让两个文件互相 `import type`，被架构测试禁止）；“取成员发布的文件”抽成 `mesh/BlobFetcher`，让 `api` 不必认识 `OrcaNode`；`DEFAULT_PORT` 留在 `core/constants.ts`，因为面板前端要读它，而 `core/net.ts` 依赖 `node:net` |
+| D41 | `src/` 按功能重组为 8 个上下文 `core ← {mesh, executor} ← task ← api ← node ← {cli, plugin}`（同层互不引用，仅类型的环也算违规）；服务对象用 class，协作者走构造器参数属性，私有协作者由拥有者 `new`，共享对象由创建者传入，子系统间通知用各自的 `readonly events`；不做依赖注入（无容器、`XDeps`、端口接口、Provider），只有多实现时才设接口；关闭 `erasableSyntaxOnly`，`src/` 不再由裸 node 运行（脚本走 `tsx`，harness 跑 `lib/`），`enum` / `namespace` 由 Biome 禁止；测试使用真实对象，设计不为测试让步（`refactor.md`，修订 D37） | 闭包工厂的状态与方法混在一个作用域里（`createWorkgroup` 345 行），接口类型与实现要写两遍，组合根靠声明提升解开循环；按技术层横切的目录让一个功能（组网）散在 5 个目录。参数属性省掉 class 最主要的样板，代价只是不能再裸跑 `src/`，而这并没有换来别的简化。行为差异两条：approval broker 的 listener 异常改为被吞掉（与 tracker 一致），但会经 `NodeLogger` 记一条 warning；工作区目录的创建与首次测量挪到 `start()`。与方案的出入两处（第三处，`TaskRecord` 并进 `task/runner.ts`，已由 D42 撤回）：“取成员发布的文件”抽成 `mesh/BlobFetcher`，让 `api` 不必认识 `OrcaNode`；`DEFAULT_PORT` 留在 `core/constants.ts`，因为面板前端要读它，而 `core/net.ts` 依赖 `node:net` |
+| D42 | 模块级函数的去留按固定规则判定（`refactor.md` §2）：只有一个调用点且不超过三行、或只是给表达式起名的内联（R1）；参数里带着某个 class 的状态或协作者的，成为那个 class 的方法，导出的也一样（R3）；一个类型加一组以它为参数的函数收成 class（R4）；未导出且只在一个 class 里用的，成为它的 `private` 方法，不读 `this` 的写成 `private static`（R2）；只有被 ≥ 2 个模块用的无状态纯计算、导出后有独立单元测试的纯契约、CLI 子命令的一次性过程保持为函数（R5）。只为测试存在的公开面（公开方法与字段、返回计数、选项字段、`Pick` / 结构参数类型、依赖袋）一律删除或改私有，测试改走真实入口（R7）；一个默认值、一个检查、一个派生值只在拥有者那里算一次（R9）；不用 `ReturnType` 给已有类型换写法，不用 `X & { 偷带字段 }` 把参数塞进另一个配置对象（R10）。修订 D41：`TaskRecord` 不再认识 runner，回到 `task/record.ts` | 第一轮只换了外壳：自由函数其实是某个 class 的方法（`plugin/catalog.ts` 的六个函数都把 `logger` 当参数传）、数据袋加一组操作它的函数（`PeerRecord`、`WorkspacePaths`）、封装被打开（runner 为同文件的记录公开 8 个字段）、转发与包装（`self()` 两跳转发、只有测试订阅的 `ChangeSignal`）、同一件事算好几遍（任务时限默认值三处、“节点没在运行”四处、`busy` 两个来源）。行为差异：多段文字的消息在 CLI 与 tracker 通知里改为换行分隔；notes 目录只列常规文件，面板与任务书一致；面板不再有变化推送入口（本来就靠轮询）；“节点没在运行”的报错在启动失败后带上失败原因 |
 
 ## 已并入章节的决策
 
