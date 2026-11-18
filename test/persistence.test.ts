@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
-import type { OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -31,7 +30,7 @@ async function nodeFor(dataRoot: string): Promise<OrcaNode> {
     data_root: dataRoot,
     port: 0,
   });
-  const orcaNode = createOrcaNode({ config, storage: createPersistentStorage(config) });
+  const orcaNode = new OrcaNode(config, { storage: createPersistentStorage(config) });
   orcaNodes.push(orcaNode);
   return orcaNode;
 }
@@ -49,19 +48,19 @@ describe("orca node persistence", () => {
     const dataRoot = tempDir();
     const first = await nodeFor(dataRoot);
     await first.start();
-    const task = await first.sendTask(first.endpoints[0]!, {
+    const task = await first.delegation.sendTask(first.profile.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
       metadata: { echo: { final: { state: "completed", text: "from sqlite" } } },
     });
     await waitFor(async () => {
-      const view = await first.getTask(first.endpoints[0]!, task.id);
+      const view = await first.delegation.getTask(first.profile.endpoints[0]!, task.id);
       return view.status.state === "completed";
     });
     await first.stop();
 
     const second = await nodeFor(dataRoot);
     await second.start();
-    const after = await second.getTask(second.endpoints[0]!, task.id);
+    const after = await second.delegation.getTask(second.profile.endpoints[0]!, task.id);
     expect(after.status.state).toBe("completed");
   });
 
@@ -69,19 +68,19 @@ describe("orca node persistence", () => {
     const dataRoot = tempDir();
     const first = await nodeFor(dataRoot);
     await first.start();
-    const task = await first.sendTask(first.endpoints[0]!, {
+    const task = await first.delegation.sendTask(first.profile.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { steps: [], final: { state: "hang", text: "" } } },
     });
     await waitFor(async () => {
-      const view: TaskView = await first.getTask(first.endpoints[0]!, task.id);
+      const view: TaskView = await first.delegation.getTask(first.profile.endpoints[0]!, task.id);
       return view.status.state === "working";
     });
     await first.stop();
 
     const second = await nodeFor(dataRoot);
     await second.start();
-    const after = await second.getTask(second.endpoints[0]!, task.id);
+    const after = await second.delegation.getTask(second.profile.endpoints[0]!, task.id);
     expect(after.status.state).toBe("failed");
     expect(after.status.reason).toBe("node_restart");
   });

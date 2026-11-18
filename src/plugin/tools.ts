@@ -267,12 +267,12 @@ async function runSend(
     },
   };
   throwIfAborted(signal);
-  const view = await orcaNode.sendTask(peer, input, { signal });
+  const view = await orcaNode.delegation.sendTask(peer, input, { signal });
   if (signal.aborted) {
     // The remote accepted the task after the caller's turn was cancelled: the
     // caller never learns its id, so it must not keep running unobserved.
     // Best effort; the dispatch log still lists it for the panel.
-    orcaNode.cancelTask(peer, view.id).catch(() => {});
+    orcaNode.delegation.cancelTask(peer, view.id).catch(() => {});
     throw abortError("cancelled by the caller");
   }
   // Track the task so the dispatching agent is told when it finishes, even
@@ -283,20 +283,20 @@ async function runSend(
 
 async function runStatus(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle, signal);
-  return taskStatus(await orcaNode.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
+  return taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
 }
 
 async function runCancel(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
   const orcaNode = await requireNode(handle, signal);
-  return taskStatus(await orcaNode.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
+  return taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
 }
 
 async function runMembers(handle: PodHandle, signal: AbortSignal): Promise<MembersResult> {
   const orcaNode = await requireNode(handle, signal);
   return {
     self: peerSummary(orcaNode.self()),
-    members: orcaNode.members().map(peerSummary),
-    members_digest: orcaNode.membersDigest(),
+    members: orcaNode.membership.list().map(peerSummary),
+    members_digest: orcaNode.mesh.digest(),
   };
 }
 
@@ -309,8 +309,8 @@ async function runConnect(handle: PodHandle, args: PeerArgs, signal: AbortSignal
   const orcaNode = await requireNode(handle, signal);
   return {
     peer,
-    members: orcaNode.members().map(peerSummary),
-    members_digest: orcaNode.membersDigest(),
+    members: orcaNode.membership.list().map(peerSummary),
+    members_digest: orcaNode.mesh.digest(),
   };
 }
 

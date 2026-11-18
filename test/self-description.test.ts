@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const LIVE: OrcaNode[] = [];
@@ -18,15 +18,16 @@ afterEach(async () => {
 async function pair(): Promise<[OrcaNode, OrcaNode]> {
   const workgroupId = wg(`wg-${randomBytes(6).toString("hex")}`);
   const nodes = await Promise.all(
-    [0, 1].map(async () =>
-      createOrcaNode({
-        config: await createOrcaNodeConfig({
-          workgroup_id: workgroupId,
-          workgroup_password: "same password",
-          data_root: mkdtempSync(join(tmpdir(), "orca-self-")),
-          port: 0,
-        }),
-      }),
+    [0, 1].map(
+      async () =>
+        new OrcaNode(
+          await createOrcaNodeConfig({
+            workgroup_id: workgroupId,
+            workgroup_password: "same password",
+            data_root: mkdtempSync(join(tmpdir(), "orca-self-")),
+            port: 0,
+          }),
+        ),
     ),
   );
   for (const node of nodes) {
@@ -34,12 +35,12 @@ async function pair(): Promise<[OrcaNode, OrcaNode]> {
     LIVE.push(node);
   }
   const [a, b] = nodes as [OrcaNode, OrcaNode];
-  await b.join(a.endpoints[0]!);
+  await b.mesh.join(a.profile.endpoints[0]!);
   return [a, b];
 }
 
 function seenBy(observer: OrcaNode, subject: OrcaNode) {
-  return observer.members().find((peer) => peer.orca_node_id === subject.orcaNodeId);
+  return observer.membership.list().find((peer) => peer.orca_node_id === subject.orcaNodeId);
 }
 
 describe("self-description after join (G13)", () => {
@@ -48,14 +49,10 @@ describe("self-description after join (G13)", () => {
     expect(seenBy(a, b)?.models).toBeUndefined();
 
     // The host catalog arrives after the node joined.
-    b.setModelCatalog(
-      [{ provider: "p", id: "m", name: "M" }],
-      { provider: "p", model: "m" },
-      ReasoningEffortId("high"),
-    );
+    b.models.update([{ provider: "p", id: "m", name: "M" }], { provider: "p", model: "m" }, ReasoningEffortId("high"));
     expect(seenBy(a, b)?.models).toBeUndefined();
 
-    await b.heartbeat(a.endpoints[0]!);
+    await b.mesh.heartbeat(a.profile.endpoints[0]!);
     expect(seenBy(a, b)).toMatchObject({
       models: [{ provider: "p", id: "m", name: "M" }],
       default_model: { provider: "p", model: "m", reasoningEffort: "high" },
@@ -63,18 +60,18 @@ describe("self-description after join (G13)", () => {
     });
 
     // A catalog the node no longer advertises does not linger.
-    b.setModelCatalog([], null, null);
-    await b.heartbeat(a.endpoints[0]!);
+    b.models.update([], null, null);
+    await b.mesh.heartbeat(a.profile.endpoints[0]!);
     expect(seenBy(a, b)).toMatchObject({ default_model: null, default_reasoning_effort: null });
     expect(seenBy(a, b)?.models).toBeUndefined();
   }, 15_000);
 
   it("is replaced by a repeated join, in both directions", async () => {
     const [a, b] = await pair();
-    a.setModelCatalog([{ provider: "pa", id: "ma", name: "MA" }], null);
-    b.setModelCatalog([{ provider: "pb", id: "mb", name: "MB" }], null);
+    a.models.update([{ provider: "pa", id: "ma", name: "MA" }], null);
+    b.models.update([{ provider: "pb", id: "mb", name: "MB" }], null);
 
-    await b.join(a.endpoints[0]!);
+    await b.mesh.join(a.profile.endpoints[0]!);
     // A records B's join body; B records the self record in A's answer.
     expect(seenBy(a, b)?.models).toEqual([{ provider: "pb", id: "mb", name: "MB" }]);
     expect(seenBy(b, a)?.models).toEqual([{ provider: "pa", id: "ma", name: "MA" }]);

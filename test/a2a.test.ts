@@ -16,7 +16,7 @@ async function twoNodes(): Promise<{ origin: OrcaNode; target: OrcaNode; targetU
   mesh = await createMesh({ orcaNodes: 2 });
   const [origin, target] = mesh.orcaNodes;
   if (!origin || !target) throw new Error("mesh did not create two orca nodes");
-  return { origin, target, targetUrl: target.endpoints[0]! };
+  return { origin, target, targetUrl: target.profile.endpoints[0]! };
 }
 
 async function waitForState(
@@ -29,7 +29,7 @@ async function waitForState(
   const deadline = Date.now() + timeoutMs;
   let last: TaskView | null = null;
   while (Date.now() < deadline) {
-    last = await origin.getTask(targetUrl, taskId);
+    last = await origin.delegation.getTask(targetUrl, taskId);
     if (last.status.state === state) return last;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -44,7 +44,7 @@ function textOf(view: TaskView): string | null {
 describe("A2A task surface", () => {
   it("runs an echo task to completion and returns its text", async () => {
     const { origin, targetUrl } = await twoNodes();
-    const submitted = await origin.sendTask(targetUrl, {
+    const submitted = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
       metadata: { echo: { final: { state: "completed", text: "hello pod" } } },
     });
@@ -60,7 +60,7 @@ describe("A2A task surface", () => {
 
   it("answers a resume with 429 orca_node_busy while another task holds the slot", async () => {
     const { origin, targetUrl } = await twoNodes();
-    const parked = await origin.sendTask(targetUrl, {
+    const parked = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "start" }] },
       metadata: {
         echo: {
@@ -70,27 +70,27 @@ describe("A2A task surface", () => {
       },
     });
     const suspended = await waitForState(origin, targetUrl, parked.id, "input-required");
-    const holder = await origin.sendTask(targetUrl, {
+    const holder = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { final: { state: "hang", text: "" } } },
     });
     await waitForState(origin, targetUrl, holder.id, "working");
 
-    await expect(origin.approveTask(targetUrl, suspended)).rejects.toMatchObject({
+    await expect(origin.delegation.approveTask(targetUrl, suspended)).rejects.toMatchObject({
       code: "orca_node_busy",
       status: 429,
     });
-    expect((await origin.getTask(targetUrl, parked.id)).status.state).toBe("input-required");
+    expect((await origin.delegation.getTask(targetUrl, parked.id)).status.state).toBe("input-required");
 
-    await origin.cancelTask(targetUrl, holder.id);
-    await origin.approveTask(targetUrl, suspended);
+    await origin.delegation.cancelTask(targetUrl, holder.id);
+    await origin.delegation.approveTask(targetUrl, suspended);
     expect(textOf(await waitForState(origin, targetUrl, parked.id, "completed"))).toBe("done");
   });
 
   it("stores echo artifacts as content-addressed blobs", async () => {
     const { origin, targetUrl } = await twoNodes();
     const content = "hello pod\n";
-    const submitted = await origin.sendTask(targetUrl, {
+    const submitted = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "artifact" }] },
       metadata: {
         echo: {
@@ -111,7 +111,7 @@ describe("A2A task surface", () => {
   it("rejects an invalid echo script before creating a task", async () => {
     const { origin, targetUrl } = await twoNodes();
     await expect(
-      origin.sendTask(targetUrl, {
+      origin.delegation.sendTask(targetUrl, {
         message: { role: "user", parts: [{ kind: "text", text: "bad" }] },
         metadata: { echo: { steps: [{ at_ms: 10 }, { at_ms: 5 }] } },
       }),
@@ -120,33 +120,33 @@ describe("A2A task surface", () => {
 
   it("returns orca_node_busy when a task is already running", async () => {
     const { origin, targetUrl } = await twoNodes();
-    const running = await origin.sendTask(targetUrl, {
+    const running = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { final: { state: "hang", text: "" } } },
     });
     await waitForState(origin, targetUrl, running.id, "working");
 
     await expect(
-      origin.sendTask(targetUrl, {
+      origin.delegation.sendTask(targetUrl, {
         message: { role: "user", parts: [{ kind: "text", text: "second" }] },
         metadata: { echo: { final: { state: "completed", text: "nope" } } },
       }),
     ).rejects.toMatchObject({ code: "orca_node_busy", status: 429 });
 
-    await origin.cancelTask(targetUrl, running.id);
+    await origin.delegation.cancelTask(targetUrl, running.id);
   });
 
   it("cancels a hanging task", async () => {
     const { origin, targetUrl } = await twoNodes();
-    const submitted = await origin.sendTask(targetUrl, {
+    const submitted = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { final: { state: "hang", text: "" } } },
     });
     await waitForState(origin, targetUrl, submitted.id, "working");
 
-    const canceled = await origin.cancelTask(targetUrl, submitted.id);
+    const canceled = await origin.delegation.cancelTask(targetUrl, submitted.id);
     expect(canceled.status.state).toBe("canceled");
-    const fetched = await origin.getTask(targetUrl, submitted.id);
+    const fetched = await origin.delegation.getTask(targetUrl, submitted.id);
     expect(fetched.status.state).toBe("canceled");
   });
 
@@ -154,25 +154,25 @@ describe("A2A task surface", () => {
     mesh = await createMesh({ orcaNodes: 3 });
     const [origin, target, other] = mesh.orcaNodes;
     if (!origin || !target || !other) throw new Error("mesh did not create three orca nodes");
-    const targetUrl = target.endpoints[0]!;
-    const submitted = await origin.sendTask(targetUrl, {
+    const targetUrl = target.profile.endpoints[0]!;
+    const submitted = await origin.delegation.sendTask(targetUrl, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
       metadata: { echo: { final: { state: "hang", text: "" } } },
     });
     await waitForState(origin, targetUrl, submitted.id, "working");
 
-    await expect(other.cancelTask(targetUrl, submitted.id)).rejects.toMatchObject({
+    await expect(other.delegation.cancelTask(targetUrl, submitted.id)).rejects.toMatchObject({
       code: "not_task_origin",
       status: 403,
     });
 
-    const canceled = await origin.cancelTask(targetUrl, submitted.id);
+    const canceled = await origin.delegation.cancelTask(targetUrl, submitted.id);
     expect(canceled.status.state).toBe("canceled");
   });
 
   it("reports unknown tasks as 404", async () => {
     const { origin, targetUrl } = await twoNodes();
-    await expect(origin.getTask(targetUrl, "01JUNKNOWN")).rejects.toMatchObject({
+    await expect(origin.delegation.getTask(targetUrl, "01JUNKNOWN")).rejects.toMatchObject({
       code: "task_not_found",
       status: 404,
     });

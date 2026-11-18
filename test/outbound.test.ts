@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const WORKGROUP = wg("orca-outbound");
@@ -37,7 +37,7 @@ async function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: num
     port: 0,
     request_timeout_ms: requestTimeoutMs,
   });
-  const node = createOrcaNode({ config, ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) });
+  const node = new OrcaNode(config, { ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) });
   nodes.push(node);
   return node;
 }
@@ -58,9 +58,9 @@ describe("outbound A2A calls (11)", () => {
           });
     const node = await makeNode(stalled, 250);
     await node.start();
-    await node.join(peer.endpoints[0]!);
+    await node.mesh.join(peer.profile.endpoints[0]!);
     const started = Date.now();
-    await expect(node.getTask(peer.endpoints[0]!, "01TASK")).rejects.toBeDefined();
+    await expect(node.delegation.getTask(peer.profile.endpoints[0]!, "01TASK")).rejects.toBeDefined();
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
@@ -71,19 +71,22 @@ describe("outbound A2A calls (11)", () => {
     await node.start();
 
     for (const call of [
-      () => node.getTask(stranger.endpoints[0]!, "01TASK"),
-      () => node.cancelTask(stranger.endpoints[0]!, "01TASK"),
-      () => node.sendTask(stranger.endpoints[0]!, { message: { role: "user", parts: [{ kind: "text", text: "hi" }] } }),
-      () => node.heartbeat(stranger.endpoints[0]!),
+      () => node.delegation.getTask(stranger.profile.endpoints[0]!, "01TASK"),
+      () => node.delegation.cancelTask(stranger.profile.endpoints[0]!, "01TASK"),
+      () =>
+        node.delegation.sendTask(stranger.profile.endpoints[0]!, {
+          message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
+        }),
+      () => node.mesh.heartbeat(stranger.profile.endpoints[0]!),
     ]) {
       await expect(call()).rejects.toMatchObject({ code: "unknown_peer" });
     }
     // Nothing was sent: the stranger never saw the node's admission proof.
-    expect(stranger.members()).toHaveLength(0);
-    expect(node.members()).toHaveLength(0);
+    expect(stranger.membership.list()).toHaveLength(0);
+    expect(node.membership.list()).toHaveLength(0);
 
-    await node.join(stranger.endpoints[0]!);
-    await expect(node.getTask(stranger.endpoints[0]!, "01MISSING")).rejects.toMatchObject({
+    await node.mesh.join(stranger.profile.endpoints[0]!);
+    await expect(node.delegation.getTask(stranger.profile.endpoints[0]!, "01MISSING")).rejects.toMatchObject({
       code: "task_not_found",
       status: 404,
     });
@@ -113,8 +116,8 @@ describe("outbound A2A calls (11)", () => {
           );
     const origin = await makeNode(endless);
     await origin.start();
-    await origin.join(peer.endpoints[0]!);
-    await expect(origin.getTask(peer.endpoints[0]!, "01TASK")).rejects.toThrow(/too large/);
+    await origin.mesh.join(peer.profile.endpoints[0]!);
+    await expect(origin.delegation.getTask(peer.profile.endpoints[0]!, "01TASK")).rejects.toThrow(/too large/);
     expect(cancelled).toBe(true);
     expect(pulled).toBeLessThan(16);
   });
@@ -133,8 +136,8 @@ describe("outbound A2A calls (11)", () => {
         : fetch(url, init);
     const origin = await makeNode(degraded);
     await origin.start();
-    await origin.join(peer.endpoints[0]!);
-    await expect(origin.getTask(peer.endpoints[0]!, "01TASK")).rejects.toThrow(/content type/);
+    await origin.mesh.join(peer.profile.endpoints[0]!);
+    await expect(origin.delegation.getTask(peer.profile.endpoints[0]!, "01TASK")).rejects.toThrow(/content type/);
   });
 
   it("does not log a read of a task it never dispatched", async () => {
@@ -142,10 +145,10 @@ describe("outbound A2A calls (11)", () => {
     await peer.start();
     const origin = await makeNode(undefined);
     await origin.start();
-    await origin.join(peer.endpoints[0]!);
+    await origin.mesh.join(peer.profile.endpoints[0]!);
 
-    await expect(origin.getTask(peer.endpoints[0]!, "01MISSING")).rejects.toBeDefined();
-    expect(origin.listDispatches()).toHaveLength(0);
+    await expect(origin.delegation.getTask(peer.profile.endpoints[0]!, "01MISSING")).rejects.toBeDefined();
+    expect(origin.delegation.log.list()).toHaveLength(0);
   });
 
   it("refreshes an existing dispatch entry without creating more", async () => {
@@ -153,15 +156,15 @@ describe("outbound A2A calls (11)", () => {
     await peer.start();
     const origin = await makeNode(undefined);
     await origin.start();
-    await origin.join(peer.endpoints[0]!);
+    await origin.mesh.join(peer.profile.endpoints[0]!);
 
-    const view = await origin.sendTask(peer.endpoints[0]!, {
+    const view = await origin.delegation.sendTask(peer.profile.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "ping" }] },
     });
-    await origin.getTask(peer.endpoints[0]!, view.id);
-    await origin.getTask(peer.endpoints[0]!, view.id);
+    await origin.delegation.getTask(peer.profile.endpoints[0]!, view.id);
+    await origin.delegation.getTask(peer.profile.endpoints[0]!, view.id);
 
-    const entries = origin.listDispatches();
+    const entries = origin.delegation.log.list();
     expect(entries).toHaveLength(1);
     expect(entries[0]!.task_id).toBe(view.id);
   });

@@ -9,7 +9,7 @@ import { EventBus } from "../src/core/events.ts";
 import { DispatchLog } from "../src/task/dispatch-log.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import type { DispatchEntry } from "../src/task/wire.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { SqliteDispatchStore } from "../src/task/dispatch-store.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -99,7 +99,7 @@ describe("origin dispatch log (13.4)", () => {
       bind_host: "127.0.0.1",
       port: 0,
     });
-    const peer = createOrcaNode({ config: peerConfig });
+    const peer = new OrcaNode(peerConfig);
     await peer.start();
     nodes.push(peer);
 
@@ -111,12 +111,12 @@ describe("origin dispatch log (13.4)", () => {
       bind_host: "127.0.0.1",
       port: 0,
     });
-    let origin = createOrcaNode({ config: originConfig, storage: createPersistentStorage(originConfig) });
+    let origin = new OrcaNode(originConfig, { storage: createPersistentStorage(originConfig) });
     await origin.start();
     nodes.push(origin);
-    await origin.join(peer.endpoints[0]!);
+    await origin.mesh.join(peer.profile.endpoints[0]!);
 
-    const view = await origin.sendTask(peer.endpoints[0]!, {
+    const view = await origin.delegation.sendTask(peer.profile.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "slow echo" }] },
       metadata: {
         echo: {
@@ -127,23 +127,27 @@ describe("origin dispatch log (13.4)", () => {
     });
 
     const deadline = Date.now() + 5000;
-    let record = origin.listDispatches().find((item) => item.task_id === view.id);
+    let record = origin.delegation.log.list().find((item) => item.task_id === view.id);
     while (record === undefined && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      record = origin.listDispatches().find((item) => item.task_id === view.id);
+      record = origin.delegation.log.list().find((item) => item.task_id === view.id);
     }
     // The target answers `submitted` while it prepares the task, `working` once the executor runs.
-    expect(record).toMatchObject({ peer: peer.endpoints[0]! });
+    expect(record).toMatchObject({ peer: peer.profile.endpoints[0]! });
     expect(["submitted", "working"]).toContain(record?.state);
 
     // Restart the origin: in-flight dispatches become unknown, never "failed".
     await origin.stop();
     nodes = nodes.filter((node) => node !== origin);
-    origin = createOrcaNode({ config: originConfig, storage: createPersistentStorage(originConfig) });
+    origin = new OrcaNode(originConfig, { storage: createPersistentStorage(originConfig) });
     await origin.start();
     nodes.push(origin);
 
-    const recovered = origin.listDispatches().find((item) => item.task_id === view.id);
-    expect(recovered).toMatchObject({ state: "unknown", last_error: "origin_restart", peer: peer.endpoints[0]! });
+    const recovered = origin.delegation.log.list().find((item) => item.task_id === view.id);
+    expect(recovered).toMatchObject({
+      state: "unknown",
+      last_error: "origin_restart",
+      peer: peer.profile.endpoints[0]!,
+    });
   });
 });

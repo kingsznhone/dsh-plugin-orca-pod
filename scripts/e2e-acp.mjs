@@ -8,7 +8,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createOrcaNode, createOrcaNodeConfig, createPersistentStorage } from "orca-pod";
+import { OrcaNode, createOrcaNodeConfig, createPersistentStorage } from "orca-pod";
 
 const TERMINAL = new Set(["completed", "failed", "canceled"]);
 const prompt = process.argv[2] ?? "Reply with exactly the word pong";
@@ -21,11 +21,11 @@ const config = await createOrcaNodeConfig({
   executor: "acp",
   acp: {},
 });
-const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
 await node.start();
 
 const startedAt = Date.now();
-const submitted = await node.sendTask(node.endpoints[0], {
+const submitted = await node.delegation.sendTask(node.profile.endpoints[0], {
   message: {
     role: "user",
     parts: [{ kind: "text", text: prompt }],
@@ -36,7 +36,7 @@ const submitted = await node.sendTask(node.endpoints[0], {
 let view = submitted;
 while (!TERMINAL.has(view.status.state) && Date.now() - startedAt < 120_000) {
   await new Promise((resolve) => setTimeout(resolve, 500));
-  view = await node.getTask(node.endpoints[0], submitted.id);
+  view = await node.delegation.getTask(node.profile.endpoints[0], submitted.id);
 }
 
 const part = view.status.message?.parts[0];

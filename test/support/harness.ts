@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createOrcaNodeConfig } from "../../src/node/config.ts";
 import { WorkgroupIdSchema } from "../../src/core/wire/peer.ts";
 import type { MembershipTimings } from "../../src/mesh/membership.ts";
-import { createOrcaNode, joinRoster, type OrcaNode } from "../../src/node/orca-node.ts";
+import { OrcaNode } from "../../src/node/orca-node.ts";
 
 type MeshOptions = {
   orcaNodes?: number;
@@ -62,7 +62,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         display_name: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
         approval_timeout_s: options.approvalTimeoutS,
       });
-      orcaNodes.push(createOrcaNode({ config, timings: options.timings, fetch: options.fetch?.(index) }));
+      orcaNodes.push(new OrcaNode(config, { timings: options.timings, fetch: options.fetch?.(index) }));
     }
 
     for (const orcaNode of orcaNodes) {
@@ -74,12 +74,12 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
     if (!bootstrapUrl) throw new Error("createMesh needs at least one orca node");
 
     for (const orcaNode of orcaNodes.slice(1)) {
-      const response = await orcaNode.join(bootstrapUrl);
-      await joinRoster(orcaNode, response.members);
+      const response = await orcaNode.mesh.join(bootstrapUrl);
+      await orcaNode.mesh.joinAll(response.members);
     }
 
     for (const orcaNode of orcaNodes) {
-      await orcaNode.heartbeat(bootstrapUrl);
+      await orcaNode.mesh.heartbeat(bootstrapUrl);
     }
 
     return {
@@ -103,9 +103,9 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
 export async function connectAll(orcaNodes: readonly OrcaNode[]): Promise<void> {
   for (const [index, orcaNode] of orcaNodes.entries()) {
     for (const other of orcaNodes.slice(index + 1)) {
-      const [endpoint] = other.endpoints;
+      const [endpoint] = other.profile.endpoints;
       if (endpoint === undefined) throw new Error("orca node has no endpoint; start it first");
-      await orcaNode.join(endpoint);
+      await orcaNode.mesh.join(endpoint);
     }
   }
 }

@@ -3,7 +3,7 @@ import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { bodySha256 } from "../src/core/signing.ts";
 import { errorMessage } from "../src/core/errors.ts";
 import { createOrcaNodeConfig, defaultDataRoot, loadConfig, saveConfig } from "../src/node/config.ts";
-import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode } from "../src/node/orca-node.ts";
 import { DEFAULT_PORT } from "../src/core/constants.ts";
 import { WorkgroupIdSchema } from "../src/core/wire/peer.ts";
 
@@ -55,9 +55,9 @@ async function withNode(orcaNode: OrcaNode, keepAlive: boolean): Promise<void> {
   if (!keepAlive) return;
   for (;;) {
     await sleep(2000);
-    const members = orcaNode.members();
+    const members = orcaNode.membership.list();
     console.log(
-      `members=${members.length} digest=${orcaNode.membersDigest().slice(0, 12)} peers=${members.map((member) => `${member.orca_node_id}:${member.state}`).join(",")}`,
+      `members=${members.length} digest=${orcaNode.mesh.digest().slice(0, 12)} peers=${members.map((member) => `${member.orca_node_id}:${member.state}`).join(",")}`,
     );
   }
 }
@@ -78,7 +78,7 @@ async function serve(args: Values<typeof SERVE>): Promise<void> {
       endpoints: args.endpoint === undefined ? [] : [args.endpoint],
     }));
   if (!exists) await saveConfig(configFile, config);
-  const orcaNode = createOrcaNode({ config, logger: console });
+  const orcaNode = new OrcaNode(config, { logger: console });
   const { url } = await orcaNode.start();
   console.log(`serving on ${url} node=${orcaNode.orcaNodeId} config=${configFile}`);
   await withNode(orcaNode, true);
@@ -96,18 +96,18 @@ async function join(args: Values<typeof JOIN>): Promise<void> {
     port: Number(args.port ?? 0),
     endpoints: args.endpoint === undefined ? [] : [args.endpoint],
   });
-  const orcaNode = createOrcaNode({ config, logger: console });
+  const orcaNode = new OrcaNode(config, { logger: console });
   const { url } = await orcaNode.start();
-  const response = await orcaNode.join(peer);
+  const response = await orcaNode.mesh.join(peer);
   console.log(`joined ${peer} as ${orcaNode.orcaNodeId} on ${url}`);
   console.log(
     `members=${response.members.map((member) => `${member.orca_node_id}@${member.endpoints[0] ?? "-"}`).join(",")}`,
   );
   console.log(`digest=${response.members_digest}`);
-  for (const member of orcaNode.members()) {
+  for (const member of orcaNode.membership.list()) {
     const [memberEndpoint] = member.endpoints;
-    if (memberEndpoint && memberEndpoint !== orcaNode.endpoints[0]) {
-      await orcaNode.heartbeat(memberEndpoint).catch((error: unknown) => {
+    if (memberEndpoint && memberEndpoint !== orcaNode.profile.endpoints[0]) {
+      await orcaNode.mesh.heartbeat(memberEndpoint).catch((error: unknown) => {
         console.log(`heartbeat ${memberEndpoint} failed: ${errorMessage(error)}`);
       });
     }
@@ -119,25 +119,25 @@ async function task(args: Values<typeof TASK>): Promise<void> {
   const configFile = required(args.config, "config");
   const peer = required(args.peer, "peer");
   const config = await loadConfig(configFile);
-  const orcaNode = createOrcaNode({ config, logger: console });
+  const orcaNode = new OrcaNode(config, { logger: console });
   // Peer calls only reach members, so admit this node at the target first.
-  await orcaNode.join(peer);
+  await orcaNode.mesh.join(peer);
   const echo = args.echo
     ? (JSON.parse(args.echo) as Record<string, unknown>)
     : { final: { state: "completed", text: args.text ?? "echo from host" } };
-  const submitted = await orcaNode.sendTask(peer, {
+  const submitted = await orcaNode.delegation.sendTask(peer, {
     message: { role: "user", parts: [{ kind: "text", text: args.text ?? "run echo" }] },
     metadata: { echo },
   });
   console.log(`submitted task=${submitted.id} state=${submitted.status.state}`);
   let resumed = false;
   for (let attempt = 0; attempt < 300; attempt += 1) {
-    const view = await orcaNode.getTask(peer, submitted.id);
+    const view = await orcaNode.delegation.getTask(peer, submitted.id);
     if (view.status.state === "input-required") {
       console.log(`input-required: ${JSON.stringify(view.status.message)}`);
       if (args["auto-resume"] === true && !resumed) {
         resumed = true;
-        await orcaNode.sendTask(peer, {
+        await orcaNode.delegation.sendTask(peer, {
           message: { role: "user", parts: [{ kind: "text", text: "approved" }], taskId: submitted.id },
         });
         console.log("resumed");

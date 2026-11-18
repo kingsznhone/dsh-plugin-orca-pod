@@ -12,7 +12,7 @@ import { parsePodMetadata } from "../src/task/meta.ts";
 import { parseSchema } from "../src/core/schema.ts";
 import { permissionRequestOf, TaskMetadataSchema } from "../src/task/wire.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { narrowPermissionMode } from "../src/core/wire/permission.ts";
 import { escalationFor, modeAllows } from "../src/executor/acp/permissions.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
@@ -59,7 +59,7 @@ function input(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInpu
   };
 }
 
-function taskText(view: Awaited<ReturnType<ReturnType<typeof createOrcaNode>["getTask"]>>): string {
+function taskText(view: Awaited<ReturnType<OrcaNode["delegation"]["getTask"]>>): string {
   return (view.status.message?.parts ?? []).map((part) => (part.kind === "text" ? part.text : "")).join("");
 }
 
@@ -164,15 +164,15 @@ describe("permission mode execution", () => {
       executor: "acp",
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
     });
-    const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
     await node.start();
     try {
-      const view = await node.sendTask(node.endpoints[0]!, {
+      const view = await node.delegation.sendTask(node.profile.endpoints[0]!, {
         message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
       });
       let current = view;
       for (let i = 0; i < 100; i += 1) {
-        current = await node.getTask(node.endpoints[0]!, view.id);
+        current = await node.delegation.getTask(node.profile.endpoints[0]!, view.id);
         if (current.status.state === "input-required" || current.status.state === "failed") break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -181,7 +181,7 @@ describe("permission mode execution", () => {
         current_mode: "read-only",
         requested_mode: "workspace-write",
       });
-      await node.cancelTask(node.endpoints[0]!, view.id);
+      await node.delegation.cancelTask(node.profile.endpoints[0]!, view.id);
     } finally {
       await node.stop();
     }
@@ -198,16 +198,16 @@ describe("permission mode execution", () => {
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
       permission_mode: "read-only",
     });
-    const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
     await node.start();
     try {
-      const view = await node.sendTask(node.endpoints[0]!, {
+      const view = await node.delegation.sendTask(node.profile.endpoints[0]!, {
         message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
         metadata: { pod: { permission_mode: "danger-full-access" } },
       });
       let current = view;
       for (let i = 0; i < 100; i += 1) {
-        current = await node.getTask(node.endpoints[0]!, view.id);
+        current = await node.delegation.getTask(node.profile.endpoints[0]!, view.id);
         if (current.status.state === "completed" || current.status.state === "failed") break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }

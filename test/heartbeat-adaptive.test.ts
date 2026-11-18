@@ -74,7 +74,10 @@ describe("node cadence follows the mesh", () => {
   it("drops to two seconds for a pair and five for five nodes", async () => {
     const pair = await createMesh({ orcaNodes: 2, workgroupId: "adaptive-pair", password: "correct horse" });
     try {
-      await eventually(() => pair.orcaNodes.every((orcaNode) => orcaNode.heartbeatIntervalMs === 2000), "pair cadence");
+      await eventually(
+        () => pair.orcaNodes.every((orcaNode) => orcaNode.membership.timings.intervalMs === 2000),
+        "pair cadence",
+      );
     } finally {
       await pair.stop();
     }
@@ -84,7 +87,9 @@ describe("node cadence follows the mesh", () => {
       // Each node must see the other four before the cadence reflects five nodes.
       await eventually(
         () =>
-          mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 4 && orcaNode.heartbeatIntervalMs === 5000),
+          mesh.orcaNodes.every(
+            (orcaNode) => orcaNode.membership.list().length === 4 && orcaNode.membership.timings.intervalMs === 5000,
+          ),
         "five-node cadence",
         20_000,
       );
@@ -102,7 +107,7 @@ describe("node cadence follows the mesh", () => {
     });
     try {
       await eventually(
-        () => mesh.orcaNodes.every((orcaNode) => orcaNode.heartbeatIntervalMs === 60),
+        () => mesh.orcaNodes.every((orcaNode) => orcaNode.membership.timings.intervalMs === 60),
         "pinned cadence",
         5_000,
       );

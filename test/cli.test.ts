@@ -14,7 +14,7 @@ import {
   validateConfig,
   type OrcaNodeConfig,
 } from "../src/node/config.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { bodySha256 } from "../src/core/signing.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -58,7 +58,7 @@ describe("orca-node CLI", () => {
       port: 0,
     });
     await saveConfig(configPath(root), config);
-    node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+    node = new OrcaNode(config, { storage: createPersistentStorage(config) });
     endpoint = (await node.start()).url;
     // `serve` records the listen address and port; tests start the node in-process, so do it here.
     await saveConfig(configPath(root), endpointWriteback(config, endpoint) ?? config);
@@ -167,7 +167,7 @@ describe("orca-node CLI", () => {
     expect(waited.code).toBe(3);
     const view = JSON.parse(waited.stdout) as { status: { state: string } };
     expect(view.status.state).toBe("input-required");
-    await node.cancelTask(endpoint, created.id);
+    await node.delegation.cancelTask(endpoint, created.id);
   });
 
   it("returns 2 when the task is still running", async () => {
@@ -202,7 +202,7 @@ describe("orca-node CLI", () => {
     expect(waited.code).toBe(2);
     const view = JSON.parse(waited.stdout) as { status: { state: string } };
     expect(view.status.state).toBe("working");
-    await node.cancelTask(endpoint, created.id);
+    await node.delegation.cancelTask(endpoint, created.id);
   });
 
   it("reads the task text from stdin", async () => {

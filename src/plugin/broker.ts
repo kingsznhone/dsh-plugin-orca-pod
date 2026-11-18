@@ -28,8 +28,8 @@ interface ApprovalPrompt {
   created_at: string;
 }
 
-/** The two orca-node calls that carry a decision to the remote task. */
-export type BrokerNode = Pick<OrcaNode, "approveTask" | "denyTask">;
+/** The part of the orca node that carries a decision to the remote task. */
+export type BrokerNode = Pick<OrcaNode, "delegation">;
 
 export interface ApprovalBroker {
   /**
@@ -106,9 +106,9 @@ export function createApprovalBroker(getNode: () => BrokerNode | null): Approval
       notify();
     },
     list: () => [...parked.values()].map((entry) => entry.prompt),
-    approve: (peer, taskId) => decide(peer, taskId, (node, view) => node.approveTask(peer, view)),
+    approve: (peer, taskId) => decide(peer, taskId, (node, view) => node.delegation.approveTask(peer, view)),
     deny: (peer, taskId, reason = "denied from the UI") =>
-      decide(peer, taskId, (node, view) => node.denyTask(peer, view, reason)),
+      decide(peer, taskId, (node, view) => node.delegation.denyTask(peer, view, reason)),
     withdraw(peer, taskId) {
       if (parked.delete(taskKey(peer, taskId))) notify();
     },

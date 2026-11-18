@@ -332,10 +332,10 @@ describe("panel configuration lifecycle", () => {
         const want = b.handle.runtime.orcaNode!.self().orca_node_id;
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
-          if (a.handle.runtime.orcaNode!.members().some((member) => member.state === "online")) break;
+          if (a.handle.runtime.orcaNode!.membership.list().some((member) => member.state === "online")) break;
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
         }
-        expect(a.handle.runtime.orcaNode!.members().map((member) => member.orca_node_id)).toContain(want);
+        expect(a.handle.runtime.orcaNode!.membership.list().map((member) => member.orca_node_id)).toContain(want);
       } finally {
         await stopPod(a.handle, logger);
       }

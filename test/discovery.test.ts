@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const TIMINGS = {
@@ -21,8 +21,8 @@ const TIMINGS = {
 const orcaNodes: OrcaNode[] = [];
 
 async function make(displayName: string): Promise<OrcaNode> {
-  const orcaNode = createOrcaNode({
-    config: await createOrcaNodeConfig({
+  const orcaNode = new OrcaNode(
+    await createOrcaNodeConfig({
       workgroup_id: wg("orca-dev"),
       workgroup_password: "secret",
       display_name: displayName,
@@ -30,8 +30,8 @@ async function make(displayName: string): Promise<OrcaNode> {
       port: 0,
       data_root: mkdtempSync(join(tmpdir(), "orca-discovery-")),
     }),
-    timings: TIMINGS,
-  });
+    { timings: TIMINGS },
+  );
   orcaNodes.push(orcaNode);
   return orcaNode;
 }
@@ -54,25 +54,25 @@ describe("lazy discovery", () => {
     await a.start();
     const b = await make("b");
     await b.start();
-    await b.join(a.endpoints[0]!);
+    await b.mesh.join(a.profile.endpoints[0]!);
 
     const c = await make("c");
     await c.start();
-    await c.join(a.endpoints[0]!);
+    await c.mesh.join(a.profile.endpoints[0]!);
 
     // join 的目录里已经有 B，但 B 还不认识 C
-    expect(c.members().some((member) => member.orca_node_id === b.orcaNodeId)).toBe(true);
-    expect(b.members().some((member) => member.orca_node_id === c.orcaNodeId)).toBe(false);
+    expect(c.membership.list().some((member) => member.orca_node_id === b.orcaNodeId)).toBe(true);
+    expect(b.membership.list().some((member) => member.orca_node_id === c.orcaNodeId)).toBe(false);
 
     // C 心跳 B 撞 404 → 自动重新 join B；拿到目录后 B 也认识 C
     await waitFor(
       () =>
-        [a, b, c].every((orcaNode) => orcaNode.members().length === 2) &&
-        c.members().every((member) => member.state === "online"),
+        [a, b, c].every((orcaNode) => orcaNode.membership.list().length === 2) &&
+        c.membership.list().every((member) => member.state === "online"),
     );
 
     for (const orcaNode of [a, b, c]) {
-      expect(orcaNode.members()).toHaveLength(2);
+      expect(orcaNode.membership.list()).toHaveLength(2);
     }
   });
 
@@ -81,26 +81,27 @@ describe("lazy discovery", () => {
     await a.start();
     const b = await make("b");
     await b.start();
-    await b.join(a.endpoints[0]!);
+    await b.mesh.join(a.profile.endpoints[0]!);
 
     // A 侧来了 C，B 侧来了 D：双方只看 join 快照时谁也看不到对面
     const c = await make("c");
     await c.start();
-    await c.join(a.endpoints[0]!);
+    await c.mesh.join(a.profile.endpoints[0]!);
     const d = await make("d");
     await d.start();
-    await d.join(b.endpoints[0]!);
+    await d.mesh.join(b.profile.endpoints[0]!);
 
     // 心跳里只带摘要；摘要不一致时对端回目录，orca node 据此补齐候选并建立心跳边
     await waitFor(() =>
       [a, b, c, d].every(
         (orcaNode) =>
-          orcaNode.members().length === 3 && orcaNode.members().every((member) => member.state === "online"),
+          orcaNode.membership.list().length === 3 &&
+          orcaNode.membership.list().every((member) => member.state === "online"),
       ),
     );
 
     for (const orcaNode of [a, b, c, d]) {
-      expect(orcaNode.members()).toHaveLength(3);
+      expect(orcaNode.membership.list()).toHaveLength(3);
     }
   });
 });

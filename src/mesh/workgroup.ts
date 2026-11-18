@@ -127,6 +127,22 @@ export class Workgroup {
     return response;
   }
 
+  /**
+   * Join every member of a directory response, best-effort: one unreachable
+   * member must not stop this node from joining the rest of the mesh (§3.2).
+   * A member is tried at each of its advertised URLs in turn (IPv6 unreachable,
+   * LAN vs public…).
+   */
+  async joinAll(members: readonly PeerView[]): Promise<{ joined: OrcaNodeId[]; failed: OrcaNodeId[] }> {
+    const joined: OrcaNodeId[] = [];
+    const failed: OrcaNodeId[] = [];
+    for (const member of members) {
+      if (member.orca_node_id === this.profile.orcaNodeId || member.endpoints.length === 0) continue;
+      ((await this.joinAt(member)) ? joined : failed).push(member.orca_node_id);
+    }
+    return { joined, failed };
+  }
+
   /** One heartbeat to a URL the node already knows. */
   async heartbeat(peerUrl: string): Promise<HeartbeatResponse> {
     return this.pulse(peerUrl, this.client.known(peerUrl), true);
@@ -165,6 +181,19 @@ export class Workgroup {
     }
     this.emitMembersIfChanged();
     return { left };
+  }
+
+  /** Join one member at the first of its advertised URLs that answers. */
+  private async joinAt(member: PeerView): Promise<boolean> {
+    for (const endpoint of member.endpoints) {
+      try {
+        await this.join(endpoint);
+        return true;
+      } catch {
+        // Try the member's next advertised URL.
+      }
+    }
+    return false;
   }
 
   /** Every member this node knows, for its own panel and events. */

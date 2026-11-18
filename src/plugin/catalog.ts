@@ -133,7 +133,7 @@ export function createModelCatalogFeed(ctx: Pick<Context, "inject">, logger: Log
   let services: CatalogServices = {};
   let pod: PodHandle | null = null;
   const advertise = (orcaNode: OrcaNode): void =>
-    orcaNode.setModelCatalog(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoningEffort ?? null);
+    orcaNode.models.update(catalog.models, catalog.defaultModel, catalog.defaultModel?.reasoningEffort ?? null);
   /** Bumped per refresh; a slower, older refresh must not overwrite a newer catalog. */
   let generation = 0;
   const refresh = async (): Promise<void> => {

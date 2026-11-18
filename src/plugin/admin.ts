@@ -188,7 +188,7 @@ function preview(value: unknown): string {
 
 /** Display names for node ids and endpoint URLs, resolved against one roster snapshot. */
 function labeller(current: OrcaNode | null): (key: string | undefined) => string {
-  const peers: PeerView[] = current === null ? [] : [current.self(), ...current.members()];
+  const peers: PeerView[] = current === null ? [] : [current.self(), ...current.membership.list()];
   return (key) => {
     if (key === undefined || key.length === 0) return "-";
     const known = peers.find((peer) => peer.orca_node_id === key || peer.endpoints.includes(key));
@@ -244,7 +244,7 @@ export function createPodAdmin(
     const origin = podOf(view).origin_orca_node;
     return {
       id: view.id,
-      peer: current.endpoints[0] ?? "",
+      peer: current.profile.endpoints[0] ?? "",
       state: view.status.state,
       who: label(origin),
       who_title: origin ?? "",
@@ -282,7 +282,7 @@ export function createPodAdmin(
     const current = node();
     const self = current?.self() ?? null;
     const port = handle.runtime.port ?? config.port;
-    const endpoints = current?.endpoints ?? [...config.endpoints];
+    const endpoints = [...(current?.profile.endpoints ?? config.endpoints)];
     const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));
     return {
       configured: handle.configured,
@@ -327,8 +327,8 @@ export function createPodAdmin(
       const current = node();
       if (current === null) return [];
       const label = labeller(current);
-      return current
-        .members()
+      return current.membership
+        .list()
         .filter((member) => member.state !== "offline")
         .map((member) => ({ ...member, busy_from: member.busy === null ? null : label(member.busy.origin_orca_node) }));
     },
@@ -336,12 +336,12 @@ export function createPodAdmin(
       const current = node();
       if (current === null) return [];
       const label = labeller(current);
-      const tasks = current.listTasks(limit);
+      const tasks = current.tasks.list(limit);
       const local = new Set(tasks.map((view) => view.id));
       const rows: PodTaskRow[] = [
         ...tasks.map((view) => localRow(current, label, view)),
-        ...current
-          .listDispatches()
+        ...current.delegation.log
+          .list()
           .slice(-limit)
           .filter((entry) => !local.has(entry.task_id))
           .map((entry) => dispatchRow(label, entry)),
@@ -364,21 +364,21 @@ export function createPodAdmin(
     },
     async task(peer, taskId) {
       const current = requireNode();
-      const task = await current.getTask(peer, taskId);
+      const task = await current.delegation.getTask(peer, taskId);
       return {
         task,
         origin: labeller(current)(podOf(task).origin_orca_node),
-        dispatch: current.listDispatches().find((entry) => entry.task_id === task.id) ?? null,
-        artifacts: artifactsOf(task, current.nodeIdOf(peer)),
+        dispatch: current.delegation.log.list().find((entry) => entry.task_id === task.id) ?? null,
+        artifacts: artifactsOf(task, current.client.idOf(peer)),
       };
     },
     approve: (peer, taskId) => broker.approve(peer, taskId),
     deny: (peer, taskId, reason) => broker.deny(peer, taskId, reason),
     async cancel(peer, taskId) {
-      return requireNode().cancelTask(peer, taskId);
+      return requireNode().delegation.cancelTask(peer, taskId);
     },
     workspace() {
-      const paths = node()?.workspacePaths() ?? null;
+      const paths = node()?.workspace ?? null;
       if (paths === null) return null;
       return {
         ...paths,
@@ -408,7 +408,7 @@ export function createPodAdmin(
       return configView();
     },
     subscribe(listener) {
-      const offNode = node()?.subscribe(listener) ?? (() => {});
+      const offNode = node()?.events.subscribe(listener) ?? (() => {});
       const offTracker = tracker.subscribe(listener);
       const offBroker = broker.subscribe(listener);
       return () => {

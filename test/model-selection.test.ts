@@ -9,7 +9,7 @@ import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.
 import { parseSchema } from "../src/core/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { discoverModelCatalog } from "../src/plugin/catalog.ts";
-import { createOrcaNode, createPersistentStorage, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { wg } from "./fixtures/ids.ts";
 
 const LIVE: OrcaNode[] = [];
@@ -30,7 +30,7 @@ async function startNode(options: Partial<Settings>): Promise<OrcaNode> {
     port: 0,
     ...options,
   });
-  const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+  const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
   await node.start();
   LIVE.push(node);
   return node;
@@ -117,29 +117,31 @@ describe("model catalog", () => {
       default_model: { provider: "deepseek", model: "deepseek-flash" },
       default_reasoning_effort: ReasoningEffortId("max"),
     });
-    await b.join(a.endpoints[0]!);
-    const peer = await until(() => a.members().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
+    await b.mesh.join(a.profile.endpoints[0]!);
+    const peer = await until(() => a.membership.list().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
     expect(peer.models).toHaveLength(1);
     expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", id: "deepseek-flash" });
     expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash" });
     expect(peer.default_reasoning_effort).toBe("max");
     // The join response carries the directory, so b sees a's catalog too.
-    const seenByB = await until(() => b.members().find((member) => member.orca_node_id === a.orcaNodeId) ?? null);
+    const seenByB = await until(
+      () => b.membership.list().find((member) => member.orca_node_id === a.orcaNodeId) ?? null,
+    );
     expect(seenByB.models).toHaveLength(2);
     expect(seenByB.default_reasoning_effort).toBeNull();
   });
 
   it("fails a task that asks for a model when the executor cannot select one", async () => {
     const node = await startNode({});
-    const submitted = await node.sendTask(node.endpoints[0]!, {
+    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "select a model" }] },
       metadata: { pod: { model: { provider: "deepseek", model: "deepseek-flash" } } },
     });
     const deadline = Date.now() + 5_000;
-    let task = await node.getTask(node.endpoints[0]!, submitted.id);
+    let task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
     while (task.status.state !== "failed" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      task = await node.getTask(node.endpoints[0]!, submitted.id);
+      task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
     }
     expect(task.status.state).toBe("failed");
     expect(task.status.reason).toBe("model_unsupported");
@@ -147,15 +149,15 @@ describe("model catalog", () => {
 
   it("fails a task that asks for a reasoning effort when the executor cannot select one", async () => {
     const node = await startNode({});
-    const submitted = await node.sendTask(node.endpoints[0]!, {
+    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "select an effort" }] },
       metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
     });
     const deadline = Date.now() + 5_000;
-    let task = await node.getTask(node.endpoints[0]!, submitted.id);
+    let task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
     while (task.status.state !== "failed" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      task = await node.getTask(node.endpoints[0]!, submitted.id);
+      task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
     }
     expect(task.status.state).toBe("failed");
     expect(task.status.reason).toBe("model_unsupported");

@@ -19,11 +19,10 @@
 import { rm } from "node:fs/promises";
 
 import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
-import { createOrcaNode, createPersistentStorage } from "../node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../node/orca-node.ts";
 import { parseSettings, passwordRefFor } from "../node/settings.ts";
 import { identityPath } from "../core/identity.ts";
 import { isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
-import type { OrcaNode } from "../node/orca-node.ts";
 import type { ConfigFields, PanelPatch, Settings } from "../node/settings.ts";
 
 import type { Logger } from "@deepseek-ai/cordis";
@@ -131,7 +130,7 @@ async function startNode(
     endpoints: config.endpoints.every(isLoopbackEndpoint) ? [] : config.endpoints,
   });
   await saveConfig(configPath(dataRoot), nodeConfig);
-  const orcaNode = createOrcaNode({ config: nodeConfig, storage: createPersistentStorage(nodeConfig), logger });
+  const orcaNode = new OrcaNode(nodeConfig, { storage: createPersistentStorage(nodeConfig), logger });
   runtime.orcaNode = orcaNode;
 
   const info = await startListening(orcaNode, runtime);
@@ -176,7 +175,7 @@ async function joinPeers(orcaNode: OrcaNode, peers: Iterable<string>, self: stri
   for (const peer of peers) {
     if (peer === self) continue;
     try {
-      const response = await orcaNode.join(peer);
+      const response = await orcaNode.mesh.join(peer);
       logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`);
     } catch (error) {
       logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`);
@@ -332,7 +331,7 @@ export function startPod(
       enqueue(async () => {
         const orcaNode = runtime.orcaNode;
         if (orcaNode === null) throw new Error("orca node is not running");
-        await orcaNode.join(peer);
+        await orcaNode.mesh.join(peer);
         if (!handle.rememberedPeers.includes(peer)) handle.rememberedPeers = [...handle.rememberedPeers, peer];
         await saveRememberedPeers(dataRoot, handle.rememberedPeers);
       }),
@@ -341,7 +340,7 @@ export function startPod(
         const orcaNode = runtime.orcaNode;
         if (orcaNode !== null) {
           try {
-            await orcaNode.leave();
+            await orcaNode.mesh.leave();
           } catch (error) {
             logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
           }

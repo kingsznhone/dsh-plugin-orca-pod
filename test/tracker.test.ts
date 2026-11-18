@@ -7,7 +7,8 @@ import type { Logger } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
-import type { TrackerAgent, TrackerNode, TrackerOptions } from "../src/plugin/tracker.ts";
+import { fakeTrackerNode, type GetTask } from "./fixtures/tracker-node.ts";
+import type { TrackerAgent, TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 
 /** First text block of a notice, for message assertions. */
@@ -76,26 +77,26 @@ function permissionView(id: string, requestId: string): TaskView {
   };
 }
 
-function fakeNode(views: Map<string, TaskView>): TrackerNode {
+type FakeTaskNode = { getTask: GetTask };
+
+function fakeNode(views: Map<string, TaskView>): FakeTaskNode {
   return {
     async getTask(_peer: string, taskId: string): Promise<TaskView> {
       const view = views.get(taskId);
       if (view === undefined) throw new Error(`unknown task ${taskId}`);
       return view;
     },
-    annotateDispatch() {},
-    nodeIdOf: () => undefined,
   };
 }
 
 const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 const broker = createApprovalBroker(() => null);
 
-function createTracker(getNode: () => Pick<TrackerNode, "getTask"> | null, options?: TrackerOptions) {
+function createTracker(getNode: () => FakeTaskNode | null, options?: TrackerOptions) {
   return createTrackerWith(
     () => {
       const node = getNode();
-      return node === null ? null : { annotateDispatch() {}, nodeIdOf: () => undefined, ...node };
+      return node === null ? null : fakeTrackerNode(node.getTask);
     },
     broker,
     logger,
@@ -383,7 +384,7 @@ describe("tracking restore and poll rounds", () => {
 
   it("does not revive a task it gave up on when the log is restored again", async () => {
     const agent = new FakeAgent();
-    const node: Pick<TrackerNode, "getTask"> = {
+    const node: FakeTaskNode = {
       getTask: async () => {
         throw new PodError("task_not_found", "task not found");
       },
@@ -405,7 +406,7 @@ describe("tracking restore and poll rounds", () => {
     let active = 0;
     let peak = 0;
     let reads = 0;
-    const node: Pick<TrackerNode, "getTask"> = {
+    const node: FakeTaskNode = {
       async getTask(_peer, taskId) {
         active += 1;
         reads += 1;

@@ -77,7 +77,7 @@ export function apply(ctx: Context, config: Settings): void {
     if (orcaNode === null) return;
     restoreTrackedDispatches(
       tracker,
-      orcaNode.listDispatches(),
+      orcaNode.delegation.log.list(),
       (id) => (agent !== undefined ? agent : agents.current()?.get(id)),
       logger,
       agent?.id,

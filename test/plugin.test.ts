@@ -9,6 +9,7 @@ import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PodHandle } from "../src/plugin/lifecycle.ts";
 import { createPodTools, sessionSandboxMode, type SandboxReader } from "../src/plugin/tools.ts";
 import type { TrackerAgent } from "../src/plugin/tracker.ts";
+import { fakeTrackerNode } from "./fixtures/tracker-node.ts";
 import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
@@ -21,7 +22,7 @@ function createTracker(
   return createTrackerWith(
     () => {
       const node = getNode();
-      return node === null ? null : { annotateDispatch() {}, nodeIdOf: () => undefined, ...node };
+      return node === null ? null : fakeTrackerNode(node.getTask);
     },
     createApprovalBroker(() => null),
     logger,
@@ -203,9 +204,11 @@ describe("orca_pod tool", () => {
   it("inherits the dispatching session's permission mode when send omits one", async () => {
     const sent: unknown[] = [];
     const fakeNode = {
-      sendTask: async (_peer: string, input: unknown) => {
-        sent.push(input);
-        return { id: "task-1", status: { state: "submitted" } };
+      delegation: {
+        sendTask: async (_peer: string, input: unknown) => {
+          sent.push(input);
+          return { id: "task-1", status: { state: "submitted" } };
+        },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
@@ -266,15 +269,17 @@ describe("orca_pod tool", () => {
     const signals: Array<AbortSignal | undefined> = [];
     const cancelled: string[] = [];
     const fakeNode = {
-      sendTask: async (_peer: string, _input: unknown, options?: { signal?: AbortSignal }) => {
-        signals.push(options?.signal);
-        // The remote accepts, but the user cancels the turn before the reply lands.
-        controller.abort();
-        return { id: "task-late", status: { state: "submitted" } };
-      },
-      cancelTask: async (_peer: string, taskId: string) => {
-        cancelled.push(taskId);
-        return { id: taskId, status: { state: "canceled" } };
+      delegation: {
+        sendTask: async (_peer: string, _input: unknown, options?: { signal?: AbortSignal }) => {
+          signals.push(options?.signal);
+          // The remote accepts, but the user cancels the turn before the reply lands.
+          controller.abort();
+          return { id: "task-late", status: { state: "submitted" } };
+        },
+        cancelTask: async (_peer: string, taskId: string) => {
+          cancelled.push(taskId);
+          return { id: taskId, status: { state: "canceled" } };
+        },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
@@ -304,17 +309,19 @@ describe("orca_pod tool", () => {
     let finishSend: (() => void) | undefined;
     let sendSettled = false;
     const fakeNode = {
-      sendTask: (_peer: string, _input: unknown, options: { signal: AbortSignal }) =>
-        new Promise((resolve) => {
-          // The outbound request notices the abort but takes a moment to wind down.
-          options.signal.addEventListener("abort", () => {
-            finishSend = () => {
-              sendSettled = true;
-              resolve({ id: "task-slow", status: { state: "submitted" } });
-            };
-          });
-        }),
-      cancelTask: async (_peer: string, taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
+      delegation: {
+        sendTask: (_peer: string, _input: unknown, options: { signal: AbortSignal }) =>
+          new Promise((resolve) => {
+            // The outbound request notices the abort but takes a moment to wind down.
+            options.signal.addEventListener("abort", () => {
+              finishSend = () => {
+                sendSettled = true;
+                resolve({ id: "task-slow", status: { state: "submitted" } });
+              };
+            });
+          }),
+        cancelTask: async (_peer: string, taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
+      },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
       ready: Promise.resolve(),
@@ -344,9 +351,11 @@ describe("orca_pod tool", () => {
   it("does not dispatch at all when the turn is already cancelled", async () => {
     let sent = 0;
     const fakeNode = {
-      sendTask: async () => {
-        sent += 1;
-        return { id: "never", status: { state: "submitted" } };
+      delegation: {
+        sendTask: async () => {
+          sent += 1;
+          return { id: "never", status: { state: "submitted" } };
+        },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForSend = {
@@ -381,8 +390,8 @@ describe("orca_pod tool", () => {
   it("joins a peer and returns the refreshed members", async () => {
     const seen: string[] = [];
     const fakeNode = {
-      members: () => [],
-      membersDigest: () => "digest",
+      membership: { list: () => [] },
+      mesh: { digest: () => "digest" },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
     const handleForConnect = {
       ready: Promise.resolve(),

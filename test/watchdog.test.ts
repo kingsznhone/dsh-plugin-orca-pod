@@ -33,7 +33,9 @@ describe("heartbeat loop and watchdog", () => {
     try {
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) => orcaNode.members().length === 2 && orcaNode.members().every((peer) => peer.state === "online"),
+          (orcaNode) =>
+            orcaNode.membership.list().length === 2 &&
+            orcaNode.membership.list().every((peer) => peer.state === "online"),
         ),
       );
 
@@ -41,18 +43,22 @@ describe("heartbeat loop and watchdog", () => {
 
       await waitFor(() =>
         survivors.every((orcaNode) =>
-          orcaNode.members().some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
+          orcaNode.membership
+            .list()
+            .some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
         ),
       );
 
       await expect(
-        survivors[0]!.sendTask(victim.endpoints[0]!, {
+        survivors[0]!.delegation.sendTask(victim.profile.endpoints[0]!, {
           message: { role: "user", parts: [{ kind: "text", text: "hello?" }] },
         }),
       ).rejects.toMatchObject({ code: "peer_not_online" });
 
       await waitFor(() =>
-        survivors.every((orcaNode) => orcaNode.members().every((peer) => peer.orca_node_id !== victim.orcaNodeId)),
+        survivors.every((orcaNode) =>
+          orcaNode.membership.list().every((peer) => peer.orca_node_id !== victim.orcaNodeId),
+        ),
       );
     } finally {
       await Promise.allSettled(survivors.map((orcaNode) => orcaNode.stop()));
@@ -64,12 +70,14 @@ describe("heartbeat loop and watchdog", () => {
     try {
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) => orcaNode.members().length === 1 && orcaNode.members().every((peer) => peer.state === "online"),
+          (orcaNode) =>
+            orcaNode.membership.list().length === 1 &&
+            orcaNode.membership.list().every((peer) => peer.state === "online"),
         ),
       );
       await new Promise((resolve) => setTimeout(resolve, 150));
       for (const orcaNode of mesh.orcaNodes) {
-        expect(orcaNode.members().every((peer) => peer.state === "online")).toBe(true);
+        expect(orcaNode.membership.list().every((peer) => peer.state === "online")).toBe(true);
       }
     } finally {
       await mesh.stop();

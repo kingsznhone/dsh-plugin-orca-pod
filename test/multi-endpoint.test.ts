@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode } from "../src/node/orca-node.ts";
 import type { MembershipTimings } from "../src/mesh/membership.ts";
 import { wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/wire/peer.ts";
@@ -64,7 +64,7 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       data_root: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
       endpoints: [dead, live],
     });
-    const b: OrcaNode = createOrcaNode({ config: bConfig, timings: TIMINGS });
+    const b: OrcaNode = new OrcaNode(bConfig, { timings: TIMINGS });
     await b.start();
 
     let deadAttempts = 0;
@@ -78,15 +78,15 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       port: 0,
       data_root: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
     });
-    const a: OrcaNode = createOrcaNode({ config: aConfig, timings: TIMINGS, fetch: counting });
+    const a: OrcaNode = new OrcaNode(aConfig, { timings: TIMINGS, fetch: counting });
     await a.start();
 
     try {
-      const joined = await a.join(live);
+      const joined = await a.mesh.join(live);
       expect(joined.self.endpoints).toEqual([dead, live]);
 
-      const peer = (): ReturnType<OrcaNode["members"]>[number] | undefined =>
-        a.members().find((view) => view.orca_node_id === b.orcaNodeId);
+      const peer = (): ReturnType<OrcaNode["membership"]["list"]>[number] | undefined =>
+        a.membership.list().find((view) => view.orca_node_id === b.orcaNodeId);
       await waitFor(() => peer() !== undefined);
       expect(peer()?.endpoints).toEqual([dead, live]);
 

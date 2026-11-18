@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { createOrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { isTerminal, type TaskView } from "../src/task/wire.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -139,10 +139,10 @@ describe("budget advertisement", () => {
       port: 0,
       task_timeout_s: 900,
     });
-    const node = createOrcaNode({ config, storage: createPersistentStorage(config) });
+    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
     await node.start();
     try {
-      const card = (await (await fetch(`${node.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
+      const card = (await (await fetch(`${node.profile.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
         max_task_ttl_s?: number;
       };
       expect(card.max_task_ttl_s).toBe(900);
@@ -154,11 +154,11 @@ describe("budget advertisement", () => {
         data_root: otherRoot,
         port: 0,
       });
-      const other = createOrcaNode({ config: otherConfig, storage: createPersistentStorage(otherConfig) });
+      const other = new OrcaNode(otherConfig, { storage: createPersistentStorage(otherConfig) });
       await other.start();
       try {
-        await other.join(node.endpoints[0]!);
-        const peer = node.members().find((candidate) => candidate.orca_node_id === other.orcaNodeId);
+        await other.mesh.join(node.profile.endpoints[0]!);
+        const peer = node.membership.list().find((candidate) => candidate.orca_node_id === other.orcaNodeId);
         expect(peer?.max_task_ttl_s).toBe(3600);
       } finally {
         await other.stop();

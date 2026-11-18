@@ -10,10 +10,10 @@ describe("createMesh", () => {
       expect(mesh.urls).toHaveLength(3);
 
       for (const orcaNode of mesh.orcaNodes) {
-        expect(orcaNode.members()).toHaveLength(2);
+        expect(orcaNode.membership.list()).toHaveLength(2);
       }
 
-      const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest()));
+      const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.mesh.digest()));
       expect(digests.size).toBe(1);
 
       for (const url of mesh.urls) {

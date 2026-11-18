@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { createMesh } from "./support/harness.ts";
-import { createOrcaNode, type OrcaNode } from "../src/node/orca-node.ts";
+import { OrcaNode } from "../src/node/orca-node.ts";
 import type { MembershipTimings } from "../src/mesh/membership.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -87,7 +87,7 @@ async function makeNode(
     port: 0,
     data_root: mkdtempSync(join(tmpdir(), "orca-transport-")),
   });
-  return createOrcaNode({ config, timings: options.timings ?? JITTER, fetch: options.fetch });
+  return new OrcaNode(config, { timings: options.timings ?? JITTER, fetch: options.fetch });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10000): Promise<void> {
@@ -102,7 +102,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10000): Promise<voi
 async function waitForTask(client: OrcaNode, peerUrl: string, taskId: string): Promise<TaskView> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const task = await client.getTask(peerUrl, taskId);
+    const task = await client.delegation.getTask(peerUrl, taskId);
     if (task.status.state === "completed") return task;
     if (task.status.state === "failed" || task.status.state === "canceled") {
       throw new Error(`task ended as ${task.status.state}`);
@@ -127,11 +127,11 @@ describe("transport jitter during formation", () => {
     });
 
     try {
-      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 2));
+      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.membership.list().length === 2));
       await waitFor(() =>
-        mesh.orcaNodes.every((orcaNode) => orcaNode.members().every((peer) => peer.state === "online")),
+        mesh.orcaNodes.every((orcaNode) => orcaNode.membership.list().every((peer) => peer.state === "online")),
       );
-      expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest())).size).toBe(1);
+      expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.mesh.digest())).size).toBe(1);
     } finally {
       await mesh.stop();
     }
@@ -152,7 +152,7 @@ describe("transport jitter during formation", () => {
     });
 
     try {
-      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.members().length === 2));
+      await waitFor(() => mesh.orcaNodes.every((orcaNode) => orcaNode.membership.list().length === 2));
 
       // 45% 丢包、持续 3s = 30 个心跳间隔：期间状态可能反复 suspect/online。
       for (const state of states) state.dropRate = 0.45;
@@ -161,10 +161,12 @@ describe("transport jitter during formation", () => {
       for (const state of states) state.dropRate = 0;
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) => orcaNode.members().length === 2 && orcaNode.members().every((peer) => peer.state === "online"),
+          (orcaNode) =>
+            orcaNode.membership.list().length === 2 &&
+            orcaNode.membership.list().every((peer) => peer.state === "online"),
         ),
       );
-      expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.membersDigest())).size).toBe(1);
+      expect(new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.mesh.digest())).size).toBe(1);
     } finally {
       await mesh.stop();
     }
@@ -192,21 +194,25 @@ describe("transport jitter during formation", () => {
       if (!aUrl || !bUrl || !cUrl) throw new Error("orca nodes did not start");
       aHost = new URL(aUrl).host;
 
-      await b.join(aUrl);
-      await c.join(aUrl);
-      await c.join(bUrl);
-      await waitFor(() => [a, b, c].every((orcaNode) => orcaNode.members().length === 2));
+      await b.mesh.join(aUrl);
+      await c.mesh.join(aUrl);
+      await c.mesh.join(bUrl);
+      await waitFor(() => [a, b, c].every((orcaNode) => orcaNode.membership.list().length === 2));
 
       // c → a 单向断，持续 1.5s = 15 个心跳间隔。在线判定是“最近有没有收到它”：
       // a 的心跳仍能到 c，所以 c 不应该把 a 判死，也不应该报 peer_not_online。
       blocked = true;
       await sleep(1500);
-      expect(c.members().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online")).toBe(true);
-      expect(a.members().some((peer) => peer.orca_node_id === c.orcaNodeId && peer.state === "online")).toBe(true);
+      expect(c.membership.list().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online")).toBe(
+        true,
+      );
+      expect(a.membership.list().some((peer) => peer.orca_node_id === c.orcaNodeId && peer.state === "online")).toBe(
+        true,
+      );
 
       let error: unknown;
       try {
-        await c.sendTask(aUrl, { message: { role: "user", parts: [{ kind: "text", text: "hi" }] } });
+        await c.delegation.sendTask(aUrl, { message: { role: "user", parts: [{ kind: "text", text: "hi" }] } });
       } catch (caught) {
         error = caught;
       }
@@ -215,7 +221,7 @@ describe("transport jitter during formation", () => {
 
       // 链路恢复后同一调用应该成功并跑完。
       blocked = false;
-      const task = await c.sendTask(aUrl, {
+      const task = await c.delegation.sendTask(aUrl, {
         message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
         metadata: { echo: { final: { state: "completed", text: "ok" } } },
       });
@@ -237,27 +243,27 @@ describe("transport jitter during formation", () => {
       const aUrl = (await a.start()).url;
       const bUrl = (await b.start()).url;
       if (!aUrl || !bUrl) throw new Error("orca nodes did not start");
-      await b.join(aUrl);
+      await b.mesh.join(aUrl);
       await waitFor(
         () =>
-          a.members().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
-          b.members().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
+          a.membership.list().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
+          b.membership.list().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
       );
 
       // 500ms 全断 = 5 个心跳间隔：超过 suspect 阈值（3 个间隔），但不到 offline（6 个间隔）。
       blocked = true;
       await sleep(500);
-      expect(a.members().every((peer) => peer.state !== "offline")).toBe(true);
-      expect(b.members().every((peer) => peer.state !== "offline")).toBe(true);
+      expect(a.membership.list().every((peer) => peer.state !== "offline")).toBe(true);
+      expect(b.membership.list().every((peer) => peer.state !== "offline")).toBe(true);
 
       blocked = false;
       await waitFor(
         () =>
-          a.members().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
-          b.members().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
+          a.membership.list().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
+          b.membership.list().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
       );
-      expect(a.members()).toHaveLength(1);
-      expect(a.membersDigest()).toBe(b.membersDigest());
+      expect(a.membership.list()).toHaveLength(1);
+      expect(a.mesh.digest()).toBe(b.mesh.digest());
     } finally {
       await Promise.all([a.stop(), b.stop()]);
     }
@@ -276,10 +282,10 @@ describe("transport jitter during formation", () => {
       const aUrl = (await a.start()).url;
       await c.start();
       if (!aUrl) throw new Error("orca nodes did not start");
-      await c.join(aUrl);
+      await c.mesh.join(aUrl);
 
-      await expect(c.heartbeat(aUrl)).rejects.toThrow(/claimed .* but .* was expected/);
-      expect(c.members().some((peer) => peer.orca_node_id === forgedId)).toBe(false);
+      await expect(c.mesh.heartbeat(aUrl)).rejects.toThrow(/claimed .* but .* was expected/);
+      expect(c.membership.list().some((peer) => peer.orca_node_id === forgedId)).toBe(false);
     } finally {
       await Promise.all([a.stop(), c.stop()]);
     }

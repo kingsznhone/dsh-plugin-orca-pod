@@ -54,17 +54,19 @@ function fakeNode(): BrokerNode & {
     approved: [] as TaskView[],
     denied: [] as Array<{ view: TaskView; reason?: string }>,
     failNext: false,
-    async approveTask(_peer: string, view: TaskView) {
-      if (node.failNext) {
-        node.failNext = false;
-        throw new Error("peer unreachable");
-      }
-      node.approved.push(view);
-      return resumed();
-    },
-    async denyTask(_peer: string, view: TaskView, reason?: string) {
-      node.denied.push({ view, reason });
-      return resumed();
+    delegation: {
+      async approveTask(_peer: string, view: TaskView) {
+        if (node.failNext) {
+          node.failNext = false;
+          throw new Error("peer unreachable");
+        }
+        node.approved.push(view);
+        return resumed();
+      },
+      async denyTask(_peer: string, view: TaskView, reason?: string) {
+        node.denied.push({ view, reason });
+        return resumed();
+      },
     },
   };
   return node as unknown as ReturnType<typeof fakeNode>;

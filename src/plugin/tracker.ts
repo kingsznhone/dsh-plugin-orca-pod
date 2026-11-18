@@ -22,6 +22,7 @@ import { boundContextSummary, createUserMessage, type ContextFormed, type UserMe
 import type { DispatchEntry, TaskView } from "../task/wire.ts";
 import { isTerminal, permissionRequestOf } from "../task/wire.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
+import type { OrcaNode } from "../node/orca-node.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 
@@ -35,14 +36,12 @@ declare module "@deepseek-ai/dsh-llm" {
 /** The DSH Agent surface used to return a notice to the dispatching session. */
 export type TrackerAgent = Pick<Agent, "id" | "status" | "inject" | "followup">;
 
-/** The orca-node calls the tracker needs. */
-export interface TrackerNode {
-  getTask(peerUrl: string, taskId: string): Promise<TaskView>;
-  /** Persist the dispatching agent so tracking can resume after a host restart. */
-  annotateDispatch(taskId: string, agentId: SessionId): void;
-  /** The member behind a URL, so a task's files can be named `<node id>/<sha256>` (§5.6). */
-  nodeIdOf(endpoint: string): string | undefined;
-}
+/**
+ * The parts of the orca node the tracker needs: `delegation` to read tasks and
+ * to persist the dispatching agent (so tracking can resume after a host restart),
+ * `client` to name the member behind a URL (`<node id>/<sha256>`, §5.6).
+ */
+export type TrackerNode = Pick<OrcaNode, "delegation" | "client">;
 
 /** Timing knobs; every value has a production default. */
 export interface TrackerOptions {
@@ -263,7 +262,7 @@ export function createTracker(
   /** Read one tracked task and act on what it says. True when something a listener renders changed. */
   async function pollEntry(node: TrackerNode, key: string, entry: PendingTask): Promise<boolean> {
     try {
-      const view = await node.getTask(entry.peer, entry.taskId);
+      const view = await node.delegation.getTask(entry.peer, entry.taskId);
       // The entry may have been dropped (agent disposed) while the read ran.
       if (pending.get(key) !== entry) return false;
       entry.view = view;
@@ -339,7 +338,7 @@ export function createTracker(
       batch.lines.push(
         task.kind === "interrupted"
           ? trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
-          : taskNoticeLine(task.view, task.peer, getNode()?.nodeIdOf(task.peer)),
+          : taskNoticeLine(task.view, task.peer, getNode()?.client.idOf(task.peer)),
       );
       batches.set(task.agent.id, batch);
     }
@@ -402,7 +401,7 @@ export function createTracker(
       });
       // Persist the dispatching session so a host restart can resume tracking
       // (§8.3). Restored entries already carry it and skip the write.
-      if (trackOptions.record !== false) getNode()?.annotateDispatch(taskId, agent.id);
+      if (trackOptions.record !== false) getNode()?.delegation.log.annotate(taskId, agent.id);
       notify();
       schedulePoll(0);
       return true;
