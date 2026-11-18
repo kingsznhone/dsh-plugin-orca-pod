@@ -63,29 +63,24 @@ const LEDGER_LIMIT = 1024;
  * A grant answers one request once: remembering its id until it expires turns a
  * replay into `grant_replayed` instead of a second upgrade (§7.11).
  */
-export type GrantLedger = {
-  has(grantId: string, now?: number): boolean;
-  consume(grant: SignedGrant): void;
-};
+export class GrantLedger {
+  private readonly consumed = new Map<string, number>();
 
-export function createGrantLedger(): GrantLedger {
-  const consumed = new Map<string, number>();
-  return {
-    has(grantId, now = Date.now()) {
-      const expiresAt = consumed.get(grantId);
-      return expiresAt !== undefined && expiresAt > now;
-    },
-    consume(grant) {
-      if (consumed.size >= LEDGER_LIMIT) {
-        const now = Date.now();
-        for (const [id, expiresAt] of consumed) if (expiresAt <= now) consumed.delete(id);
-        // Still full of live grants: forget the oldest rather than grow without bound.
-        const oldest = consumed.keys().next();
-        if (consumed.size >= LEDGER_LIMIT && !oldest.done) consumed.delete(oldest.value);
-      }
-      consumed.set(grant.grant_id, Date.parse(grant.expires_at));
-    },
-  };
+  has(grantId: string, now = Date.now()): boolean {
+    const expiresAt = this.consumed.get(grantId);
+    return expiresAt !== undefined && expiresAt > now;
+  }
+
+  consume(grant: SignedGrant): void {
+    if (this.consumed.size >= LEDGER_LIMIT) {
+      const now = Date.now();
+      for (const [id, expiresAt] of this.consumed) if (expiresAt <= now) this.consumed.delete(id);
+      // Still full of live grants: forget the oldest rather than grow without bound.
+      const oldest = this.consumed.keys().next();
+      if (this.consumed.size >= LEDGER_LIMIT && !oldest.done) this.consumed.delete(oldest.value);
+    }
+    this.consumed.set(grant.grant_id, Date.parse(grant.expires_at));
+  }
 }
 
 // ---------------------------------------------------------------------------

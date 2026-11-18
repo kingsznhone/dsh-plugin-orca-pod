@@ -14,7 +14,7 @@ import type { TaskStore } from "../task/task-store.ts";
 import type { DispatchEntry, SubmitTaskInput, TaskView } from "../task/wire.ts";
 import { NonceCache } from "../core/signing.ts";
 import { loadIdentity } from "../core/identity.ts";
-import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../task/delegation.ts";
+import { Delegation, type ApprovalOptions, type TaskCallOptions } from "../task/delegation.ts";
 import { EchoExecutor } from "../executor/echo.ts";
 import { AcpExecutor } from "../executor/acp/executor.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
@@ -43,8 +43,8 @@ import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { ModelOffer } from "../core/wire/model.ts";
 import type { PodEventInput, PodEventListener } from "./events.ts";
 import { storeDbPath } from "../core/sqlite.ts";
-import { createTaskRunner } from "../task/runner.ts";
-import { createWorkspaceManager, type WorkspacePaths } from "../task/workspace.ts";
+import { SingleSlotTaskRunner } from "../task/runner.ts";
+import { ensureWorkspace, workspacePathsOf, type WorkspacePaths } from "../task/workspace.ts";
 
 /** Snapshot of the local runtime, used to advertise what this machine can do. */
 function collectRuntime(): RuntimeInfo {
@@ -230,8 +230,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const dispatches = storage?.dispatchStore ?? new MemoryDispatchStore();
   const events = new EventBus<PodEventInput>();
   const models = new ModelCatalog(config);
-  const workspaceManager = createWorkspaceManager({ dataRoot: config.data_root, workgroupId: config.workgroup_id });
-  const workspace = workspaceManager.ensure();
+  const workspace = workspacePathsOf(config.data_root, config.workgroup_id);
   const logger = options.logger ?? SILENT;
   /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
   const maxTaskTtlS = config.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
@@ -257,11 +256,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   });
   const heartbeatLoop = new HeartbeatLoop(membership, group, options.timings?.intervalMs === undefined);
   group.events.subscribe((event) => events.emit(event));
-  const tasks = createTaskRunner({
-    executor,
-    fileBlobs,
-    store: taskStore,
-    workspace,
+  const tasks = new SingleSlotTaskRunner(executor, fileBlobs, taskStore, workspace, {
     logger,
     selfOrcaNodeId: config.orca_node_id,
     workgroupId: config.workgroup_id,
@@ -272,21 +267,15 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     maxWorkspaceFiles: config.max_workspace_files,
     taskTimeoutS: maxTaskTtlS,
     dataRoot: config.data_root,
-    onEvent: (view) => {
-      events.emit({ type: "task", view });
-      // The busy holder is part of every member record; re-render it too.
-      profile.setBusy(tasks.busy());
-      group.emitMembersIfChanged();
-    },
   });
-  const delegation = createDelegation({
-    identity,
-    workgroupId: config.workgroup_id,
-    client,
-    membership,
-    dispatches,
-    emit: (event) => events.emit(event),
+  const delegation = new Delegation(identity, client, membership, dispatches, config.workgroup_id);
+  tasks.events.subscribe((event) => {
+    events.emit(event);
+    // The busy holder is part of every member record; re-render it too.
+    profile.setBusy(tasks.busy());
+    group.emitMembersIfChanged();
   });
+  delegation.events.subscribe((event) => events.emit(event));
   const app = createGateway({
     orcaNode: {
       orca_node_id: config.orca_node_id,
@@ -354,7 +343,8 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     },
 
     async start() {
-      tasks.recover();
+      ensureWorkspace(workspace);
+      tasks.start();
       const address = await listen();
       const port = Number(new URL(address).port);
       const urls = endpointsFrom(config, port);
@@ -378,13 +368,13 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     join: (peerUrl) => group.join(peerUrl),
     heartbeat: (peerUrl) => group.heartbeat(peerUrl),
     leave: () => group.leave(),
-    sendTask: delegation.sendTask,
-    getTask: delegation.getTask,
-    cancelTask: delegation.cancelTask,
-    approveTask: delegation.approveTask,
-    denyTask: delegation.denyTask,
-    listDispatches: delegation.listDispatches,
-    annotateDispatch: delegation.annotateDispatch,
+    sendTask: (peerUrl, input, callOptions) => delegation.sendTask(peerUrl, input, callOptions),
+    getTask: (peerUrl, taskId, callOptions) => delegation.getTask(peerUrl, taskId, callOptions),
+    cancelTask: (peerUrl, taskId, callOptions) => delegation.cancelTask(peerUrl, taskId, callOptions),
+    approveTask: (peerUrl, view, approval) => delegation.approveTask(peerUrl, view, approval),
+    denyTask: (peerUrl, view, reason) => delegation.denyTask(peerUrl, view, reason),
+    listDispatches: () => delegation.log.list(),
+    annotateDispatch: (taskId, agentId) => delegation.log.annotate(taskId, agentId),
     listTasks: (limit = 200) => tasks.list(limit),
     subscribe: (listener) => events.subscribe(listener),
     fetchBlob,

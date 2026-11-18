@@ -2,47 +2,21 @@ import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
 import { NonceCache, buildAuthHeader, bodySha256 } from "../src/core/signing.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { PodError } from "../src/core/errors.ts";
 import { runtimeDigest, type BusyState, type SelfRecord } from "../src/core/wire/peer.ts";
-import type { TaskRunner } from "../src/task/wire.ts";
+import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
 import { Membership } from "../src/mesh/membership.ts";
 import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
+import { createTestRunner } from "./fixtures/runner.ts";
 
 const ENDPOINT = "http://orca-node.test";
-
-const idleTasks: TaskRunner = {
-  submit() {
-    throw new Error("not used");
-  },
-  get() {
-    return null;
-  },
-  originOf() {
-    return null;
-  },
-  resume() {
-    throw new Error("not used");
-  },
-  cancel() {
-    throw new Error("not used");
-  },
-  busy() {
-    return null;
-  },
-  recover() {
-    return 0;
-  },
-  list() {
-    return [];
-  },
-};
 
 function selfRecord(identity: NodeIdentity): SelfRecord {
   return {
@@ -74,7 +48,7 @@ const noFetch: FetchBlob = async () => {
 };
 
 function createHarness(
-  tasks: TaskRunner = idleTasks,
+  tasks: SingleSlotTaskRunner = createTestRunner(),
   fileBlobs: FileBlobRegistry = new DiskBlobRegistry(new MemoryFileBlobStore()),
   fetchBlob: FetchBlob = noFetch,
 ): Harness {
@@ -112,7 +86,7 @@ async function published(content: Buffer): Promise<{ harness: Harness; blobId: s
   await writeFile(path, content);
   const fileBlobs = new DiskBlobRegistry(new MemoryFileBlobStore());
   const { blob_id: blobId } = await fileBlobs.register(path, 120);
-  return { harness: createHarness(idleTasks, fileBlobs), blobId, path };
+  return { harness: createHarness(createTestRunner(), fileBlobs), blobId, path };
 }
 
 describe("blob route", () => {
@@ -150,7 +124,7 @@ describe("blob route", () => {
     const asked: string[] = [];
     const node = fakeNodeId("publisher");
     const blobId = "b".repeat(64);
-    const harness = createHarness(idleTasks, undefined, async (from, blob) => {
+    const harness = createHarness(createTestRunner(), undefined, async (from, blob) => {
       asked.push(`${from}/${blob}`);
       return { stream: Readable.from([Buffer.from("fetched bytes")]), size: 13 };
     });
@@ -215,7 +189,7 @@ describe("file blobs registered by the local CLI", () => {
     expect(blob.size).toBe(content.length);
     expect(blob.expires_at).not.toBeNull();
 
-    const harness = createHarness(idleTasks, fileBlobs);
+    const harness = createHarness(createTestRunner(), fileBlobs);
     const response = await harness.app.inject({
       method: "GET",
       url: `/blobs/${blob.blob_id}`,
@@ -256,32 +230,11 @@ describe("a2a busy response", () => {
       origin_orca_node: generateNodeIdentity().orcaNodeId,
       since: new Date().toISOString(),
     };
-    const tasks: TaskRunner = {
-      submit() {
-        throw new PodError("orca_node_busy", "node is busy");
-      },
-      get() {
-        return null;
-      },
-      originOf() {
-        return null;
-      },
-      resume() {
-        throw new Error("not used");
-      },
-      cancel() {
-        throw new Error("not used");
-      },
-      busy() {
-        return holder;
-      },
-      recover() {
-        return 0;
-      },
-      list() {
-        return [];
-      },
-    };
+    const tasks = createTestRunner();
+    vi.spyOn(tasks, "submit").mockImplementation(() => {
+      throw new PodError("orca_node_busy", "node is busy");
+    });
+    vi.spyOn(tasks, "busy").mockReturnValue(holder);
     const harness = createHarness(tasks);
     const payload = JSON.stringify({
       jsonrpc: "2.0",

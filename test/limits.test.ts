@@ -115,8 +115,8 @@ describe("storage failures", () => {
         close() {},
       },
       logger: { warn: (text) => warnings.push(text) },
-      onEvent: (view) => seen.push(view),
     });
+    runner.events.subscribe((event) => seen.push(event.view));
     runner.submit(completedTask("fine"));
 
     const deadline = Date.now() + 5_000;

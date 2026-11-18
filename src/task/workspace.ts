@@ -5,7 +5,7 @@ import type { WorkgroupId } from "../core/wire/peer.ts";
 import { isMissingFile } from "../core/errors.ts";
 
 /**
- * One workspace per (data_root, workgroup) (§6.7). Created on join and kept
+ * One workspace per (data_root, workgroup) (§6.7). Created when the node starts and kept
  * across tasks, sessions and restarts; its root is the agent's cwd, so project
  * files and `notes/` are cwd-relative.
  *
@@ -22,32 +22,17 @@ export type WorkspacePaths = {
   state: string;
 };
 
-type WorkspaceManager = {
-  /** Create the directories if needed and return the workspace. */
-  ensure(): WorkspacePaths;
-};
+/** Where the workspace of a workgroup lives; nothing is created yet (`ensureWorkspace` does that). */
+export function workspacePathsOf(dataRoot: string, workgroupId: WorkgroupId): WorkspacePaths {
+  const root = join(dataRoot, "workgroups", workgroupId);
+  return { root, notes: join(root, "notes"), state: join(dataRoot, "state", workgroupId) };
+}
 
-export function createWorkspaceManager(options: { dataRoot: string; workgroupId: WorkgroupId }): WorkspaceManager {
-  const root = join(options.dataRoot, "workgroups", options.workgroupId);
-  const state = join(options.dataRoot, "state", options.workgroupId);
-  const workspace: WorkspacePaths = {
-    root,
-    notes: join(root, "notes"),
-    state,
-  };
-
-  let ensured = false;
-  function ensure(): WorkspacePaths {
-    if (!ensured) {
-      for (const dir of [workspace.root, workspace.notes, join(workspace.state, "tasks")]) {
-        mkdirSync(dir, { recursive: true });
-      }
-      ensured = true;
-    }
-    return workspace;
+/** Create the workspace directories if they are missing; running it twice changes nothing. */
+export function ensureWorkspace(workspace: WorkspacePaths): void {
+  for (const dir of [workspace.root, workspace.notes, join(workspace.state, "tasks")]) {
+    mkdirSync(dir, { recursive: true });
   }
-
-  return { ensure };
 }
 
 export type WorkspaceUsage = { bytes: number; files: number };

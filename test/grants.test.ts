@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  signGrant,
-  checkGrant,
-  createGrantLedger,
-  parseSignedGrant,
-  type GrantExpectation,
-} from "../src/task/grants.ts";
+import { signGrant, checkGrant, GrantLedger, parseSignedGrant, type GrantExpectation } from "../src/task/grants.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
 import type { Grant, PermissionRequest } from "../src/core/wire/grant.ts";
 
@@ -51,7 +45,7 @@ function grant(overrides: Partial<Grant> = {}) {
 
 describe("checkGrant", () => {
   it("verifies without consuming: only the ledger records a use", () => {
-    const ledger = createGrantLedger();
+    const ledger = new GrantLedger();
     const signed = grant();
     expect(checkGrant(signed, expected, ledger)).toBeNull();
     expect(checkGrant(signed, expected, ledger)).toBeNull();
@@ -61,7 +55,7 @@ describe("checkGrant", () => {
   });
 
   it("rejects a grant that is expired, for another tool, request, workgroup or origin", () => {
-    const ledger = createGrantLedger();
+    const ledger = new GrantLedger();
     expect(checkGrant(grant({ expires_at: new Date(Date.now() - 1000).toISOString() }), expected, ledger)).toBe(
       "grant_expired",
     );
@@ -75,7 +69,7 @@ describe("checkGrant", () => {
   });
 
   it("only accepts a grant for this very task on this very node", () => {
-    const ledger = createGrantLedger();
+    const ledger = new GrantLedger();
     expect(checkGrant(grant({ task_id: "another-task" }), expected, ledger)).toBe("grant_invalid");
     expect(checkGrant(grant({ target_orca_node: fakeNodeId("STRANGER") }), expected, ledger)).toBe("grant_invalid");
   });

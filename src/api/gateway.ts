@@ -3,7 +3,7 @@ import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest }
 import type { NonceCache } from "../core/signing.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import type { SelfRecord, OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
-import type { TaskRunner } from "../task/wire.ts";
+import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import type { FileBlobRegistry, OpenedBlob } from "../core/blobs.ts";
 import type { Membership } from "../mesh/membership.ts";
 import { a2aRoutes } from "./a2a-routes.ts";
@@ -29,7 +29,7 @@ export type GatewayDeps = {
   nonceCache: NonceCache;
   /** When this gateway process started; requests older than this are replays (§7.1). */
   startedAt: number;
-  tasks: TaskRunner;
+  tasks: SingleSlotTaskRunner;
   /** Files a task published by path with a TTL (§5.6). */
   fileBlobs: FileBlobRegistry;
 };

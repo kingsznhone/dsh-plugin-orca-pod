@@ -6,43 +6,16 @@ import { describe, expect, it } from "vitest";
 import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
 import { admissionProof } from "../src/mesh/admission.ts";
 import { runtimeDigest, type BusyState, type PeerView, type SelfRecord } from "../src/core/wire/peer.ts";
-import type { TaskRunner } from "../src/task/wire.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
 import { Membership } from "../src/mesh/membership.ts";
 import { MemoryFileBlobStore, DiskBlobRegistry } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
+import { createTestRunner } from "./fixtures/runner.ts";
 
 const ENDPOINT = "http://orca-node.test";
 const WORKGROUP = wg("orca-dev");
-
-const idleTasks: TaskRunner = {
-  submit() {
-    throw new Error("not used");
-  },
-  get() {
-    return null;
-  },
-  originOf() {
-    return null;
-  },
-  resume() {
-    throw new Error("not used");
-  },
-  cancel() {
-    throw new Error("not used");
-  },
-  busy() {
-    return null;
-  },
-  recover() {
-    return 0;
-  },
-  list() {
-    return [];
-  },
-};
 
 function selfRecord(identity: NodeIdentity): SelfRecord {
   return {
@@ -88,7 +61,7 @@ function createHarness(): Harness {
     peers,
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
-    tasks: idleTasks,
+    tasks: createTestRunner(),
     fileBlobs,
   };
   return {

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { PermissionRequestSchema, type PermissionRequest, type ResumeControl } from "../core/wire/grant.ts";
 import { ModelSelectionSchema, ReasoningEffortSchema } from "../core/wire/model.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
-import { OrcaNodeIdSchema, type BusyState, type OrcaNodeId } from "../core/wire/peer.ts";
+import { OrcaNodeIdSchema } from "../core/wire/peer.ts";
 
 /**
  * Task id: a ULID (48-bit millisecond timestamp + 80 random bits, Crockford base32).
@@ -142,26 +142,6 @@ export type SubmitTaskInput = {
   message: A2AMessage;
   metadata?: TaskMetadata;
 };
-
-/** Implemented by `task/runner.ts` (wired with an executor in `node/`), consumed by the gateway. */
-export interface TaskRunner {
-  /** `originOrcaNode` is the authenticated caller; it is recorded for busy/holder reporting (§6.9). */
-  submit(input: SubmitTaskInput & { originOrcaNode: OrcaNodeId }): TaskView;
-  get(taskId: string): TaskView | null;
-  resume(taskId: string, message: A2AMessage, callerOrcaNode?: OrcaNodeId): TaskView;
-  cancel(taskId: string): TaskView;
-  /** Origin of a known task, used by the gateway to authorize cancellation (§5.3). */
-  originOf(taskId: string): OrcaNodeId | null;
-  /** Currently running task (single-slot, §6.9); null when idle. */
-  busy(): BusyState | null;
-  /**
-   * Local (inbound) tasks, newest first, for the UI task panel (§9.2). In-memory
-   * records come first, then the persisted store fills the remaining budget.
-   */
-  list(limit?: number): TaskView[];
-  /** Fail tasks that were interrupted by a restart (§8.3); returns how many. */
-  recover(): number;
-}
 
 // ---- JSON-RPC (§4.7) ----
 

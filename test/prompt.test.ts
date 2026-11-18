@@ -11,8 +11,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/executor/executor.ts";
-import { isTerminal, type TaskRunner, type TaskView } from "../src/task/wire.ts";
-import { runnerDeps, createTestRunner } from "./fixtures/runner.ts";
+import { isTerminal, type TaskView } from "../src/task/wire.ts";
+import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
+import { runnerSetup, createTestRunner } from "./fixtures/runner.ts";
 
 function message(text = "do the work") {
   return { role: "user" as const, parts: [{ kind: "text" as const, text }] };
@@ -28,7 +29,7 @@ function promptRecorder(prompts: string[]): LocalExecutor {
   };
 }
 
-async function waitForTerminal(runner: TaskRunner, taskId: string, timeoutMs = 5_000): Promise<TaskView> {
+async function waitForTerminal(runner: SingleSlotTaskRunner, taskId: string, timeoutMs = 5_000): Promise<TaskView> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const view = runner.get(taskId);
@@ -55,7 +56,7 @@ describe("task prompt", () => {
   });
 
   it("lists workspace notes from earlier tasks in the prompt appendix", async () => {
-    const deps = runnerDeps();
+    const deps = runnerSetup();
     const { workspace } = deps;
     writeFileSync(join(workspace.notes, "STATUS.md"), "where the last task stopped\n");
     const prompts: string[] = [];
@@ -117,7 +118,7 @@ describe("task prompt", () => {
   });
 
   it("leaves note names that are not plain text out of the prompt", async () => {
-    const deps = runnerDeps();
+    const deps = runnerSetup();
     writeFileSync(join(deps.workspace.notes, "ok.md"), "x");
     writeFileSync(join(deps.workspace.notes, "evil‮.md"), "x");
     const prompts: string[] = [];

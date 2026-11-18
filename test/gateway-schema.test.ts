@@ -1,40 +1,34 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
 import { Membership } from "../src/mesh/membership.ts";
 import { runtimeDigest, type SelfRecord } from "../src/core/wire/peer.ts";
-import type { SubmitTaskInput, TaskRunner } from "../src/task/wire.ts";
+import type { SubmitTaskInput } from "../src/task/wire.ts";
 import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
 import { admissionProof } from "../src/mesh/admission.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore } from "../src/core/blobs.ts";
 import { createGateway } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
+import { createTestRunner } from "./fixtures/runner.ts";
 
 const WORKGROUP = wg("orca-schema");
 
 const submitted: SubmitTaskInput[] = [];
 
-const tasks: TaskRunner = {
-  submit(input) {
+function harness() {
+  const tasks = createTestRunner();
+  vi.spyOn(tasks, "submit").mockImplementation((input) => {
     submitted.push(input);
     throw new PodError("internal", "submit reached");
-  },
-  get: () => null,
-  originOf: () => null,
-  resume() {
+  });
+  vi.spyOn(tasks, "resume").mockImplementation(() => {
     throw new PodError("internal", "resume reached");
-  },
-  cancel() {
+  });
+  vi.spyOn(tasks, "cancel").mockImplementation(() => {
     throw new PodError("internal", "cancel reached");
-  },
-  busy: () => null,
-  recover: () => 0,
-  list: () => [],
-};
-
-function harness() {
+  });
   const key = randomBytes(32);
   const self = generateNodeIdentity();
   const membership = new Membership(self.orcaNodeId);

@@ -7,7 +7,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { createTestRunner, runnerDeps } from "./fixtures/runner.ts";
+import { createTestRunner, runnerSetup } from "./fixtures/runner.ts";
 
 const message = { role: "user" as const, parts: [{ kind: "text" as const, text: "go" }] };
 
@@ -28,9 +28,10 @@ async function submitUntilRefused(submit: () => unknown): Promise<unknown> {
 
 describe("workspace quota", () => {
   it("refuses a new task while the workspace holds more bytes than its quota", async () => {
-    const deps = runnerDeps({ maxWorkspaceBytes: 100 });
+    const deps = runnerSetup({ maxWorkspaceBytes: 100 });
     writeFileSync(join(deps.workspace.root, "big.bin"), Buffer.alloc(500));
     const runner = createTestRunner(deps);
+    runner.start();
 
     const error = await submitUntilRefused(() => runner.submit({ message }));
     expect(error).toMatchObject({ code: "quota_exceeded", status: 507 });
@@ -38,16 +39,18 @@ describe("workspace quota", () => {
   });
 
   it("refuses a new task while the workspace holds more files than its quota", async () => {
-    const deps = runnerDeps({ maxWorkspaceFiles: 2 });
+    const deps = runnerSetup({ maxWorkspaceFiles: 2 });
     for (const name of ["a", "b", "c"]) writeFileSync(join(deps.workspace.notes, name), "x");
     const runner = createTestRunner(deps);
+    runner.start();
 
     expect(await submitUntilRefused(() => runner.submit({ message }))).toMatchObject({ code: "quota_exceeded" });
   });
 
   it("measures again after a refusal, so cleaning up lifts it", async () => {
-    const deps = runnerDeps({ maxWorkspaceFiles: 2 });
+    const deps = runnerSetup({ maxWorkspaceFiles: 2 });
     const runner = createTestRunner(deps);
+    runner.start();
     const files = ["a", "b", "c"].map((name) => join(deps.workspace.notes, name));
     for (const file of files) writeFileSync(file, "x");
     await submitUntilRefused(() => runner.submit({ message }));
@@ -84,9 +87,10 @@ describe("workspace quota", () => {
   });
 
   it("admits tasks while the workspace is within its quota", async () => {
-    const deps = runnerDeps({ maxWorkspaceBytes: 1000, maxWorkspaceFiles: 10 });
+    const deps = runnerSetup({ maxWorkspaceBytes: 1000, maxWorkspaceFiles: 10 });
     writeFileSync(join(deps.workspace.root, "small.txt"), "x");
     const runner = createTestRunner(deps);
+    runner.start();
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(runner.submit({ message }).kind).toBe("task");
