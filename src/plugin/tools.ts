@@ -30,7 +30,7 @@ import {
   type ToolExecution,
   type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
-import type { PodHandle } from "./lifecycle.ts";
+import type { PodLifecycle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
 
 /** The sandbox-policy read `sessionSandboxMode` needs; the host service satisfies it. */
@@ -175,23 +175,6 @@ type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
 
 const taskStatus = (view: TaskView): TaskStatusResult => ({ ...view, terminal: isTerminal(view.status.state) });
 
-/**
- * Wait for startup, then fail the tool call when the orca node is not usable.
- * Startup is the host's work, not this call's, so a cancelled turn may stop
- * waiting for it right away.
- */
-async function requireNode(handle: PodHandle, signal: AbortSignal): Promise<OrcaNode> {
-  await waitUnlessAborted(handle.ready, signal);
-  if (handle.runtime.error !== null) {
-    throw new Error(`orca node is not running: ${handle.runtime.error.message}`);
-  }
-  const orcaNode = handle.runtime.orcaNode;
-  if (orcaNode === null) {
-    throw new Error("orca node is not running");
-  }
-  return orcaNode;
-}
-
 function peerSummary(peer: PeerView): PeerSummary {
   return {
     orca_node_id: peer.orca_node_id,
@@ -234,86 +217,6 @@ function taskMode(explicit: SandboxMode | undefined, session: SandboxMode | unde
   return explicit;
 }
 
-async function runSend(
-  handle: PodHandle,
-  tracker: Tracker,
-  args: SendArgs,
-  exec: ToolRunContext,
-  policy: SandboxReader | undefined,
-): Promise<SendResult> {
-  // Tasks are single-hop: a session the task executor spawned never dispatches (§7.9).
-  if (runningInTask()) {
-    throw new Error(
-      "send is not available inside a task: tasks are single-hop; end the task with a BLOCKED: report instead",
-    );
-  }
-  const { signal } = exec;
-  const peer = normalizePeerUrl(args.peer);
-  const permissionMode = taskMode(args.permission_mode, sessionSandboxMode(policy, exec));
-  const model = args.model === undefined ? undefined : (parseModelSpec(args.model, args.reasoning_effort) ?? undefined);
-  if (args.model !== undefined && model === undefined) {
-    throw new Error("model must be a provider/model string");
-  }
-  const orcaNode = await requireNode(handle, signal);
-  const input: SubmitTaskInput = {
-    message: { role: "user", parts: [{ kind: "text", text: args.text }] },
-    metadata: {
-      echo: args.echo,
-      pod: {
-        permission_mode: permissionMode,
-        model,
-        reasoning_effort: model === undefined ? args.reasoning_effort : undefined,
-      },
-    },
-  };
-  throwIfAborted(signal);
-  const view = await orcaNode.delegation.sendTask(peer, input, { signal });
-  if (signal.aborted) {
-    // The remote accepted the task after the caller's turn was cancelled: the
-    // caller never learns its id, so it must not keep running unobserved.
-    // Best effort; the dispatch log still lists it for the panel.
-    orcaNode.delegation.cancelTask(peer, view.id).catch(() => {});
-    throw abortError("cancelled by the caller");
-  }
-  // Track the task so the dispatching agent is told when it finishes, even
-  // after its turn ends.
-  if (exec.agent !== undefined) tracker.track(exec.agent, peer, view.id);
-  return { task_id: view.id, state: view.status.state, peer };
-}
-
-async function runStatus(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-  const orcaNode = await requireNode(handle, signal);
-  return taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
-}
-
-async function runCancel(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-  const orcaNode = await requireNode(handle, signal);
-  return taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
-}
-
-async function runMembers(handle: PodHandle, signal: AbortSignal): Promise<MembersResult> {
-  const orcaNode = await requireNode(handle, signal);
-  return {
-    self: peerSummary(orcaNode.self()),
-    members: orcaNode.membership.list().map(peerSummary),
-    members_digest: orcaNode.mesh.digest(),
-  };
-}
-
-async function runConnect(handle: PodHandle, args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
-  const peer = normalizePeerUrl(args.peer);
-  await requireNode(handle, signal);
-  // Joining persists the peer; do not start it for a turn that is already gone.
-  throwIfAborted(signal);
-  await handle.addPeer(peer);
-  const orcaNode = await requireNode(handle, signal);
-  return {
-    peer,
-    members: orcaNode.membership.list().map(peerSummary),
-    members_digest: orcaNode.mesh.digest(),
-  };
-}
-
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError("cancelled by the caller");
 }
@@ -353,28 +256,6 @@ export function describeError(operation: string, error: unknown): Error {
   return new Error(`${operation}: ${errorMessage(error)}`);
 }
 
-/** Dispatch one `orca_pod` call against the running node. */
-function runCall(
-  handle: PodHandle,
-  tracker: Tracker,
-  call: PodCall,
-  exec: ToolRunContext,
-  policy: SandboxReader | undefined,
-): Promise<SendResult | TaskStatusResult | MembersResult | ConnectResult> {
-  switch (call.method) {
-    case "send":
-      return runSend(handle, tracker, call.args, exec, policy);
-    case "status":
-      return runStatus(handle, call.args, exec.signal);
-    case "cancel":
-      return runCancel(handle, call.args, exec.signal);
-    case "members":
-      return runMembers(handle, exec.signal);
-    case "connect":
-      return runConnect(handle, call.args, exec.signal);
-  }
-}
-
 /** A result as the lossless JSON DSH stores; every method answers with data read from JSON. */
 function json(value: unknown): JsonValue {
   const snapshot = snapshotJsonValue(value);
@@ -382,32 +263,150 @@ function json(value: unknown): JsonValue {
   return snapshot as JsonValue;
 }
 
-/** Build the single `orca_pod` tool definition bound to one running pod handle. */
-export function createPodTools(
-  handle: PodHandle,
-  tracker: Tracker,
-  policy?: () => SandboxReader | undefined,
-): ToolDefinition[] {
-  const tool = defineTool({
-    name: "orca_pod",
-    description:
-      "Operate the Orca Pod mesh from this session: dispatch and inspect tasks on other orca nodes, list members, or join a new peer. " +
-      METHODS_HELP +
-      " " +
-      ASYNC_NOTE,
-    parameters: PARAMETERS,
-    // Output differs per method (task views, a roster): unconstrained JSON.
-    output: { schema: { type: "json", description: "JSON payload rendered as text." }, render: renderJson },
-    async execute(args, exec) {
-      const call = parseCall(args);
-      try {
-        throwIfAborted(exec.signal);
-        // The call's own work observes the signal and settles when it stops (B20).
-        return json(await runCall(handle, tracker, call, exec, policy?.()));
-      } catch (error) {
-        throw describeError("orca_pod", error);
-      }
-    },
-  });
-  return [tool];
+/** The sandbox policy the host offers, when it does. */
+export type SandboxSource = { current(): SandboxReader | undefined };
+
+/** The single `orca_pod` tool, bound to one pod lifecycle. */
+export class PodTool {
+  constructor(
+    private readonly lifecycle: PodLifecycle,
+    private readonly tracker: Tracker,
+    private readonly sandbox?: SandboxSource,
+  ) {}
+
+  definition(): ToolDefinition {
+    return defineTool({
+      name: "orca_pod",
+      description:
+        "Operate the Orca Pod mesh from this session: dispatch and inspect tasks on other orca nodes, list members, or join a new peer. " +
+        METHODS_HELP +
+        " " +
+        ASYNC_NOTE,
+      parameters: PARAMETERS,
+      // Output differs per method (task views, a roster): unconstrained JSON.
+      output: { schema: { type: "json", description: "JSON payload rendered as text." }, render: renderJson },
+      execute: async (args, exec) => {
+        const call = parseCall(args);
+        try {
+          throwIfAborted(exec.signal);
+          // The call's own work observes the signal and settles when it stops (B20).
+          return json(await this.run(call, exec));
+        } catch (error) {
+          throw describeError("orca_pod", error);
+        }
+      },
+    });
+  }
+
+  /** Dispatch a task and track it for the dispatching agent. */
+  async send(args: SendArgs, exec: ToolRunContext): Promise<SendResult> {
+    // Tasks are single-hop: a session the task executor spawned never dispatches (§7.9).
+    if (runningInTask()) {
+      throw new Error(
+        "send is not available inside a task: tasks are single-hop; end the task with a BLOCKED: report instead",
+      );
+    }
+    const { signal } = exec;
+    const peer = normalizePeerUrl(args.peer);
+    const permissionMode = taskMode(args.permission_mode, sessionSandboxMode(this.sandbox?.current(), exec));
+    const model =
+      args.model === undefined ? undefined : (parseModelSpec(args.model, args.reasoning_effort) ?? undefined);
+    if (args.model !== undefined && model === undefined) {
+      throw new Error("model must be a provider/model string");
+    }
+    const orcaNode = await this.requireNode(signal);
+    const input: SubmitTaskInput = {
+      message: { role: "user", parts: [{ kind: "text", text: args.text }] },
+      metadata: {
+        echo: args.echo,
+        pod: {
+          permission_mode: permissionMode,
+          model,
+          reasoning_effort: model === undefined ? args.reasoning_effort : undefined,
+        },
+      },
+    };
+    throwIfAborted(signal);
+    const view = await orcaNode.delegation.sendTask(peer, input, { signal });
+    if (signal.aborted) {
+      // The remote accepted the task after the caller's turn was cancelled: the
+      // caller never learns its id, so it must not keep running unobserved.
+      // Best effort; the dispatch log still lists it for the panel.
+      orcaNode.delegation.cancelTask(peer, view.id).catch(() => {});
+      throw abortError("cancelled by the caller");
+    }
+    // Track the task so the dispatching agent is told when it finishes, even
+    // after its turn ends.
+    if (exec.agent !== undefined) this.tracker.track(exec.agent, peer, view.id);
+    return { task_id: view.id, state: view.status.state, peer };
+  }
+
+  async status(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
+    const orcaNode = await this.requireNode(signal);
+    return taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
+  }
+
+  async cancel(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
+    const orcaNode = await this.requireNode(signal);
+    return taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
+  }
+
+  async members(signal: AbortSignal): Promise<MembersResult> {
+    const orcaNode = await this.requireNode(signal);
+    return {
+      self: peerSummary(orcaNode.self()),
+      members: orcaNode.membership.list().map(peerSummary),
+      members_digest: orcaNode.mesh.digest(),
+    };
+  }
+
+  async connect(args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
+    const peer = normalizePeerUrl(args.peer);
+    await this.requireNode(signal);
+    // Joining persists the peer; do not start it for a turn that is already gone.
+    throwIfAborted(signal);
+    await this.lifecycle.addPeer(peer);
+    const orcaNode = await this.requireNode(signal);
+    return {
+      peer,
+      members: orcaNode.membership.list().map(peerSummary),
+      members_digest: orcaNode.mesh.digest(),
+    };
+  }
+
+  /** Dispatch one `orca_pod` call against the running node. */
+  private run(
+    call: PodCall,
+    exec: ToolRunContext,
+  ): Promise<SendResult | TaskStatusResult | MembersResult | ConnectResult> {
+    switch (call.method) {
+      case "send":
+        return this.send(call.args, exec);
+      case "status":
+        return this.status(call.args, exec.signal);
+      case "cancel":
+        return this.cancel(call.args, exec.signal);
+      case "members":
+        return this.members(exec.signal);
+      case "connect":
+        return this.connect(call.args, exec.signal);
+    }
+  }
+
+  /**
+   * Wait for startup, then fail the tool call when the orca node is not usable.
+   * Startup is the host's work, not this call's, so a cancelled turn may stop
+   * waiting for it right away.
+   */
+  private async requireNode(signal: AbortSignal): Promise<OrcaNode> {
+    await waitUnlessAborted(this.lifecycle.ready, signal);
+    if (this.lifecycle.error !== null) {
+      throw new Error(`orca node is not running: ${this.lifecycle.error.message}`);
+    }
+    const orcaNode = this.lifecycle.node;
+    if (orcaNode === null) {
+      throw new Error("orca node is not running");
+    }
+    return orcaNode;
+  }
 }

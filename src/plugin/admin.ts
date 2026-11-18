@@ -24,7 +24,8 @@ import type { LlmReasoningEffortInfo, ReasoningEffortId } from "@deepseek-ai/dsh
 import type { ExecutorKind } from "../executor/kinds.ts";
 import type { PanelPatch } from "../node/settings.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
-import type { PodHandle } from "./lifecycle.ts";
+import type { ModelCatalogFeed } from "./catalog.ts";
+import type { PodLifecycle } from "./lifecycle.ts";
 import type { Tracker } from "./tracker.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 
@@ -133,37 +134,6 @@ export interface PodConfigView {
   error: string | null;
 }
 
-/** Read-only data surface plus approval actions. */
-export interface PodAdmin {
-  /** This node's own advertised record, or null while it is not running. */
-  self(): PodPeer<SelfRecord> | null;
-  /** Reachable members only: offline records are dropped. */
-  members(): PodPeer[];
-  /** Local tasks and dispatched tasks merged, newest first. */
-  recent(limit: number): PodTaskRow[];
-  /** Permission requests waiting for the human, one per task. */
-  approvals(): PodApproval[];
-  task(peer: string, taskId: string): Promise<PodTaskDetail>;
-  approve(peer: string, taskId: string): Promise<TaskView>;
-  deny(peer: string, taskId: string, reason?: string): Promise<TaskView>;
-  cancel(peer: string, taskId: string): Promise<TaskView>;
-  workspace(): WorkspaceView | null;
-  /** Effective config plus setup state; the password itself is never returned. */
-  config(): PodConfigView;
-  /** Store a new password, persist the panel fields into the plugin config, and restart. */
-  saveConfig(patch: PanelPatch): Promise<PodConfigView>;
-  /** `join` one peer now and remember it for later starts. */
-  connect(peer: string): Promise<PodConfigView>;
-  /** Leave the workgroup: tell known peers and forget them locally. */
-  disconnect(): Promise<PodConfigView>;
-  /** Drop the workgroup, its stored password and the orca node identity (first-run wizard again). */
-  reset(): Promise<PodConfigView>;
-  /** Change notification; subscribes to both node events and tracker updates. */
-  subscribe(listener: () => void): () => void;
-  /** A file a member published, fetched by this node for the panel (§5.6). */
-  blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob>;
-}
-
 const REQUESTED_PREVIEW_CHARS = 160;
 
 /** List regular entries of one directory, sorted; missing paths yield []. */
@@ -197,95 +167,163 @@ function labeller(current: OrcaNode | null): (key: string | undefined) => string
   };
 }
 
-/** Build the admin surface over one running orca node. */
 /** A permission request waiting for the human, whoever saw it first. */
 type PendingApproval = { peer: string; taskId: string; request: PermissionRequest; agentId: string | null };
 
-export function createPodAdmin(
-  handle: PodHandle,
-  tracker: Tracker,
-  broker: ApprovalBroker,
-  /** The host's model catalog; without one the panel offers no effort to pick. */
-  reasoningEfforts: () => readonly LlmReasoningEffortInfo[] = () => [],
-): PodAdmin {
-  /** The node, or null while startup failed / has not completed yet. */
-  function node(): OrcaNode | null {
-    return handle.runtime.orcaNode;
+function artifactsOf(view: TaskView, node: OrcaNodeId | undefined): PodArtifact[] {
+  return (view.artifacts ?? []).map((artifact) => ({
+    name: artifact.name,
+    blob_id: artifact.artifactId,
+    bytes: artifact.bytes,
+    node: node ?? null,
+  }));
+}
+
+/** A task this node dispatched: its who is the target. */
+function dispatchRow(label: (key: string | undefined) => string, entry: DispatchEntry): PodTaskRow {
+  return {
+    id: entry.task_id,
+    peer: entry.peer,
+    state: entry.state,
+    who: label(entry.peer),
+    who_title: entry.peer,
+    at: entry.updated_at,
+    artifacts: [],
+    cancellable: isActive(entry.state),
+  };
+}
+
+/** A task this node runs: its who is the node that dispatched it. */
+function localRow(current: OrcaNode, label: (key: string | undefined) => string, view: TaskView): PodTaskRow {
+  const origin = podOf(view).origin_orca_node;
+  return {
+    id: view.id,
+    peer: current.profile.endpoints[0] ?? "",
+    state: view.status.state,
+    who: label(origin),
+    who_title: origin ?? "",
+    at: view.status.timestamp,
+    artifacts: artifactsOf(view, current.orcaNodeId),
+    cancellable: isActive(view.status.state),
+  };
+}
+
+/**
+ * The data surface of the UI panel plus the approval actions, over one pod
+ * lifecycle: its running node, the tracker and the approval broker.
+ */
+export class PodAdmin {
+  constructor(
+    private readonly lifecycle: PodLifecycle,
+    private readonly tracker: Tracker,
+    private readonly broker: ApprovalBroker,
+    /** The host's model catalog; without one the panel offers no effort to pick. */
+    private readonly catalog: ModelCatalogFeed,
+  ) {}
+
+  /** This node's own advertised record, or null while it is not running. */
+  self(): PodPeer<SelfRecord> | null {
+    const current = this.lifecycle.node;
+    if (current === null) return null;
+    const self = current.self();
+    return { ...self, busy_from: self.busy === null ? null : labeller(current)(self.busy.origin_orca_node) };
   }
 
-  function requireNode(): OrcaNode {
-    const current = node();
-    if (current === null) throw new Error("orca node is not running");
-    return current;
+  /** Reachable members only: offline records are dropped. */
+  members(): PodPeer[] {
+    const current = this.lifecycle.node;
+    if (current === null) return [];
+    const label = labeller(current);
+    return current.membership
+      .list()
+      .filter((member) => member.state !== "offline")
+      .map((member) => ({ ...member, busy_from: member.busy === null ? null : label(member.busy.origin_orca_node) }));
   }
 
-  /** The broker's parked prompts plus requests only the tracker has seen, one per task. */
-  function waitingApprovals(): Map<string, PendingApproval> {
-    const waiting = new Map<string, PendingApproval>();
-    for (const prompt of broker.list()) {
-      waiting.set(taskKey(prompt.peer, prompt.task_id), {
-        peer: prompt.peer,
-        taskId: prompt.task_id,
-        request: prompt.request,
-        agentId: prompt.agent_id,
-      });
-    }
-    for (const tracked of tracker.list()) {
-      const key = taskKey(tracked.peer, tracked.taskId);
-      if (tracked.request !== null && !waiting.has(key)) {
-        waiting.set(key, { peer: tracked.peer, taskId: tracked.taskId, request: tracked.request, agentId: null });
-      }
-    }
-    return waiting;
+  /** Local tasks and dispatched tasks merged, newest first. */
+  recent(limit: number): PodTaskRow[] {
+    const current = this.lifecycle.node;
+    if (current === null) return [];
+    const label = labeller(current);
+    const tasks = current.tasks.list(limit);
+    const local = new Set(tasks.map((view) => view.id));
+    const rows: PodTaskRow[] = [
+      ...tasks.map((view) => localRow(current, label, view)),
+      ...current.delegation.log
+        .list()
+        .slice(-limit)
+        .filter((entry) => !local.has(entry.task_id))
+        .map((entry) => dispatchRow(label, entry)),
+    ];
+    return rows.sort((left, right) => right.at.localeCompare(left.at)).slice(0, limit);
   }
 
-  /** A task this node runs: its who is the node that dispatched it. */
-  function localRow(current: OrcaNode, label: (key: string | undefined) => string, view: TaskView): PodTaskRow {
-    const origin = podOf(view).origin_orca_node;
-    return {
-      id: view.id,
-      peer: current.profile.endpoints[0] ?? "",
-      state: view.status.state,
-      who: label(origin),
-      who_title: origin ?? "",
-      at: view.status.timestamp,
-      artifacts: artifactsOf(view, current.orcaNodeId),
-      cancellable: isActive(view.status.state),
-    };
-  }
-
-  /** A task this node dispatched: its who is the target. */
-  function dispatchRow(label: (key: string | undefined) => string, entry: DispatchEntry): PodTaskRow {
-    return {
-      id: entry.task_id,
-      peer: entry.peer,
-      state: entry.state,
-      who: label(entry.peer),
-      who_title: entry.peer,
-      at: entry.updated_at,
-      artifacts: [],
-      cancellable: isActive(entry.state),
-    };
-  }
-
-  function artifactsOf(view: TaskView, node: OrcaNodeId | undefined): PodArtifact[] {
-    return (view.artifacts ?? []).map((artifact) => ({
-      name: artifact.name,
-      blob_id: artifact.artifactId,
-      bytes: artifact.bytes,
-      node: node ?? null,
+  /** Permission requests waiting for the human, one per task. */
+  approvals(): PodApproval[] {
+    const label = labeller(this.lifecycle.node);
+    return [...this.waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => ({
+      id,
+      peer,
+      task_id: taskId,
+      tool: request.tool,
+      requested: preview(request.requested),
+      from: label(request.requested_by),
+      current_mode: request.current_mode,
+      requested_mode: request.requested_mode,
+      agent_id: agentId,
     }));
   }
 
-  function configView(): PodConfigView {
-    const config = handle.config;
-    const current = node();
+  async task(peer: string, taskId: string): Promise<PodTaskDetail> {
+    const current = this.requireNode();
+    const task = await current.delegation.getTask(peer, taskId);
+    return {
+      task,
+      origin: labeller(current)(podOf(task).origin_orca_node),
+      dispatch: current.delegation.log.list().find((entry) => entry.task_id === task.id) ?? null,
+      artifacts: artifactsOf(task, current.client.idOf(peer)),
+    };
+  }
+
+  approve(peer: string, taskId: string): Promise<TaskView> {
+    return this.broker.approve(peer, taskId);
+  }
+
+  deny(peer: string, taskId: string, reason?: string): Promise<TaskView> {
+    return this.broker.deny(peer, taskId, reason);
+  }
+
+  cancel(peer: string, taskId: string): Promise<TaskView> {
+    return this.requireNode().delegation.cancelTask(peer, taskId);
+  }
+
+  workspace(): WorkspaceView | null {
+    const paths = this.lifecycle.node?.workspace ?? null;
+    if (paths === null) return null;
+    return {
+      ...paths,
+      notes_files: entries(paths.notes)
+        .filter((entry) => !entry.is_dir)
+        .map((entry) => entry.name),
+    };
+  }
+
+  /** A file a member published, fetched by this node for the panel (§5.6). */
+  blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob> {
+    return this.requireNode().fetchBlob(node, blobId);
+  }
+
+  /** Effective config plus setup state; the password itself is never returned. */
+  config(): PodConfigView {
+    const { lifecycle } = this;
+    const config = lifecycle.config;
+    const current = lifecycle.node;
     const self = current?.self() ?? null;
-    const port = handle.runtime.port ?? config.port;
+    const port = lifecycle.port ?? config.port;
     const endpoints = [...(current?.profile.endpoints ?? config.endpoints)];
     const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));
     return {
-      configured: handle.configured,
+      configured: lifecycle.configured,
       workgroup_id: config.workgroup_id ?? "",
       node_id: self?.orca_node_id ?? null,
       display_name: self?.display_name ?? config.display_name ?? null,
@@ -294,9 +332,9 @@ export function createPodAdmin(
       endpoints,
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
       permission_modes: SANDBOX_MODES,
-      reasoning_efforts: reasoningEfforts(),
+      reasoning_efforts: this.catalog.reasoningEfforts(),
       bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
-      peers: [...new Set([...config.peers, ...handle.rememberedPeers])],
+      peers: [...new Set([...config.peers, ...lifecycle.rememberedPeers])],
       data_root: config.data_root,
       advanced: {
         task_timeout_s: config.task_timeout_s ?? null,
@@ -312,110 +350,71 @@ export function createPodAdmin(
       },
       password_set: config.workgroup_password.length > 0,
       running: current !== null,
-      error: handle.runtime.error === null ? null : handle.runtime.error.message,
+      error: lifecycle.error === null ? null : lifecycle.error.message,
     };
   }
 
-  return {
-    self() {
-      const current = node();
-      if (current === null) return null;
-      const self = current.self();
-      return { ...self, busy_from: self.busy === null ? null : labeller(current)(self.busy.origin_orca_node) };
-    },
-    members() {
-      const current = node();
-      if (current === null) return [];
-      const label = labeller(current);
-      return current.membership
-        .list()
-        .filter((member) => member.state !== "offline")
-        .map((member) => ({ ...member, busy_from: member.busy === null ? null : label(member.busy.origin_orca_node) }));
-    },
-    recent(limit) {
-      const current = node();
-      if (current === null) return [];
-      const label = labeller(current);
-      const tasks = current.tasks.list(limit);
-      const local = new Set(tasks.map((view) => view.id));
-      const rows: PodTaskRow[] = [
-        ...tasks.map((view) => localRow(current, label, view)),
-        ...current.delegation.log
-          .list()
-          .slice(-limit)
-          .filter((entry) => !local.has(entry.task_id))
-          .map((entry) => dispatchRow(label, entry)),
-      ];
-      return rows.sort((left, right) => right.at.localeCompare(left.at)).slice(0, limit);
-    },
-    approvals() {
-      const label = labeller(node());
-      return [...waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => ({
-        id,
-        peer,
-        task_id: taskId,
-        tool: request.tool,
-        requested: preview(request.requested),
-        from: label(request.requested_by),
-        current_mode: request.current_mode,
-        requested_mode: request.requested_mode,
-        agent_id: agentId,
-      }));
-    },
-    async task(peer, taskId) {
-      const current = requireNode();
-      const task = await current.delegation.getTask(peer, taskId);
-      return {
-        task,
-        origin: labeller(current)(podOf(task).origin_orca_node),
-        dispatch: current.delegation.log.list().find((entry) => entry.task_id === task.id) ?? null,
-        artifacts: artifactsOf(task, current.client.idOf(peer)),
-      };
-    },
-    approve: (peer, taskId) => broker.approve(peer, taskId),
-    deny: (peer, taskId, reason) => broker.deny(peer, taskId, reason),
-    async cancel(peer, taskId) {
-      return requireNode().delegation.cancelTask(peer, taskId);
-    },
-    workspace() {
-      const paths = node()?.workspace ?? null;
-      if (paths === null) return null;
-      return {
-        ...paths,
-        notes_files: entries(paths.notes)
-          .filter((entry) => !entry.is_dir)
-          .map((entry) => entry.name),
-      };
-    },
-    blob: (node, blobId) => requireNode().fetchBlob(node, blobId),
-    config: configView,
-    async saveConfig(patch) {
-      // The password goes to the DSH credential store and the other fields to the
-      // plugin config; switching workgroups carries the current password over.
-      await handle.reconfigure(patch);
-      return configView();
-    },
-    async connect(peer) {
-      await handle.addPeer(normalizePeerUrl(peer));
-      return configView();
-    },
-    async disconnect() {
-      await handle.disconnect();
-      return configView();
-    },
-    async reset() {
-      await handle.reset();
-      return configView();
-    },
-    subscribe(listener) {
-      const offNode = node()?.events.subscribe(listener) ?? (() => {});
-      const offTracker = tracker.subscribe(listener);
-      const offBroker = broker.subscribe(listener);
-      return () => {
-        offNode();
-        offTracker();
-        offBroker();
-      };
-    },
-  };
+  /** Store a new password, persist the panel fields into the plugin config, and restart. */
+  async saveConfig(patch: PanelPatch): Promise<PodConfigView> {
+    // The password goes to the DSH credential store and the other fields to the
+    // plugin config; switching workgroups carries the current password over.
+    await this.lifecycle.reconfigure(patch);
+    return this.config();
+  }
+
+  /** `join` one peer now and remember it for later starts. */
+  async connect(peer: string): Promise<PodConfigView> {
+    await this.lifecycle.addPeer(normalizePeerUrl(peer));
+    return this.config();
+  }
+
+  /** Leave the workgroup: tell known peers and forget them locally. */
+  async disconnect(): Promise<PodConfigView> {
+    await this.lifecycle.disconnect();
+    return this.config();
+  }
+
+  /** Drop the workgroup, its stored password and the orca node identity (first-run wizard again). */
+  async reset(): Promise<PodConfigView> {
+    await this.lifecycle.reset();
+    return this.config();
+  }
+
+  /** Change notification; subscribes to both node events and tracker updates. */
+  subscribe(listener: () => void): () => void {
+    const offNode = this.lifecycle.node?.events.subscribe(listener) ?? (() => {});
+    const offTracker = this.tracker.subscribe(listener);
+    const offBroker = this.broker.subscribe(listener);
+    return () => {
+      offNode();
+      offTracker();
+      offBroker();
+    };
+  }
+
+  private requireNode(): OrcaNode {
+    const current = this.lifecycle.node;
+    if (current === null) throw new Error("orca node is not running");
+    return current;
+  }
+
+  /** The broker's parked prompts plus requests only the tracker has seen, one per task. */
+  private waitingApprovals(): Map<string, PendingApproval> {
+    const waiting = new Map<string, PendingApproval>();
+    for (const prompt of this.broker.list()) {
+      waiting.set(taskKey(prompt.peer, prompt.task_id), {
+        peer: prompt.peer,
+        taskId: prompt.task_id,
+        request: prompt.request,
+        agentId: prompt.agent_id,
+      });
+    }
+    for (const tracked of this.tracker.list()) {
+      const key = taskKey(tracked.peer, tracked.taskId);
+      if (tracked.request !== null && !waiting.has(key)) {
+        waiting.set(key, { peer: tracked.peer, taskId: tracked.taskId, request: tracked.request, agentId: null });
+      }
+    }
+    return waiting;
+  }
 }

@@ -18,18 +18,17 @@ const trackers: Tracker[] = [];
 // Capture the tracker `apply` composes so the test can observe wake-budget resets.
 vi.mock("../src/plugin/tracker.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/plugin/tracker.ts")>();
-  return {
-    ...original,
-    createTracker: (...args: Parameters<typeof original.createTracker>) => {
-      const tracker = original.createTracker(...args);
-      trackers.push(tracker);
-      return tracker;
-    },
-  };
+  class CapturingTracker extends original.Tracker {
+    constructor(...args: ConstructorParameters<typeof original.Tracker>) {
+      super(...args);
+      trackers.push(this);
+    }
+  }
+  return { ...original, Tracker: CapturingTracker };
 });
 
 const { apply } = await import("../src/plugin/bundle.ts");
-const { createHostStores } = await import("../src/plugin/stores.ts");
+const { HostPodStores } = await import("../src/plugin/stores.ts");
 
 const roots: string[] = [];
 
@@ -344,17 +343,17 @@ describe("plugin apply", () => {
 
   it("keeps the password in the credential store and settings in the profile entry", async () => {
     const host = fakeHost();
-    const stores = createHostStores(host.ctx as unknown as Parameters<typeof createHostStores>[0]);
+    const stores = new HostPodStores(host.ctx as unknown as ConstructorParameters<typeof HostPodStores>[0]);
     const ref = credentialRef("ORCA_POD_PASSWORD_WG_A");
     await stores.writeSecret(ref, "secret");
     expect(await stores.readSecret(ref)).toBe("secret");
     await stores.clearSecret(ref);
     expect(await stores.readSecret(ref)).toBeUndefined();
 
-    expect(await stores.writeConfig((raw) => ({ ...raw, workgroup_id: wg("wg-a") }))).toBe(true);
+    expect(await stores.writeConfig((raw) => ({ ...raw, workgroup_id: wg("wg-a") }))).toEqual({ workgroup_id: "wg-a" });
     expect(host.entry.options.config).toEqual({ workgroup_id: "wg-a" });
     // An unchanged config is not written, so the Loader does not restart the plugin.
-    expect(await stores.writeConfig((raw) => raw)).toBe(false);
+    expect(await stores.writeConfig((raw) => raw)).toBeNull();
     expect(host.edits).toHaveLength(1);
   });
 });

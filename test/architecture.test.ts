@@ -46,10 +46,7 @@ const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
 const ALLOWED_VIOLATIONS: string[] = [];
 
 /** Known cycles that only a type closes, as the sorted file keys joined by `, `. Only removals are allowed. */
-const ALLOWED_TYPE_CYCLES: string[] = [
-  // Cleared by the plugin rewrite (phase 8).
-  "plugin/lifecycle.ts, plugin/stores.ts",
-];
+const ALLOWED_TYPE_CYCLES: string[] = [];
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

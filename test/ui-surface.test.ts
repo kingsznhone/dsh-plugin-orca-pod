@@ -4,11 +4,10 @@
  * model through a tool round-trip.
  */
 
-import { parseSettings } from "../src/node/settings.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOrcaNodeConfig } from "../src/node/config.ts";
 import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
@@ -18,12 +17,11 @@ import type { TaskView } from "../src/task/wire.ts";
 import { isTerminal } from "../src/task/wire.ts";
 import { shortenNodeId } from "../src/core/identity.ts";
 import { waitFor } from "./support/harness.ts";
-import { createPodAdmin } from "../src/plugin/admin.ts";
+import { PodAdmin } from "../src/plugin/admin.ts";
 import type { PodTaskRow } from "../src/plugin/admin.ts";
-import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import { createApprovalBroker } from "../src/plugin/broker.ts";
-import { createTracker } from "../src/plugin/tracker.ts";
-import { fakeTrackerNode } from "./fixtures/tracker-node.ts";
+import { ApprovalBroker } from "../src/plugin/broker.ts";
+import { Tracker, type TrackerOptions } from "../src/plugin/tracker.ts";
+import { catalogFeed, lifecycleWithNode } from "./fixtures/pod.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
@@ -101,26 +99,12 @@ async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
   return { a, b };
 }
 
-function handleFor(node: OrcaNode): PodHandle {
-  return {
-    ready: Promise.resolve(),
-    runtime: {
-      orcaNode: node,
-      url: node.profile.endpoints[0] ?? null,
-      port: null,
-      started_at: null,
-      error: null,
-    },
-    config: { ...parseSettings({ workgroup_id: "wg-ui", workgroup_password: "pw" }), data_root: "/data" },
-    configured: true,
-    rememberedPeers: [],
-    adopt: async () => {},
-    reconfigure: async () => {},
-    addPeer: async () => {},
-    disconnect: async () => {},
-    reset: async () => {},
-    dispose: async () => {},
-  };
+/** A pod over an already running node: its lifecycle, approval broker, tracker and admin surface. */
+function podOver(node: OrcaNode, options?: TrackerOptions) {
+  const lifecycle = lifecycleWithNode(node);
+  const broker = new ApprovalBroker(lifecycle);
+  const tracker = new Tracker(lifecycle, broker, logger, options);
+  return { lifecycle, broker, tracker, admin: new PodAdmin(lifecycle, tracker, broker, catalogFeed()) };
 }
 
 describe("UI data surface", () => {
@@ -190,12 +174,7 @@ describe("UI data surface", () => {
 
   it("exposes workspace paths, notes and artifact links through the admin surface", async () => {
     const { a, b } = await startPair();
-    const broker = createApprovalBroker(() => b);
-    const admin = createPodAdmin(
-      handleFor(b),
-      createTracker(() => b, broker, logger),
-      broker,
-    );
+    const { admin } = podOver(b);
     writeFileSync(join(admin.workspace()!.notes, "STATUS.md"), "handoff notes");
 
     const workspace = admin.workspace()!;
@@ -222,17 +201,8 @@ describe("UI data surface", () => {
 
   it("merges local tasks and dispatches into one list and tells where each can be cancelled", async () => {
     const { a, b } = await startPair();
-    const broker = createApprovalBroker(() => b);
-    const adminA = createPodAdmin(
-      handleFor(a),
-      createTracker(() => a, broker, logger),
-      broker,
-    );
-    const adminB = createPodAdmin(
-      handleFor(b),
-      createTracker(() => b, broker, logger),
-      broker,
-    );
+    const { admin: adminA } = podOver(a);
+    const { admin: adminB } = podOver(b);
 
     const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
       message: text("keep working"),
@@ -271,12 +241,7 @@ describe("UI data surface", () => {
 
   it("serves a remote task with its dispatch record and no artifact link this node cannot sign", async () => {
     const { a, b } = await startPair();
-    const broker = createApprovalBroker(() => a);
-    const adminA = createPodAdmin(
-      handleFor(a),
-      createTracker(() => a, broker, logger),
-      broker,
-    );
+    const { admin: adminA } = podOver(a);
     const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
       message: text("produce an artifact"),
       metadata: ARTIFACT,
@@ -324,11 +289,8 @@ describe("UI data surface", () => {
         },
       },
     };
-    const broker = createApprovalBroker(() => b);
-    const tracker = createTracker(() => fakeTrackerNode(async () => suspended), broker, logger, {
-      intervalMs: 20,
-    });
-    const admin = createPodAdmin(handleFor(b), tracker, broker);
+    vi.spyOn(b.delegation, "getTask").mockResolvedValue(suspended);
+    const { tracker, admin } = podOver(b, { intervalMs: 20 });
     let notified = 0;
     const offAdmin = admin.subscribe(() => {
       notified += 1;

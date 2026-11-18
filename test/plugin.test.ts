@@ -2,32 +2,41 @@ import { describe, expect, it, vi } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
 import type { DispatchEntry, TaskView } from "../src/task/wire.ts";
-import { createApprovalBroker } from "../src/plugin/broker.ts";
-import type { Logger } from "@deepseek-ai/cordis";
+import { ApprovalBroker } from "../src/plugin/broker.ts";
+import type { OrcaNode } from "../src/node/orca-node.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
-import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
-import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import { createPodTools, sessionSandboxMode, type SandboxReader } from "../src/plugin/tools.ts";
-import type { TrackerAgent } from "../src/plugin/tracker.ts";
-import { fakeTrackerNode } from "./fixtures/tracker-node.ts";
-import { createTracker as createTrackerWith, restoreTrackedDispatches } from "../src/plugin/tracker.ts";
+import type { ToolDefinition, ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
+import type { PodLifecycle } from "../src/plugin/lifecycle.ts";
+import { PodTool, sessionSandboxMode, type SandboxReader } from "../src/plugin/tools.ts";
+import { Tracker, type TrackerAgent } from "../src/plugin/tracker.ts";
+import { idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
-const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
-
+/** A real tracker whose lifecycle answers with a node that can only read tasks. */
 function createTracker(
   getNode: () => { getTask(peer: string, taskId: string): Promise<TaskView> } | null,
   options: { intervalMs?: number; coalesceMs?: number },
 ) {
-  return createTrackerWith(
-    () => {
-      const node = getNode();
-      return node === null ? null : fakeTrackerNode(node.getTask);
-    },
-    createApprovalBroker(() => null),
-    logger,
-    options,
-  );
+  const lifecycle = idleLifecycle();
+  vi.spyOn(lifecycle, "node", "get").mockImplementation(() => {
+    const node = getNode();
+    return node === null
+      ? null
+      : ({
+          delegation: { getTask: node.getTask, log: { annotate() {} } },
+          client: { idOf: () => undefined },
+        } as unknown as OrcaNode);
+  });
+  return new Tracker(lifecycle, new ApprovalBroker(lifecycle), logger, options);
+}
+
+/** The `orca_pod` tool of a lifecycle; `policy` is the host's sandbox policy, when it has one. */
+function createPodTools(
+  lifecycle: PodLifecycle,
+  tracker: Tracker,
+  policy?: () => SandboxReader | undefined,
+): ToolDefinition[] {
+  return [new PodTool(lifecycle, tracker, policy === undefined ? undefined : { current: policy }).definition()];
 }
 
 function tool(result: ReturnType<typeof createPodTools>) {
@@ -123,19 +132,7 @@ describe("plugin config", () => {
 });
 
 describe("orca_pod tool", () => {
-  const handle: PodHandle = {
-    ready: Promise.resolve(),
-    runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
-    config: { ...parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }), data_root: "/data" },
-    configured: true,
-    rememberedPeers: [],
-    adopt: async () => {},
-    reconfigure: async () => {},
-    addPeer: async () => {},
-    disconnect: async () => {},
-    reset: async () => {},
-    dispose: async () => {},
-  };
+  const handle = idleLifecycle({ workgroup_id: "wg-a", workgroup_password: "pw" });
   const tracker = createTracker(() => null, { intervalMs: 60_000 });
   const tools = createPodTools(handle, tracker);
 
@@ -211,19 +208,7 @@ describe("orca_pod tool", () => {
         },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
-      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-      configured: true,
-      rememberedPeers: [],
-      adopt: async () => {},
-      reconfigure: async () => {},
-      addPeer: async () => {},
-      disconnect: async () => {},
-      reset: async () => {},
-      dispose: async () => {},
-    } as unknown as PodHandle;
+    const handleForSend = lifecycleWithNode(fakeNode);
     const session = {};
     const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxReader;
     const sendTools = createPodTools(handleForSend, tracker, () => sandbox);
@@ -282,11 +267,7 @@ describe("orca_pod tool", () => {
         },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
-      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-    } as unknown as PodHandle;
+    const handleForSend = lifecycleWithNode(fakeNode);
     const watched: string[] = [];
     const recorder = { track: (_agent: unknown, _peer: string, taskId: string) => watched.push(taskId) > 0 };
     const sendTools = createPodTools(handleForSend, recorder as unknown as typeof tracker);
@@ -323,11 +304,7 @@ describe("orca_pod tool", () => {
         cancelTask: async (_peer: string, taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
-      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-    } as unknown as PodHandle;
+    const handleForSend = lifecycleWithNode(fakeNode);
     const sendTools = createPodTools(handleForSend, tracker);
     let settled = false;
     const call = run(
@@ -358,11 +335,7 @@ describe("orca_pod tool", () => {
         },
       },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForSend = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
-      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-    } as unknown as PodHandle;
+    const handleForSend = lifecycleWithNode(fakeNode);
     const sendTools = createPodTools(handleForSend, tracker);
     await expect(
       run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { signal: AbortSignal.abort() }),
@@ -393,21 +366,10 @@ describe("orca_pod tool", () => {
       membership: { list: () => [] },
       mesh: { digest: () => "digest" },
     } as unknown as import("../src/node/orca-node.ts").OrcaNode;
-    const handleForConnect = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
-      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
-      configured: true,
-      rememberedPeers: [],
-      adopt: async () => {},
-      reconfigure: async () => {},
-      addPeer: async (peer: string) => {
-        seen.push(peer);
-      },
-      disconnect: async () => {},
-      reset: async () => {},
-      dispose: async () => {},
-    } as unknown as PodHandle;
+    const handleForConnect = lifecycleWithNode(fakeNode);
+    vi.spyOn(handleForConnect, "addPeer").mockImplementation(async (peer: string) => {
+      seen.push(peer);
+    });
     const connectTools = createPodTools(handleForConnect, tracker);
     const result = await run(connectTools, { method: "connect", peer: "192.168.1.20" });
     expect(seen).toEqual(["http://192.168.1.20:11811"]);
@@ -457,8 +419,7 @@ describe("tracker recovery (8.3)", () => {
       { intervalMs: 1000, coalesceMs: 1000 },
     );
     try {
-      const restored = restoreTrackedDispatches(
-        tracker,
+      const restored = tracker.restore(
         [
           dispatch("running", "working", SessionId("live-session")),
           dispatch("parked", "input-required", SessionId("live-session")),
@@ -467,7 +428,6 @@ describe("tracker recovery (8.3)", () => {
           dispatch("orphaned", "working", SessionId("gone-session")),
         ],
         (agentId) => (agentId === "live-session" ? agent : undefined),
-        logger,
       );
       expect(restored).toBe(2);
       expect(tracker.size()).toBe(2);

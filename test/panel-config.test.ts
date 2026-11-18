@@ -9,23 +9,22 @@ import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configPath } from "../src/node/config.ts";
 import { shortenNodeId } from "../src/core/identity.ts";
 import { normalizePeerUrl } from "../src/core/net.ts";
-import { createPodAdmin } from "../src/plugin/admin.ts";
-import type { PodAdmin } from "../src/plugin/admin.ts";
-import type { Logger } from "@deepseek-ai/cordis";
-import { startPod, stopPod } from "../src/plugin/lifecycle.ts";
-import { createMemoryStores, peerStatePath } from "../src/plugin/stores.ts";
-import type { PodHandle } from "../src/plugin/lifecycle.ts";
+import { PodAdmin } from "../src/plugin/admin.ts";
+import { PodLifecycle } from "../src/plugin/lifecycle.ts";
+import { RememberedPeers } from "../src/plugin/peers-file.ts";
+import { MemoryPodStores } from "../src/plugin/stores.ts";
 import { PanelPatchSchema, parseSettings } from "../src/node/settings.ts";
-import { createApprovalBroker } from "../src/plugin/broker.ts";
-import { createTracker } from "../src/plugin/tracker.ts";
+import { ApprovalBroker } from "../src/plugin/broker.ts";
+import { Tracker } from "../src/plugin/tracker.ts";
 import { wg } from "./fixtures/ids.ts";
+import { catalogFeed, idleLifecycle, logger } from "./fixtures/pod.ts";
 
-const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as Logger;
+const peerStatePath = (root: string): string => new RememberedPeers(root, logger).path;
 const roots: string[] = [];
 const PASSWORD = "panel-password";
 /** Credential reference derived from the default test workgroup `wg-panel`. */
@@ -49,31 +48,29 @@ function bundle(root: string, workgroupId = "wg-panel"): Record<string, unknown>
   return { workgroup_id: workgroupId, display_name: "panel node", port: 0, data_root: root };
 }
 
-type Stores = ReturnType<typeof createMemoryStores>;
-type Pod = { handle: PodHandle; stores: Stores };
+type Stores = MemoryPodStores;
+type Pod = { handle: PodLifecycle; stores: Stores };
 
 /** Start a pod over in-memory stores; `secrets` pre-fill the credential store. */
 function launch(raw: Record<string, unknown>, secrets: Record<string, string> = {}, stores?: Stores): Pod {
-  const store = stores ?? createMemoryStores(raw);
+  const store = stores ?? new MemoryPodStores(raw);
   for (const [ref, value] of Object.entries(secrets)) store.secrets.set(ref, value);
-  return { handle: startPod(parseSettings(store.raw()), logger, store), stores: store };
+  const handle = new PodLifecycle(parseSettings(store.raw()), logger, store, catalogFeed());
+  handle.start();
+  return { handle, stores: store };
 }
 
 /** Launch and complete the setup the first-run wizard would perform. */
 async function started(raw: Record<string, unknown>): Promise<Pod> {
   const pod = launch(raw);
   await pod.handle.ready;
-  if (pod.handle.runtime.orcaNode === null) await pod.handle.reconfigure({ workgroup_password: PASSWORD });
+  if (pod.handle.node === null) await pod.handle.reconfigure({ workgroup_password: PASSWORD });
   return pod;
 }
 
-function adminFor(handle: PodHandle): PodAdmin {
-  const broker = createApprovalBroker(() => null);
-  return createPodAdmin(
-    handle,
-    createTracker(() => null, broker, logger, { intervalMs: 60_000 }),
-    broker,
-  );
+function adminFor(handle: PodLifecycle): PodAdmin {
+  const broker = new ApprovalBroker(handle);
+  return new PodAdmin(handle, new Tracker(handle, broker, logger, { intervalMs: 60_000 }), broker, catalogFeed());
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
@@ -89,25 +86,25 @@ describe("panel configuration lifecycle", () => {
       // A plugin config that names a workgroup is not enough: without a stored
       // password a fresh install must not listen (§7.1).
       expect(handle.configured).toBe(false);
-      expect(handle.runtime.error).toBeNull();
-      expect(handle.runtime.orcaNode).toBeNull();
+      expect(handle.error).toBeNull();
+      expect(handle.node).toBeNull();
 
       await handle.reconfigure({ display_name: "renamed node", workgroup_password: PASSWORD });
 
       expect(handle.configured).toBe(true);
       expect(handle.config.display_name).toBe("renamed node");
-      expect(handle.runtime.error).toBeNull();
+      expect(handle.error).toBeNull();
       expect(stores.secrets.get(REF)).toBe(PASSWORD);
       expect(stores.raw()).toMatchObject({ display_name: "renamed node" });
       // Neither the plugin config nor the node config carries the password.
       expect(JSON.stringify(stores.raw())).not.toContain(PASSWORD);
       expect(await readFile(configPath(root), "utf8")).not.toContain(PASSWORD);
 
-      const firstId = handle.runtime.orcaNode!.self().orca_node_id;
+      const firstId = handle.node!.self().orca_node_id;
       await handle.reconfigure({ display_name: "renamed again" });
-      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
+      expect(handle.node!.self().orca_node_id).toBe(firstId);
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -117,9 +114,9 @@ describe("panel configuration lifecycle", () => {
     await handle.ready;
     try {
       expect(handle.configured).toBe(true);
-      expect(handle.runtime.orcaNode).not.toBeNull();
+      expect(handle.node).not.toBeNull();
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -132,9 +129,9 @@ describe("panel configuration lifecycle", () => {
       expect(stores.secrets.get(REF)).toBe("rotated");
       expect(stores.raw()).toEqual(before);
       expect(handle.config.workgroup_password).toBe("rotated");
-      expect(handle.runtime.orcaNode).not.toBeNull();
+      expect(handle.node).not.toBeNull();
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -145,10 +142,10 @@ describe("panel configuration lifecycle", () => {
       await expect(handle.reconfigure({ port: -1 })).rejects.toThrow();
       // The failed operation must not poison the serial lane.
       await handle.reconfigure({ display_name: "recovered" });
-      expect(handle.runtime.orcaNode).not.toBeNull();
+      expect(handle.node).not.toBeNull();
       expect(handle.config.display_name).toBe("recovered");
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -167,7 +164,7 @@ describe("panel configuration lifecycle", () => {
       expect(stores.raw()).not.toHaveProperty("task_timeout_s");
       expect((await readJson(configPath(root))).task_timeout_s).toBeUndefined();
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -176,13 +173,13 @@ describe("panel configuration lifecycle", () => {
     const { handle } = await started(bundle(root));
     try {
       const reconfiguring = handle.reconfigure({ display_name: "late rename" });
-      const stopping = stopPod(handle, logger);
+      const stopping = handle.stop();
       await Promise.allSettled([reconfiguring, stopping]);
       // stopPod waits for the queued restart, and that operation must not start
       // a fresh listener after the host disposed the pod.
-      expect(handle.runtime.orcaNode).toBeNull();
+      expect(handle.node).toBeNull();
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -197,7 +194,7 @@ describe("panel configuration lifecycle", () => {
       expect(stores.raw().bind_host).toBe("0.0.0.0");
       expect((await readJson(configPath(root))).bind_host).toBe("0.0.0.0");
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -229,7 +226,7 @@ describe("panel configuration lifecycle", () => {
         default_reasoning_effort: ReasoningEffortId("max"),
         executor: "echo",
       });
-      expect(handle.runtime.error).toBeNull();
+      expect(handle.error).toBeNull();
 
       expect(stores.raw().task_timeout_s).toBe(120);
       const nodeConfig = await readJson(configPath(root));
@@ -252,7 +249,7 @@ describe("panel configuration lifecycle", () => {
       // written back so the persisted node config never loses it.
       expect(clearedConfig.executor).toBe("acp");
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -260,41 +257,41 @@ describe("panel configuration lifecycle", () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started(bundle(root));
     try {
-      const before = handle.runtime.orcaNode!.self().orca_node_id;
+      const before = handle.node!.self().orca_node_id;
       expect(handle.configured).toBe(true);
 
       await handle.reset();
 
       expect(handle.configured).toBe(false);
-      expect(handle.runtime.error).toBeNull();
+      expect(handle.error).toBeNull();
       // Reset returns to the wizard: nothing restarts until setup completes.
-      expect(handle.runtime.orcaNode).toBeNull();
+      expect(handle.node).toBeNull();
       expect(stores.raw()).not.toHaveProperty("workgroup_id");
       expect(stores.secrets.has(REF)).toBe(false);
       await expect(readFile(configPath(root), "utf8")).rejects.toThrow();
 
       const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-panel"), workgroup_password: PASSWORD });
       expect(view.running).toBe(true);
-      expect(handle.runtime.orcaNode!.self().orca_node_id).not.toBe(before);
+      expect(handle.node!.self().orca_node_id).not.toBe(before);
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
   it("keeps the configuration and the orca node id on the next start", async () => {
     const root = await tempRoot("orca-panel-");
     const first = await started(bundle(root));
-    const firstId = first.handle.runtime.orcaNode!.self().orca_node_id;
-    await stopPod(first.handle, logger);
+    const firstId = first.handle.node!.self().orca_node_id;
+    await first.handle.stop();
 
     const second = launch({}, {}, first.stores);
     await second.handle.ready;
     try {
       expect(second.handle.configured).toBe(true);
-      expect(second.handle.runtime.error).toBeNull();
-      expect(second.handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
+      expect(second.handle.error).toBeNull();
+      expect(second.handle.node!.self().orca_node_id).toBe(firstId);
     } finally {
-      await stopPod(second.handle, logger);
+      await second.handle.stop();
     }
   });
 
@@ -304,7 +301,7 @@ describe("panel configuration lifecycle", () => {
     const a = await started(bundle(rootA));
     const b = await started(bundle(rootB));
     try {
-      const peerUrl = b.handle.runtime.url!;
+      const peerUrl = b.handle.url!;
       await a.handle.addPeer(peerUrl);
       expect(a.handle.rememberedPeers).toEqual([peerUrl]);
       expect(await readJson(peerStatePath(rootA))).toEqual({ peers: [peerUrl] });
@@ -312,8 +309,8 @@ describe("panel configuration lifecycle", () => {
       expect(a.stores.raw()).not.toHaveProperty("peers");
       expect(adminFor(a.handle).config().peers).toEqual([peerUrl]);
     } finally {
-      await stopPod(a.handle, logger);
-      await stopPod(b.handle, logger);
+      await a.handle.stop();
+      await b.handle.stop();
     }
   });
 
@@ -322,25 +319,25 @@ describe("panel configuration lifecycle", () => {
     const rootB = await tempRoot("orca-panel-b-");
     const b = await started(bundle(rootB));
     try {
-      const peerUrl = b.handle.runtime.url!;
+      const peerUrl = b.handle.url!;
       // What an earlier session left behind; startup tries it once without
       // waiting for the operator to click Connect again.
       await mkdir(rootA, { recursive: true });
       await writeFile(peerStatePath(rootA), JSON.stringify({ peers: [peerUrl] }), "utf8");
       const a = await started(bundle(rootA));
       try {
-        const want = b.handle.runtime.orcaNode!.self().orca_node_id;
+        const want = b.handle.node!.self().orca_node_id;
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
-          if (a.handle.runtime.orcaNode!.membership.list().some((member) => member.state === "online")) break;
+          if (a.handle.node!.membership.list().some((member) => member.state === "online")) break;
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
         }
-        expect(a.handle.runtime.orcaNode!.membership.list().map((member) => member.orca_node_id)).toContain(want);
+        expect(a.handle.node!.membership.list().map((member) => member.orca_node_id)).toContain(want);
       } finally {
-        await stopPod(a.handle, logger);
+        await a.handle.stop();
       }
     } finally {
-      await stopPod(b.handle, logger);
+      await b.handle.stop();
     }
   });
 
@@ -352,7 +349,7 @@ describe("panel configuration lifecycle", () => {
       expect(handle.rememberedPeers).toEqual([]);
       await expect(readFile(peerStatePath(root), "utf8")).rejects.toThrow();
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 });
@@ -372,7 +369,7 @@ describe("panel admin configuration", () => {
       });
       expect(JSON.stringify(view)).not.toContain(PASSWORD);
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -380,7 +377,7 @@ describe("panel admin configuration", () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started(bundle(root));
     try {
-      const firstId = handle.runtime.orcaNode!.self().orca_node_id;
+      const firstId = handle.node!.self().orca_node_id;
 
       const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-other") });
 
@@ -388,30 +385,19 @@ describe("panel admin configuration", () => {
       expect(view.password_set).toBe(true);
       expect(stores.secrets.get("ORCA_POD_PASSWORD_WG_OTHER")).toBe(PASSWORD);
       expect(handle.config.workgroup_password).toBe(PASSWORD);
-      expect(handle.runtime.orcaNode!.self().orca_node_id).toBe(firstId);
+      expect(handle.node!.self().orca_node_id).toBe(firstId);
       expect((await readJson(configPath(root))).workgroup_id).toBe("wg-other");
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
   it("normalizes peers before joining them", async () => {
     const seen: string[] = [];
-    const handle: PodHandle = {
-      ready: Promise.resolve(),
-      runtime: { orcaNode: null, url: null, port: null, started_at: null, error: null },
-      config: { ...parseSettings({ workgroup_id: "wg-panel", workgroup_password: "pw" }), data_root: "/data" },
-      configured: false,
-      rememberedPeers: [],
-      reconfigure: async () => {},
-      addPeer: async (peer) => {
-        seen.push(peer);
-      },
-      disconnect: async () => {},
-      reset: async () => {},
-      dispose: async () => {},
-      adopt: async () => {},
-    };
+    const handle = idleLifecycle({ workgroup_id: "wg-panel", workgroup_password: "pw" });
+    vi.spyOn(handle, "addPeer").mockImplementation(async (peer) => {
+      seen.push(peer);
+    });
     const admin = adminFor(handle);
     await admin.connect("192.168.1.20:11811");
     await admin.connect("http://desk.example.com/");
@@ -450,7 +436,7 @@ describe("panel admin configuration", () => {
         max_workspace_files: 50_000,
       });
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -460,20 +446,20 @@ describe("panel admin configuration", () => {
     await handle.ready;
     try {
       const admin = adminFor(handle);
-      expect(handle.runtime.orcaNode).toBeNull();
-      expect(handle.runtime.error).toBeNull();
+      expect(handle.node).toBeNull();
+      expect(handle.error).toBeNull();
       expect(admin.config().configured).toBe(false);
       expect(admin.config().running).toBe(false);
 
       await admin.saveConfig({ workgroup_id: wg("wg-fresh"), workgroup_password: "pw-fresh" });
 
-      expect(handle.runtime.orcaNode).not.toBeNull();
-      expect(handle.runtime.error).toBeNull();
+      expect(handle.node).not.toBeNull();
+      expect(handle.error).toBeNull();
       expect(handle.configured).toBe(true);
       expect(stores.secrets.get("ORCA_POD_PASSWORD_WG_FRESH")).toBe("pw-fresh");
       expect(admin.config()).toMatchObject({ configured: true, running: true, workgroup_id: "wg-fresh" });
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -487,11 +473,11 @@ describe("panel admin configuration", () => {
       expect(view.configured).toBe(false);
       expect(view.password_set).toBe(false);
       expect(view.error).toBeNull();
-      expect(handle.runtime.orcaNode).toBeNull();
+      expect(handle.node).toBeNull();
       // Saving other settings cannot complete the setup without a password.
       await expect(handle.reconfigure({ display_name: "no secret yet" })).rejects.toThrow(/password is required/);
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -503,7 +489,7 @@ describe("panel admin configuration", () => {
       await expect(adminFor(handle).saveConfig({ workgroup_password: "" })).rejects.toThrow(/password is required/);
       await expect(adminFor(handle).saveConfig({ workgroup_password: "   " })).rejects.toThrow(/password is required/);
     } finally {
-      await stopPod(handle, logger);
+      await handle.stop();
     }
   });
 
@@ -511,9 +497,9 @@ describe("panel admin configuration", () => {
     const rootA = await tempRoot("orca-panel-a-");
     const rootB = await tempRoot("orca-panel-b-");
     const b = await started(bundle(rootB, "wg-leave"));
-    const a = await started({ ...bundle(rootA, "wg-leave"), peers: [b.handle.runtime.url!] });
+    const a = await started({ ...bundle(rootA, "wg-leave"), peers: [b.handle.url!] });
     try {
-      await a.handle.addPeer(b.handle.runtime.url!);
+      await a.handle.addPeer(b.handle.url!);
       expect(a.handle.rememberedPeers).toHaveLength(1);
       const admin = adminFor(a.handle);
       await admin.disconnect();
@@ -523,8 +509,8 @@ describe("panel admin configuration", () => {
       expect(admin.config().peers).toEqual([]);
       expect(admin.members().map((member) => member.orca_node_id)).toEqual([]);
     } finally {
-      await stopPod(a.handle, logger);
-      await stopPod(b.handle, logger);
+      await a.handle.stop();
+      await b.handle.stop();
     }
   });
 });

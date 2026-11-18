@@ -1,13 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
 import type { TaskState, TaskView, DispatchEntry } from "../src/task/wire.ts";
-import { createApprovalBroker } from "../src/plugin/broker.ts";
-import type { Logger } from "@deepseek-ai/cordis";
+import { ApprovalBroker } from "../src/plugin/broker.ts";
+import type { OrcaNode } from "../src/node/orca-node.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import { createTracker as createTrackerWith, restoreTrackedDispatches, taskNoticeLine } from "../src/plugin/tracker.ts";
-import { fakeTrackerNode, type GetTask } from "./fixtures/tracker-node.ts";
+import { Tracker, taskNoticeLine } from "../src/plugin/tracker.ts";
+import { idleLifecycle, logger } from "./fixtures/pod.ts";
 import type { TrackerAgent, TrackerOptions } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 
@@ -77,6 +77,8 @@ function permissionView(id: string, requestId: string): TaskView {
   };
 }
 
+/** The one call of a node the tracker makes while polling. */
+type GetTask = (peer: string, taskId: string) => Promise<TaskView>;
 type FakeTaskNode = { getTask: GetTask };
 
 function fakeNode(views: Map<string, TaskView>): FakeTaskNode {
@@ -89,19 +91,21 @@ function fakeNode(views: Map<string, TaskView>): FakeTaskNode {
   };
 }
 
-const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
-const broker = createApprovalBroker(() => null);
+const broker = new ApprovalBroker(idleLifecycle());
 
+/** A real tracker whose lifecycle answers with a node that can only read tasks. */
 function createTracker(getNode: () => FakeTaskNode | null, options?: TrackerOptions) {
-  return createTrackerWith(
-    () => {
-      const node = getNode();
-      return node === null ? null : fakeTrackerNode(node.getTask);
-    },
-    broker,
-    logger,
-    options,
-  );
+  const lifecycle = idleLifecycle();
+  vi.spyOn(lifecycle, "node", "get").mockImplementation(() => {
+    const node = getNode();
+    return node === null
+      ? null
+      : ({
+          delegation: { getTask: node.getTask, log: { annotate() {} } },
+          client: { idOf: () => undefined },
+        } as unknown as OrcaNode);
+  });
+  return new Tracker(lifecycle, broker, logger, options);
 }
 
 function waitFor(check: () => boolean, timeoutMs = 500): Promise<void> {
@@ -375,10 +379,10 @@ describe("tracking restore and poll rounds", () => {
       ["agent-2", two],
     ]);
     const log = [dispatch("01A", SessionId("agent-1")), dispatch("01B", SessionId("agent-2"))];
-    expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger, SessionId("agent-2"))).toBe(1);
+    expect(tracker.restore(log, (id) => agents.get(id), SessionId("agent-2"))).toBe(1);
     expect(tracker.list().map((task) => task.taskId)).toEqual(["01B"]);
     // Restoring everything afterwards only adds what is not watched yet.
-    expect(restoreTrackedDispatches(tracker, log, (id) => agents.get(id), logger)).toBe(1);
+    expect(tracker.restore(log, (id) => agents.get(id))).toBe(1);
     tracker.stop();
   });
 
@@ -391,9 +395,9 @@ describe("tracking restore and poll rounds", () => {
     };
     const tracker = createTracker(() => node, fast);
     const log = [dispatch("01GONE", agent.id)];
-    expect(restoreTrackedDispatches(tracker, log, () => agent, logger)).toBe(1);
+    expect(tracker.restore(log, () => agent)).toBe(1);
     await waitFor(() => agent.followed.length === 1);
-    expect(restoreTrackedDispatches(tracker, log, () => agent, logger)).toBe(0);
+    expect(tracker.restore(log, () => agent)).toBe(0);
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(agent.followed).toHaveLength(1);
     // A fresh dispatch of the same id (an explicit track) is still accepted.

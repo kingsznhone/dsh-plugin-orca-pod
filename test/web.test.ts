@@ -5,15 +5,18 @@
  */
 
 import { PassThrough, Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import type { Logger } from "@deepseek-ai/cordis";
+import { describe, expect, it, vi } from "vitest";
 
-import type { PodAdmin, PodApproval, PodPeer, PodTaskRow } from "../src/plugin/admin.ts";
+import { PodAdmin, type PodApproval, type PodPeer, type PodTaskRow } from "../src/plugin/admin.ts";
+import { ApprovalBroker } from "../src/plugin/broker.ts";
+import { Tracker } from "../src/plugin/tracker.ts";
 import type { SelfRecord } from "../src/core/wire/peer.ts";
 import type { TaskView } from "../src/task/wire.ts";
-import type { Logger } from "@deepseek-ai/cordis";
 import { isDirectLoopbackRequest } from "../src/core/net.ts";
-import { createPodApiHandler, POD_API_PREFIX, registerPodWeb } from "../src/plugin/web.ts";
+import { PodApi, POD_API_PREFIX } from "../src/plugin/web.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
+import { catalogFeed, idleLifecycle, logger } from "./fixtures/pod.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"], artifacts: TaskView["artifacts"] = []): TaskView {
   return {
@@ -62,9 +65,13 @@ const APPROVAL: PodApproval = {
   agent_id: "session-1",
 };
 
-function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
+/** A real admin surface over an idle pod whose answers are replaced, so the HTTP bridge is tested on its own. */
+function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin & { calls: string[] } {
   const calls: string[] = [];
-  const admin: PodAdmin = {
+  const lifecycle = idleLifecycle();
+  const broker = new ApprovalBroker(lifecycle);
+  const admin = new PodAdmin(lifecycle, new Tracker(lifecycle, broker, logger), broker, catalogFeed());
+  const stubs: Partial<PodAdmin> = {
     self: () =>
       ({
         orca_node_id: "NODE01",
@@ -158,7 +165,16 @@ function fakeAdmin(overrides: Partial<PodAdmin> = {}): PodAdmin {
     },
     ...overrides,
   };
+  for (const [name, stub] of Object.entries(stubs)) {
+    vi.spyOn(admin, name as keyof PodAdmin).mockImplementation(stub as never);
+  }
   return Object.assign(admin, { calls });
+}
+
+/** The panel API of an admin surface, as the plain function the web server calls. */
+function apiHandler(admin: PodAdmin): (request: never, response: never) => Promise<void> {
+  const api = new PodApi(admin);
+  return (request, response) => api.handle(request as never, response as never);
 }
 
 interface InvokeOptions {
@@ -234,7 +250,7 @@ describe("panel HTTP bridge", () => {
       headers: { host: "127.0.0.1:7775", "x-orca-pod": "1" },
       socket: { remoteAddress: "127.0.0.1" },
     });
-    await createPodApiHandler(admin)(request as never, response as never);
+    await apiHandler(admin)(request as never, response as never);
     expect(response.statusCode).toBe(200);
     expect(headers["content-length"]).toBe("10");
     expect(body()).toBe("file bytes");
@@ -242,13 +258,13 @@ describe("panel HTTP bridge", () => {
   });
 
   it("refuses a blob request that does not name a published file", async () => {
-    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/blob?node=x&blob=y` });
+    const result = await invoke(apiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/blob?node=x&blob=y` });
     expect(result.status).toBe(400);
   });
 
   it("serves one state snapshot with members, recent tasks and pending approvals", async () => {
     const admin = fakeAdmin();
-    const result = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/state` });
+    const result = await invoke(apiHandler(admin), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);
     expect(result.body.self.orca_node_id).toBe("NODE01");
     expect(result.body.members).toHaveLength(1);
@@ -264,7 +280,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("rejects non-loopback callers and proxied requests", async () => {
-    const handler = createPodApiHandler(fakeAdmin());
+    const handler = apiHandler(fakeAdmin());
     const remote = await invoke(handler, { url: `${POD_API_PREFIX}/state`, address: "192.168.1.20" });
     expect(remote.status).toBe(403);
     expect(remote.body.error).toBe("local_only");
@@ -277,7 +293,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("rejects a hostile origin, a foreign Host and a missing panel header", async () => {
-    const handler = createPodApiHandler(fakeAdmin());
+    const handler = apiHandler(fakeAdmin());
 
     const rebound = await invoke(handler, {
       url: `${POD_API_PREFIX}/state`,
@@ -301,7 +317,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("requires a JSON content type for panel writes", async () => {
-    const handler = createPodApiHandler(fakeAdmin());
+    const handler = apiHandler(fakeAdmin());
     const plain = await invoke(handler, {
       method: "POST",
       url: `${POD_API_PREFIX}/reset`,
@@ -313,7 +329,7 @@ describe("panel HTTP bridge", () => {
 
   it("drives approve, deny and cancel without a model round-trip", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const handler = createPodApiHandler(admin);
+    const handler = apiHandler(admin);
     const approve = await invoke(handler, {
       method: "POST",
       url: `${POD_API_PREFIX}/approve`,
@@ -341,12 +357,12 @@ describe("panel HTTP bridge", () => {
   });
 
   it("validates action bodies and surfaces admin errors", async () => {
-    const handler = createPodApiHandler(fakeAdmin());
+    const handler = apiHandler(fakeAdmin());
     const missing = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/approve`, body: {} });
     expect(missing.status).toBe(400);
     expect(missing.body.error).toMatch(/peer/);
 
-    const failing = createPodApiHandler(
+    const failing = apiHandler(
       fakeAdmin({
         approve: async () => {
           throw new Error("task has no pending permission request");
@@ -367,20 +383,20 @@ describe("panel HTTP bridge", () => {
 
   it("serves one task with its dispatch, artifacts and inputs in a single call", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const result = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
+    const result = await invoke(apiHandler(admin), { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
     expect(result.status).toBe(200);
     expect(result.body.task.id).toBe("TASK01");
     expect(result.body).toMatchObject({ origin: "node two", dispatch: null, inputs: ["in.txt"] });
     expect(result.body.artifacts[0].name).toBe("report.md");
     expect(admin.calls).toEqual(["task:p:TASK01"]);
 
-    const missing = await invoke(createPodApiHandler(admin), { url: `${POD_API_PREFIX}/task?peer=p` });
+    const missing = await invoke(apiHandler(admin), { url: `${POD_API_PREFIX}/task?peer=p` });
     expect(missing.status).toBe(400);
   });
 
   it("serves the merged task rows for the all-tasks view and clamps the limit", async () => {
     const limits: number[] = [];
-    const handler = createPodApiHandler(
+    const handler = apiHandler(
       fakeAdmin({
         recent: (limit) => {
           limits.push(limit);
@@ -398,7 +414,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("includes the editable config in the state snapshot", async () => {
-    const result = await invoke(createPodApiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/state` });
+    const result = await invoke(apiHandler(fakeAdmin()), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);
     expect(result.body.config.workgroup_id).toBe("wg");
     expect(result.body.config.password_set).toBe(true);
@@ -408,7 +424,7 @@ describe("panel HTTP bridge", () => {
 
   it("hands the panel body to saveConfig unchanged", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const result = await invoke(createPodApiHandler(admin), {
+    const result = await invoke(apiHandler(admin), {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
       body: {
@@ -428,7 +444,7 @@ describe("panel HTTP bridge", () => {
 
   it("forwards the advanced local controls from the panel", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const saved = await invoke(createPodApiHandler(admin), {
+    const saved = await invoke(apiHandler(admin), {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
       body: {
@@ -452,7 +468,7 @@ describe("panel HTTP bridge", () => {
 
     // Clearing a control sends null, so the override (and the persisted config
     // key) disappears and the local default applies again.
-    const cleared = await invoke(createPodApiHandler(admin), {
+    const cleared = await invoke(apiHandler(admin), {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
       body: {
@@ -471,7 +487,7 @@ describe("panel HTTP bridge", () => {
 
   it("connects a peer from the panel", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const handler = createPodApiHandler(admin);
+    const handler = apiHandler(admin);
     const result = await invoke(handler, {
       method: "POST",
       url: `${POD_API_PREFIX}/connect`,
@@ -487,7 +503,7 @@ describe("panel HTTP bridge", () => {
 
   it("disconnects from the panel", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const handler = createPodApiHandler(admin);
+    const handler = apiHandler(admin);
     const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/disconnect`, body: {} });
     expect(result.status).toBe(200);
     expect(admin.calls).toEqual(["disconnect"]);
@@ -495,7 +511,7 @@ describe("panel HTTP bridge", () => {
 
   it("resets the panel configuration", async () => {
     const admin = fakeAdmin() as PodAdmin & { calls: string[] };
-    const handler = createPodApiHandler(admin);
+    const handler = apiHandler(admin);
     const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/reset`, body: {} });
     expect(result.status).toBe(200);
     expect(admin.calls).toEqual(["reset"]);
@@ -533,7 +549,7 @@ describe("panel HTTP bridge", () => {
         });
       },
     };
-    registerPodWeb(ctx as never, fakeAdmin());
+    new PodApi(fakeAdmin()).register(ctx as never);
     expect(registered).toHaveLength(1);
     expect(registered[0]).toMatchObject({ kind: "prefix", path: POD_API_PREFIX });
     expect(cleanups).toHaveLength(1);

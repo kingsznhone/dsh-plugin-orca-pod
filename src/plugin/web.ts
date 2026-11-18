@@ -138,27 +138,6 @@ function rejection(request: IncomingMessage): Reply | null {
   return null;
 }
 
-async function handleGet(admin: PodAdmin, url: URL): Promise<Reply> {
-  switch (url.pathname.slice(POD_API_PREFIX.length)) {
-    case "/state":
-      return answer("state", podState(admin));
-    case "/task": {
-      const peer = url.searchParams.get("peer");
-      const taskId = url.searchParams.get("task");
-      if (peer === null || taskId === null) return { status: 400, body: { error: "peer and task are required" } };
-      return answer("task", await admin.task(peer, taskId));
-    }
-    // Every task this node knows about, for the panel's "all tasks" view.
-    case "/tasks": {
-      const rawLimit = Number(url.searchParams.get("limit") ?? "500");
-      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
-      return answer("tasks", { recent: admin.recent(limit) });
-    }
-    default:
-      return NOT_FOUND;
-  }
-}
-
 /** One POST action: the schema its JSON body must satisfy (`null`: it reads none) and what it does with it. */
 type PostAction = { body: z.ZodType | null; run(admin: PodAdmin, body: unknown): Promise<unknown> };
 
@@ -188,46 +167,12 @@ const POST_ACTIONS: Record<string, PostAction> = {
   })),
 };
 
-async function handlePost(admin: PodAdmin, request: IncomingMessage, url: URL): Promise<Reply> {
-  const name = url.pathname.slice(POD_API_PREFIX.length + 1);
-  const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
-  if (action === undefined) return NOT_FOUND;
-  if (action.body === null) return ok(await action.run(admin, undefined));
-  const parsed = parseSchema(action.body, await readJsonBody(request));
-  if (!parsed.ok) throw new Error(describeIssue(parsed.issue));
-  return ok(await action.run(admin, parsed.value));
-}
+/** The panel's HTTP API (`/orca-api`) over one admin surface. */
+export class PodApi {
+  constructor(private readonly admin: PodAdmin) {}
 
-/**
- * `GET /orca-api/blob?node=&blob=`: a file a member published, fetched by this
- * node and streamed to the panel (§5.6). A failure before the first byte is the
- * usual JSON error; one after it can only cut the transfer short.
- */
-async function sendBlob(admin: PodAdmin, url: URL, response: ServerResponse): Promise<void> {
-  const ref = parseBlobRef(`${url.searchParams.get("node") ?? ""}/${url.searchParams.get("blob") ?? ""}`);
-  if (ref === null) {
-    sendJson(response, 400, { error: "node and blob must name a published file" });
-    return;
-  }
-  let opened: Awaited<ReturnType<PodAdmin["blob"]>>;
-  try {
-    opened = await admin.blob(ref.node, ref.blob);
-  } catch (error) {
-    const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;
-    sendJson(response, status, { error: errorMessage(error) });
-    return;
-  }
-  response.statusCode = 200;
-  response.setHeader("content-type", "application/octet-stream");
-  if (opened.size !== undefined) response.setHeader("content-length", String(opened.size));
-  await pipeline(opened.stream, response).catch(() => response.destroy());
-}
-
-/** Route handler for `/orca-api`; exported for tests. */
-export function createPodApiHandler(
-  admin: PodAdmin,
-): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
-  return async (request, response) => {
+  /** Route handler for `/orca-api`. */
+  async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const refused = rejection(request);
     if (refused !== null) {
       sendJson(response, refused.status, refused.body);
@@ -235,31 +180,92 @@ export function createPodApiHandler(
     }
     const url = new URL(request.url ?? POD_API_PREFIX, "http://localhost");
     if (request.method === "GET" && url.pathname === `${POD_API_PREFIX}/blob`) {
-      await sendBlob(admin, url, response);
+      await this.sendBlob(url, response);
       return;
     }
     let reply: Reply;
     try {
-      if (request.method === "GET") reply = await handleGet(admin, url);
-      else if (request.method === "POST") reply = await handlePost(admin, request, url);
+      if (request.method === "GET") reply = await this.handleGet(url);
+      else if (request.method === "POST") reply = await this.handlePost(request, url);
       else reply = NOT_FOUND;
     } catch (error) {
       reply = { status: 400, body: { error: errorMessage(error) } };
     }
     sendJson(response, reply.status, reply.body);
-  };
-}
+  }
 
-/**
- * Register the panel route on the host web server.
- *
- * Registration is fenced behind `inject(['webServer'])`, so a host without a web
- * UI (ACP, CLI) leaves the plugin without a panel instead of failing startup.
- */
-export function registerPodWeb(ctx: Context, admin: PodAdmin): void {
-  const handler = createPodApiHandler(admin);
-  const route: WebRoute = { kind: "prefix", path: POD_API_PREFIX, handler };
-  ctx.inject(["webServer"], (scope) => {
-    scope.effect(() => scope.webServer.register(route), "orca-pod.panel-route");
-  });
+  /**
+   * Register the panel route on the host web server.
+   *
+   * Registration is fenced behind `inject(['webServer'])`, so a host without a web
+   * UI (ACP, CLI) leaves the plugin without a panel instead of failing startup.
+   */
+  register(ctx: Pick<Context, "inject">): void {
+    const route: WebRoute = {
+      kind: "prefix",
+      path: POD_API_PREFIX,
+      handler: (request, response) => this.handle(request, response),
+    };
+    ctx.inject(["webServer"], (scope) => {
+      scope.effect(() => scope.webServer.register(route), "orca-pod.panel-route");
+    });
+  }
+
+  private async handleGet(url: URL): Promise<Reply> {
+    const { admin } = this;
+    switch (url.pathname.slice(POD_API_PREFIX.length)) {
+      case "/state":
+        return answer("state", podState(admin));
+      case "/task": {
+        const peer = url.searchParams.get("peer");
+        const taskId = url.searchParams.get("task");
+        if (peer === null || taskId === null) return { status: 400, body: { error: "peer and task are required" } };
+        return answer("task", await admin.task(peer, taskId));
+      }
+      // Every task this node knows about, for the panel's "all tasks" view.
+      case "/tasks": {
+        const rawLimit = Number(url.searchParams.get("limit") ?? "500");
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
+        return answer("tasks", { recent: admin.recent(limit) });
+      }
+      default:
+        return NOT_FOUND;
+    }
+  }
+
+  private async handlePost(request: IncomingMessage, url: URL): Promise<Reply> {
+    const name = url.pathname.slice(POD_API_PREFIX.length + 1);
+    const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
+    if (action === undefined) return NOT_FOUND;
+    if (action.body === null) return ok(await action.run(this.admin, undefined));
+    const parsed = parseSchema(action.body, await readJsonBody(request));
+    if (!parsed.ok) throw new Error(describeIssue(parsed.issue));
+    return ok(await action.run(this.admin, parsed.value));
+  }
+
+  /**
+   * `GET /orca-api/blob?node=&blob=`: a file a member published, fetched by this
+   * node and streamed to the panel (§5.6). A failure before the first byte is the
+   * usual JSON error; one after it can only cut the transfer short.
+   */
+  private async sendBlob(url: URL, response: ServerResponse): Promise<void> {
+    const ref = parseBlobRef(`${url.searchParams.get("node") ?? ""}/${url.searchParams.get("blob") ?? ""}`);
+    if (ref === null) {
+      sendJson(response, 400, { error: "node and blob must name a published file" });
+      return;
+    }
+    let opened: Awaited<ReturnType<PodAdmin["blob"]>>;
+    try {
+      opened = await this.admin.blob(ref.node, ref.blob);
+    } catch (error) {
+      const status =
+        error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;
+      sendJson(response, status, { error: errorMessage(error) });
+      return;
+    }
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/octet-stream");
+    if (opened.size !== undefined) response.setHeader("content-length", String(opened.size));
+    await pipeline(opened.stream, response).catch(() => response.destroy());
+  }
 }

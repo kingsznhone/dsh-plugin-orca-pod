@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSettings } from "../src/node/settings.ts";
-import { createPodAdmin } from "../src/plugin/admin.ts";
-import { createApprovalBroker } from "../src/plugin/broker.ts";
-import type { BrokerNode } from "../src/plugin/broker.ts";
-import type { PodHandle } from "../src/plugin/lifecycle.ts";
-import type { Tracker } from "../src/plugin/tracker.ts";
+import { PodAdmin } from "../src/plugin/admin.ts";
+import { ApprovalBroker } from "../src/plugin/broker.ts";
+import { Tracker } from "../src/plugin/tracker.ts";
 import type { PermissionRequest } from "../src/core/wire/grant.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { labelId } from "./fixtures/ids.ts";
+import { catalogFeed, idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
 
 const PEER = "http://127.0.0.1:11812";
 const TASK = "TASK01";
@@ -45,7 +43,7 @@ function resumed(): TaskView {
   };
 }
 
-function fakeNode(): BrokerNode & {
+function fakeNode(): {
   approved: TaskView[];
   denied: Array<{ view: TaskView; reason?: string }>;
   failNext: boolean;
@@ -54,6 +52,9 @@ function fakeNode(): BrokerNode & {
     approved: [] as TaskView[],
     denied: [] as Array<{ view: TaskView; reason?: string }>,
     failNext: false,
+    // What the admin surface reads to label the nodes in an approval.
+    self: () => ({ orca_node_id: labelId("SELF00"), display_name: "self", endpoints: [] as string[] }),
+    membership: { list: () => [] as unknown[] },
     delegation: {
       async approveTask(_peer: string, view: TaskView) {
         if (node.failNext) {
@@ -72,12 +73,12 @@ function fakeNode(): BrokerNode & {
   return node as unknown as ReturnType<typeof fakeNode>;
 }
 
-const park = (broker: ReturnType<typeof createApprovalBroker>, request = REQUEST) =>
+const park = (broker: ApprovalBroker, request = REQUEST) =>
   broker.park({ peer: PEER, view: suspended(request), request, agentId: "session-1" });
 
 describe("approval broker", () => {
   it("keeps one prompt per request id and replaces it when the request changes", () => {
-    const broker = createApprovalBroker(() => null);
+    const broker = new ApprovalBroker(idleLifecycle());
     park(broker);
     const first = broker.list()[0]!;
     expect(first).toMatchObject({
@@ -99,7 +100,7 @@ describe("approval broker", () => {
 
   it("approves the parked request on the remote task and withdraws the prompt", async () => {
     const node = fakeNode();
-    const broker = createApprovalBroker(() => node);
+    const broker = new ApprovalBroker(lifecycleWithNode(node));
     park(broker);
     const task = await broker.approve(PEER, TASK);
     expect(task.status.state).toBe("working");
@@ -110,7 +111,7 @@ describe("approval broker", () => {
 
   it("denies with the given reason, or a default one", async () => {
     const node = fakeNode();
-    const broker = createApprovalBroker(() => node);
+    const broker = new ApprovalBroker(lifecycleWithNode(node));
     park(broker);
     await broker.deny(PEER, TASK, "not this time");
     park(broker);
@@ -121,7 +122,7 @@ describe("approval broker", () => {
 
   it("keeps the prompt when the remote call fails so the user can retry", async () => {
     const node = fakeNode();
-    const broker = createApprovalBroker(() => node);
+    const broker = new ApprovalBroker(lifecycleWithNode(node));
     park(broker);
     node.failNext = true;
     await expect(broker.approve(PEER, TASK)).rejects.toThrow(/peer unreachable/);
@@ -131,13 +132,13 @@ describe("approval broker", () => {
   });
 
   it("rejects a decision without a pending prompt or a running node", async () => {
-    const broker = createApprovalBroker(() => fakeNode());
+    const broker = new ApprovalBroker(lifecycleWithNode(fakeNode()));
     await expect(broker.approve(PEER, TASK)).rejects.toThrow(/no pending permission request/);
-    await expect(createApprovalBroker(() => null).deny(PEER, TASK)).rejects.toThrow(/not running/);
+    await expect(new ApprovalBroker(idleLifecycle()).deny(PEER, TASK)).rejects.toThrow(/not running/);
   });
 
   it("notifies subscribers on park, withdraw and clear", () => {
-    const broker = createApprovalBroker(() => null);
+    const broker = new ApprovalBroker(idleLifecycle());
     let notified = 0;
     const off = broker.subscribe(() => {
       notified += 1;
@@ -159,17 +160,10 @@ describe("approval broker", () => {
 
   it("is what the panel admin approves and denies through", async () => {
     const node = fakeNode();
-    const broker = createApprovalBroker(() => node);
-    const handle = {
-      runtime: { orcaNode: null, port: 11811, error: null },
-      config: parseSettings({ workgroup_id: "wg", workgroup_password: "pw" }),
-      configured: true,
-      rememberedPeers: [],
-      adopt: async () => {},
-      ready: Promise.resolve(),
-    } as unknown as PodHandle;
-    const tracker = { list: () => [], subscribe: () => () => {} } as unknown as Tracker;
-    const admin = createPodAdmin(handle, tracker, broker);
+    const lifecycle = lifecycleWithNode(node);
+    const broker = new ApprovalBroker(lifecycle);
+    const tracker = new Tracker(lifecycle, broker, logger);
+    const admin = new PodAdmin(lifecycle, tracker, broker, catalogFeed());
 
     park(broker);
     expect(admin.approvals()).toEqual([

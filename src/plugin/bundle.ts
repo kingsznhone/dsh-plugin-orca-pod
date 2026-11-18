@@ -11,7 +11,7 @@
  * registration made there is tied to that scope's `effect`, never to the plugin's.
  */
 
-import type { Context, Inject } from "@deepseek-ai/cordis";
+import type { Context, Inject, Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-app-boot";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
@@ -19,19 +19,19 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
 // `ctx.settings` is this plugin's own injection; the service package owns the type.
 import type {} from "@deepseek-ai/dsh-settings";
 
-import { createApprovalBroker } from "./broker.ts";
-import { createPodAdmin } from "./admin.ts";
+import { PodAdmin } from "./admin.ts";
+import { ApprovalBroker } from "./broker.ts";
+import { ModelCatalogFeed } from "./catalog.ts";
 import { createConfigSchema } from "./config.ts";
-import { DATA_ROOT_ENV, defaultDataRoot } from "../node/config.ts";
-import { createModelCatalogFeed } from "./catalog.ts";
-import { startPod, stopPod } from "./lifecycle.ts";
-import { createHostStores } from "./stores.ts";
-import type { Settings } from "../node/settings.ts";
-import { optionalService } from "./services.ts";
+import { PodLifecycle } from "./lifecycle.ts";
+import { OptionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
-import { createPodTools } from "./tools.ts";
-import { createTracker, restoreTrackedDispatches } from "./tracker.ts";
-import { registerPodWeb } from "./web.ts";
+import { HostPodStores } from "./stores.ts";
+import { PodTool } from "./tools.ts";
+import { Tracker } from "./tracker.ts";
+import { PodApi } from "./web.ts";
+import { DATA_ROOT_ENV, defaultDataRoot } from "../node/config.ts";
+import type { Settings } from "../node/settings.ts";
 
 /** Standard Schema config consumed by Cordis before `apply` runs: the node `Settings`, without the password. */
 export const Config: StandardSchemaV1<unknown, Settings> = createConfigSchema();
@@ -44,27 +44,82 @@ export const Config: StandardSchemaV1<unknown, Settings> = createConfigSchema();
 export const inject: Inject<Context> = ["tools", "credentials", "configEditor"];
 
 /**
- * Compose the plugin: runtime, approval broker, tracker, tool, panel route.
+ * Compose the plugin: lifecycle, approval broker, tracker, tool, panel route.
  *
  * Startup is asynchronous and never throws into the host: a failed orca node start
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  */
 export function apply(ctx: Context, config: Settings): void {
-  // Read the environment the way DSH tells host plugins to (the launcher's
-  // snapshot, `.env` layers included) and take the DSH home the host resolved.
-  // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
-  // baseUrl is the profile hint that keeps two profiles apart.
-  const logger = ctx.logger("orca-pod");
-  const launch = launchEnvironmentOf(ctx);
-  const env = Object.fromEntries(DATA_ROOT_ENV.map((name) => [name, launch.get(name)?.value]));
-  const defaultRoot = defaultDataRoot(env, ctx.baseUrl, ctx.dshHomePath?.());
-  const catalog = createModelCatalogFeed(ctx, logger);
-  const handle = startPod(config, logger, createHostStores(ctx), { onNodeStarted: catalog.advertise }, defaultRoot);
-  catalog.watch(handle);
-  const node = () => handle.runtime.orcaNode;
-  const broker = createApprovalBroker(node);
-  const tracker = createTracker(node, broker, logger);
+  new PodPlugin(ctx, config);
+}
+
+/** One plugin fiber: it builds what the pod is made of and hooks it into the host. */
+class PodPlugin {
+  private readonly logger: Logger;
+  private readonly feed: ModelCatalogFeed;
+  private readonly lifecycle: PodLifecycle;
+  private readonly broker: ApprovalBroker;
+  private readonly tracker: Tracker;
+  private readonly agents: OptionalService<"agents">;
+
+  constructor(ctx: Context, config: Settings) {
+    // Read the environment the way DSH tells host plugins to (the launcher's
+    // snapshot, `.env` layers included) and take the DSH home the host resolved.
+    // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
+    // baseUrl is the profile hint that keeps two profiles apart.
+    this.logger = ctx.logger("orca-pod");
+    const launch = launchEnvironmentOf(ctx);
+    const env = Object.fromEntries(DATA_ROOT_ENV.map((name) => [name, launch.get(name)?.value]));
+    const defaultRoot = defaultDataRoot(env, ctx.baseUrl, ctx.dshHomePath?.());
+    this.feed = new ModelCatalogFeed(ctx, this.logger);
+    this.lifecycle = new PodLifecycle(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
+    this.lifecycle.start();
+    this.feed.watch(this.lifecycle);
+    this.broker = new ApprovalBroker(this.lifecycle);
+    this.tracker = new Tracker(this.lifecycle, this.broker, this.logger);
+    this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
+      if (service !== undefined) void this.lifecycle.ready.then(() => this.restore());
+    });
+
+    // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
+    // the session when it is disposed, and a session created while the host runs
+    // (including one resumed after a restart) picks up its own dispatches.
+    ctx.on("agent/created", ({ agent }) => {
+      this.onAgentCreated(agent);
+    });
+    // A new user message gives the agent a fresh budget of tracker wake-ups.
+    ctx.on("agent/inbox/claimed", ({ agent, message }) => {
+      this.onInboxClaimed(agent, message);
+    });
+
+    // Cordis runs the returned disposer when the plugin fiber unloads (DSH exit,
+    // reload, or the bundle being disabled). It awaits the orca node shutdown.
+    ctx.effect(() => () => this.dispose(), "orca-pod.orca-node");
+
+    const sandbox = new OptionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy");
+
+    // The tool is only visible once the workgroup credentials exist: before that
+    // every call would fail with "not configured" and clutter the tool list.
+    const tool = new PodTool(this.lifecycle, this.tracker, sandbox);
+    ctx.tools.register(tool.definition(), { when: () => this.lifecycle.configured });
+    new PodApi(new PodAdmin(this.lifecycle, this.tracker, this.broker, this.feed)).register(ctx);
+
+    // The skill ships inside the package and is registered in memory; no copy is
+    // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
+    // this host's registry; it learns publish/fetch from the task preamble instead.
+    if (config.skill_injection) {
+      ctx.inject(["skills"], (scope) => {
+        scope.effect(() => scope.skills.register(skillRegistration()), "orca-pod.skill");
+      });
+    }
+
+    // The bundle renders its own settings section, so DSH must not also generate
+    // an auto page from the Config schema.
+    ctx.inject(["settings"], (scope) => {
+      scope.effect(() => scope.settings.configure({ auto: false }, ctx.fiber), "orca-pod.settings-page");
+    });
+  }
 
   /**
    * Resume tracking from the dispatch log (§8.3). Without `agent`, every session
@@ -72,67 +127,28 @@ export function apply(ctx: Context, config: Settings): void {
    * appearing); with `agent`, only that session's own dispatches. Repeating it
    * is harmless: watched or abandoned tasks are left alone.
    */
-  const restore = (agent?: Agent): void => {
-    const orcaNode = node();
-    if (orcaNode === null) return;
-    restoreTrackedDispatches(
-      tracker,
-      orcaNode.delegation.log.list(),
-      (id) => (agent !== undefined ? agent : agents.current()?.get(id)),
-      logger,
+  restore(agent?: Agent): void {
+    const node = this.lifecycle.node;
+    if (node === null) return;
+    this.tracker.restore(
+      node.delegation.log.list(),
+      (id) => (agent !== undefined ? agent : this.agents.current()?.get(id)),
       agent?.id,
     );
-  };
-
-  const agents = optionalService(ctx, "agents", "orca-pod.agents", (service) => {
-    if (service !== undefined) void handle.ready.then(() => restore());
-  });
-
-  // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
-  // the session when it is disposed, and a session created while the host runs
-  // (including one resumed after a restart) picks up its own dispatches.
-  ctx.on("agent/created", ({ agent }) => {
-    agent.ctx.effect(() => () => tracker.forget(agent.id), "orca-pod.track");
-    void handle.ready.then(() => restore(agent));
-  });
-
-  // A new user message gives the agent a fresh budget of tracker wake-ups.
-  ctx.on("agent/inbox/claimed", ({ agent, message }) => {
-    if (message.source?.kind === "user") tracker.resetWakes(agent.id);
-  });
-
-  // Cordis runs the returned disposer when the plugin fiber unloads (DSH exit,
-  // reload, or the bundle being disabled). It awaits the orca node shutdown.
-  ctx.effect(
-    () => async () => {
-      broker.clear();
-      tracker.stop();
-      await stopPod(handle, logger);
-    },
-    "orca-pod.orca-node",
-  );
-
-  const sandbox = optionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy");
-
-  // The tool is only visible once the workgroup credentials exist: before that
-  // every call would fail with "not configured" and clutter the tool list.
-  for (const tool of createPodTools(handle, tracker, sandbox.current)) {
-    ctx.tools.register(tool, { when: () => handle.configured });
-  }
-  registerPodWeb(ctx, createPodAdmin(handle, tracker, broker, catalog.reasoningEfforts));
-
-  // The skill ships inside the package and is registered in memory; no copy is
-  // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
-  // this host's registry; it learns publish/fetch from the task preamble instead.
-  if (config.skill_injection) {
-    ctx.inject(["skills"], (scope) => {
-      scope.effect(() => scope.skills.register(skillRegistration()), "orca-pod.skill");
-    });
   }
 
-  // The bundle renders its own settings section, so DSH must not also generate
-  // an auto page from the Config schema.
-  ctx.inject(["settings"], (scope) => {
-    scope.effect(() => scope.settings.configure({ auto: false }, ctx.fiber), "orca-pod.settings-page");
-  });
+  onAgentCreated(agent: Agent): void {
+    agent.ctx.effect(() => () => this.tracker.forget(agent.id), "orca-pod.track");
+    void this.lifecycle.ready.then(() => this.restore(agent));
+  }
+
+  onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {
+    if (message.source?.kind === "user") this.tracker.resetWakes(agent.id);
+  }
+
+  async dispose(): Promise<void> {
+    this.broker.clear();
+    this.tracker.stop();
+    await this.lifecycle.stop();
+  }
 }

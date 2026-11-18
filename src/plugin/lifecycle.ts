@@ -1,10 +1,10 @@
 /**
  * Node lifecycle for the Orca pod DSH bundle.
  *
- * The DSH host must not block on an orca node: `startPod` returns a handle
- * synchronously and performs config resolution, `orcaNode.start()`, and initial
- * `join`s on a promise that never rejects. Failures are recorded on
- * `handle.runtime.error` and logged, so `apply` always returns quickly.
+ * The DSH host must not block on an orca node: `start()` returns at once and
+ * performs config resolution, `orcaNode.start()` and the initial `join`s on a
+ * promise that never rejects. Failures are recorded in `error` and logged, so
+ * `apply` always returns quickly.
  *
  * Where things live (§7.3, §9.2):
  * - **settings** are the plugin config. The panel persists them through
@@ -18,69 +18,22 @@
 
 import { rm } from "node:fs/promises";
 
+import type { Logger } from "@deepseek-ai/cordis";
+
+import { errorMessage } from "../core/errors.ts";
+import { identityPath } from "../core/identity.ts";
+import { isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
+import { SerialQueue } from "../core/serial-queue.ts";
 import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
 import { OrcaNode, createPersistentStorage } from "../node/orca-node.ts";
 import { parseSettings, passwordRefFor } from "../node/settings.ts";
-import { identityPath } from "../core/identity.ts";
-import { isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
 import type { ConfigFields, PanelPatch, Settings } from "../node/settings.ts";
+import type { ModelCatalogFeed } from "./catalog.ts";
+import { RememberedPeers } from "./peers-file.ts";
+import type { PodStores, RawConfig } from "./stores.ts";
 
-import type { Logger } from "@deepseek-ai/cordis";
-import { loadRememberedPeers, peerStatePath, saveRememberedPeers, type PodStores, type RawConfig } from "./stores.ts";
-import { errorMessage } from "../core/errors.ts";
-
-/** Observable state of the pod owned by one plugin fiber. */
-interface PodRuntime {
-  /** Created orca node, or null before creation / after a failed creation. */
-  orcaNode: OrcaNode | null;
-  /** Endpoint reported by `orcaNode.start()`. */
-  url: string | null;
-  /** Bound listen port reported by `orcaNode.start()`. */
-  port: number | null;
-  /** ISO timestamp of a successful start. */
-  started_at: string | null;
-  /** First fatal startup error, if any. */
-  error: Error | null;
-}
-
-/** Handle returned by `startPod`; cleanup and tools share it. */
 /** Settings with the data directory resolved: the lifecycle fixes it once, at start (DX13). */
 export type RootedSettings = Settings & { data_root: string };
-
-export interface PodHandle {
-  runtime: PodRuntime;
-  /** Effective config: the plugin config plus the resolved password (in memory only). */
-  config: RootedSettings;
-  /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
-  configured: boolean;
-  /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
-  rememberedPeers: string[];
-  /** Startup completion; resolves after success or failure, never rejects. */
-  ready: Promise<void>;
-  /**
-   * Apply a panel patch: store a new password in the credential store, persist the
-   * panel fields into the plugin config (`null` clears a field to its default),
-   * and restart the node with the result.
-   */
-  reconfigure(patch: PanelPatch): Promise<void>;
-  /** `join` one peer now and remember it in the peer state file. */
-  addPeer(peer: string): Promise<void>;
-  /** Leave the workgroup: tell known peers and forget every remembered and configured peer. */
-  disconnect(): Promise<void>;
-  /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
-  reset(): Promise<void>;
-  /**
-   * Stop accepting lifecycle writes: wait for the current operation, and make
-   * pending queue entries skip starting a new node. Used by `stopPod` so a
-   * reconfiguration cannot leak a listener after host shutdown (§9.2).
-   */
-  dispose(): Promise<void>;
-  /**
-   * Take a config the host persisted, as a plugin restart would: stop the node
-   * and start again from `config`. Only the in-memory stores call it.
-   */
-  adopt(config: Settings): Promise<void>;
-}
 
 /** Anything thrown, as an `Error`. */
 function toError(error: unknown): Error {
@@ -113,293 +66,339 @@ function needsSetup(config: Settings): boolean {
   return !config.workgroup_id || !config.workgroup_password;
 }
 
-async function startNode(
-  config: RootedSettings,
-  remembered: readonly string[],
-  runtime: PodRuntime,
-  logger: Logger,
-  hooks: StartPodHooks,
-): Promise<void> {
-  const dataRoot = config.data_root;
-  // The plugin runs real DSH sessions by default. A loopback-only advertise list
-  // is useless across machines, so it means "derive from the listen address".
-  const nodeConfig = await createOrcaNodeConfig({
-    ...config,
-    data_root: dataRoot,
-    executor: config.executor ?? "acp",
-    endpoints: config.endpoints.every(isLoopbackEndpoint) ? [] : config.endpoints,
-  });
-  await saveConfig(configPath(dataRoot), nodeConfig);
-  const orcaNode = new OrcaNode(nodeConfig, { storage: createPersistentStorage(nodeConfig), logger });
-  runtime.orcaNode = orcaNode;
-
-  const info = await startListening(orcaNode, runtime);
-  runtime.url = info.url;
-  runtime.port = info.port;
-  runtime.started_at = new Date().toISOString();
-  runtime.error = null;
-  logger.info(
-    `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
-  );
-
-  // Install ambient state before the first join so the joined self record and
-  // every heartbeat carry it from the start.
-  try {
-    hooks.onNodeStarted?.(orcaNode);
-  } catch (error) {
-    logger.warn(`orca-pod: onNodeStarted hook failed: ${errorMessage(error)}`);
-  }
-
-  // Startup peers from the config, then the ones joined at runtime.
-  await joinPeers(orcaNode, new Set([...config.peers, ...remembered]), normalizePeerUrl(info.url), logger);
-}
-
-/** Start listening; a node that cannot is stopped and dropped from the runtime, and the failure is kept. */
-async function startListening(orcaNode: OrcaNode, runtime: PodRuntime): Promise<{ url: string; port: number }> {
-  try {
-    return await orcaNode.start();
-  } catch (error) {
-    runtime.error = toError(error);
-    runtime.orcaNode = null;
-    try {
-      await orcaNode.stop();
-    } catch {
-      // The node never finished starting; nothing useful to report here.
-    }
-    throw runtime.error;
-  }
-}
-
-/** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */
-async function joinPeers(orcaNode: OrcaNode, peers: Iterable<string>, self: string, logger: Logger): Promise<void> {
-  for (const peer of peers) {
-    if (peer === self) continue;
-    try {
-      const response = await orcaNode.mesh.join(peer);
-      logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`);
-    } catch (error) {
-      logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`);
-    }
-  }
-}
-
-async function stopNode(runtime: PodRuntime, logger: Logger): Promise<void> {
-  const orcaNode = runtime.orcaNode;
-  runtime.orcaNode = null;
-  runtime.url = null;
-  runtime.port = null;
-  if (orcaNode === null) return;
-  try {
-    await orcaNode.stop();
-  } catch (error) {
-    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
-  }
-}
-
 /**
- * Hooks a host plugin uses to attach ambient state to every orca node start
- * (initial start, panel reconfigure). The model catalog (§6.15) is the
- * only user today: it must be installed before the first `join` so the self
- * record peers receive already advertises it.
+ * The orca node of one plugin fiber, and what drives it: start, panel
+ * reconfiguration, peers, reset. Every restart and state write goes through one
+ * queue, so two of them never overlap.
  */
-export interface StartPodHooks {
-  onNodeStarted?: (orcaNode: OrcaNode) => void;
-}
-
-/**
- * Create and start a pod orca node without blocking the caller.
- *
- * The returned `ready` promise resolves after startup (success or failure) and
- * never rejects; inspect `runtime.error` for the failure cause.
- */
-export function startPod(
-  bundleConfig: Settings,
-  logger: Logger,
-  stores: PodStores,
-  hooks: StartPodHooks = {},
-  defaultRoot?: string,
-): PodHandle {
-  const runtime: PodRuntime = { orcaNode: null, url: null, port: null, started_at: null, error: null };
-  // Resolve the data directory once: an explicit `data_root` wins, else the
-  // host-provided default (the DSH profile directory), else the process default.
-  // Every later read (peer state, node config, panel) then sees the same path.
-  const dataRoot = bundleConfig.data_root ?? defaultRoot ?? defaultDataRoot();
-  const rooted = (config: Settings): RootedSettings => ({
-    ...config,
-    data_root: config.data_root ?? dataRoot,
-    workgroup_password: "",
-  });
+export class PodLifecycle {
+  private readonly dataRoot: string;
+  private readonly queue = new SerialQueue();
+  private readonly peers: RememberedPeers;
   /** The plugin config as the host gave it; the password is resolved separately. */
-  let pluginConfig = rooted(bundleConfig);
+  private pluginConfig: RootedSettings;
+  private effective: RootedSettings;
+  private isConfigured = false;
+  private disposed = false;
+  private readyPromise: Promise<void> = Promise.resolve();
 
-  let disposed = false;
-  let queue: Promise<void> = Promise.resolve();
+  private runningNode: OrcaNode | null = null;
+  private listenUrl: string | null = null;
+  private listenPort: number | null = null;
+  private startedAtIso: string | null = null;
+  private failure: Error | null = null;
+
+  constructor(
+    config: Settings,
+    private readonly logger: Logger,
+    private readonly stores: PodStores,
+    private readonly catalog: ModelCatalogFeed,
+    defaultRoot?: string,
+  ) {
+    // Resolve the data directory once: an explicit `data_root` wins, else the
+    // host-provided default (the DSH profile directory), else the process default.
+    // Every later read (peer state, node config, panel) then sees the same path.
+    this.dataRoot = config.data_root ?? defaultRoot ?? defaultDataRoot();
+    this.peers = new RememberedPeers(this.dataRoot, logger);
+    this.pluginConfig = this.rooted(config);
+    this.effective = this.pluginConfig;
+  }
+
+  /** The created orca node, or null before creation, after a failed start and after `stop`. */
+  get node(): OrcaNode | null {
+    return this.runningNode;
+  }
+
+  /** Endpoint reported by `orcaNode.start()`. */
+  get url(): string | null {
+    return this.listenUrl;
+  }
+
+  /** Bound listen port reported by `orcaNode.start()`. */
+  get port(): number | null {
+    return this.listenPort;
+  }
+
+  /** ISO timestamp of a successful start. */
+  get startedAt(): string | null {
+    return this.startedAtIso;
+  }
+
+  /** The first fatal startup error, if any. */
+  get error(): Error | null {
+    return this.failure;
+  }
+
+  /** Effective config: the plugin config plus the resolved password (in memory only). */
+  get config(): RootedSettings {
+    return this.effective;
+  }
+
+  /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
+  get configured(): boolean {
+    return this.isConfigured;
+  }
+
+  /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
+  get rememberedPeers(): readonly string[] {
+    return this.peers.list();
+  }
+
+  /** Startup completion; resolves after success or failure, never rejects. */
+  get ready(): Promise<void> {
+    return this.readyPromise;
+  }
+
+  /** Begin starting: load the remembered peers and boot the node. Does not wait for it. */
+  start(): void {
+    this.readyPromise = this.queue.run(async () => {
+      await this.peers.load();
+      await this.boot();
+    });
+  }
 
   /**
-   * Serialize node restarts and state writes. A failed operation must not
-   * poison the lane: the caller still sees its rejection, but the next
-   * operation runs against a clean queue.
+   * Stop the pod; safe to call after a failed startup and safe to await twice.
+   * It lets an in-flight reconfiguration finish (or skip its restart), so shutdown
+   * cannot race a new listener into existence after the host disposed us (§9.2).
    */
-  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const run = queue.catch(() => {}).then(operation);
-    queue = run.then(
-      () => {},
-      () => {},
-    );
-    return run;
+  async stop(): Promise<void> {
+    await this.readyPromise;
+    this.disposed = true;
+    await this.queue.drain();
+    const node = this.runningNode;
+    if (node === null) return;
+    try {
+      await node.stop();
+      this.logger.info("orca-pod: orca node stopped");
+    } catch (error) {
+      this.logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
+    }
   }
 
-  /** Remove a file; one that cannot be removed is reported, not fatal. */
-  async function removeQuietly(path: string): Promise<void> {
-    try {
-      await rm(path, { force: true });
-    } catch (error) {
-      logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
+  /**
+   * Apply a panel patch: store a new password in the credential store, persist the
+   * panel fields into the plugin config (`null` clears a field to its default),
+   * and restart the node with the result.
+   */
+  async reconfigure(patch: PanelPatch): Promise<void> {
+    const { workgroup_password: password, ...fields } = patch;
+    // Omit the field to keep the current password; a passwordless mesh is not supported.
+    if (typeof password === "string" && password.trim().length === 0) {
+      throw new Error("a workgroup password is required; a passwordless mesh is not supported");
     }
+    // Validate the whole result first, so a bad patch changes nothing.
+    const preview = parseSettings(applyPanelFields(withoutSecret(this.effective), fields));
+    const ref = passwordRefFor(preview);
+    if (ref === undefined) throw new Error("a workgroup id is required");
+    // Switching workgroups keeps the current password unless a new one is
+    // given: the password is a local secret, not a claim tied to one group.
+    const carried =
+      ref !== passwordRefFor(this.effective) && this.effective.workgroup_password.length > 0
+        ? this.effective.workgroup_password
+        : undefined;
+    const secret = typeof password === "string" ? password : carried;
+    // The secret goes first: in DSH the config write restarts the plugin, and
+    // the new instance must already find the password.
+    if (secret !== undefined) await this.stores.writeSecret(ref, secret);
+    else if ((await this.stores.readSecret(ref)) === undefined) {
+      throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
+    }
+    // Outside the queue on purpose: a host restart waits for the queue to drain.
+    const changed = await this.persist((raw) => applyPanelFields(raw, fields));
+    // Nothing to persist (only the password changed, or the bundle already
+    // names the workgroup): no host restart follows, so restart in place.
+    if (!changed) await this.queue.run(() => this.boot());
+  }
+
+  /** `join` one peer now and remember it in the peer state file. */
+  addPeer(peer: string): Promise<void> {
+    return this.queue.run(async () => {
+      const node = this.runningNode;
+      if (node === null) throw new Error("orca node is not running");
+      await node.mesh.join(peer);
+      await this.peers.add(peer);
+    });
+  }
+
+  /** Leave the workgroup: tell known peers and forget every remembered and configured peer. */
+  async disconnect(): Promise<void> {
+    await this.queue.run(async () => {
+      const node = this.runningNode;
+      if (node !== null) {
+        try {
+          await node.mesh.leave();
+        } catch (error) {
+          this.logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
+        }
+      }
+      await this.peers.clear();
+    });
+    // Startup peers named in the plugin config are forgotten too.
+    if (this.effective.peers.length > 0) await this.persist((raw) => applyPanelFields(raw, { peers: null }));
+  }
+
+  /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
+  async reset(): Promise<void> {
+    const ref = passwordRefFor(this.effective);
+    await this.queue.run(async () => {
+      await this.stopNode();
+      for (const path of [configPath(this.dataRoot), identityPath(this.dataRoot), this.peers.path]) {
+        await this.removeQuietly(path);
+      }
+      this.peers.forgetInMemory();
+      this.failure = null;
+    });
+    if (ref !== undefined) await this.stores.clearSecret(ref);
+    const changed = await this.persist((raw) =>
+      applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
+    );
+    // Back to the first-run wizard: without a stored password nothing starts,
+    // even when an inherited config layer still names a workgroup.
+    if (!changed) await this.queue.run(() => this.boot());
+  }
+
+  /**
+   * Take a config the host persisted, as a plugin restart would: stop the node
+   * and start again from `config`. A host that restarts the plugin itself never
+   * calls it.
+   */
+  adopt(config: Settings): Promise<void> {
+    return this.queue.run(async () => {
+      this.pluginConfig = this.rooted(config);
+      await this.boot();
+    });
+  }
+
+  private rooted(config: Settings): RootedSettings {
+    return { ...config, data_root: config.data_root ?? this.dataRoot, workgroup_password: "" };
+  }
+
+  /** Write a config change; true when something was stored (the host restarts the plugin, or we adopt it here). */
+  private async persist(change: (raw: RawConfig) => RawConfig): Promise<boolean> {
+    const written = await this.stores.writeConfig(change);
+    if (written === null) return false;
+    if (!this.stores.restartsOnWrite) await this.adopt(parseSettings(written));
+    return true;
   }
 
   /** (Re)start from `pluginConfig`: resolve the password, then run the node if setup is complete. Queue only. */
-  async function boot(): Promise<void> {
-    await stopNode(runtime, logger);
-    runtime.error = null;
-    const password = await readPassword(pluginConfig);
-    handle.config = { ...pluginConfig, workgroup_password: password ?? "" };
-    handle.configured = !needsSetup(handle.config);
-    if (disposed) return;
-    if (!handle.configured) {
+  private async boot(): Promise<void> {
+    await this.stopNode();
+    this.failure = null;
+    const password = await this.readPassword(this.pluginConfig);
+    this.effective = { ...this.pluginConfig, workgroup_password: password ?? "" };
+    this.isConfigured = !needsSetup(this.effective);
+    if (this.disposed) return;
+    if (!this.isConfigured) {
       // The panel shows its first-run wizard and calls `reconfigure` once the
       // user has picked a workgroup, password and listen address.
-      logger.info("orca-pod: waiting for workgroup setup from the panel");
+      this.logger.info("orca-pod: waiting for workgroup setup from the panel");
       return;
     }
     try {
-      await startNode(handle.config, handle.rememberedPeers, runtime, logger, hooks);
+      await this.startNode(this.effective);
     } catch (error) {
-      runtime.error = toError(error);
-      logger.error(`orca-pod: orca node failed to start: ${errorMessage(runtime.error)}`);
+      this.failure = toError(error);
+      this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(this.failure)}`);
     }
   }
 
   /** The stored workgroup password, or undefined when there is none or the store cannot be read. */
-  async function readPassword(config: Settings): Promise<string | undefined> {
+  private async readPassword(config: Settings): Promise<string | undefined> {
     const ref = passwordRefFor(config);
     if (ref === undefined) return undefined;
     try {
-      return await stores.readSecret(ref);
+      return await this.stores.readSecret(ref);
     } catch (error) {
-      logger.warn(`orca-pod: could not read the workgroup password (${ref}): ${errorMessage(error)}`);
+      this.logger.warn(`orca-pod: could not read the workgroup password (${ref}): ${errorMessage(error)}`);
       return undefined;
     }
   }
 
-  const handle: PodHandle = {
-    runtime,
-    config: pluginConfig,
-    configured: false,
-    rememberedPeers: [],
-    ready: Promise.resolve(),
-    async reconfigure(patch) {
-      const { workgroup_password: password, ...fields } = patch;
-      // Omit the field to keep the current password; a passwordless mesh is not supported.
-      if (typeof password === "string" && password.trim().length === 0) {
-        throw new Error("a workgroup password is required; a passwordless mesh is not supported");
-      }
-      // Validate the whole result first, so a bad patch changes nothing.
-      const preview = parseSettings(applyPanelFields(withoutSecret(handle.config), fields));
-      const ref = passwordRefFor(preview);
-      if (ref === undefined) throw new Error("a workgroup id is required");
-      // Switching workgroups keeps the current password unless a new one is
-      // given: the password is a local secret, not a claim tied to one group.
-      const carried =
-        ref !== passwordRefFor(handle.config) && handle.config.workgroup_password.length > 0
-          ? handle.config.workgroup_password
-          : undefined;
-      const secret = typeof password === "string" ? password : carried;
-      // The secret goes first: in DSH the config write restarts the plugin, and
-      // the new instance must already find the password.
-      if (secret !== undefined) await stores.writeSecret(ref, secret);
-      else if ((await stores.readSecret(ref)) === undefined) {
-        throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
-      }
-      // Outside the queue on purpose: a host restart waits for the queue to drain.
-      const changed = await stores.writeConfig((raw) => applyPanelFields(raw, fields));
-      // Nothing to persist (only the password changed, or the bundle already
-      // names the workgroup): no host restart follows, so restart in place.
-      if (!changed) await enqueue(boot);
-    },
-    addPeer: (peer) =>
-      enqueue(async () => {
-        const orcaNode = runtime.orcaNode;
-        if (orcaNode === null) throw new Error("orca node is not running");
-        await orcaNode.mesh.join(peer);
-        if (!handle.rememberedPeers.includes(peer)) handle.rememberedPeers = [...handle.rememberedPeers, peer];
-        await saveRememberedPeers(dataRoot, handle.rememberedPeers);
-      }),
-    async disconnect() {
-      await enqueue(async () => {
-        const orcaNode = runtime.orcaNode;
-        if (orcaNode !== null) {
-          try {
-            await orcaNode.mesh.leave();
-          } catch (error) {
-            logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
-          }
-        }
-        handle.rememberedPeers = [];
-        await saveRememberedPeers(dataRoot, []);
-      });
-      // Startup peers named in the plugin config are forgotten too.
-      if (handle.config.peers.length > 0) await stores.writeConfig((raw) => applyPanelFields(raw, { peers: null }));
-    },
-    async reset() {
-      const ref = passwordRefFor(handle.config);
-      await enqueue(async () => {
-        await stopNode(runtime, logger);
-        for (const path of [configPath(dataRoot), identityPath(dataRoot), peerStatePath(dataRoot)]) {
-          await removeQuietly(path);
-        }
-        handle.rememberedPeers = [];
-        runtime.error = null;
-      });
-      if (ref !== undefined) await stores.clearSecret(ref);
-      const changed = await stores.writeConfig((raw) =>
-        applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
-      );
-      // Back to the first-run wizard: without a stored password nothing starts,
-      // even when an inherited config layer still names a workgroup.
-      if (!changed) await enqueue(boot);
-    },
-    adopt: (config) =>
-      enqueue(async () => {
-        pluginConfig = rooted(config);
-        await boot();
-      }),
-    dispose: async () => {
-      disposed = true;
-      await queue;
-    },
-  };
+  private async startNode(config: RootedSettings): Promise<void> {
+    const dataRoot = config.data_root;
+    // The plugin runs real DSH sessions by default. A loopback-only advertise list
+    // is useless across machines, so it means "derive from the listen address".
+    const nodeConfig = await createOrcaNodeConfig({
+      ...config,
+      data_root: dataRoot,
+      executor: config.executor ?? "acp",
+      endpoints: config.endpoints.every(isLoopbackEndpoint) ? [] : config.endpoints,
+    });
+    await saveConfig(configPath(dataRoot), nodeConfig);
+    const node = new OrcaNode(nodeConfig, { storage: createPersistentStorage(nodeConfig), logger: this.logger });
+    this.runningNode = node;
 
-  stores.attach?.(handle);
-  handle.ready = enqueue(async () => {
-    handle.rememberedPeers = await loadRememberedPeers(dataRoot, logger);
-    await boot();
-  });
-  return handle;
-}
+    const info = await this.startListening(node);
+    this.listenUrl = info.url;
+    this.listenPort = info.port;
+    this.startedAtIso = new Date().toISOString();
+    this.failure = null;
+    this.logger.info(
+      `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
+    );
 
-/** Stop the pod; safe to call after a failed startup and safe to await twice. */
-export async function stopPod(handle: PodHandle, logger: Logger): Promise<void> {
-  await handle.ready;
-  // Let an in-flight reconfiguration finish (or skip its restart), so shutdown
-  // cannot race a new listener into existence after the host disposed us.
-  await handle.dispose();
-  const orcaNode = handle.runtime.orcaNode;
-  if (orcaNode === null) return;
-  try {
-    await orcaNode.stop();
-    logger.info("orca-pod: orca node stopped");
-  } catch (error) {
-    logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
+    // Install the model catalog before the first join so the joined self record
+    // and every heartbeat carry it from the start (§6.15).
+    try {
+      this.catalog.advertise(node);
+    } catch (error) {
+      this.logger.warn(`orca-pod: advertising the model catalog failed: ${errorMessage(error)}`);
+    }
+
+    // Startup peers from the config, then the ones joined at runtime.
+    await this.joinPeers(node, new Set([...config.peers, ...this.peers.list()]), normalizePeerUrl(info.url));
+  }
+
+  /** Start listening; a node that cannot is stopped and dropped, and the failure is kept. */
+  private async startListening(node: OrcaNode): Promise<{ url: string; port: number }> {
+    try {
+      return await node.start();
+    } catch (error) {
+      this.failure = toError(error);
+      this.runningNode = null;
+      try {
+        await node.stop();
+      } catch {
+        // The node never finished starting; nothing useful to report here.
+      }
+      throw this.failure;
+    }
+  }
+
+  /** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */
+  private async joinPeers(node: OrcaNode, peers: Iterable<string>, self: string): Promise<void> {
+    for (const peer of peers) {
+      if (peer === self) continue;
+      try {
+        const response = await node.mesh.join(peer);
+        this.logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`);
+      } catch (error) {
+        this.logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  private async stopNode(): Promise<void> {
+    const node = this.runningNode;
+    this.runningNode = null;
+    this.listenUrl = null;
+    this.listenPort = null;
+    if (node === null) return;
+    try {
+      await node.stop();
+    } catch (error) {
+      this.logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Remove a file; one that cannot be removed is reported, not fatal. */
+  private async removeQuietly(path: string): Promise<void> {
+    try {
+      await rm(path, { force: true });
+    } catch (error) {
+      this.logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
+    }
   }
 }

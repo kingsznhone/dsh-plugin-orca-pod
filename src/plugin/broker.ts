@@ -10,12 +10,14 @@
 
 import { randomUUID } from "node:crypto";
 
+import { ChangeSignal } from "../core/events.ts";
 import type { OrcaNode } from "../node/orca-node.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { TaskView } from "../task/wire.ts";
+import type { PodLifecycle } from "./lifecycle.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
-interface ApprovalPrompt {
+export interface ApprovalPrompt {
   id: string;
   peer: string;
   task_id: string;
@@ -28,28 +30,6 @@ interface ApprovalPrompt {
   created_at: string;
 }
 
-/** The part of the orca node that carries a decision to the remote task. */
-export type BrokerNode = Pick<OrcaNode, "delegation">;
-
-export interface ApprovalBroker {
-  /**
-   * Park a request seen on a tracked task. The tracker polls while the task stays
-   * suspended, so the same request id keeps its prompt (stable id and created_at).
-   */
-  park(input: { peer: string; view: TaskView; request: PermissionRequest; agentId: string }): void;
-  /** Pending prompts, oldest first. */
-  list(): ApprovalPrompt[];
-  /** Grant the parked request once; resolves with the resumed task. */
-  approve(peer: string, taskId: string): Promise<TaskView>;
-  /** Fail the parked request on the remote task. */
-  deny(peer: string, taskId: string, reason?: string): Promise<TaskView>;
-  /** Drop the prompt of a task that settled or was answered elsewhere. */
-  withdraw(peer: string, taskId: string): void;
-  /** Drop every prompt (plugin unload). */
-  clear(): void;
-  subscribe(listener: () => void): () => void;
-}
-
 interface Parked {
   prompt: ApprovalPrompt;
   /** The view the user saw; the grant is signed for exactly its request. */
@@ -59,69 +39,93 @@ interface Parked {
 /** The key a task is known by on this side: where it runs and its id there. Stable across polls. */
 export const taskKey = (peer: string, taskId: string): string => `${peer}|${taskId}`;
 
-export function createApprovalBroker(getNode: () => BrokerNode | null): ApprovalBroker {
-  const parked = new Map<string, Parked>();
-  const listeners = new Set<() => void>();
+export class ApprovalBroker {
+  private readonly parked = new Map<string, Parked>();
+  private readonly changes = new ChangeSignal();
 
-  function notify(): void {
-    for (const listener of [...listeners]) listener();
+  /** The lifecycle owns the running node, which carries a decision to the remote task. */
+  constructor(private readonly lifecycle: PodLifecycle) {}
+
+  /**
+   * Park a request seen on a tracked task. The tracker polls while the task stays
+   * suspended, so the same request id keeps its prompt (stable id and created_at).
+   */
+  park({
+    peer,
+    view,
+    request,
+    agentId,
+  }: {
+    peer: string;
+    view: TaskView;
+    request: PermissionRequest;
+    agentId: string;
+  }): void {
+    const key = taskKey(peer, view.id);
+    if (this.parked.get(key)?.prompt.request_id === request.request_id) return;
+    const prompt: ApprovalPrompt = {
+      id: randomUUID(),
+      peer,
+      task_id: view.id,
+      request_id: request.request_id,
+      tool: request.tool,
+      requested: request.requested,
+      request,
+      agent_id: agentId,
+      created_at: new Date().toISOString(),
+    };
+    this.parked.set(key, { prompt, view });
+    this.changes.notify();
+  }
+
+  /** Pending prompts, oldest first. */
+  list(): ApprovalPrompt[] {
+    return [...this.parked.values()].map((entry) => entry.prompt);
+  }
+
+  /** Grant the parked request once; resolves with the resumed task. */
+  approve(peer: string, taskId: string): Promise<TaskView> {
+    return this.decide(peer, taskId, (node, view) => node.delegation.approveTask(peer, view));
+  }
+
+  /** Fail the parked request on the remote task. */
+  deny(peer: string, taskId: string, reason = "denied from the UI"): Promise<TaskView> {
+    return this.decide(peer, taskId, (node, view) => node.delegation.denyTask(peer, view, reason));
+  }
+
+  /** Drop the prompt of a task that settled or was answered elsewhere. */
+  withdraw(peer: string, taskId: string): void {
+    if (this.parked.delete(taskKey(peer, taskId))) this.changes.notify();
+  }
+
+  /** Drop every prompt (plugin unload). */
+  clear(): void {
+    if (this.parked.size === 0) return;
+    this.parked.clear();
+    this.changes.notify();
+  }
+
+  subscribe(listener: () => void): () => void {
+    return this.changes.subscribe(listener);
   }
 
   /** Run one decision against the remote task, then drop the prompt it answered. */
-  async function decide(
+  private async decide(
     peer: string,
     taskId: string,
-    act: (node: BrokerNode, view: TaskView) => Promise<TaskView>,
+    act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
   ): Promise<TaskView> {
-    const node = getNode();
+    const node = this.lifecycle.node;
     if (node === null) throw new Error("orca node is not running");
     const key = taskKey(peer, taskId);
-    const entry = parked.get(key);
+    const entry = this.parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");
     const resumed = await act(node, entry.view);
     // A failed call leaves the prompt for a retry; a newer request keeps its own.
-    if (parked.get(key) === entry) {
-      parked.delete(key);
-      notify();
+    if (this.parked.get(key) === entry) {
+      this.parked.delete(key);
+      this.changes.notify();
     }
     return resumed;
   }
-
-  return {
-    park({ peer, view, request, agentId }) {
-      const key = taskKey(peer, view.id);
-      if (parked.get(key)?.prompt.request_id === request.request_id) return;
-      const prompt: ApprovalPrompt = {
-        id: randomUUID(),
-        peer,
-        task_id: view.id,
-        request_id: request.request_id,
-        tool: request.tool,
-        requested: request.requested,
-        request,
-        agent_id: agentId,
-        created_at: new Date().toISOString(),
-      };
-      parked.set(key, { prompt, view });
-      notify();
-    },
-    list: () => [...parked.values()].map((entry) => entry.prompt),
-    approve: (peer, taskId) => decide(peer, taskId, (node, view) => node.delegation.approveTask(peer, view)),
-    deny: (peer, taskId, reason = "denied from the UI") =>
-      decide(peer, taskId, (node, view) => node.delegation.denyTask(peer, view, reason)),
-    withdraw(peer, taskId) {
-      if (parked.delete(taskKey(peer, taskId))) notify();
-    },
-    clear() {
-      if (parked.size === 0) return;
-      parked.clear();
-      notify();
-    },
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
 }
