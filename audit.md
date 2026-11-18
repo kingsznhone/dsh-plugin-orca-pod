@@ -8,7 +8,6 @@
 
 | # | 位置 | 问题 |
 |---|---|---|
-| R3 | 插件侧工厂的签名 | 核心服务都是 `createX(deps)`；插件侧仍是位置参数：`startPod(config, logger, stores, hooks, defaultRoot)`、`createTracker(getNode, broker, logger, options)`、`createPodAdmin(handle, tracker, broker, reasoningEfforts)`、`createPodTools(handle, tracker, policy)`。应按 §9.6 的约定改成单个 deps 对象 |
 | R4 | `cli/*` 子命令 | 每个子命令导出 `run(args)`，没有 I/O 依赖参数，直接写 `process.stdout`；CLI 测试因此只能起子进程。需要进程内测 CLI 时，给 `run` 加一个 `{ stdout, stderr, stdin, env }` 参数 |
 
 ## 2. 工具链
@@ -39,7 +38,7 @@
 ## 4. 有意保留
 
 - **IN9** `workgroupKey`：一行、一处使用，但名字说明了编码的作用，不内联。
-- **MG4** `execution/acp/permissions.ts`：§6、§7.14 以文件名引用它作为自动应答规则的出处。
-- **MG6** `protocol/constants.ts`：只有 `DEFAULT_PORT` 一个常量，但被协议、CLI、插件与面板多处引用，保留。
-- **MG7** `transport/gateway/error-handler.ts`：文档把它描述为“唯一的错误出口”，单独成文件便于找。
+- **MG4** `executor/acp/permissions.ts`：§6、§7.14 以文件名引用它作为自动应答规则的出处。
+- **MG6** `core/constants.ts`：只有 `DEFAULT_PORT` 与 `DEFAULT_TASK_TIMEOUT_S` 两个常量，但被协议、CLI、插件与面板多处引用；面板前端要读它，所以不并进依赖 `node:net` 的 `net.ts`。
+- **MG7** `api/gateway.ts` 的 `handleError`：文档把它描述为“唯一的错误出口”，是 `Gateway` 里唯一的私有错误方法，便于找。
 

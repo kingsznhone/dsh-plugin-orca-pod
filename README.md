@@ -20,19 +20,16 @@ orca-pod/
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
 ├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、build-client.ts（客户端 TSX 构建）
 ├── skills/orca-node/     # 标准 skill bundle（随包发布）
-├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按限界上下文分目录，依赖只能向下
+├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按功能分 8 个目录：core ← {mesh, executor} ← task ← api ← node ← {cli, plugin}
 │   ├── index.ts          # 公共入口：OrcaNode + apply/Config/inject
-│   ├── kernel/           # errors（PodError + 错误码表）、schema（isRecord、parseSchema）、events（事件总线与 NodeLogger）、entry（包内入口路径）
-│   ├── protocol/         # 线上协议（zod schema）：peer / cluster / a2a / task / grant / model / permission / client（PeerClient 契约）/ blob / dispatch / events / constants
-│   ├── security/         # identity（Ed25519，orca_node_id=公钥）、crypto（签名、准入证明、nonce）、grants（grant 校验与消费账本）
-│   ├── storage/          # stores（全部存储接口）；实现 memory / file-registry（publish）/ sqlite
-│   ├── membership/       # membership（成员表、看门狗、墓碑）、mesh（join/心跳/leave）、screening（端点筛查）
-│   ├── tasks/            # runner（单槽运行器）、record（任务状态机）、meta、prompt（任务书）、workspace、delegation（发起侧派发、审批签 grant、派发日志语义）
-│   ├── execution/        # executor 契约、echo、process（子进程公共件）、kinds（执行器种类）、acp/（config / connection / session / permissions / executor）
-│   ├── transport/        # peer-client（唯一的出站客户端）、net（地址归一化、回环、端口）、gateway/（入站 HTTP 路由）
-│   ├── node/             # orca-node（组合根 OrcaNode）、config（config.json）、settings（字段表）
+│   ├── core/             # 公共底座：errors、schema、events（EventBus / ChangeSignal）、serial-queue、entry、constants、net、identity（Ed25519，orca_node_id=公钥）、signing（请求签名、nonce）、sqlite、blobs（发布文件）、model-catalog；wire/（跨模块共用的线上词汇）
+│   ├── mesh/             # 组网：membership（成员表、看门狗、墓碑）、self-profile、dialer、workgroup（join/心跳/leave）、heartbeat、peer-client（唯一的出站客户端）、blob-fetcher、admission（准入证明）、screening（端点筛查）、wire
+│   ├── executor/         # executor 契约、echo、process（子进程公共件）、kinds（执行器种类）、acp/（config / connection / session / permissions / executor）
+│   ├── task/             # wire、runner（单槽运行器与任务状态机）、slot、quota、workspace、grants、meta、prompt（任务书）、task-store、dispatch-store、dispatch-log、delegation（发起侧派发、审批签 grant）
+│   ├── api/              # 入站 HTTP：gateway、access（访问策略）、cluster-routes、a2a-routes、blob-routes、input
+│   ├── node/             # orca-node（组合根 OrcaNode）、config（config.json）、settings（字段表）、events
 │   ├── cli/              # main（orca-node 分派）+ 每个子命令一个文件、shared；orca-pod（install bin）、install
-│   └── plugin/           # DSH bundle：admin / broker / bundle / catalog / config / lifecycle / panel-api / services / skill / stores / tools / tracker / web
+│   └── plugin/           # DSH bundle：admin / broker / bundle / catalog / config / lifecycle / panel-api / peers-file / services / skill / stores / tools / tracker / web
 └── test/                 # vitest 套件
 ```
 

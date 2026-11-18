@@ -6,7 +6,7 @@
 
 ### 6.1 LocalExecutor 接口
 
-执行器是一个事件流（`src/execution/executor.ts`）：
+执行器是一个事件流（`src/executor/executor.ts`）：
 
 ```ts
 interface LocalExecutor {
@@ -32,7 +32,7 @@ type ExecuteInput = {
 };
 ```
 
-任务运行器（`tasks/runner.ts` 管槽位与查找，`tasks/record.ts` 管一个任务的状态机与计时器）把事件喂进状态机：`suspend` → `input-required`；`artifact` → 写 blob 并记进任务；`completed`/`failed` → 终态。`input-required` 之后 origin 的恢复消息让同一个生成器继续跑，而不是重新开始。
+任务运行器（`task/runner.ts` 里的 `SingleSlotTaskRunner` 管槽位与查找，同一文件里的 `TaskRecord` 管一个任务的状态机与计时器）把事件喂进状态机：`suspend` → `input-required`；`artifact` → 写 blob 并记进任务；`completed`/`failed` → 终态。`input-required` 之后 origin 的恢复消息让同一个生成器继续跑，而不是重新开始。
 
 `permissionMode` 来自 origin 会话，随 `metadata.pod.permission_mode` 到达；没带就是 `read-only`；本机 `permission_mode` 是上限，target 只会取更窄的（[§7.10](07-security.md#710-权限模式继承)）。
 
@@ -221,7 +221,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 ### 6.14 AcpExecutor
 
-`AcpExecutor`（`src/execution/acp/`）是唯一的真实执行器，也是唯一能承接**权限挂起**的那种：任务交给 `dsh --profile acp`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
+`AcpExecutor`（`src/executor/acp/`）是唯一的真实执行器，也是唯一能承接**权限挂起**的那种：任务交给 `dsh --profile acp`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
 
 配置（本机 `config.json` 或插件配置）：
 

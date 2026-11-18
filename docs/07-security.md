@@ -123,7 +123,7 @@ sig = Ed25519(identity.private_key,
 - **不跟随重定向**：出站请求带 `redirect: "manual"`，3xx 按失败处理，签名请求不会被弹到别的地址；
 - 已知残余：校验与 `fetch` 各自解析一次 DNS，两次之间改答案（DNS rebinding）的窗口仍在。
 
-实现：`membership/membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate）；心跳循环与候选端点筛查在 `src/membership/mesh.ts`（`endpointAllowed` 复用 60 秒判定缓存、`dialOrder` 只在拨号 candidate 前筛查、`heartbeatPeer` 逐个试探），`src/membership/screening.ts` 只是纯策略（`candidateEndpointAllowed` / `screenEndpoint`）；入站 join 走 `screenEndpoint`。
+实现：`mesh/membership.ts` 给每个 peer 记 `origin: "explicit" | "candidate"`（直接 join → explicit；只从目录 merge 进来 → candidate）；心跳循环在 `src/mesh/heartbeat.ts`，候选端点筛查在 `src/mesh/dialer.ts`（`EndpointDialer.endpointAllowed` 复用 60 秒判定缓存、`dialOrder` 只在拨号 candidate 前筛查），`Workgroup.heartbeatPeer`（`src/mesh/workgroup.ts`）逐个试探，`src/mesh/screening.ts` 只是纯策略（`candidateEndpointAllowed` / `screenEndpoint`）；入站 join 走 `screenEndpoint`。
 
 ### 7.8 审计
 
@@ -257,7 +257,7 @@ origin: tracker 的下一次 tasks/get 看到 input-required
 
 ### 7.14 ACP `request_permission` 映射
 
-AcpExecutor 收到 `session/request_permission` 时，用任务当前的生效模式（[§7.10](07-security.md#710-权限模式继承)，可能已被升级）和请求里的工具类别 `kind` 决定（`src/execution/acp/permissions.ts`）：
+AcpExecutor 收到 `session/request_permission` 时，用任务当前的生效模式（[§7.10](07-security.md#710-权限模式继承)，可能已被升级）和请求里的工具类别 `kind` 决定（`src/executor/acp/permissions.ts`）：
 
 | 生效模式             | 请求的 `kind`                                          | 结论                                                    |
 | -------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
