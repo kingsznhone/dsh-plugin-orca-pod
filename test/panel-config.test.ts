@@ -64,10 +64,13 @@ function launch(raw: Record<string, unknown>, secrets: Record<string, string> = 
 /** Launch and complete the setup the first-run wizard would perform. */
 async function started(raw: Record<string, unknown>): Promise<Pod> {
   const pod = launch(raw);
-  await pod.handle.ready;
-  if (pod.handle.node === null) await pod.handle.reconfigure({ workgroup_password: PASSWORD });
+  await pod.handle.settled();
+  if (pod.handle.run === null) await pod.handle.reconfigure({ workgroup_password: PASSWORD });
   return pod;
 }
+
+/** The URL a running pod listens on. */
+const urlOf = (handle: PodLifecycle): string => handle.run!.node.profile.endpoints[0]!;
 
 function adminFor(handle: PodLifecycle): PodAdmin {
   const broker = new ApprovalBroker(handle);
@@ -82,28 +85,28 @@ describe("panel configuration lifecycle", () => {
   it("waits for the workgroup password, then keeps it in the credential store only", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = launch(bundle(root));
-    await handle.ready;
+    await handle.settled();
     try {
       // A plugin config that names a workgroup is not enough: without a stored
       // password a fresh install must not listen (§7.1).
       expect(handle.configured).toBe(false);
-      expect(handle.error).toBeNull();
-      expect(handle.node).toBeNull();
+      expect(handle.status.kind).not.toBe("failed");
+      expect(handle.run).toBeNull();
 
       await handle.reconfigure({ display_name: "renamed node", workgroup_password: PASSWORD });
 
       expect(handle.configured).toBe(true);
       expect(handle.config.display_name).toBe("renamed node");
-      expect(handle.error).toBeNull();
+      expect(handle.status.kind).not.toBe("failed");
       expect(stores.secrets.get(REF)).toBe(PASSWORD);
       expect(stores.raw()).toMatchObject({ display_name: "renamed node" });
       // Neither the plugin config nor the node config carries the password.
       expect(JSON.stringify(stores.raw())).not.toContain(PASSWORD);
       expect(await readFile(configPath(root), "utf8")).not.toContain(PASSWORD);
 
-      const firstId = handle.node!.orcaNodeId;
+      const firstId = handle.run!.node.orcaNodeId;
       await handle.reconfigure({ display_name: "renamed again" });
-      expect(handle.node!.orcaNodeId).toBe(firstId);
+      expect(handle.run!.node.orcaNodeId).toBe(firstId);
     } finally {
       await handle.stop();
     }
@@ -112,10 +115,10 @@ describe("panel configuration lifecycle", () => {
   it("starts at once when the credential store already holds the password", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle } = launch(bundle(root), { [REF]: PASSWORD });
-    await handle.ready;
+    await handle.settled();
     try {
       expect(handle.configured).toBe(true);
-      expect(handle.node).not.toBeNull();
+      expect(handle.run).not.toBeNull();
     } finally {
       await handle.stop();
     }
@@ -130,10 +133,41 @@ describe("panel configuration lifecycle", () => {
       expect(stores.secrets.get(REF)).toBe("rotated");
       expect(stores.raw()).toEqual(before);
       expect(handle.config.workgroup_password).toBe("rotated");
-      expect(handle.node).not.toBeNull();
+      expect(handle.run).not.toBeNull();
     } finally {
       await handle.stop();
     }
+  });
+
+  it("reports where the pod is: starting, unconfigured, running, failed, stopped", async () => {
+    const root = await tempRoot("orca-panel-");
+    const { handle } = launch(bundle(root));
+    // A restart is queued the moment `start` returns: nobody may be handed a node yet.
+    expect(handle.status).toEqual({ kind: "starting" });
+    expect(handle.run).toBeNull();
+    expect(() => handle.requireRun()).toThrow(/not running: it is still starting/);
+    await handle.settled();
+    expect(handle.status).toEqual({ kind: "unconfigured" });
+    expect(() => handle.requireRun()).toThrow(/not running: the workgroup and its password are not set up/);
+
+    await handle.reconfigure({ workgroup_password: PASSWORD });
+    expect(handle.status.kind).toBe("running");
+    expect(handle.requireRun()).toBe(handle.run);
+    expect(handle.run!.port).toBeGreaterThan(0);
+
+    // Another pod on the same port cannot listen: its start fails, and the status says why.
+    const taken = launch({ ...bundle(await tempRoot("orca-panel-")), port: handle.run!.port }, { [REF]: PASSWORD });
+    await taken.handle.settled();
+    expect(taken.handle.status).toMatchObject({ kind: "failed", error: expect.any(Error) });
+    expect(() => taken.handle.requireRun()).toThrow(/not running: .*(EADDRINUSE|in use)/i);
+    await taken.handle.stop();
+
+    await handle.stop();
+    expect(handle.status).toEqual({ kind: "stopped" });
+    expect(() => handle.requireRun()).toThrow(/not running: the pod was stopped/);
+    // A restart asked for after the stop starts nothing.
+    await handle.reconfigure({ display_name: "too late" });
+    expect(handle.status).toEqual({ kind: "stopped" });
   });
 
   it("makes a tool call wait for an in-place restart instead of reporting that nothing runs", async () => {
@@ -166,7 +200,7 @@ describe("panel configuration lifecycle", () => {
       await rotating;
       const outcome = await call;
       expect(outcome).toHaveProperty("value");
-      expect(JSON.stringify((outcome as { value: unknown }).value)).toContain(handle.node!.orcaNodeId);
+      expect(JSON.stringify((outcome as { value: unknown }).value)).toContain(handle.run!.node.orcaNodeId);
     } finally {
       await handle.stop();
     }
@@ -179,7 +213,7 @@ describe("panel configuration lifecycle", () => {
       await expect(handle.reconfigure({ port: -1 })).rejects.toThrow();
       // The failed operation must not poison the serial lane.
       await handle.reconfigure({ display_name: "recovered" });
-      expect(handle.node).not.toBeNull();
+      expect(handle.run).not.toBeNull();
       expect(handle.config.display_name).toBe("recovered");
     } finally {
       await handle.stop();
@@ -214,7 +248,7 @@ describe("panel configuration lifecycle", () => {
       await Promise.allSettled([reconfiguring, stopping]);
       // stopPod waits for the queued restart, and that operation must not start
       // a fresh listener after the host disposed the pod.
-      expect(handle.node).toBeNull();
+      expect(handle.run).toBeNull();
     } finally {
       await handle.stop();
     }
@@ -263,7 +297,7 @@ describe("panel configuration lifecycle", () => {
         default_reasoning_effort: ReasoningEffortId("max"),
         executor: "echo",
       });
-      expect(handle.error).toBeNull();
+      expect(handle.status.kind).not.toBe("failed");
 
       expect(stores.raw().task_timeout_s).toBe(120);
       const nodeConfig = await readJson(configPath(root));
@@ -294,22 +328,22 @@ describe("panel configuration lifecycle", () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started(bundle(root));
     try {
-      const before = handle.node!.orcaNodeId;
+      const before = handle.run!.node.orcaNodeId;
       expect(handle.configured).toBe(true);
 
       await handle.reset();
 
       expect(handle.configured).toBe(false);
-      expect(handle.error).toBeNull();
+      expect(handle.status.kind).not.toBe("failed");
       // Reset returns to the wizard: nothing restarts until setup completes.
-      expect(handle.node).toBeNull();
+      expect(handle.run).toBeNull();
       expect(stores.raw()).not.toHaveProperty("workgroup_id");
       expect(stores.secrets.has(REF)).toBe(false);
       await expect(readFile(configPath(root), "utf8")).rejects.toThrow();
 
       const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-panel"), workgroup_password: PASSWORD });
       expect(view.running).toBe(true);
-      expect(handle.node!.orcaNodeId).not.toBe(before);
+      expect(handle.run!.node.orcaNodeId).not.toBe(before);
     } finally {
       await handle.stop();
     }
@@ -318,15 +352,15 @@ describe("panel configuration lifecycle", () => {
   it("keeps the configuration and the orca node id on the next start", async () => {
     const root = await tempRoot("orca-panel-");
     const first = await started(bundle(root));
-    const firstId = first.handle.node!.orcaNodeId;
+    const firstId = first.handle.run!.node.orcaNodeId;
     await first.handle.stop();
 
     const second = launch({}, {}, first.stores);
-    await second.handle.ready;
+    await second.handle.settled();
     try {
       expect(second.handle.configured).toBe(true);
-      expect(second.handle.error).toBeNull();
-      expect(second.handle.node!.orcaNodeId).toBe(firstId);
+      expect(second.handle.status.kind).not.toBe("failed");
+      expect(second.handle.run!.node.orcaNodeId).toBe(firstId);
     } finally {
       await second.handle.stop();
     }
@@ -338,7 +372,7 @@ describe("panel configuration lifecycle", () => {
     const a = await started(bundle(rootA));
     const b = await started(bundle(rootB));
     try {
-      const peerUrl = b.handle.url!;
+      const peerUrl = urlOf(b.handle);
       await a.handle.addPeer(peerUrl);
       expect(a.handle.rememberedPeers).toEqual([peerUrl]);
       expect(await readJson(peerStatePath(rootA))).toEqual({ peers: [peerUrl] });
@@ -356,20 +390,20 @@ describe("panel configuration lifecycle", () => {
     const rootB = await tempRoot("orca-panel-b-");
     const b = await started(bundle(rootB));
     try {
-      const peerUrl = b.handle.url!;
+      const peerUrl = urlOf(b.handle);
       // What an earlier session left behind; startup tries it once without
       // waiting for the operator to click Connect again.
       await mkdir(rootA, { recursive: true });
       await writeFile(peerStatePath(rootA), JSON.stringify({ peers: [peerUrl] }), "utf8");
       const a = await started(bundle(rootA));
       try {
-        const want = b.handle.node!.orcaNodeId;
+        const want = b.handle.run!.node.orcaNodeId;
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
-          if (a.handle.node!.membership.list().some((member) => member.state === "online")) break;
+          if (a.handle.run!.node.membership.list().some((member) => member.state === "online")) break;
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
         }
-        expect(a.handle.node!.membership.list().map((member) => member.orca_node_id)).toContain(want);
+        expect(a.handle.run!.node.membership.list().map((member) => member.orca_node_id)).toContain(want);
       } finally {
         await a.handle.stop();
       }
@@ -414,7 +448,7 @@ describe("panel admin configuration", () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = await started(bundle(root));
     try {
-      const firstId = handle.node!.orcaNodeId;
+      const firstId = handle.run!.node.orcaNodeId;
 
       const view = await adminFor(handle).saveConfig({ workgroup_id: wg("wg-other") });
 
@@ -422,7 +456,7 @@ describe("panel admin configuration", () => {
       expect(view.password_set).toBe(true);
       expect(stores.secrets.get("ORCA_POD_PASSWORD_WG_OTHER")).toBe(PASSWORD);
       expect(handle.config.workgroup_password).toBe(PASSWORD);
-      expect(handle.node!.orcaNodeId).toBe(firstId);
+      expect(handle.run!.node.orcaNodeId).toBe(firstId);
       expect((await readJson(configPath(root))).workgroup_id).toBe("wg-other");
     } finally {
       await handle.stop();
@@ -480,18 +514,18 @@ describe("panel admin configuration", () => {
   it("stays idle until the first-run wizard supplies a workgroup", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle, stores } = launch({ port: 0, data_root: root });
-    await handle.ready;
+    await handle.settled();
     try {
       const admin = adminFor(handle);
-      expect(handle.node).toBeNull();
-      expect(handle.error).toBeNull();
+      expect(handle.run).toBeNull();
+      expect(handle.status.kind).not.toBe("failed");
       expect(admin.config().configured).toBe(false);
       expect(admin.config().running).toBe(false);
 
       await admin.saveConfig({ workgroup_id: wg("wg-fresh"), workgroup_password: "pw-fresh" });
 
-      expect(handle.node).not.toBeNull();
-      expect(handle.error).toBeNull();
+      expect(handle.run).not.toBeNull();
+      expect(handle.status.kind).not.toBe("failed");
       expect(handle.configured).toBe(true);
       expect(stores.secrets.get("ORCA_POD_PASSWORD_WG_FRESH")).toBe("pw-fresh");
       expect(admin.config()).toMatchObject({ configured: true, running: true, workgroup_id: "wg-fresh" });
@@ -503,14 +537,14 @@ describe("panel admin configuration", () => {
   it("keeps the node idle while the workgroup password is missing", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle } = launch(bundle(root));
-    await handle.ready;
+    await handle.settled();
     try {
       const view = adminFor(handle).config();
       expect(view.running).toBe(false);
       expect(view.configured).toBe(false);
       expect(view.password_set).toBe(false);
       expect(view.error).toBeNull();
-      expect(handle.node).toBeNull();
+      expect(handle.run).toBeNull();
       // Saving other settings cannot complete the setup without a password.
       await expect(handle.reconfigure({ display_name: "no secret yet" })).rejects.toThrow(/password is required/);
     } finally {
@@ -521,7 +555,7 @@ describe("panel admin configuration", () => {
   it("rejects saving a blank workgroup password", async () => {
     const root = await tempRoot("orca-panel-");
     const { handle } = launch(bundle(root));
-    await handle.ready;
+    await handle.settled();
     try {
       await expect(adminFor(handle).saveConfig({ workgroup_password: "" })).rejects.toThrow(/password is required/);
       await expect(adminFor(handle).saveConfig({ workgroup_password: "   " })).rejects.toThrow(/password is required/);
@@ -534,9 +568,9 @@ describe("panel admin configuration", () => {
     const rootA = await tempRoot("orca-panel-a-");
     const rootB = await tempRoot("orca-panel-b-");
     const b = await started(bundle(rootB, "wg-leave"));
-    const a = await started({ ...bundle(rootA, "wg-leave"), peers: [b.handle.url!] });
+    const a = await started({ ...bundle(rootA, "wg-leave"), peers: [urlOf(b.handle)] });
     try {
-      await a.handle.addPeer(b.handle.url!);
+      await a.handle.addPeer(urlOf(b.handle));
       expect(a.handle.rememberedPeers).toHaveLength(1);
       const admin = adminFor(a.handle);
       await admin.disconnect();

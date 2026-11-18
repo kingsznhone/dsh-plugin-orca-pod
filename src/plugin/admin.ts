@@ -183,8 +183,8 @@ export class PodAdmin {
 
   /** This node's own advertised record, or null while it is not running. */
   self(): PodPeer<SelfRecord> | null {
-    const current = this.lifecycle.node;
-    if (current === null) return null;
+    const current = this.lifecycle.run?.node;
+    if (current === undefined) return null;
     const self = current.profile.record();
     return {
       ...self,
@@ -194,8 +194,8 @@ export class PodAdmin {
 
   /** Reachable members only: offline records are dropped. */
   members(): PodPeer[] {
-    const current = this.lifecycle.node;
-    if (current === null) return [];
+    const current = this.lifecycle.run?.node;
+    if (current === undefined) return [];
     const labels = new RosterLabels(current);
     return current.membership
       .list()
@@ -208,8 +208,8 @@ export class PodAdmin {
 
   /** Local tasks and dispatched tasks merged, newest first. */
   recent(limit: number): PodTaskRow[] {
-    const current = this.lifecycle.node;
-    if (current === null) return [];
+    const current = this.lifecycle.run?.node;
+    if (current === undefined) return [];
     const labels = new RosterLabels(current);
     const tasks = current.tasks.list(limit);
     const local = new Set(tasks.map((view) => view.id));
@@ -242,7 +242,7 @@ export class PodAdmin {
 
   /** Permission requests waiting for the human, one per task. */
   approvals(): PodApproval[] {
-    const labels = new RosterLabels(this.lifecycle.node);
+    const labels = new RosterLabels(this.lifecycle.run?.node ?? null);
     return [...this.waitingApprovals()].map(([id, { peer, taskId, request, agentId }]) => ({
       id,
       peer,
@@ -257,7 +257,7 @@ export class PodAdmin {
   }
 
   async task(peer: string, taskId: string): Promise<PodTaskDetail> {
-    const current = this.lifecycle.requireNode();
+    const current = await this.node();
     const task = await current.delegation.getTask(peer, taskId);
     return {
       task,
@@ -275,28 +275,29 @@ export class PodAdmin {
     return this.broker.deny(peer, taskId, reason);
   }
 
-  cancel(peer: string, taskId: string): Promise<TaskView> {
-    return this.lifecycle.requireNode().delegation.cancelTask(peer, taskId);
+  async cancel(peer: string, taskId: string): Promise<TaskView> {
+    return (await this.node()).delegation.cancelTask(peer, taskId);
   }
 
   workspace(): WorkspaceView | null {
-    const workspace = this.lifecycle.node?.workspace;
+    const workspace = this.lifecycle.run?.node.workspace;
     if (workspace === undefined) return null;
     return { root: workspace.root, notes: workspace.notes, state: workspace.state, notes_files: workspace.noteFiles() };
   }
 
   /** A file a member published, fetched by this node for the panel (§5.6). */
-  blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob> {
-    return this.lifecycle.requireNode().blobs.fetch(node, blobId);
+  async blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob> {
+    return (await this.node()).blobs.fetch(node, blobId);
   }
 
   /** Effective config plus setup state; the password itself is never returned. */
   config(): PodConfigView {
     const { lifecycle } = this;
     const config = lifecycle.config;
-    const current = lifecycle.node;
+    const { run, status } = lifecycle;
+    const current = run?.node ?? null;
     const self = current?.profile.record() ?? null;
-    const port = lifecycle.port ?? config.port;
+    const port = run?.port ?? config.port;
     const endpoints = [...(current?.profile.endpoints ?? config.endpoints)];
     const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));
     return {
@@ -327,7 +328,7 @@ export class PodAdmin {
       },
       password_set: config.workgroup_password.length > 0,
       running: current !== null,
-      error: lifecycle.error === null ? null : lifecycle.error.message,
+      error: status.kind === "failed" ? status.error.message : null,
     };
   }
 
@@ -355,6 +356,12 @@ export class PodAdmin {
   async reset(): Promise<PodConfigView> {
     await this.lifecycle.reset();
     return this.config();
+  }
+
+  /** The node of the current run, once any restart in progress has finished; fails when there is none. */
+  private async node(): Promise<OrcaNode> {
+    await this.lifecycle.settled();
+    return this.lifecycle.requireRun().node;
   }
 
   /** The broker's parked prompts plus requests only the tracker has seen, one per task. */

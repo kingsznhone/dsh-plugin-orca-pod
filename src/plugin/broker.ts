@@ -106,7 +106,8 @@ export class ApprovalBroker {
     taskId: string,
     act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
   ): Promise<TaskView> {
-    const node = this.lifecycle.requireNode();
+    await this.lifecycle.settled();
+    const { node } = this.lifecycle.requireRun();
     const key = taskKey(peer, taskId);
     const entry = this.parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");

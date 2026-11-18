@@ -227,7 +227,7 @@ class NoticeDelivery {
       batch.lines.push(
         task.kind === "interrupted"
           ? NoticeDelivery.trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
-          : taskNoticeLine(task.view, task.peer, this.lifecycle.node?.client.idOf(task.peer)),
+          : taskNoticeLine(task.view, task.peer, this.lifecycle.run?.node.client.idOf(task.peer)),
       );
       batches.set(task.agent.id, batch);
     }
@@ -336,7 +336,7 @@ export class Tracker {
     this.pending.set(key, { agent, peer, taskId, view: null, failures: 0, nextAttemptAt: 0 });
     // Persist the dispatching session so a host restart can resume tracking
     // (§8.3). Restored entries already carry it and skip the write.
-    if (options.record !== false) this.lifecycle.node?.delegation.log.annotate(taskId, agent.id);
+    if (options.record !== false) this.lifecycle.run?.node.delegation.log.annotate(taskId, agent.id);
     this.loop.schedule(0);
     return true;
   }
@@ -405,13 +405,13 @@ export class Tracker {
   }
 
   private async poll(): Promise<void> {
-    const node = this.lifecycle.node;
-    if (node === null) return;
+    const run = this.lifecycle.run;
+    if (run === null) return;
     for (const [key, entry] of [...this.pending]) {
       // Exponential backoff after transient failures; the timer keeps running so
       // other entries are still polled on schedule.
       if (Date.now() < entry.nextAttemptAt) continue;
-      await this.pollEntry(node, key, entry);
+      await this.pollEntry(run.node, key, entry);
     }
   }
 

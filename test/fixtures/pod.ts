@@ -24,11 +24,11 @@ export function idleLifecycle(
 }
 
 /**
- * A lifecycle that answers `node` with the given object, the way one that
- * started a node would. Tests pass the few parts of a node they exercise.
+ * A lifecycle that is running the given node, the way one that started it
+ * would be. Tests pass the few parts of a node they exercise.
  */
 export function lifecycleWithNode(node: unknown): PodLifecycle {
   const lifecycle = idleLifecycle();
-  vi.spyOn(lifecycle, "node", "get").mockReturnValue(node as OrcaNode);
+  vi.spyOn(lifecycle, "status", "get").mockReturnValue({ kind: "running", run: { node: node as OrcaNode, port: 0 } });
   return lifecycle;
 }

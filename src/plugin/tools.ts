@@ -127,7 +127,7 @@ type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
 /** The single `orca_pod` tool, bound to one pod lifecycle. */
 export class PodTool {
   constructor(
-    private readonly lifecycle: PodLifecycle,
+    private readonly pod: PodLifecycle,
     private readonly tracker: Tracker,
     private readonly sandbox?: OptionalService<"sandboxPolicy">,
   ) {}
@@ -175,7 +175,7 @@ export class PodTool {
     if (args.model !== undefined && model === undefined) {
       throw new Error("model must be a provider/model string");
     }
-    const orcaNode = await this.requireNode(signal);
+    const orcaNode = await this.awaitNode(signal);
     const input: SubmitTaskInput = {
       message: { role: "user", parts: [{ kind: "text", text: args.text }] },
       metadata: {
@@ -203,17 +203,17 @@ export class PodTool {
   }
 
   private async status(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-    const orcaNode = await this.requireNode(signal);
+    const orcaNode = await this.awaitNode(signal);
     return PodTool.taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, signal));
   }
 
   private async cancel(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-    const orcaNode = await this.requireNode(signal);
+    const orcaNode = await this.awaitNode(signal);
     return PodTool.taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal));
   }
 
   private async members(signal: AbortSignal): Promise<MembersResult> {
-    const orcaNode = await this.requireNode(signal);
+    const orcaNode = await this.awaitNode(signal);
     return {
       self: PodTool.peerSummary(orcaNode.profile.record()),
       members: orcaNode.membership.list().map(PodTool.peerSummary),
@@ -223,11 +223,11 @@ export class PodTool {
 
   private async connect(args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
     const peer = normalizePeerUrl(args.peer);
-    await this.requireNode(signal);
+    await this.awaitNode(signal);
     // Joining persists the peer; do not start it for a turn that is already gone.
     PodTool.throwIfAborted(signal);
-    await this.lifecycle.addPeer(peer);
-    const orcaNode = await this.requireNode(signal);
+    await this.pod.addPeer(peer);
+    const orcaNode = await this.awaitNode(signal);
     return {
       peer,
       members: orcaNode.membership.list().map(PodTool.peerSummary),
@@ -255,13 +255,13 @@ export class PodTool {
   }
 
   /**
-   * Wait for startup, then fail the tool call when the orca node is not usable.
-   * Startup is the host's work, not this call's, so a cancelled turn may stop
-   * waiting for it right away.
+   * Wait for any (re)start in progress, then fail the tool call when the orca
+   * node is not usable. A restart is the host's work, not this call's, so a
+   * cancelled turn may stop waiting for it right away.
    */
-  private async requireNode(signal: AbortSignal): Promise<OrcaNode> {
-    await PodTool.waitUnlessAborted(this.lifecycle.ready, signal);
-    return this.lifecycle.requireNode();
+  private async awaitNode(signal: AbortSignal): Promise<OrcaNode> {
+    await PodTool.waitUnlessAborted(this.pod.settled(), signal);
+    return this.pod.requireRun().node;
   }
 
   private static renderJson(_args: unknown, value: unknown): ContentBlock[] {

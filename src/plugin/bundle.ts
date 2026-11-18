@@ -72,11 +72,17 @@ class PodPlugin {
     this.feed = new ModelCatalogFeed(ctx, this.logger);
     this.lifecycle = new PodLifecycle(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
     this.lifecycle.start();
-    this.feed.watch(this.lifecycle);
+    const lifecycle = this.lifecycle;
+    this.feed.watch({
+      get node() {
+        return lifecycle.run?.node ?? null;
+      },
+      ready: lifecycle.settled(),
+    });
     this.broker = new ApprovalBroker(this.lifecycle);
     this.tracker = new Tracker(this.lifecycle, this.broker, this.logger);
     this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
-      if (service !== undefined) void this.lifecycle.ready.then(() => this.restore());
+      if (service !== undefined) void this.lifecycle.settled().then(() => this.restore());
     });
 
     // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
@@ -125,10 +131,10 @@ class PodPlugin {
    * is harmless: watched or abandoned tasks are left alone.
    */
   private restore(agent?: Agent): void {
-    const node = this.lifecycle.node;
-    if (node === null) return;
+    const run = this.lifecycle.run;
+    if (run === null) return;
     this.tracker.restore(
-      node.delegation.log.list(),
+      run.node.delegation.log.list(),
       (id) => (agent !== undefined ? agent : this.agents.current()?.get(id)),
       agent?.id,
     );
@@ -136,7 +142,7 @@ class PodPlugin {
 
   private onAgentCreated(agent: Agent): void {
     agent.ctx.effect(() => () => this.tracker.forget(agent.id), "orca-pod.track");
-    void this.lifecycle.ready.then(() => this.restore(agent));
+    void this.lifecycle.settled().then(() => this.restore(agent));
   }
 
   private onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {

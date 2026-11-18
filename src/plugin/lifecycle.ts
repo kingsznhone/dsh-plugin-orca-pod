@@ -3,8 +3,8 @@
  *
  * The DSH host must not block on an orca node: `start()` returns at once and
  * performs config resolution, `orcaNode.start()` and the initial `join`s on a
- * promise that never rejects. Failures are recorded in `error` and logged, so
- * `apply` always returns quickly.
+ * promise that never rejects. Failures become the `failed` status and are
+ * logged, so `apply` always returns quickly.
  *
  * Where things live (§7.3, §9.2):
  * - **settings** are the plugin config. The panel persists them through
@@ -35,10 +35,28 @@ import type { PodStores, RawConfig } from "./stores.ts";
 /** Settings with the data directory resolved: the lifecycle fixes it once, at start (DX13). */
 export type RootedSettings = Settings & { data_root: string };
 
+/** One started node; replaced as a whole on every restart, never mutated. */
+export type PodRun = { readonly node: OrcaNode; readonly port: number };
+
+/** What the pod is doing, as one value. */
+export type PodStatus =
+  /** No workgroup or no stored password: the panel shows the first-run wizard. */
+  | { kind: "unconfigured" }
+  /** A (re)start is queued, or running up to the moment the node listens. */
+  | { kind: "starting" }
+  | { kind: "running"; run: PodRun }
+  | { kind: "failed"; error: Error }
+  /** The plugin fiber unloaded. */
+  | { kind: "stopped" };
+
 /**
  * The orca node of one plugin fiber, and what drives it: start, panel
  * reconfiguration, peers, reset. Every restart and state write goes through one
  * queue, so two of them never overlap.
+ *
+ * The pod lives as long as the plugin fiber; a node lives for one run and is
+ * replaced as a whole on every restart. Consumers read the current run through
+ * `run` (display, background work) or `settled()` and `requireRun()` (actions).
  */
 export class PodLifecycle {
   private readonly dataRoot: string;
@@ -47,15 +65,12 @@ export class PodLifecycle {
   /** The plugin config as the host gave it; the password is resolved separately. */
   private pluginConfig: RootedSettings;
   private effective: RootedSettings;
-  private isConfigured = false;
-  private disposed = false;
-  private readyPromise: Promise<void> = Promise.resolve();
-
-  private runningNode: OrcaNode | null = null;
-  private listenUrl: string | null = null;
-  private listenPort: number | null = null;
-  private startedAtIso: string | null = null;
-  private failure: Error | null = null;
+  /** Where the last finished (re)start left the pod; only the queue writes it. */
+  private outcome: Exclude<PodStatus, { kind: "starting" }> = { kind: "unconfigured" };
+  /** Restarts that are queued or have not brought their node up yet. */
+  private restarting = 0;
+  /** The last queued restart, rejoin of the peers included; it never rejects. */
+  private booting: Promise<void> = Promise.resolve();
 
   constructor(
     config: Settings,
@@ -73,29 +88,25 @@ export class PodLifecycle {
     this.effective = this.pluginConfig;
   }
 
-  /** The created orca node, or null before creation, after a failed start and after `stop`. */
-  get node(): OrcaNode | null {
-    return this.runningNode;
+  /** What the pod is doing now. A queued restart counts as `starting`: the node it replaces is about to go. */
+  get status(): PodStatus {
+    return this.restarting > 0 ? { kind: "starting" } : this.outcome;
   }
 
-  /** Endpoint reported by `orcaNode.start()`. */
-  get url(): string | null {
-    return this.listenUrl;
+  /** The current run, or null in every other status. Read-only projections use this. */
+  get run(): PodRun | null {
+    const { status } = this;
+    return status.kind === "running" ? status.run : null;
   }
 
-  /** Bound listen port reported by `orcaNode.start()`. */
-  get port(): number | null {
-    return this.listenPort;
+  /** Settles when no (re)start is queued or running, the rejoin of the peers included; it never rejects. */
+  settled(): Promise<void> {
+    return this.booting;
   }
 
-  /** ISO timestamp of a successful start. */
-  get startedAt(): string | null {
-    return this.startedAtIso;
-  }
-
-  /** The first fatal startup error, if any. */
-  get error(): Error | null {
-    return this.failure;
+  /** The current run, or an error that names the status. */
+  requireRun(): PodRun {
+    return PodLifecycle.runOf(this.status);
   }
 
   /** Effective config: the plugin config plus the resolved password (in memory only). */
@@ -105,16 +116,7 @@ export class PodLifecycle {
 
   /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
   get configured(): boolean {
-    return this.isConfigured;
-  }
-
-  /** The running node, or an error that says why there is none (startup failed, or it has not been set up). */
-  requireNode(): OrcaNode {
-    const node = this.node;
-    if (node === null) {
-      throw new Error(`orca node is not running${this.failure === null ? "" : `: ${this.failure.message}`}`);
-    }
-    return node;
+    return Boolean(this.effective.workgroup_id && this.effective.workgroup_password);
   }
 
   /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
@@ -122,36 +124,23 @@ export class PodLifecycle {
     return this.peers.list();
   }
 
-  /** Startup completion; resolves after success or failure, never rejects. */
-  get ready(): Promise<void> {
-    return this.readyPromise;
-  }
-
   /** Begin starting: load the remembered peers and boot the node. Does not wait for it. */
   start(): void {
-    this.readyPromise = this.queue.run(async () => {
-      await this.peers.load();
-      await this.boot();
-    });
+    void this.queue.run(() => this.peers.load());
+    void this.restart();
   }
 
   /**
    * Stop the pod; safe to call after a failed startup and safe to await twice.
-   * It lets an in-flight reconfiguration finish (or skip its restart), so shutdown
-   * cannot race a new listener into existence after the host disposed us (§9.2).
+   * It takes its turn in the queue: a restart queued after it finds the pod
+   * stopped and starts nothing, so shutdown cannot race a new listener into
+   * existence after the host disposed us (§9.2).
    */
   async stop(): Promise<void> {
-    await this.readyPromise;
-    this.disposed = true;
-    await this.queue.drain();
-    const node = this.runningNode;
-    if (node === null) return;
-    try {
-      await node.stop();
-      this.logger.info("orca-pod: orca node stopped");
-    } catch (error) {
-      this.logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
-    }
+    await this.queue.run(async () => {
+      await this.stopNode();
+      this.outcome = { kind: "stopped" };
+    });
   }
 
   /**
@@ -188,13 +177,13 @@ export class PodLifecycle {
     const changed = await this.persist((raw) => PodLifecycle.applyPanelFields(raw, fields));
     // Nothing to persist (only the password changed, or the bundle already
     // names the workgroup): no host restart follows, so restart in place.
-    if (!changed) await this.queue.run(() => this.boot());
+    if (!changed) await this.restart();
   }
 
   /** `join` one peer now and remember it in the peer state file. */
   addPeer(peer: string): Promise<void> {
     return this.queue.run(async () => {
-      await this.requireNode().mesh.join(peer);
+      await PodLifecycle.runOf(this.outcome).node.mesh.join(peer);
       await this.peers.add(peer);
     });
   }
@@ -202,10 +191,9 @@ export class PodLifecycle {
   /** Leave the workgroup: tell known peers and forget every remembered and configured peer. */
   async disconnect(): Promise<void> {
     await this.queue.run(async () => {
-      const node = this.runningNode;
-      if (node !== null) {
+      if (this.outcome.kind === "running") {
         try {
-          await node.mesh.leave();
+          await this.outcome.run.node.mesh.leave();
         } catch (error) {
           this.logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
         }
@@ -226,7 +214,6 @@ export class PodLifecycle {
         await this.removeQuietly(path);
       }
       await this.peers.remove();
-      this.failure = null;
     });
     if (ref !== undefined) await this.stores.clearSecret(ref);
     const changed = await this.persist((raw) =>
@@ -234,7 +221,7 @@ export class PodLifecycle {
     );
     // Back to the first-run wizard: without a stored password nothing starts,
     // even when an inherited config layer still names a workgroup.
-    if (!changed) await this.queue.run(() => this.boot());
+    if (!changed) await this.restart();
   }
 
   /**
@@ -243,10 +230,8 @@ export class PodLifecycle {
    * calls it.
    */
   adopt(config: Settings): Promise<void> {
-    return this.queue.run(async () => {
-      this.pluginConfig = this.rooted(config);
-      await this.boot();
-    });
+    this.pluginConfig = this.rooted(config);
+    return this.restart();
   }
 
   private rooted(config: Settings): RootedSettings {
@@ -261,28 +246,60 @@ export class PodLifecycle {
     return true;
   }
 
-  /** (Re)start from `pluginConfig`: resolve the password, then run the node if setup is complete. Queue only. */
+  /**
+   * Queue a (re)start. `status` reads `starting` from this call on, so nobody is
+   * handed the node that is about to go, and `settled()` waits for this restart.
+   */
+  private restart(): Promise<void> {
+    this.restarting += 1;
+    const done = this.queue.run(() => this.boot());
+    this.booting = done.catch(() => {});
+    return done;
+  }
+
+  /** (Re)start from `pluginConfig`: bring the node up, then rejoin the peers. Queue only. */
   private async boot(): Promise<void> {
-    await this.stopNode();
-    this.failure = null;
-    const password = await this.readPassword(this.pluginConfig);
-    this.effective = { ...this.pluginConfig, workgroup_password: password ?? "" };
-    // A panel-configured orca node needs both a workgroup and a password. Empty
-    // values mean "not configured yet" and keep the node idle instead of opening
-    // a passwordless mesh; the first-run wizard fills them in.
-    this.isConfigured = Boolean(this.effective.workgroup_id && this.effective.workgroup_password);
-    if (this.disposed) return;
-    if (!this.isConfigured) {
-      // The panel shows its first-run wizard and calls `reconfigure` once the
-      // user has picked a workgroup, password and listen address.
-      this.logger.info("orca-pod: waiting for workgroup setup from the panel");
-      return;
-    }
+    const rejoin = await this.bringUp();
+    if (rejoin !== null) await this.joinPeers(rejoin.node, rejoin.peers, rejoin.self);
+  }
+
+  /**
+   * Stop the old node, resolve the password and run a new node if setup is
+   * complete. Settles the restart's `starting` status, so the new run is visible
+   * while its peers are still being joined. Queue only.
+   */
+  private async bringUp(): Promise<{ node: OrcaNode; peers: Set<string>; self: string } | null> {
     try {
-      await this.startNode(this.effective);
-    } catch (error) {
-      this.failure = PodLifecycle.toError(error);
-      this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(this.failure)}`);
+      if (this.outcome.kind === "stopped") return null;
+      await this.stopNode();
+      const password = await this.readPassword(this.pluginConfig);
+      this.effective = { ...this.pluginConfig, workgroup_password: password ?? "" };
+      // A panel-configured orca node needs both a workgroup and a password. Empty
+      // values mean "not configured yet" and keep the node idle instead of opening
+      // a passwordless mesh; the first-run wizard fills them in.
+      if (!this.configured) {
+        // The panel shows its first-run wizard and calls `reconfigure` once the
+        // user has picked a workgroup, password and listen address.
+        this.logger.info("orca-pod: waiting for workgroup setup from the panel");
+        return null;
+      }
+      try {
+        const run = await this.startNode(this.effective);
+        this.outcome = { kind: "running", run };
+        // Startup peers from the config, then the ones joined at runtime.
+        return {
+          node: run.node,
+          peers: new Set([...this.effective.peers, ...this.peers.list()]),
+          self: normalizePeerUrl(run.node.profile.endpoints[0] ?? ""),
+        };
+      } catch (error) {
+        const failure = PodLifecycle.toError(error);
+        this.outcome = { kind: "failed", error: failure };
+        this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
+        return null;
+      }
+    } finally {
+      this.restarting -= 1;
     }
   }
 
@@ -298,7 +315,8 @@ export class PodLifecycle {
     }
   }
 
-  private async startNode(config: RootedSettings): Promise<void> {
+  /** Create, start and equip a node. One that cannot listen is stopped and dropped, and the failure thrown. */
+  private async startNode(config: RootedSettings): Promise<PodRun> {
     const dataRoot = config.data_root;
     // The plugin runs real DSH sessions by default. A loopback-only advertise list
     // is useless across machines, so it means "derive from the listen address".
@@ -310,14 +328,11 @@ export class PodLifecycle {
     });
     await saveConfig(configPath(dataRoot), nodeConfig);
     const node = new OrcaNode(nodeConfig, { storage: createPersistentStorage(nodeConfig), logger: this.logger });
-    this.runningNode = node;
 
     let info: { url: string; port: number };
     try {
       info = await node.start();
     } catch (error) {
-      // A node that cannot listen is stopped and dropped; `boot` keeps the failure.
-      this.runningNode = null;
       try {
         await node.stop();
       } catch {
@@ -325,9 +340,6 @@ export class PodLifecycle {
       }
       throw error;
     }
-    this.listenUrl = info.url;
-    this.listenPort = info.port;
-    this.startedAtIso = new Date().toISOString();
     this.logger.info(
       `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
     );
@@ -339,9 +351,7 @@ export class PodLifecycle {
     } catch (error) {
       this.logger.warn(`orca-pod: advertising the model catalog failed: ${errorMessage(error)}`);
     }
-
-    // Startup peers from the config, then the ones joined at runtime.
-    await this.joinPeers(node, new Set([...config.peers, ...this.peers.list()]), normalizePeerUrl(info.url));
+    return { node, port: info.port };
   }
 
   /** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */
@@ -357,14 +367,14 @@ export class PodLifecycle {
     }
   }
 
+  /** Stop the node of the current run, if any; the pod then has no run (and stays stopped if it was). */
   private async stopNode(): Promise<void> {
-    const node = this.runningNode;
-    this.runningNode = null;
-    this.listenUrl = null;
-    this.listenPort = null;
-    if (node === null) return;
+    const { outcome } = this;
+    if (outcome.kind !== "stopped") this.outcome = { kind: "unconfigured" };
+    if (outcome.kind !== "running") return;
     try {
-      await node.stop();
+      await outcome.run.node.stop();
+      this.logger.info("orca-pod: orca node stopped");
     } catch (error) {
       this.logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
     }
@@ -376,6 +386,22 @@ export class PodLifecycle {
       await rm(path, { force: true });
     } catch (error) {
       this.logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
+    }
+  }
+
+  /** The run of a status, or the error that says why there is none. */
+  private static runOf(status: PodStatus): PodRun {
+    switch (status.kind) {
+      case "running":
+        return status.run;
+      case "starting":
+        throw new Error("orca node is not running: it is still starting");
+      case "failed":
+        throw new Error(`orca node is not running: ${status.error.message}`);
+      case "stopped":
+        throw new Error("orca node is not running: the pod was stopped");
+      case "unconfigured":
+        throw new Error("orca node is not running: the workgroup and its password are not set up yet");
     }
   }
 

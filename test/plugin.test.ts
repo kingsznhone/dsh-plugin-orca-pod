@@ -21,14 +21,20 @@ function createTracker(
   options: { intervalMs?: number; coalesceMs?: number },
 ) {
   const lifecycle = idleLifecycle();
-  vi.spyOn(lifecycle, "node", "get").mockImplementation(() => {
+  vi.spyOn(lifecycle, "status", "get").mockImplementation(() => {
     const node = getNode();
     return node === null
-      ? null
-      : ({
-          delegation: { getTask: node.getTask, log: { annotate() {} } },
-          client: { idOf: () => undefined },
-        } as unknown as OrcaNode);
+      ? { kind: "unconfigured" }
+      : {
+          kind: "running",
+          run: {
+            node: {
+              delegation: { getTask: node.getTask, log: { annotate() {} } },
+              client: { idOf: () => undefined },
+            } as unknown as OrcaNode,
+            port: 0,
+          },
+        };
   });
   return new Tracker(lifecycle, new ApprovalBroker(lifecycle), logger, options);
 }
