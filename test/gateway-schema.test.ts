@@ -1,16 +1,13 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
-import { Membership } from "../src/mesh/membership.ts";
-import { runtimeDigest, type SelfRecord } from "../src/core/wire/peer.ts";
 import type { SubmitTaskInput } from "../src/task/wire.ts";
-import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
+import { buildAuthHeader } from "../src/core/signing.ts";
 import { admissionProof } from "../src/mesh/admission.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { DiskBlobRegistry, MemoryFileBlobStore } from "../src/core/blobs.ts";
-import { createGateway } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
+import { createGatewayHarness } from "./fixtures/gateway.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 
 const WORKGROUP = wg("orca-schema");
@@ -29,36 +26,15 @@ function harness() {
   vi.spyOn(tasks, "cancel").mockImplementation(() => {
     throw new PodError("internal", "cancel reached");
   });
-  const key = randomBytes(32);
-  const self = generateNodeIdentity();
-  const membership = new Membership(self.orcaNodeId);
-  const record: SelfRecord = {
-    orca_node_id: self.orcaNodeId,
-    display_name: "schema-test",
-    endpoints: ["http://orca-node.test"],
-    runtime: null,
-    runtime_digest: runtimeDigest(null),
-    state: "online",
-    busy: null,
-    last_recv_at: null,
-    workgroup_id: WORKGROUP,
-  };
-  const app = createGateway({
-    orcaNode: {
-      orca_node_id: self.orcaNodeId,
-      workgroup_id: WORKGROUP,
-      self: () => record,
-      fetchBlob: async () => {
-        throw new Error("not used");
-      },
-    },
+  const {
+    app,
+    key,
     identity: self,
-    workgroupKey: key,
-    peers: membership,
-    nonceCache: new NonceCache(),
-    startedAt: Date.now(),
+    membership,
+  } = createGatewayHarness({
     tasks,
-    fileBlobs: new DiskBlobRegistry(new MemoryFileBlobStore()),
+    workgroup: WORKGROUP,
+    displayName: "schema-test",
   });
   const post = (signer: NodeIdentity, url: string, body: unknown) => {
     const payload = JSON.stringify(body);
@@ -106,7 +82,7 @@ function harness() {
       ...extra,
     };
   };
-  return { app, self, peers: membership, post, joinBody, heartbeatBody };
+  return { app, self, membership, post, joinBody, heartbeatBody };
 }
 
 describe("gateway body schemas", () => {
@@ -158,7 +134,7 @@ describe("gateway body schemas", () => {
   });
 
   it("drops unknown keys from a joining node's model catalog", async () => {
-    const { post, joinBody, peers } = harness();
+    const { post, joinBody, membership } = harness();
     const joiner = generateNodeIdentity();
     const response = await post(
       joiner,
@@ -171,7 +147,7 @@ describe("gateway body schemas", () => {
       }),
     );
     expect(response.statusCode).toBe(200);
-    const stored = peers.get(joiner.orcaNodeId);
+    const stored = membership.get(joiner.orcaNodeId);
     expect(stored?.models).toEqual([{ provider: "p", id: "m", name: "M" }]);
     expect(stored?.default_model).toEqual({ provider: "p", model: "m", reasoningEffort: "high" });
   });
@@ -196,7 +172,7 @@ describe("gateway body schemas", () => {
   });
 
   it("takes a member's profile from its heartbeat but screens the endpoints like a join", async () => {
-    const { post, joinBody, heartbeatBody, peers } = harness();
+    const { post, joinBody, heartbeatBody, membership } = harness();
     const member = generateNodeIdentity();
     expect((await post(member, "/cluster/join", joinBody(member, {}))).statusCode).toBe(200);
 
@@ -207,7 +183,7 @@ describe("gateway body schemas", () => {
     };
     const ok = await post(member, "/cluster/heartbeat", heartbeatBody(member, { self }));
     expect(ok.statusCode).toBe(200);
-    expect(peers.get(member.orcaNodeId)).toMatchObject({
+    expect(membership.get(member.orcaNodeId)).toMatchObject({
       display_name: "renamed",
       endpoints: ["http://127.0.0.1:2"],
       models: [{ provider: "p", id: "m", name: "M" }],
@@ -217,11 +193,11 @@ describe("gateway body schemas", () => {
     const metadata = { ...self, endpoints: ["http://169.254.169.254"] };
     const refused = await post(member, "/cluster/heartbeat", heartbeatBody(member, { self: metadata }));
     expect(refused.json()).toMatchObject({ code: "endpoint_refused" });
-    expect(peers.get(member.orcaNodeId)?.endpoints).toEqual(["http://127.0.0.1:2"]);
+    expect(membership.get(member.orcaNodeId)?.endpoints).toEqual(["http://127.0.0.1:2"]);
 
     // A heartbeat without `self` (an older node) leaves the profile alone.
     const bare = await post(member, "/cluster/heartbeat", heartbeatBody(member, {}));
     expect(bare.statusCode).toBe(200);
-    expect(peers.get(member.orcaNodeId)?.display_name).toBe("renamed");
+    expect(membership.get(member.orcaNodeId)?.display_name).toBe("renamed");
   });
 });

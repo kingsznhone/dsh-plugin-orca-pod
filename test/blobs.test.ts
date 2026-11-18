@@ -1,86 +1,24 @@
-import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
-import { NonceCache, buildAuthHeader, bodySha256 } from "../src/core/signing.ts";
+import { buildAuthHeader, bodySha256 } from "../src/core/signing.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { PodError } from "../src/core/errors.ts";
-import { runtimeDigest, type BusyState, type SelfRecord } from "../src/core/wire/peer.ts";
+import type { BusyState } from "../src/core/wire/peer.ts";
 import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
-import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { Membership } from "../src/mesh/membership.ts";
-import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
-import { fakeNodeId, wg } from "./fixtures/ids.ts";
+import { generateNodeIdentity } from "../src/core/identity.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
+import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 
-const ENDPOINT = "http://orca-node.test";
-
-function selfRecord(identity: NodeIdentity): SelfRecord {
-  return {
-    orca_node_id: identity.orcaNodeId,
-    display_name: "blob-test-orca-node",
-    endpoints: [ENDPOINT],
-    runtime: null,
-    runtime_digest: runtimeDigest(null),
-    state: "online",
-    busy: null,
-    last_recv_at: null,
-    workgroup_id: wg("orca-dev"),
-  };
-}
-
-type Harness = {
-  app: ReturnType<typeof createGateway>;
-  key: Buffer;
-  identity: NodeIdentity;
-  orcaNodeId: string;
-  sign(method: string, path: string, body?: Uint8Array | string): string;
-};
-
-/** What the node does when its CLI asks for a member's file; the gateway only relays it. */
-type FetchBlob = GatewayDeps["orcaNode"]["fetchBlob"];
-
-const noFetch: FetchBlob = async () => {
-  throw new Error("not used");
-};
-
-function createHarness(
-  tasks: SingleSlotTaskRunner = createTestRunner(),
-  fileBlobs: FileBlobRegistry = new DiskBlobRegistry(new MemoryFileBlobStore()),
-  fetchBlob: FetchBlob = noFetch,
-): Harness {
-  const key = randomBytes(32);
-  const identity = generateNodeIdentity();
-  const orcaNodeId = identity.orcaNodeId;
-  const deps: GatewayDeps = {
-    orcaNode: {
-      orca_node_id: orcaNodeId,
-      workgroup_id: wg("orca-dev"),
-      self: () => selfRecord(identity),
-      fetchBlob,
-    },
-    identity,
-    workgroupKey: key,
-    peers: new Membership(orcaNodeId),
-    nonceCache: new NonceCache(),
-    startedAt: Date.now(),
-    tasks,
-    fileBlobs,
-  };
-  return {
-    app: createGateway(deps),
-    key,
-    identity,
-    orcaNodeId,
-    sign: (method, url, body) => buildAuthHeader({ identity, method, url, targetOrcaNodeId: orcaNodeId, body }),
-  };
-}
+const createHarness = (tasks?: SingleSlotTaskRunner, blobs?: FileBlobRegistry): GatewayHarness =>
+  createGatewayHarness({ tasks, blobs });
 
 /** A file published on the harness node, as `orca-node publish` would register it. */
-async function published(content: Buffer): Promise<{ harness: Harness; blobId: string; path: string }> {
+async function published(content: Buffer): Promise<{ harness: GatewayHarness; blobId: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), "orca-blob-route-"));
   const path = join(dir, "result.bin");
   await writeFile(path, content);
@@ -124,7 +62,8 @@ describe("blob route", () => {
     const asked: string[] = [];
     const node = fakeNodeId("publisher");
     const blobId = "b".repeat(64);
-    const harness = createHarness(createTestRunner(), undefined, async (from, blob) => {
+    const harness = createHarness();
+    vi.spyOn(harness.files, "fetch").mockImplementation(async (from, blob) => {
       asked.push(`${from}/${blob}`);
       return { stream: Readable.from([Buffer.from("fetched bytes")]), size: 13 };
     });

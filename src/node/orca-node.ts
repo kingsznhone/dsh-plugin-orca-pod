@@ -1,18 +1,15 @@
-import { Readable } from "node:stream";
 import { isWildcardHost } from "@deepseek-ai/dsh-host-webserver";
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
 
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
-import { BLOB_ID_PATTERN, DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../core/blobs.ts";
+import { DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../core/blobs.ts";
 import { MemoryDispatchStore, SqliteDispatchStore } from "../task/dispatch-store.ts";
 import { MemoryTaskStore, SqliteTaskStore } from "../task/task-store.ts";
 import type { FileBlobStore, OpenedBlob } from "../core/blobs.ts";
 import type { DispatchStore } from "../task/dispatch-store.ts";
 import type { TaskStore } from "../task/task-store.ts";
 import type { DispatchEntry, SubmitTaskInput, TaskView } from "../task/wire.ts";
-import { NonceCache } from "../core/signing.ts";
 import { loadIdentity } from "../core/identity.ts";
 import { Delegation, type ApprovalOptions, type TaskCallOptions } from "../task/delegation.ts";
 import { EchoExecutor } from "../executor/echo.ts";
@@ -21,10 +18,10 @@ import type { LocalExecutor } from "../executor/executor.ts";
 import { DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
 import { EventBus } from "../core/events.ts";
 import { ModelCatalog } from "../core/model-catalog.ts";
-import { errorMessage, PodError } from "../core/errors.ts";
 import type { NodeLogger } from "../core/events.ts";
-import { bindUrl, detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../core/net.ts";
-import { createGateway } from "../api/gateway.ts";
+import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
+import { Gateway } from "../api/gateway.ts";
+import { BlobFetcher } from "../mesh/blob-fetcher.ts";
 import { HttpPeerClient, type FetchLike } from "../mesh/peer-client.ts";
 import { HeartbeatLoop } from "../mesh/heartbeat.ts";
 import { SelfProfile } from "../mesh/self-profile.ts";
@@ -276,61 +273,11 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     group.emitMembersIfChanged();
   });
   delegation.events.subscribe((event) => events.emit(event));
-  const app = createGateway({
-    orcaNode: {
-      orca_node_id: config.orca_node_id,
-      workgroup_id: config.workgroup_id,
-      self: () => group.self(),
-      fetchBlob,
-    },
-    identity,
-    workgroupKey: key,
-    peers: membership,
-    nonceCache: new NonceCache(),
-    startedAt: Date.now(),
-    tasks,
-    fileBlobs,
-  });
+  const files = new BlobFetcher(fileBlobs, group, client, config.orca_node_id);
+  const gateway = new Gateway(profile, membership, tasks, files, key);
 
   // A new catalog changes what this node announces about itself (§6.15).
   models.changes.subscribe(() => group.emitMembersIfChanged());
-
-  async function fetchBlob(nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal): Promise<OpenedBlob> {
-    if (!BLOB_ID_PATTERN.test(blobId)) throw new PodError("bad_request", "a blob id is a lowercase sha256 hex digest");
-    if (nodeId === config.orca_node_id) return fileBlobs.open(blobId);
-    const addresses = await group.endpointsOf(nodeId);
-    if (addresses.length === 0) throw new PodError("unknown_orca_node", `${nodeId} is not a member of this workgroup`);
-    let unreachable: unknown;
-    for (const endpoint of addresses) {
-      try {
-        const { body, size } = await client.download(endpoint, `/blobs/${blobId}`, { target: nodeId, signal });
-        return { stream: Readable.fromWeb(body as WebReadableStream<Uint8Array>), size };
-      } catch (error) {
-        // The node answered: its answer stands. Only an address that does not answer moves on to the next.
-        if (error instanceof Error && error.name === "PodError") throw error;
-        unreachable = error;
-      }
-    }
-    throw new PodError("peer_not_online", `${nodeId} did not answer at any address: ${errorMessage(unreachable)}`);
-  }
-
-  /** Port 0 would let the kernel hand out a port `fetch` refuses to dial (e.g. 6000); pick one it accepts. */
-  async function listen(): Promise<string> {
-    const { bind_host: host, port } = config;
-    if (port !== 0) {
-      if (isBlockedFetchPort(port))
-        throw new Error(`listen port ${port} is blocked by fetch; choose another listen port`);
-      return app.listen({ host, port });
-    }
-    // The probed port can be taken again before we bind it; retry with a fresh one.
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        return await app.listen({ host, port: await pickFreePort() });
-      } catch (error) {
-        if (attempt === 5) throw error;
-      }
-    }
-  }
 
   return {
     orcaNodeId: config.orca_node_id,
@@ -345,7 +292,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     async start() {
       ensureWorkspace(workspace);
       tasks.start();
-      const address = await listen();
+      const address = await gateway.listen(config.bind_host, config.port);
       const port = Number(new URL(address).port);
       const urls = endpointsFrom(config, port);
       profile.setEndpoints(urls);
@@ -355,7 +302,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     },
     async stop() {
       heartbeatLoop.stop();
-      await app.close();
+      await gateway.close();
       await executor.close?.();
       taskStore.close();
       fileBlobStore.close();
@@ -377,7 +324,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     annotateDispatch: (taskId, agentId) => delegation.log.annotate(taskId, agentId),
     listTasks: (limit = 200) => tasks.list(limit),
     subscribe: (listener) => events.subscribe(listener),
-    fetchBlob,
+    fetchBlob: (nodeId, blobId, signal) => files.fetch(nodeId, blobId, signal),
     nodeIdOf: (endpoint) => client.idOf(endpoint),
     workspacePaths() {
       return { root: workspace.root, notes: workspace.notes, state: workspace.state };

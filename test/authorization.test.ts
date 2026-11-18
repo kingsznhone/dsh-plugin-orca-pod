@@ -3,77 +3,14 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
+import { buildAuthHeader } from "../src/core/signing.ts";
 import { admissionProof } from "../src/mesh/admission.ts";
-import { runtimeDigest, type BusyState, type PeerView, type SelfRecord } from "../src/core/wire/peer.ts";
+import type { BusyState, PeerView } from "../src/core/wire/peer.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { Membership } from "../src/mesh/membership.ts";
-import { MemoryFileBlobStore, DiskBlobRegistry } from "../src/core/blobs.ts";
-import type { FileBlobRegistry } from "../src/core/blobs.ts";
-import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
-import { createTestRunner } from "./fixtures/runner.ts";
+import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
 
-const ENDPOINT = "http://orca-node.test";
 const WORKGROUP = wg("orca-dev");
-
-function selfRecord(identity: NodeIdentity): SelfRecord {
-  return {
-    orca_node_id: identity.orcaNodeId,
-    display_name: "authorization-test-orca-node",
-    endpoints: [ENDPOINT],
-    runtime: null,
-    runtime_digest: runtimeDigest(null),
-    state: "online",
-    busy: null,
-    last_recv_at: null,
-    workgroup_id: WORKGROUP,
-  };
-}
-
-type Harness = {
-  app: ReturnType<typeof createGateway>;
-  key: Buffer;
-  identity: NodeIdentity;
-  orcaNodeId: string;
-  peers: Membership;
-  fileBlobs: FileBlobRegistry;
-  sign(method: string, path: string, body?: Uint8Array | string): string;
-};
-
-function createHarness(): Harness {
-  const key = randomBytes(32);
-  const identity = generateNodeIdentity();
-  const orcaNodeId = identity.orcaNodeId;
-  const peers = new Membership(orcaNodeId);
-  const fileBlobs = new DiskBlobRegistry(new MemoryFileBlobStore());
-  const deps: GatewayDeps = {
-    orcaNode: {
-      orca_node_id: orcaNodeId,
-      workgroup_id: WORKGROUP,
-      self: () => selfRecord(identity),
-      fetchBlob: async () => {
-        throw new Error("not used");
-      },
-    },
-    identity,
-    workgroupKey: key,
-    peers,
-    nonceCache: new NonceCache(),
-    startedAt: Date.now(),
-    tasks: createTestRunner(),
-    fileBlobs,
-  };
-  return {
-    app: createGateway(deps),
-    key,
-    identity,
-    orcaNodeId,
-    peers,
-    fileBlobs,
-    sign: (method, url, body) => buildAuthHeader({ identity, method, url, targetOrcaNodeId: orcaNodeId, body }),
-  };
-}
 
 function peerView(identity: NodeIdentity, endpoint: string): PeerView {
   return {
@@ -90,14 +27,14 @@ function peerView(identity: NodeIdentity, endpoint: string): PeerView {
 }
 
 /** Publish `content` on the harness node, as `orca-node publish` would; returns the blob id. */
-async function publish(harness: Harness, content: Buffer): Promise<string> {
+async function publish(harness: GatewayHarness, content: Buffer): Promise<string> {
   const path = join(await mkdtemp(join(tmpdir(), "orca-auth-blob-")), "file.bin");
   await writeFile(path, content);
-  return (await harness.fileBlobs.register(path, 60)).blob_id;
+  return (await harness.blobs.register(path, 60)).blob_id;
 }
 
 function strangerSign(
-  harness: Harness,
+  harness: GatewayHarness,
   stranger: NodeIdentity,
   method: string,
   path: string,
@@ -108,7 +45,7 @@ function strangerSign(
 
 describe("workgroup membership gate (C1)", () => {
   it("lets a member read the roster and a published file", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const members = await harness.app.inject({
       method: "GET",
       url: "/cluster/members",
@@ -126,7 +63,7 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("rejects every signed route from a valid but unknown key", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
     const blobId = await publish(harness, Buffer.from("not for strangers"));
 
@@ -179,12 +116,12 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("admits the same key once the node is in the roster, and rejects it after removal", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
     const strangerEndpoint = "http://stranger.test";
     const authorization = strangerSign(harness, stranger, "GET", "/cluster/members");
 
-    harness.peers.upsert(peerView(stranger, strangerEndpoint));
+    harness.membership.upsert(peerView(stranger, strangerEndpoint));
     const admitted = await harness.app.inject({
       method: "GET",
       url: "/cluster/members",
@@ -192,7 +129,7 @@ describe("workgroup membership gate (C1)", () => {
     });
     expect(admitted.statusCode).toBe(200);
 
-    harness.peers.remove(stranger.orcaNodeId);
+    harness.membership.remove(stranger.orcaNodeId);
     const rejected = await harness.app.inject({
       method: "GET",
       url: "/cluster/members",
@@ -203,7 +140,7 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("keeps /cluster/join open for the first admission", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
     const ts = Date.now();
     const nonce = randomBytes(16).toString("base64url");
@@ -239,7 +176,7 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("screens the endpoints a joining node declares", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const join = async (endpoints: string[], remoteAddress: string) => {
       const stranger = generateNodeIdentity();
       const ts = Date.now();
@@ -273,7 +210,7 @@ describe("workgroup membership gate (C1)", () => {
           authorization: strangerSign(harness, stranger, "POST", "/cluster/join", JSON.stringify(body)),
         },
       });
-      return { response, record: harness.peers.get(stranger.orcaNodeId) };
+      return { response, record: harness.membership.get(stranger.orcaNodeId) };
     };
 
     // Cloud metadata and other link-local targets are never accepted.
@@ -301,12 +238,12 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("answers an unknown path with 404 before any signature check", async () => {
-    const response = await createHarness().app.inject({ method: "GET", url: "/nope" });
+    const response = await createGatewayHarness({ workgroup: WORKGROUP }).app.inject({ method: "GET", url: "/nope" });
     expect(response.statusCode).toBe(404);
   });
 
   it("rejects a bad join signature with 401 and a malformed join body with 400", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
     const unsigned = await harness.app.inject({
       method: "POST",
@@ -330,7 +267,7 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("rejects a heartbeat whose busy field is not a busy holder", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const body = JSON.stringify({
       workgroup_id: WORKGROUP,
       orca_node_id: harness.orcaNodeId,
@@ -349,9 +286,9 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("limits local controls to this node over loopback without proxy headers", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
-    harness.peers.upsert(peerView(stranger, "http://stranger.test"));
+    harness.membership.upsert(peerView(stranger, "http://stranger.test"));
     // A malformed fetch: past the access check it fails validation, so it never dials anyone.
     const url = "/cluster/blob?node=x&blob=y";
     const call = (options: { remoteAddress?: string; headers?: Record<string, string>; as?: NodeIdentity }) =>
@@ -377,7 +314,7 @@ describe("workgroup membership gate (C1)", () => {
   });
 
   it("returns 404 for an unknown task instead of leaking it to members", async () => {
-    const harness = createHarness();
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const response = await harness.app.inject({
       method: "POST",
       url: "/a2a",

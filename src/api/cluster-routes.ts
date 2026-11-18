@@ -20,12 +20,14 @@ import {
   type SelfRecord,
   type OrcaNodeId,
 } from "../core/wire/peer.ts";
-import { DEFAULT_CLOCK_SKEW_MS } from "../core/signing.ts";
+import { DEFAULT_CLOCK_SKEW_MS, type NonceCache } from "../core/signing.ts";
 import { verifyAdmission } from "../mesh/admission.ts";
+import type { Membership } from "../mesh/membership.ts";
+import type { SelfProfile } from "../mesh/self-profile.ts";
 import { PodError } from "../core/errors.ts";
 import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../mesh/screening.ts";
 import { isDirectLoopbackRequest } from "../core/net.ts";
-import type { GatewayDeps } from "./gateway.ts";
+import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { parseInput } from "./input.ts";
 
 /** The recorded profile of a peer: what it described, with endpoints screened (§7.7). */
@@ -45,42 +47,6 @@ type Profile = Pick<
 const SCREENING_TTL_MS = 60_000;
 
 const ack: z.infer<typeof AckSchema> = { ok: true };
-
-/**
- * Admission (section 7.1): the Ed25519 signature proved which node is calling;
- * the password-derived proof shows it still holds the workgroup secret.
- * Heartbeats repeat it so a node whose password changed drops out within a few
- * ticks.
- */
-function admit(deps: GatewayDeps, kind: AdmissionKind, caller: OrcaNodeId, body: Admission): void {
-  if (body.workgroup_id !== deps.orcaNode.workgroup_id) {
-    throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
-  }
-  if (body.orca_node_id !== caller) {
-    throw new PodError("bad_request", "orca_node_id does not match the authenticated orca node");
-  }
-  if (Math.abs(Date.now() - body.ts) > DEFAULT_CLOCK_SKEW_MS) {
-    throw new PodError("clock_skew", "admission proof timestamp outside the skew window");
-  }
-  if (!verifyAdmission(kind, deps.workgroupKey, body)) {
-    throw new PodError("bad_proof", "workgroup admission proof does not verify");
-  }
-  if (!deps.nonceCache.remember(`${kind}:${caller}:${body.nonce}`)) {
-    throw new PodError("nonce_replay", "admission nonce already used");
-  }
-}
-
-/** Roster view including self, digested together. */
-/**
- * The directory this node hands out in join and heartbeat answers (§3.5): only
- * itself and the members it hears from. A node that went quiet or a candidate
- * it never reached is not passed on, so no one keeps a dead node circulating.
- */
-function roster(deps: GatewayDeps): { self: SelfRecord; members: PeerView[]; digest: string } {
-  const self = deps.orcaNode.self();
-  const members = [...deps.peers.directory(), self];
-  return { self, members, digest: membersDigest(members) };
-}
 
 /**
  * The endpoints of a joining node this node is willing to dial back (§7.7).
@@ -105,14 +71,137 @@ async function dialableEndpoints(declared: string[], request: FastifyRequest): P
   return allowed;
 }
 
-export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
+/** Join, heartbeat and the inspection routes of the workgroup (§3, §7.1). */
+export class ClusterRoutes {
   /**
    * Last screening per node: heartbeats repeat the same endpoints every few
    * seconds, and screening may resolve names. Join always screens afresh.
    */
-  const screened = new Map<string, { key: string; allowed: string[]; atMs: number }>();
+  private readonly screened = new Map<string, { key: string; allowed: string[]; atMs: number }>();
 
-  async function profileOf(
+  constructor(
+    private readonly profile: SelfProfile,
+    private readonly membership: Membership,
+    private readonly tasks: SingleSlotTaskRunner,
+    /** Workgroup key behind the admission proofs (§7.1). */
+    private readonly key: Buffer,
+    private readonly nonces: NonceCache,
+  ) {}
+
+  register(app: FastifyInstance): void {
+    app.get("/health", { config: { access: "public" } }, () => this.health());
+    app.get("/.well-known/agent-card.json", { config: { access: "public" } }, () => this.agentCard());
+    app.post("/cluster/join", { config: { access: "join" } }, (request) => this.join(request));
+    app.post("/cluster/heartbeat", { config: { access: "member" } }, (request) => this.heartbeat(request));
+    // Inspection for the CLI (`members`, resolving a peer's id): every record this
+    // node holds, offline ones included. No node merges it into its own table.
+    app.get("/cluster/members", { config: { access: "member" } }, () => this.members());
+    app.post("/cluster/leave", { config: { access: "member" } }, (request) => this.leave(request));
+  }
+
+  private health() {
+    return {
+      status: "ok",
+      // Public identity hint: a CLI or a first-time caller uses it to bind the
+      // target id into the request signature (the id is a public key).
+      orca_node_id: this.profile.orcaNodeId,
+    };
+  }
+
+  private agentCard() {
+    const self = this.profile.record();
+    const [primary] = self.endpoints;
+    return {
+      name: self.display_name,
+      url: primary ? `${primary}/a2a` : "",
+      max_task_ttl_s: self.max_task_ttl_s,
+    };
+  }
+
+  private async join(request: FastifyRequest): Promise<JoinResponse> {
+    const body = parseInput(JoinRequestSchema, request.body, "body");
+    this.admit("join", request.auth.orcaNodeId, body);
+    this.membership.upsert({
+      orca_node_id: body.orca_node_id,
+      ...(await this.profileOf(body.orca_node_id, body, request, false)),
+      state: "online",
+      busy: null,
+      last_recv_at: new Date().toISOString(),
+    });
+    const { self, digest } = this.roster();
+    return { self, members: this.membership.list(), members_digest: digest };
+  }
+
+  private async heartbeat(request: FastifyRequest): Promise<HeartbeatResponse> {
+    const body = parseInput(HeartbeatRequestSchema, request.body, "body");
+    const caller = request.auth.orcaNodeId;
+    this.admit("heartbeat", caller, body);
+    if (caller !== this.profile.orcaNodeId && !this.membership.touch(caller)) {
+      throw new PodError("unknown_orca_node");
+    }
+    const peer = this.membership.get(caller);
+    if (peer !== undefined && (body.self !== undefined || body.busy !== undefined)) {
+      // The sender's own signed self-description: how a profile that changed
+      // after join (a model catalog that arrived late) reaches its peers (§3.3).
+      const profile = body.self === undefined ? {} : await this.profileOf(caller, body.self, request, true);
+      this.membership.upsert({ ...peer, ...profile, busy: body.busy === undefined ? peer.busy : body.busy });
+    }
+
+    const { members, digest } = this.roster();
+    return {
+      from: this.profile.orcaNodeId,
+      busy: this.tasks.busy(),
+      members_digest: digest,
+      members: body.digest === digest ? null : members,
+    };
+  }
+
+  private members(): MembersResponse {
+    const members = [...this.membership.list(), this.profile.record()];
+    return { members_digest: membersDigest(members), members };
+  }
+
+  private leave(request: FastifyRequest): z.infer<typeof AckSchema> {
+    this.membership.remove(request.auth.orcaNodeId);
+    return ack;
+  }
+
+  /**
+   * Admission (section 7.1): the Ed25519 signature proved which node is calling;
+   * the password-derived proof shows it still holds the workgroup secret.
+   * Heartbeats repeat it so a node whose password changed drops out within a few
+   * ticks.
+   */
+  private admit(kind: AdmissionKind, caller: OrcaNodeId, body: Admission): void {
+    if (body.workgroup_id !== this.profile.workgroupId) {
+      throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
+    }
+    if (body.orca_node_id !== caller) {
+      throw new PodError("bad_request", "orca_node_id does not match the authenticated orca node");
+    }
+    if (Math.abs(Date.now() - body.ts) > DEFAULT_CLOCK_SKEW_MS) {
+      throw new PodError("clock_skew", "admission proof timestamp outside the skew window");
+    }
+    if (!verifyAdmission(kind, this.key, body)) {
+      throw new PodError("bad_proof", "workgroup admission proof does not verify");
+    }
+    if (!this.nonces.remember(`${kind}:${caller}:${body.nonce}`)) {
+      throw new PodError("nonce_replay", "admission nonce already used");
+    }
+  }
+
+  /**
+   * The directory this node hands out in join and heartbeat answers (§3.5): only
+   * itself and the members it hears from. A node that went quiet or a candidate
+   * it never reached is not passed on, so no one keeps a dead node circulating.
+   */
+  private roster(): { self: SelfRecord; members: PeerView[]; digest: string } {
+    const self = this.profile.record();
+    const members = [...this.membership.directory(), self];
+    return { self, members, digest: membersDigest(members) };
+  }
+
+  private async profileOf(
     caller: OrcaNodeId,
     described: SelfDescription,
     request: FastifyRequest,
@@ -121,11 +210,11 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
     const declared = normalizeEndpoints(described.endpoints);
     if (declared === null) throw new PodError("bad_request", "endpoints must be 1-8 distinct http(s) URLs");
     const key = `${isDirectLoopbackRequest(request)}|${declared.join(",")}`;
-    const previous = screened.get(caller);
+    const previous = this.screened.get(caller);
     const reusable =
       reuseScreening && previous !== undefined && previous.key === key && Date.now() - previous.atMs < SCREENING_TTL_MS;
     const endpoints = reusable ? previous.allowed : await dialableEndpoints(declared, request);
-    if (!reusable) screened.set(caller, { key, allowed: endpoints, atMs: Date.now() });
+    if (!reusable) this.screened.set(caller, { key, allowed: endpoints, atMs: Date.now() });
     const runtime = described.runtime ?? null;
     return {
       display_name: described.display_name,
@@ -138,74 +227,4 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
       default_reasoning_effort: described.default_reasoning_effort,
     };
   }
-
-  app.get("/health", { config: { access: "public" } }, async () => ({
-    status: "ok",
-    // Public identity hint: a CLI or a first-time caller uses it to bind the
-    // target id into the request signature (the id is a public key).
-    orca_node_id: deps.orcaNode.orca_node_id,
-  }));
-
-  app.get("/.well-known/agent-card.json", { config: { access: "public" } }, async () => {
-    const self = deps.orcaNode.self();
-    const [primary] = self.endpoints;
-    return {
-      name: self.display_name,
-      url: primary ? `${primary}/a2a` : "",
-      max_task_ttl_s: self.max_task_ttl_s,
-    };
-  });
-
-  app.post("/cluster/join", { config: { access: "join" } }, async (request) => {
-    const body = parseInput(JoinRequestSchema, request.body, "body");
-    admit(deps, "join", request.auth.orcaNodeId, body);
-    deps.peers.upsert({
-      orca_node_id: body.orca_node_id,
-      ...(await profileOf(body.orca_node_id, body, request, false)),
-      state: "online",
-      busy: null,
-      last_recv_at: new Date().toISOString(),
-    });
-    const { self, digest } = roster(deps);
-    const response: JoinResponse = { self, members: deps.peers.list(), members_digest: digest };
-    return response;
-  });
-
-  app.post("/cluster/heartbeat", { config: { access: "member" } }, async (request) => {
-    const body = parseInput(HeartbeatRequestSchema, request.body, "body");
-    const caller = request.auth.orcaNodeId;
-    admit(deps, "heartbeat", caller, body);
-    if (caller !== deps.orcaNode.orca_node_id && !deps.peers.touch(caller)) {
-      throw new PodError("unknown_orca_node");
-    }
-    const peer = deps.peers.get(caller);
-    if (peer !== undefined && (body.self !== undefined || body.busy !== undefined)) {
-      // The sender's own signed self-description: how a profile that changed
-      // after join (a model catalog that arrived late) reaches its peers (§3.3).
-      const profile = body.self === undefined ? {} : await profileOf(caller, body.self, request, true);
-      deps.peers.upsert({ ...peer, ...profile, busy: body.busy === undefined ? peer.busy : body.busy });
-    }
-
-    const { members, digest } = roster(deps);
-    const response: HeartbeatResponse = {
-      from: deps.orcaNode.orca_node_id,
-      busy: deps.tasks.busy(),
-      members_digest: digest,
-      members: body.digest === digest ? null : members,
-    };
-    return response;
-  });
-
-  // Inspection for the CLI (`members`, resolving a peer's id): every record this
-  // node holds, offline ones included. No node merges it into its own table.
-  app.get("/cluster/members", { config: { access: "member" } }, async () => {
-    const members = [...deps.peers.list(), deps.orcaNode.self()];
-    const response: MembersResponse = { members_digest: membersDigest(members), members };
-    return response;
-  });
-
-  app.post("/cluster/leave", { config: { access: "member" } }, async (request) => {
-    deps.peers.remove(request.auth.orcaNodeId);
-    return ack;
-  });
 }

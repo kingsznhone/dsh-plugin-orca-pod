@@ -1,38 +1,16 @@
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
-import type { NonceCache } from "../core/signing.ts";
-import type { NodeIdentity } from "../core/identity.ts";
-import type { SelfRecord, OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
-import type { SingleSlotTaskRunner } from "../task/runner.ts";
-import type { FileBlobRegistry, OpenedBlob } from "../core/blobs.ts";
-import type { Membership } from "../mesh/membership.ts";
-import { a2aRoutes } from "./a2a-routes.ts";
-import { installAccessPolicy } from "./access.ts";
-import { blobRoutes } from "./blob-routes.ts";
-import { clusterRoutes } from "./cluster-routes.ts";
+import { NonceCache } from "../core/signing.ts";
 import { PodError, POD_ERROR_STATUS } from "../core/errors.ts";
-
-type GatewayOrcaNode = {
-  orca_node_id: OrcaNodeId;
-  workgroup_id: WorkgroupId;
-  /** Live self record owned by the node: endpoints, model catalog, busy holder (§6.15). */
-  self: () => SelfRecord;
-  /** A file a member published, streamed from wherever that member answers (§5.6). */
-  fetchBlob: (nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal) => Promise<OpenedBlob>;
-};
-
-export type GatewayDeps = {
-  orcaNode: GatewayOrcaNode;
-  identity: NodeIdentity;
-  workgroupKey: Buffer;
-  peers: Membership;
-  nonceCache: NonceCache;
-  /** When this gateway process started; requests older than this are replays (§7.1). */
-  startedAt: number;
-  tasks: SingleSlotTaskRunner;
-  /** Files a task published by path with a TTL (§5.6). */
-  fileBlobs: FileBlobRegistry;
-};
+import { isBlockedFetchPort, pickFreePort } from "../core/net.ts";
+import type { BlobFetcher } from "../mesh/blob-fetcher.ts";
+import type { Membership } from "../mesh/membership.ts";
+import type { SelfProfile } from "../mesh/self-profile.ts";
+import type { SingleSlotTaskRunner } from "../task/runner.ts";
+import { A2aRoutes } from "./a2a-routes.ts";
+import { AccessPolicy } from "./access.ts";
+import { BlobRoutes } from "./blob-routes.ts";
+import { ClusterRoutes } from "./cluster-routes.ts";
 
 /**
  * Default cap for signed requests. Authentication needs the body bytes, so the
@@ -40,33 +18,6 @@ export type GatewayDeps = {
  * raise the limit only where large payloads are expected (§7.1).
  */
 const MAX_REQUEST_BYTES = 1024 * 1024;
-
-function installBodyParsers(app: FastifyInstance): void {
-  // JSON keeps its bytes for signature verification as well as the parsed value.
-  app.addContentTypeParser<Buffer>("application/json", { parseAs: "buffer" }, (request, body, done) => {
-    request.rawBody = body;
-    done(null, body.length === 0 ? undefined : (JSON.parse(body.toString("utf8")) as unknown));
-  });
-  // Any other media type: bytes for the signature, no parsed body.
-  app.addContentTypeParser<Buffer>("*", { parseAs: "buffer" }, (request: FastifyRequest, body, done) => {
-    request.rawBody = body;
-    done(null, undefined);
-  });
-}
-
-export function createGateway(deps: GatewayDeps): FastifyInstance {
-  // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
-  // shutdown must not wait for it. Routes register no Fastify schemas: each
-  // handler parses its input with zod (`input.ts`) after the access policy ran.
-  const app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
-  installBodyParsers(app);
-  installErrorHandler(app, deps);
-  installAccessPolicy(app, deps);
-  clusterRoutes(app, deps);
-  a2aRoutes(app, deps);
-  blobRoutes(app, deps);
-  return app;
-}
 
 const BUSY_RETRY_AFTER_S = 30;
 
@@ -82,18 +33,84 @@ function toPodError(error: unknown): PodError {
 }
 
 /**
- * The one place an error becomes an HTTP response: `{ code, message }` with the
- * status from `POD_ERROR_STATUS`. Routes marked `rpc` wrap the same body in a
- * JSON-RPC error envelope; a busy node also reports its holder and when to retry.
+ * The inbound HTTP surface of an orca node (§4): the signed routes of the
+ * workgroup, the A2A task API and the file routes, behind one access policy and
+ * one error format. The constructor only builds the routes in memory; `listen`
+ * binds the port.
  */
-function installErrorHandler(app: FastifyInstance, deps: GatewayDeps): void {
-  app.setErrorHandler((error, request, reply) => {
+export class Gateway {
+  readonly app: FastifyInstance;
+
+  constructor(
+    profile: SelfProfile,
+    membership: Membership,
+    private readonly tasks: SingleSlotTaskRunner,
+    files: BlobFetcher,
+    /** Workgroup key behind the admission proofs (§7.1). */
+    key: Buffer,
+  ) {
+    // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
+    // shutdown must not wait for it. Routes register no Fastify schemas: each
+    // handler parses its input with zod (`input.ts`) after the access policy ran.
+    this.app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
+    this.installBodyParsers();
+    this.app.setErrorHandler((error, request, reply) => this.handleError(error, request, reply));
+    const nonces = new NonceCache();
+    new AccessPolicy(profile.orcaNodeId, membership, nonces, Date.now()).install(this.app);
+    new ClusterRoutes(profile, membership, tasks, key, nonces).register(this.app);
+    new A2aRoutes(profile.orcaNodeId, tasks).register(this.app);
+    new BlobRoutes(files).register(this.app);
+  }
+
+  /**
+   * Bind the listener and return its address. Port 0 would let the kernel hand
+   * out a port `fetch` refuses to dial (e.g. 6000); pick one it accepts.
+   */
+  async listen(host: string, port: number): Promise<string> {
+    if (port !== 0) {
+      if (isBlockedFetchPort(port))
+        throw new Error(`listen port ${port} is blocked by fetch; choose another listen port`);
+      return this.app.listen({ host, port });
+    }
+    // The probed port can be taken again before we bind it; retry with a fresh one.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.app.listen({ host, port: await pickFreePort() });
+      } catch (error) {
+        if (attempt === 5) throw error;
+      }
+    }
+  }
+
+  close(): Promise<void> {
+    return this.app.close();
+  }
+
+  private installBodyParsers(): void {
+    // JSON keeps its bytes for signature verification as well as the parsed value.
+    this.app.addContentTypeParser<Buffer>("application/json", { parseAs: "buffer" }, (request, body, done) => {
+      request.rawBody = body;
+      done(null, body.length === 0 ? undefined : (JSON.parse(body.toString("utf8")) as unknown));
+    });
+    // Any other media type: bytes for the signature, no parsed body.
+    this.app.addContentTypeParser<Buffer>("*", { parseAs: "buffer" }, (request: FastifyRequest, body, done) => {
+      request.rawBody = body;
+      done(null, undefined);
+    });
+  }
+
+  /**
+   * The one place an error becomes an HTTP response: `{ code, message }` with the
+   * status from `POD_ERROR_STATUS`. Routes marked `rpc` wrap the same body in a
+   * JSON-RPC error envelope; a busy node also reports its holder and when to retry.
+   */
+  private handleError(error: unknown, request: FastifyRequest, reply: FastifyReply): FastifyReply {
     const pod = toPodError(error);
     const busy = pod.code === "orca_node_busy";
     const body = {
       code: pod.code,
       message: pod.message,
-      ...(busy ? { retry_after_s: BUSY_RETRY_AFTER_S, holder: deps.tasks.busy() } : {}),
+      ...(busy ? { retry_after_s: BUSY_RETRY_AFTER_S, holder: this.tasks.busy() } : {}),
     };
     if (busy) reply.header("retry-after", String(BUSY_RETRY_AFTER_S));
     const rpcId = (request.body as { id?: unknown } | null | undefined)?.id ?? null;
@@ -104,5 +121,5 @@ function installErrorHandler(app: FastifyInstance, deps: GatewayDeps): void {
           ? { jsonrpc: "2.0", id: rpcId, error: { code: -32000, message: pod.code, data: body } }
           : body,
       );
-  });
+  }
 }

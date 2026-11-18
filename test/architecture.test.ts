@@ -47,8 +47,7 @@ const ALLOWED_VIOLATIONS: string[] = [];
 
 /** Known cycles that only a type closes, as the sorted file keys joined by `, `. Only removals are allowed. */
 const ALLOWED_TYPE_CYCLES: string[] = [
-  // Cleared by the api (phase 6) and plugin (phase 8) rewrites.
-  "api/a2a-routes.ts, api/access.ts, api/blob-routes.ts, api/cluster-routes.ts, api/gateway.ts",
+  // Cleared by the plugin rewrite (phase 8).
   "plugin/lifecycle.ts, plugin/stores.ts",
 ];
 
