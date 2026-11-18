@@ -40,7 +40,7 @@
 ### 10.5 Phase 4：规模化与部署
 
 - `orca-pod install`：检查 `dsh --version`、生成/复用节点配置、渲染 systemd unit 并 `daemon-reload` + `enable --now`；固定常驻 `orca-node serve`（不提供 web 模式）。裸 `install` 或只带 `--dry-run` 是交互式向导；带任何其他参数即进入参数分支、完全不提问（agent 通过 SSH 安装时用 `--workgroup` + `-p/--password`）；`--dry-run`、`--system`、`--skip-dsh-check` 适合无 sudo/CI 场景。
-- 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/cluster/blob`（它故意只认传输层回环）。跨机验证前用 `scripts/sync-guest.ps1` 把当前提交同步到 guest 并重装依赖，避免两端代码漂移。
+- 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/cluster/blob`（它故意只认传输层回环）。
 - 10 个 orca node full mesh 压测：任务延迟、内存/CPU、心跳稳定性。
 - 验收：10 个 orca node 24h 稳定；单 orca node 故障不影响其他 orca node 任务。
 

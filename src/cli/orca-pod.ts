@@ -17,6 +17,7 @@
  * parsing, the interactive readline session and console output.
  */
 
+import { bindUrlHost } from "@deepseek-ai/dsh-host-webserver";
 import { DEFAULT_DSH_HOME_DISPLAY, DSH_HOME_ENV } from "@deepseek-ai/dsh-home-paths";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -174,7 +175,7 @@ function printPlan(write: (text: string) => void, answers: InstallOptions, plan:
   write("orca-pod install");
   write(`  workgroup: ${answers.node.workgroup_id ?? "(existing config)"}`);
   write(`  data root: ${plan.dataRoot}`);
-  write(`  listen:    ${listenHost.includes(":") ? `[${listenHost}]` : listenHost}:${listenPort}`);
+  write(`  listen:    ${bindUrlHost(listenHost) ?? listenHost}:${listenPort}`);
   write(`  service:   ${plan.serviceName} at ${plan.unitPath}`);
   if (plan.envFiles.length > 0) write(`  env files: ${plan.envFiles.join(", ")}`);
   if (plan.environment.length > 0) write(`  env:       ${plan.environment.join(" ")}`);

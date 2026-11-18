@@ -95,13 +95,13 @@ export function endpointWriteback(config: OrcaNodeConfig, listenUrl: string): Or
  * load or create the identity under `data_root` (the orca node id is its
  * Ed25519 public key, §7.1), derive the workgroup key. The password is not kept.
  */
-export function createOrcaNodeConfig(input: Partial<Settings>): OrcaNodeConfig {
+export async function createOrcaNodeConfig(input: Partial<Settings>): Promise<OrcaNodeConfig> {
   const settings = parseSettings(input);
   const { workgroup_id, workgroup_password, data_root = defaultDataRoot() } = settings;
   if (workgroup_id === undefined || workgroup_password.length === 0) {
     throw new Error("workgroup_id and workgroup_password are required");
   }
-  const orcaNodeId = loadOrCreateIdentity(data_root).orcaNodeId;
+  const orcaNodeId = (await loadOrCreateIdentity(data_root)).orcaNodeId;
   return {
     ...nodeSettings(settings),
     workgroup_id,

@@ -18,7 +18,7 @@ orca-pod/
 ├── icon.svg              # 插件图标（随包发布）
 ├── biome.json            # lint + format
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、build-client.ts（客户端 TSX 构建）、sync-guest.ps1
+├── scripts/              # cross.ts（跨进程联调）、harness_run.ts（真实进程 smoke）、e2e-acp.mjs（真实 dsh 冒烟）、build-client.ts（客户端 TSX 构建）
 ├── skills/orca-node/     # 标准 skill bundle（随包发布）
 ├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按限界上下文分目录，依赖只能向下
 │   ├── index.ts          # 公共入口：createOrcaNode + apply/Config/inject

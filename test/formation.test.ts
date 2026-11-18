@@ -54,12 +54,12 @@ function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "orca-formation-"));
 }
 
-function makeNode(
+async function makeNode(
   workgroupId: WorkgroupId,
   password: string,
   options: Partial<Pick<OrcaNodeConfig, "data_root" | "display_name">> & { timings?: Partial<MembershipTimings> } = {},
-): OrcaNode {
-  const config = createOrcaNodeConfig({
+): Promise<OrcaNode> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,
     data_root: options.data_root ?? tempRoot(),
@@ -95,8 +95,10 @@ describe("mesh formation", () => {
   it("converges five orca nodes that join the same bootstrap concurrently", async () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
-    const orcaNodes = Array.from({ length: 5 }, (_, index) =>
-      makeNode(workgroupId, password, { display_name: `n${index}`, timings: TEN_NODE_TIMINGS }),
+    const orcaNodes = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        makeNode(workgroupId, password, { display_name: `n${index}`, timings: TEN_NODE_TIMINGS }),
+      ),
     );
 
     try {
@@ -122,8 +124,8 @@ describe("mesh formation", () => {
   it("handles concurrent cross joins idempotently", async () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
-    const a = makeNode(workgroupId, password, { display_name: "a" });
-    const b = makeNode(workgroupId, password, { display_name: "b" });
+    const a = await makeNode(workgroupId, password, { display_name: "a" });
+    const b = await makeNode(workgroupId, password, { display_name: "b" });
 
     try {
       const [aUrl, bUrl] = await Promise.all([a.start(), b.start()]).then(([ra, rb]) => [ra.url, rb.url]);
@@ -147,9 +149,9 @@ describe("mesh formation", () => {
   it("joins the reachable peers even when one directory entry is dead", async () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
-    const a = makeNode(workgroupId, password, { display_name: "a" });
-    const b = makeNode(workgroupId, password, { display_name: "b" });
-    const c = makeNode(workgroupId, password, { display_name: "c" });
+    const a = await makeNode(workgroupId, password, { display_name: "a" });
+    const b = await makeNode(workgroupId, password, { display_name: "b" });
+    const c = await makeNode(workgroupId, password, { display_name: "c" });
 
     try {
       const aUrl = (await a.start()).url;
@@ -185,8 +187,8 @@ describe("mesh formation", () => {
   it("recognises a restarted orca node under the same id and endpoint change", async () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
-    const a = makeNode(workgroupId, password, { display_name: "a" });
-    const b = makeNode(workgroupId, password, { display_name: "b" });
+    const a = await makeNode(workgroupId, password, { display_name: "a" });
+    const b = await makeNode(workgroupId, password, { display_name: "b" });
 
     try {
       const aUrl = (await a.start()).url;
@@ -203,7 +205,7 @@ describe("mesh formation", () => {
       );
 
       // 同 orca_node_id、同 data_root、新端口：等价于“进程重启”。
-      const restarted = makeNode(workgroupId, password, {
+      const restarted = await makeNode(workgroupId, password, {
         data_root: firstConfig.data_root,
         display_name: firstConfig.display_name,
       });
@@ -294,7 +296,7 @@ describe("mesh formation", () => {
     fakeUrl = `http://127.0.0.1:${address.port}`;
 
     const workgroupId = newWorkgroupId();
-    const orcaNode = makeNode(workgroupId, "formation-test", {
+    const orcaNode = await makeNode(workgroupId, "formation-test", {
       display_name: "prober",
       // Keep the background loop out of the counts: only the explicit calls talk to the fake peer.
       timings: { intervalMs: 60_000 },

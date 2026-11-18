@@ -19,8 +19,8 @@ function newWorkgroupId(): WorkgroupId {
   return wg(`wg-${randomBytes(6).toString("hex")}`);
 }
 
-function makeNode(workgroupId: WorkgroupId, password: string, dataRoot: string, port = 0): OrcaNode {
-  const config = createOrcaNodeConfig({
+async function makeNode(workgroupId: WorkgroupId, password: string, dataRoot: string, port = 0): Promise<OrcaNode> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,
     data_root: dataRoot,
@@ -32,8 +32,8 @@ function makeNode(workgroupId: WorkgroupId, password: string, dataRoot: string, 
 describe("heartbeat admission", () => {
   it("accepts a peer that proves the workgroup password", async () => {
     const workgroupId = newWorkgroupId();
-    const a = makeNode(workgroupId, "same password", tempRoot());
-    const b = makeNode(workgroupId, "same password", tempRoot());
+    const a = await makeNode(workgroupId, "same password", tempRoot());
+    const b = await makeNode(workgroupId, "same password", tempRoot());
     await a.start();
     await b.start();
     try {
@@ -49,13 +49,13 @@ describe("heartbeat admission", () => {
   it("drops a peer that kept the old password instead of leaving it online", async () => {
     const workgroupId = newWorkgroupId();
     const rootA = tempRoot();
-    const configA = createOrcaNodeConfig({
+    const configA = await createOrcaNodeConfig({
       workgroup_id: workgroupId,
       workgroup_password: "old password",
       data_root: rootA,
       port: 0,
     });
-    const b = makeNode(workgroupId, "old password", tempRoot());
+    const b = await makeNode(workgroupId, "old password", tempRoot());
     const a = createOrcaNode({ config: configA });
     await a.start();
     await b.start();
@@ -68,7 +68,7 @@ describe("heartbeat admission", () => {
 
       // Same data root and port: same Ed25519 identity, a different password.
       const a2 = createOrcaNode({
-        config: createOrcaNodeConfig({
+        config: await createOrcaNodeConfig({
           workgroup_id: workgroupId,
           workgroup_password: "new password",
           data_root: rootA,

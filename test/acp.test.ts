@@ -21,8 +21,8 @@ afterEach(async () => {
   for (const node of LIVE.splice(0)) await node.stop();
 });
 
-function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): OrcaNodeConfig {
-  const config = createOrcaNodeConfig({
+async function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): Promise<OrcaNodeConfig> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: wg("acp-test"),
     workgroup_password: "correct horse",
     data_root: root,
@@ -122,7 +122,7 @@ function taskText(view: TaskView): string {
 describe("AcpExecutor", () => {
   it("completes a task with the accumulated assistant text and runs in the workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok"));
+    const node = await startNode(await configFor(root, "ok"));
     const submitted = await send(node, "say hi");
     const view = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(view)).toBe("acp done");
@@ -150,7 +150,7 @@ describe("AcpExecutor", () => {
 
   it("suspends for a permission request and continues after the origin approves", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "permission-fetch"));
+    const node = await startNode(await configFor(root, "permission-fetch"));
     const submitted = await send(node, "write a file", "ctx-1", "workspace-write");
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
     const request = permissionRequestOf(suspended);
@@ -164,7 +164,7 @@ describe("AcpExecutor", () => {
 
   it("answers a denied permission request so the child prompt does not hang", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "permission-fetch"));
+    const node = await startNode(await configFor(root, "permission-fetch"));
     const submitted = await send(node, "write a file", "ctx-1", "workspace-write");
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
 
@@ -181,7 +181,7 @@ describe("AcpExecutor", () => {
 
   it("cancels the ACP prompt when the task is cancelled", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "hang"));
+    const node = await startNode(await configFor(root, "hang"));
     const submitted = await send(node, "never finish");
     await waitForState(node, submitted.id, ["working"]);
     await node.cancelTask(node.endpoints[0]!, submitted.id);
@@ -193,7 +193,7 @@ describe("AcpExecutor", () => {
 
   it("reuses one ACP session for the same origin + context", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok"));
+    const node = await startNode(await configFor(root, "ok"));
     await waitForState(node, (await send(node, "first")).id, ["completed"]);
     await waitForState(node, (await send(node, "second")).id, ["completed"]);
     const entries = await logEntries(join(root, "acp.log"));
@@ -203,7 +203,7 @@ describe("AcpExecutor", () => {
 
   it("starts a fresh ACP connection after the child crashes", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "crash-once"));
+    const node = await startNode(await configFor(root, "crash-once"));
     const first = await send(node, "crash me");
     const crashed = await waitForState(node, first.id, ["failed"]);
     // The pending prompt learns how the child ended, not just that the connection closed.
@@ -219,7 +219,7 @@ describe("AcpExecutor", () => {
 
   it("resumes the stored ACP session after the orca node restarts", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const config = configFor(root, "ok");
+    const config = await configFor(root, "ok");
     const first = await startNode(config);
     await waitForState(first, (await send(first, "before restart")).id, ["completed"]);
     await first.stop();
@@ -232,7 +232,7 @@ describe("AcpExecutor", () => {
 
   it("starts a new session when the stored one is not found", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const config = configFor(root, "resume-fail");
+    const config = await configFor(root, "resume-fail");
     const first = await startNode(config);
     await waitForState(first, (await send(first, "before restart")).id, ["completed"]);
     await first.stop();
@@ -245,7 +245,7 @@ describe("AcpExecutor", () => {
 
   it("fails the task instead of overwriting a corrupt session store", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok"));
+    const node = await startNode(await configFor(root, "ok"));
     const store = join(node.workspacePaths().state, "sessions.json");
     await writeFile(store, "{not json", "utf8");
     const view = await waitForState(node, (await send(node, "hi")).id, ["failed"]);
@@ -255,7 +255,7 @@ describe("AcpExecutor", () => {
 
   it("selects the requested model on the ACP session before prompting", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok"));
+    const node = await startNode(await configFor(root, "ok"));
     const submitted = await node.sendTask(node.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "use the requested model" }], contextId: "ctx-model" },
       metadata: { pod: { model: { provider: "deepseek", model: "deepseek-v4-pro" } } },
@@ -273,7 +273,7 @@ describe("AcpExecutor", () => {
 
   it("uses the node default reasoning effort when the task does not ask", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("max") }));
+    const node = await startNode(await configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("max") }));
     const submitted = await send(node, "use the node default effort");
     await waitForState(node, submitted.id, ["completed"]);
     const entries = await logEntries(join(root, "acp.log"));
@@ -288,7 +288,7 @@ describe("AcpExecutor", () => {
 
   it("lets the task override the node default reasoning effort", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("high") }));
+    const node = await startNode(await configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("high") }));
     const submitted = await node.sendTask(node.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "use the requested effort" }], contextId: "ctx-effort" },
       metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
@@ -303,7 +303,7 @@ describe("AcpExecutor", () => {
 
   it("does not send a reasoning effort when neither the node nor the task sets one", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "ok"));
+    const node = await startNode(await configFor(root, "ok"));
     const submitted = await send(node, "provider default effort");
     await waitForState(node, submitted.id, ["completed"]);
     const entries = await logEntries(join(root, "acp.log"));
@@ -314,7 +314,7 @@ describe("AcpExecutor", () => {
 
   it("fails the task when the target rejects the requested model", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(configFor(root, "model-reject"));
+    const node = await startNode(await configFor(root, "model-reject"));
     const submitted = await node.sendTask(node.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "unknown model" }], contextId: "ctx-model-fail" },
       metadata: { pod: { model: { provider: "deepseek", model: "nope" } } },

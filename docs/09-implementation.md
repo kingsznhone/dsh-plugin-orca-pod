@@ -15,7 +15,7 @@ orca-pod/
   client/             DSH 客户端（面板）的 TSX 源码；构建到 lib/client.js
   biome.json          lint + format（一个工具）
   src/                见下表
-  scripts/            cross.ts、build-client.ts、harness_run.ts、e2e-acp.mjs、sync-guest.ps1
+  scripts/            cross.ts、build-client.ts、harness_run.ts、e2e-acp.mjs
   skills/orca-node/   标准 skill bundle（SKILL.md + references/add-machine.md）
   test/               vitest，按模块一份 *.test.ts；test/fixtures/fake-acp.mjs 是假 ACP server
 ```
@@ -204,7 +204,7 @@ export function apply(ctx, config) {
 - 唯一的工具 `orca_pod`（`method` 分派 `send`/`status`/`cancel`/`members`/`connect`，没有 approve）；工具注册用 `inject: ['tools']`。
 - 硬依赖 `inject: ['tools', 'credentials', 'configEditor']`（都在 DSH base 组合里）：密码只在凭据库，插件配置拒绝明文 `workgroup_password`（[§7.1](07-security.md#71-workgroup-与密码)）。
 
-CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个文件）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`publish`/`fetch`/`log`/`members`——`serve` 加载配置 → `createOrcaNode` → `start()`（`--peer` 启动即 join，`--bind`/`--port` 一次性覆盖）；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，经 `transport/peer-client.ts` 打本机或成员的 `/a2a`；`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限；环境里有 `ORCA_POD_IN_TASK=1`（执行器会话）时 `send` 拒绝（[§7.9](07-security.md#79-权限跟随发起-orca-node)）。`orca-pod install` 见 §9.6。`scripts/cross.ts` 提供 serve/join/task 跨进程、跨机联调命令；`scripts/sync-guest.ps1` 把当前提交（`git archive HEAD` + `scp`）同步到 Hyper-V guest 并在远端 `npm install`，保证跨机验证的两端代码一致（只同步已提交内容）。两者都复用同一个 `createOrcaNode`，不依赖 DSH。
+CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个文件）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`publish`/`fetch`/`log`/`members`——`serve` 加载配置 → `createOrcaNode` → `start()`（`--peer` 启动即 join，`--bind`/`--port` 一次性覆盖）；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，经 `transport/peer-client.ts` 打本机或成员的 `/a2a`；`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限；环境里有 `ORCA_POD_IN_TASK=1`（执行器会话）时 `send` 拒绝（[§7.9](07-security.md#79-权限跟随发起-orca-node)）。`orca-pod install` 见 §9.6。`scripts/cross.ts` 提供 serve/join/task 跨进程、跨机联调命令，复用同一个 `createOrcaNode`，不依赖 DSH。个人开发环境专用的快速脚本放在仓库根的 `tmp/`（不进版本库）。
 
 一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是 `createOrcaNode()`。**
 

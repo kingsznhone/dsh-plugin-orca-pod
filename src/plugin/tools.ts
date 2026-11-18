@@ -175,9 +175,13 @@ type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
 
 const taskStatus = (view: TaskView): TaskStatusResult => ({ ...view, terminal: isTerminal(view.status.state) });
 
-/** Wait for startup, then fail the tool call when the orca node is not usable. */
-async function requireNode(handle: PodHandle): Promise<OrcaNode> {
-  await handle.ready;
+/**
+ * Wait for startup, then fail the tool call when the orca node is not usable.
+ * Startup is the host's work, not this call's, so a cancelled turn may stop
+ * waiting for it right away.
+ */
+async function requireNode(handle: PodHandle, signal: AbortSignal): Promise<OrcaNode> {
+  await waitUnlessAborted(handle.ready, signal);
   if (handle.runtime.error !== null) {
     throw new Error(`orca node is not running: ${handle.runtime.error.message}`);
   }
@@ -250,7 +254,7 @@ async function runSend(
   if (args.model !== undefined && model === undefined) {
     throw new Error("model must be a provider/model string");
   }
-  const orcaNode = await requireNode(handle);
+  const orcaNode = await requireNode(handle, signal);
   const input: SubmitTaskInput = {
     message: { role: "user", parts: [{ kind: "text", text: args.text }] },
     metadata: {
@@ -278,17 +282,17 @@ async function runSend(
 }
 
 async function runStatus(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-  const orcaNode = await requireNode(handle);
+  const orcaNode = await requireNode(handle, signal);
   return taskStatus(await orcaNode.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
 }
 
 async function runCancel(handle: PodHandle, args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-  const orcaNode = await requireNode(handle);
+  const orcaNode = await requireNode(handle, signal);
   return taskStatus(await orcaNode.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
 }
 
-async function runMembers(handle: PodHandle): Promise<MembersResult> {
-  const orcaNode = await requireNode(handle);
+async function runMembers(handle: PodHandle, signal: AbortSignal): Promise<MembersResult> {
+  const orcaNode = await requireNode(handle, signal);
   return {
     self: peerSummary(orcaNode.self()),
     members: orcaNode.members().map(peerSummary),
@@ -298,11 +302,11 @@ async function runMembers(handle: PodHandle): Promise<MembersResult> {
 
 async function runConnect(handle: PodHandle, args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
   const peer = normalizePeerUrl(args.peer);
-  await requireNode(handle);
+  await requireNode(handle, signal);
   // Joining persists the peer; do not start it for a turn that is already gone.
   throwIfAborted(signal);
   await handle.addPeer(peer);
-  const orcaNode = await requireNode(handle);
+  const orcaNode = await requireNode(handle, signal);
   return {
     peer,
     members: orcaNode.members().map(peerSummary),
@@ -315,21 +319,17 @@ function throwIfAborted(signal: AbortSignal): void {
 }
 
 /**
- * Race one method against the caller's abort signal, so a cancelled turn stops
- * waiting (for node startup, the panel queue, a slow peer). This only ends the
- * wait; the methods forward the same signal to their outbound requests and
- * check it before any step with a lasting effect.
+ * Wait for something this call does not own (startup), or stop waiting when
+ * the caller's turn is cancelled. Never wrap the call's own work in this: a
+ * tool settles only after its work has stopped (dsh-tools `execute`), so the
+ * methods forward the signal to their requests and finish on their own.
  */
-function withSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) {
-    // Nobody waits for the abandoned work any more; keep its rejection handled.
-    work.catch(() => {});
-    return Promise.reject(abortError("cancelled by the caller"));
-  }
+function waitUnlessAborted<T>(wait: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError("cancelled by the caller"));
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => reject(abortError("cancelled by the caller"));
     signal.addEventListener("abort", onAbort, { once: true });
-    work.then(
+    wait.then(
       (value) => {
         signal.removeEventListener("abort", onAbort);
         resolve(value);
@@ -369,7 +369,7 @@ function runCall(
     case "cancel":
       return runCancel(handle, call.args, exec.signal);
     case "members":
-      return runMembers(handle);
+      return runMembers(handle, exec.signal);
     case "connect":
       return runConnect(handle, call.args, exec.signal);
   }
@@ -402,7 +402,8 @@ export function createPodTools(
       const call = parseCall(args);
       try {
         throwIfAborted(exec.signal);
-        return json(await withSignal(runCall(handle, tracker, call, exec, policy?.()), exec.signal));
+        // The call's own work observes the signal and settles when it stops (B20).
+        return json(await runCall(handle, tracker, call, exec, policy?.()));
       } catch (error) {
         throw describeError("orca_pod", error);
       }

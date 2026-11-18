@@ -141,11 +141,13 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
     };
   }
 
+  /** Every member this node knows, for its own panel and events. */
   function roster(): PeerView[] {
     return [...membership.list(), selfPeer()];
   }
 
-  const digest = (): string => computeMembersDigest(roster());
+  /** What this node passes on (§3.5): itself and the members it hears from; its digest is what peers compare. */
+  const digest = (): string => computeMembersDigest([...membership.directory(), selfPeer()]);
 
   // ---- change events ----
 

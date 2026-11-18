@@ -23,7 +23,7 @@ afterEach(async () => {
 async function startNode(options: Partial<Settings>): Promise<OrcaNode> {
   const root = await mkdtemp(join(tmpdir(), "orca-model-"));
   ROOTS.push(root);
-  const config = createOrcaNodeConfig({
+  const config = await createOrcaNodeConfig({
     workgroup_id: wg("model-test"),
     workgroup_password: "correct horse",
     data_root: root,
@@ -82,28 +82,28 @@ describe("model catalog", () => {
     ).toMatch(/^1\.id /);
   });
 
-  it("drops unknown keys from a copy instead of rejecting them", () => {
+  it("drops unknown keys from a copy instead of rejecting them", async () => {
     const raw = { provider: "p", model: "m", tier: "gold" };
     expect(selection(raw)).toEqual({ provider: "p", model: "m" });
     expect(raw).toHaveProperty("tier", "gold");
     expect(offers([{ provider: "p", id: "m", name: "M", extra: 1 }])).toEqual([{ provider: "p", id: "m", name: "M" }]);
     expect(selection("p/m")).toBeNull();
     expect(selection(null)).toBeNull();
-    const configured = createOrcaNodeConfig({
+    const configured = await createOrcaNodeConfig({
       workgroup_id: wg("wg"),
       workgroup_password: "pw",
       data_root: join(tmpdir(), "orca-model-config"),
       default_reasoning_effort: ReasoningEffortId("max"),
     });
     expect(configured.default_reasoning_effort).toBe("max");
-    expect(() =>
+    await expect(
       createOrcaNodeConfig({
         workgroup_id: wg("wg"),
         workgroup_password: "pw",
         data_root: join(tmpdir(), "orca-model-config"),
         default_reasoning_effort: ReasoningEffortId(""),
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 
   it("advertises the catalog on join and in the peer directory", async () => {

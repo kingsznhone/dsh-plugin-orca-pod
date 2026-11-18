@@ -23,6 +23,9 @@ Thumbs.db
 .vscode/
 .tmp/
 
+# 本地开发快速脚本（个人环境，不进仓库）
+tmp/
+
 # 本地安装的 skill 根（安装目标，不进仓库）
 .agents/
 .dsh/

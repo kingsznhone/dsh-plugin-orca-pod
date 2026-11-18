@@ -34,6 +34,7 @@ export const POD_ERROR_STATUS = {
   permission_denied: 409,
   grant_invalid: 409,
   grant_expired: 409,
+  grant_replayed: 409,
   // Gone.
   blob_expired: 410,
   blob_file_missing: 410,

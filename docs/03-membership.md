@@ -167,11 +167,12 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 
 具体规则：
 
-1. **候选**：未知 `orca_node_id` + endpoints 进表，`state=unknown`、来源标 `candidate`；拨号前先过 [§7.7](07-security.md#77-ssrf--候选端点防护) 的地址筛查，之后和其他 peer 一样每拍拨一次（按 endpoints 顺序）。对方不认识我就 join，成功后等对方心跳自然转 online。
-2. **已知但 offline**：不复活，只按 `recover_probe` 退避探测。
-3. **对端把我修剪掉**（`403 not_a_member` / `404 unknown_orca_node`）：我重新 join 对端（join 会带回它的目录），再补一拍心跳。
-4. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。墓碑只挡**他人目录**，不挡本人：该节点自己发来、准入证明通过的 join 会清除墓碑并重新登记，否则网关回了 200 却不记录它，之后它的每个签名请求都会被 403。
-5. **探测即扩散**：每次 join 对端都会回目录，所以知识沿 join 边继续扩散，不需要额外的 gossip 协议。
+1. **候选**：未知 `orca_node_id` + endpoints 进表，`state=unknown`、来源标 `candidate`；拨号前先过 [§7.7](07-security.md#77-ssrf--候选端点防护) 的地址筛查（按 endpoints 顺序）。对方不认识我就 join，成功后等对方心跳自然转 online。拨不通时按 offline 的退避节奏重试（`recover_probe` 起、`max_recover_probe` 封顶）；**连续 5 次**没拨通就删记录并留墓碑——别人对一个节点的记忆，不是一直拨它的理由。
+2. **目录只转发亲耳听到的**：join 与心跳应答里的目录（以及双方比对的摘要）只含本机与 `online`/`suspect` 的成员。从没拨通的候选、已 offline 的记录留在本机表里（面板与 `orca-node members` 照常显示），但不转发。每个节点只为自己正在通信的对象作保，所以一个死节点最多 `offline_after` 之后就没人再转发它，“A、C 互相把 D 传来传去”的回声从源头断掉。单向不通时（C 听得到 D、A 拨不通 D），C 会继续转发 D，A 在墓碑过期后再试——D 确实还活着，这是对的。
+3. **已知但 offline**：不复活，只按 `recover_probe` 退避探测。
+4. **对端把我修剪掉**（`403 not_a_member` / `404 unknown_orca_node`）：我重新 join 对端（join 会带回它的目录），再补一拍心跳。
+5. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。墓碑只挡**他人目录**，不挡本人：节点复活后会自己重新 join（配置里的 peers、`peers.json` 记住的 peers，或心跳被回 `403`/`404` 后重 join），该节点自己发来、准入证明通过的 join 会清除墓碑并重新登记，否则网关回了 200 却不记录它，之后它的每个签名请求都会被 403。
+6. **探测即扩散**：每次 join 对端都会回目录，所以知识沿 join 边继续扩散，不需要额外的 gossip 协议。
 
 > 回答“能不能用 `offline_after` 阻止别人的缓存进入我的表”：不要。`offline_after` 是**在线阈值**，不是**入表过滤器**。该做的是：目录只进候选 + 只有本人能复活 + 被拒就重 join。
 

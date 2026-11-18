@@ -13,7 +13,7 @@ import { createOrcaNode, createOrcaNodeConfig, createPersistentStorage } from "o
 const TERMINAL = new Set(["completed", "failed", "canceled"]);
 const prompt = process.argv[2] ?? "Reply with exactly the word pong";
 const root = await mkdtemp(join(tmpdir(), "orca-e2e-acp-"));
-const config = createOrcaNodeConfig({
+const config = await createOrcaNodeConfig({
   workgroup_id: "e2e-acp",
   workgroup_password: "e2e-password",
   data_root: root,

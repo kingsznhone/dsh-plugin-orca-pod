@@ -6,7 +6,7 @@
  */
 
 import { verifyGrant } from "./crypto.ts";
-import { PodError } from "../kernel/errors.ts";
+import { PodError, type PodErrorCode } from "../kernel/errors.ts";
 import { describeIssue, parseSchema } from "../kernel/schema.ts";
 import { SignedGrantSchema, type PermissionRequest, type SignedGrant } from "../protocol/grant.ts";
 import type { OrcaNodeId, WorkgroupId } from "../protocol/peer.ts";
@@ -28,12 +28,8 @@ export type GrantExpectation = {
   pending: PermissionRequest;
 };
 
-/**
- * Why a grant is not accepted: the task fails with this string as its `reason`.
- * `grant_invalid` / `grant_expired` are also `PodErrorCode`s; `grant_replayed`
- * has no code (it can only happen after the ledger consumed the grant).
- */
-export type GrantFailure = "grant_invalid" | "grant_expired" | "grant_replayed";
+/** Why a grant is not accepted: a `PodErrorCode`, and the `reason` the task fails with. */
+export type GrantFailure = Extract<PodErrorCode, "grant_invalid" | "grant_expired" | "grant_replayed">;
 
 /**
  * Returns the failure reason, or null when the grant is genuine and matches what

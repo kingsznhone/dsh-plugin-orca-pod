@@ -54,7 +54,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
 
   try {
     for (let index = 0; index < count; index += 1) {
-      const config = createOrcaNodeConfig({
+      const config = await createOrcaNodeConfig({
         workgroup_id: workgroupId,
         workgroup_password: password,
         data_root: join(dataRoot, `orca-node-${index}`),

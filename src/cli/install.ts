@@ -303,7 +303,7 @@ export async function ensureNodeConfig(
   await mkdir(plan.dataRoot, { recursive: true, mode: 0o700 });
   await saveConfig(
     plan.configPath,
-    createOrcaNodeConfig({ ...options.node, data_root: plan.dataRoot, executor: "acp" }),
+    await createOrcaNodeConfig({ ...options.node, data_root: plan.dataRoot, executor: "acp" }),
   );
   return { created: true };
 }

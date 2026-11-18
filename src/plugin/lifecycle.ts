@@ -124,7 +124,7 @@ async function startNode(
   const dataRoot = config.data_root;
   // The plugin runs real DSH sessions by default. A loopback-only advertise list
   // is useless across machines, so it means "derive from the listen address".
-  const nodeConfig = createOrcaNodeConfig({
+  const nodeConfig = await createOrcaNodeConfig({
     ...config,
     data_root: dataRoot,
     executor: config.executor ?? "acp",

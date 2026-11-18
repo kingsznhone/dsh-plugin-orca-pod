@@ -85,7 +85,7 @@ describe("persisted config", () => {
   it("round-trips through the same parser and is written owner-only", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-settings-"));
     roots.push(root);
-    const config = createOrcaNodeConfig({
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("wg-a"),
       workgroup_password: "pw",
       data_root: root,
@@ -98,8 +98,8 @@ describe("persisted config", () => {
     if (process.platform !== "win32") expect((await stat(configPath(root))).mode & 0o777).toBe(0o600);
   });
 
-  it("refuses to create a config without a workgroup or password", () => {
-    expect(() => createOrcaNodeConfig({ workgroup_id: wg("wg-a") })).toThrow(/required/);
-    expect(() => createOrcaNodeConfig({ workgroup_password: "pw" })).toThrow(/required/);
+  it("refuses to create a config without a workgroup or password", async () => {
+    await expect(createOrcaNodeConfig({ workgroup_id: wg("wg-a") })).rejects.toThrow(/required/);
+    await expect(createOrcaNodeConfig({ workgroup_password: "pw" })).rejects.toThrow(/required/);
   });
 });

@@ -9,6 +9,7 @@ import type { PeerClient } from "../protocol/client.ts";
 import type { TaskView } from "../protocol/task.ts";
 import { loadIdentity, type NodeIdentity } from "../security/identity.ts";
 import { createPeerClient } from "../transport/peer-client.ts";
+import { bindUrl } from "../transport/net.ts";
 
 export const OPTIONS = {
   config: { type: "string" },
@@ -72,7 +73,7 @@ export async function loadNodeConfig(flags: Flags): Promise<OrcaNodeConfig> {
 }
 
 export function localEndpoint(config: OrcaNodeConfig): string {
-  return config.endpoints[0] ?? `http://${config.bind_host}:${config.port}`;
+  return config.endpoints[0] ?? bindUrl(config.bind_host, config.port) ?? localControlEndpoint(config);
 }
 
 /**

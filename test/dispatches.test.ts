@@ -91,7 +91,7 @@ describe("dispatch store (13.4)", () => {
 describe("origin dispatch log (13.4)", () => {
   it("records a dispatched task and its last known state", async () => {
     const peerRoot = tempRoot();
-    const peerConfig = createOrcaNodeConfig({
+    const peerConfig = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: peerRoot,
@@ -103,7 +103,7 @@ describe("origin dispatch log (13.4)", () => {
     nodes.push(peer);
 
     const originRoot = tempRoot();
-    const originConfig = createOrcaNodeConfig({
+    const originConfig = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: originRoot,

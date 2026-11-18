@@ -12,8 +12,8 @@ const dataRoot = mkdtempSync(join(tmpdir(), "orca-endpoint-"));
 afterAll(() => rmSync(dataRoot, { recursive: true, force: true }));
 
 describe("serve endpoint writeback", () => {
-  it("keeps explicitly configured public endpoints", () => {
-    const config = createOrcaNodeConfig({
+  it("keeps explicitly configured public endpoints", async () => {
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("endpoint-test"),
       workgroup_password: "correct horse",
       data_root: dataRoot,
@@ -27,8 +27,8 @@ describe("serve endpoint writeback", () => {
     expect(next?.port).toBe(54321);
   });
 
-  it("learns the listen address when no endpoint is configured", () => {
-    const config = createOrcaNodeConfig({
+  it("learns the listen address when no endpoint is configured", async () => {
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("endpoint-test"),
       workgroup_password: "correct horse",
       data_root: dataRoot,
@@ -41,8 +41,8 @@ describe("serve endpoint writeback", () => {
     expect(next?.port).toBe(54321);
   });
 
-  it("writes nothing when endpoints and port are already known", () => {
-    const config = createOrcaNodeConfig({
+  it("writes nothing when endpoints and port are already known", async () => {
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("endpoint-test"),
       workgroup_password: "correct horse",
       data_root: dataRoot,
@@ -55,8 +55,8 @@ describe("serve endpoint writeback", () => {
 });
 
 describe("config endpoint validation", () => {
-  it("accepts an empty list (it is learned on first serve) but rejects bad entries", () => {
-    const config = createOrcaNodeConfig({
+  it("accepts an empty list (it is learned on first serve) but rejects bad entries", async () => {
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("endpoint-test"),
       workgroup_password: "correct horse",
       data_root: dataRoot,
@@ -64,7 +64,7 @@ describe("config endpoint validation", () => {
     });
     expect(validateConfig({ ...config, endpoints: [] }).endpoints).toEqual([]);
     expect(() => validateConfig({ ...config, endpoints: ["not a url"] })).toThrow(/endpoints/);
-    expect(() =>
+    await expect(
       createOrcaNodeConfig({
         workgroup_id: wg("endpoint-test"),
         workgroup_password: "correct horse",
@@ -72,6 +72,6 @@ describe("config endpoint validation", () => {
         port: 11811,
         endpoints: ["ftp://example.com"],
       }),
-    ).toThrow(/endpoints/);
+    ).rejects.toThrow(/endpoints/);
   });
 });

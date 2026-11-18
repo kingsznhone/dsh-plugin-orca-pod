@@ -28,8 +28,8 @@ function tempRoot(): string {
   return root;
 }
 
-function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: number): OrcaNode {
-  const config = createOrcaNodeConfig({
+async function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: number): Promise<OrcaNode> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: WORKGROUP,
     workgroup_password: PASSWORD,
     data_root: tempRoot(),
@@ -44,7 +44,7 @@ function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: number): 
 
 describe("outbound A2A calls (11)", () => {
   it("gives every outbound call a deadline", async () => {
-    const peer = makeNode(undefined);
+    const peer = await makeNode(undefined);
     await peer.start();
     const stalled: FetchLike = (url, init) =>
       url.pathname !== "/a2a"
@@ -56,7 +56,7 @@ describe("outbound A2A calls (11)", () => {
               { once: true },
             );
           });
-    const node = makeNode(stalled, 250);
+    const node = await makeNode(stalled, 250);
     await node.start();
     await node.join(peer.endpoints[0]!);
     const started = Date.now();
@@ -65,9 +65,9 @@ describe("outbound A2A calls (11)", () => {
   });
 
   it("does not join a stranger to answer a read", async () => {
-    const stranger = makeNode(undefined);
+    const stranger = await makeNode(undefined);
     await stranger.start();
-    const node = makeNode(undefined);
+    const node = await makeNode(undefined);
     await node.start();
 
     for (const call of [
@@ -90,7 +90,7 @@ describe("outbound A2A calls (11)", () => {
   });
 
   it("stops reading a response body once it passes the size cap", async () => {
-    const peer = makeNode(undefined);
+    const peer = await makeNode(undefined);
     await peer.start();
     let pulled = 0;
     let cancelled = false;
@@ -111,7 +111,7 @@ describe("outbound A2A calls (11)", () => {
               { status: 200, headers: { "content-type": "application/json" } },
             ),
           );
-    const origin = makeNode(endless);
+    const origin = await makeNode(endless);
     await origin.start();
     await origin.join(peer.endpoints[0]!);
     await expect(origin.getTask(peer.endpoints[0]!, "01TASK")).rejects.toThrow(/too large/);
@@ -120,7 +120,7 @@ describe("outbound A2A calls (11)", () => {
   });
 
   it("rejects a response that is not JSON", async () => {
-    const peer = makeNode(undefined);
+    const peer = await makeNode(undefined);
     await peer.start();
     const degraded: FetchLike = (url, init) =>
       url.pathname === "/a2a"
@@ -131,16 +131,16 @@ describe("outbound A2A calls (11)", () => {
             }),
           )
         : fetch(url, init);
-    const origin = makeNode(degraded);
+    const origin = await makeNode(degraded);
     await origin.start();
     await origin.join(peer.endpoints[0]!);
     await expect(origin.getTask(peer.endpoints[0]!, "01TASK")).rejects.toThrow(/content type/);
   });
 
   it("does not log a read of a task it never dispatched", async () => {
-    const peer = makeNode(undefined);
+    const peer = await makeNode(undefined);
     await peer.start();
-    const origin = makeNode(undefined);
+    const origin = await makeNode(undefined);
     await origin.start();
     await origin.join(peer.endpoints[0]!);
 
@@ -149,9 +149,9 @@ describe("outbound A2A calls (11)", () => {
   });
 
   it("refreshes an existing dispatch entry without creating more", async () => {
-    const peer = makeNode(undefined);
+    const peer = await makeNode(undefined);
     await peer.start();
-    const origin = makeNode(undefined);
+    const origin = await makeNode(undefined);
     await origin.start();
     await origin.join(peer.endpoints[0]!);
 

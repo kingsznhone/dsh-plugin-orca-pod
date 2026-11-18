@@ -57,7 +57,7 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
     const dead = `http://127.0.0.1:${deadPort}`;
     const live = `http://127.0.0.1:${listenPort}`;
 
-    const bConfig = createOrcaNodeConfig({
+    const bConfig = await createOrcaNodeConfig({
       workgroup_id: workgroupId,
       workgroup_password: password,
       port: listenPort,
@@ -72,7 +72,7 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       if (String(url).includes(`:${deadPort}/`)) deadAttempts += 1;
       return fetch(url, init);
     };
-    const aConfig = createOrcaNodeConfig({
+    const aConfig = await createOrcaNodeConfig({
       workgroup_id: workgroupId,
       workgroup_password: password,
       port: 0,
@@ -101,14 +101,14 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
     }
   });
 
-  it("rejects an empty endpoint list during config creation", () => {
-    expect(() =>
+  it("rejects an empty endpoint list during config creation", async () => {
+    await expect(
       createOrcaNodeConfig({
         workgroup_id: newWorkgroupId(),
         workgroup_password: "correct horse",
         port: 0,
         endpoints: ["ftp://example.com"],
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });

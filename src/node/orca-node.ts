@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { isWildcardHost } from "@deepseek-ai/dsh-host-webserver";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
@@ -10,7 +11,7 @@ import { createMemoryFileBlobStore, createMemoryDispatchStore, createMemoryTaskS
 import type { FileBlobStore, DispatchStore, OpenedBlob, TaskStore } from "../storage/stores.ts";
 import type { DispatchEntry } from "../protocol/dispatch.ts";
 import { NonceCache } from "../security/crypto.ts";
-import { loadOrCreateIdentity } from "../security/identity.ts";
+import { loadIdentity } from "../security/identity.ts";
 import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "../tasks/delegation.ts";
 import { EchoExecutor } from "../execution/echo.ts";
 import { createAcpExecutor } from "../execution/acp/executor.ts";
@@ -18,7 +19,7 @@ import type { LocalExecutor } from "../execution/executor.ts";
 import { createEventBus } from "../kernel/events.ts";
 import { errorMessage, PodError } from "../kernel/errors.ts";
 import type { NodeLogger } from "../kernel/events.ts";
-import { detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/net.ts";
+import { bindUrl, detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../transport/net.ts";
 import { createGateway } from "../transport/gateway/gateway.ts";
 import { createPeerClient, type FetchLike } from "../transport/peer-client.ts";
 import { createWorkgroup, type LeaveResult } from "../membership/mesh.ts";
@@ -204,7 +205,10 @@ async function joinAny(orcaNode: OrcaNode, member: PeerView): Promise<boolean> {
 function endpointsFrom(config: OrcaNodeConfig, port: number): [string, ...string[]] {
   const [first, ...rest] = config.endpoints;
   if (first !== undefined) return [first, ...rest];
-  if (config.bind_host !== "0.0.0.0" && config.bind_host !== "::") return [`http://${config.bind_host}:${port}`];
+  if (!isWildcardHost(config.bind_host)) {
+    const url = bindUrl(config.bind_host, port);
+    if (url !== undefined) return [url];
+  }
   const [firstDetected, ...restDetected] = detectLocalEndpoints(port);
   return firstDetected === undefined ? [`http://127.0.0.1:${port}`] : [firstDetected, ...restDetected];
 }
@@ -215,9 +219,10 @@ const SILENT: NodeLogger = { warn() {} };
 export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const { config, storage } = options;
   const key = workgroupKey(config);
-  const identity = loadOrCreateIdentity(config.data_root);
-  if (identity.orcaNodeId !== config.orca_node_id) {
-    throw new Error("identity.json does not match config.orca_node_id");
+  // `createOrcaNodeConfig` made the identity; a config without one is not this node's.
+  const identity = loadIdentity(config.data_root);
+  if (identity === null || identity.orcaNodeId !== config.orca_node_id) {
+    throw new Error("identity.json is missing or does not match config.orca_node_id");
   }
   const taskStore = storage?.taskStore ?? createMemoryTaskStore();
   const fileBlobStore = storage?.fileBlobStore ?? createMemoryFileBlobStore();

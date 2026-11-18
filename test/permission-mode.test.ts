@@ -153,7 +153,7 @@ describe("permission mode execution", () => {
 
   it("runs a task that names no mode read-only, so a write asks for an upgrade", async () => {
     const root = await tempDir();
-    const config = createOrcaNodeConfig({
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("orca-mode"),
       workgroup_password: "correct horse",
       data_root: root,
@@ -186,7 +186,7 @@ describe("permission mode execution", () => {
 
   it("narrows the origin mode by the local ceiling end to end", async () => {
     const root = await tempDir();
-    const config = createOrcaNodeConfig({
+    const config = await createOrcaNodeConfig({
       workgroup_id: wg("orca-mode"),
       workgroup_password: "correct horse",
       data_root: root,

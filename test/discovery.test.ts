@@ -20,9 +20,9 @@ const TIMINGS = {
 
 const orcaNodes: OrcaNode[] = [];
 
-function make(displayName: string): OrcaNode {
+async function make(displayName: string): Promise<OrcaNode> {
   const orcaNode = createOrcaNode({
-    config: createOrcaNodeConfig({
+    config: await createOrcaNodeConfig({
       workgroup_id: wg("orca-dev"),
       workgroup_password: "secret",
       display_name: displayName,
@@ -50,13 +50,13 @@ afterEach(async () => {
 
 describe("lazy discovery", () => {
   it("C only joins A, then reaches B via join-on-404", async () => {
-    const a = make("a");
+    const a = await make("a");
     await a.start();
-    const b = make("b");
+    const b = await make("b");
     await b.start();
     await b.join(a.endpoints[0]!);
 
-    const c = make("c");
+    const c = await make("c");
     await c.start();
     await c.join(a.endpoints[0]!);
 
@@ -77,17 +77,17 @@ describe("lazy discovery", () => {
   });
 
   it("two halves that grow independently still converge through heartbeat candidate lists", async () => {
-    const a = make("a");
+    const a = await make("a");
     await a.start();
-    const b = make("b");
+    const b = await make("b");
     await b.start();
     await b.join(a.endpoints[0]!);
 
     // A 侧来了 C，B 侧来了 D：双方只看 join 快照时谁也看不到对面
-    const c = make("c");
+    const c = await make("c");
     await c.start();
     await c.join(a.endpoints[0]!);
-    const d = make("d");
+    const d = await make("d");
     await d.start();
     await d.join(b.endpoints[0]!);
 

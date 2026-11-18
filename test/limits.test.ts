@@ -132,7 +132,7 @@ describe("storage failures", () => {
 describe("budget advertisement", () => {
   it("publishes max_task_ttl_s in the agent card and peer records", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-limits-"));
-    const config = createOrcaNodeConfig({
+    const config = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: "pw",
       data_root: root,
@@ -148,7 +148,7 @@ describe("budget advertisement", () => {
       expect(card.max_task_ttl_s).toBe(900);
 
       const otherRoot = await mkdtemp(join(tmpdir(), "orca-limits-peer-"));
-      const otherConfig = createOrcaNodeConfig({
+      const otherConfig = await createOrcaNodeConfig({
         workgroup_id: WORKGROUP,
         workgroup_password: "pw",
         data_root: otherRoot,

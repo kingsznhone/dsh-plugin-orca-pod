@@ -1,9 +1,12 @@
 import { createPublicKey, generateKeyPairSync, sign as edSign, verify as edVerify, type KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { z } from "zod";
 
+import { withFileLock, writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
+
+import { errorMessage, isMissingFile } from "../kernel/errors.ts";
 import { OrcaNodeIdSchema, isOrcaNodeId, type OrcaNodeId } from "../protocol/peer.ts";
 
 /**
@@ -83,34 +86,55 @@ export function identityPath(dataRoot: string): string {
   return join(dataRoot, "identity.json");
 }
 
+/**
+ * The node identity, or null when `identity.json` does not exist yet. A file
+ * that exists but cannot be read or parsed is an error, never "no identity":
+ * silently generating a new key would give the node a different id (B6).
+ */
 export function loadIdentity(dataRoot: string): NodeIdentity | null {
   const path = identityPath(dataRoot);
-  if (!existsSync(path)) return null;
+  let text: string;
   try {
-    const file = IdentityFileSchema.pick({ private_key_pem: true }).safeParse(JSON.parse(readFileSync(path, "utf8")));
-    return file.success ? identityFromPrivateKeyPem(file.data.private_key_pem) : null;
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return null;
+    throw new Error(`cannot read ${path}: ${errorMessage(error)}`);
+  }
+  const file = IdentityFileSchema.pick({ private_key_pem: true }).safeParse(parseJson(text));
+  const identity = file.success ? identityFromPrivateKeyPem(file.data.private_key_pem) : null;
+  if (identity === null)
+    throw new Error(
+      `${path} does not hold a valid Ed25519 private key; restore it or remove it to create a new identity`,
+    );
+  return identity;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
   } catch {
-    return null;
+    return undefined;
   }
 }
 
-function saveIdentity(dataRoot: string, identity: NodeIdentity): string {
+/**
+ * Load the node identity, creating and persisting one on first start. The
+ * check and the write run under DSH's file lock and the write is atomic, so two
+ * processes starting together end up with the same identity.
+ */
+export async function loadOrCreateIdentity(dataRoot: string): Promise<NodeIdentity> {
   const path = identityPath(dataRoot);
-  mkdirSync(dataRoot, { recursive: true });
-  const payload: IdentityFile = {
-    orca_node_id: identity.orcaNodeId,
-    private_key_pem: identity.privateKeyPem,
-    created_at: new Date().toISOString(),
-  };
-  writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  return path;
-}
-
-/** Load the node identity, creating and persisting one on first start. */
-export function loadOrCreateIdentity(dataRoot: string): NodeIdentity {
-  const existing = loadIdentity(dataRoot);
-  if (existing) return existing;
-  const identity = generateNodeIdentity();
-  saveIdentity(dataRoot, identity);
-  return identity;
+  mkdirSync(dataRoot, { recursive: true, mode: 0o700 });
+  return withFileLock(path, async () => {
+    const existing = loadIdentity(dataRoot);
+    if (existing !== null) return existing;
+    const identity = generateNodeIdentity();
+    const payload: IdentityFile = {
+      orca_node_id: identity.orcaNodeId,
+      private_key_pem: identity.privateKeyPem,
+      created_at: new Date().toISOString(),
+    };
+    await writeFileAtomic(path, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+    return identity;
+  });
 }

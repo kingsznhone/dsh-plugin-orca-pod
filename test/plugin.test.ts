@@ -300,6 +300,48 @@ describe("orca_pod tool", () => {
     expect(watched).toEqual([]);
   });
 
+  it("settles a cancelled call only after its own work has stopped (B20)", async () => {
+    const controller = new AbortController();
+    let finishSend: (() => void) | undefined;
+    let sendSettled = false;
+    const fakeNode = {
+      sendTask: (_peer: string, _input: unknown, options: { signal: AbortSignal }) =>
+        new Promise((resolve) => {
+          // The outbound request notices the abort but takes a moment to wind down.
+          options.signal.addEventListener("abort", () => {
+            finishSend = () => {
+              sendSettled = true;
+              resolve({ id: "task-slow", status: { state: "submitted" } });
+            };
+          });
+        }),
+      cancelTask: async (_peer: string, taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
+    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    const handleForSend = {
+      ready: Promise.resolve(),
+      runtime: { orcaNode: fakeNode, url: null, port: null, started_at: null, error: null },
+      config: parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" }),
+    } as unknown as PodHandle;
+    const sendTools = createPodTools(handleForSend, tracker);
+    let settled = false;
+    const call = run(
+      sendTools,
+      { method: "send", peer: "http://127.0.0.1:11811", text: "hi" },
+      { signal: controller.signal },
+    ).finally(() => {
+      settled = true;
+    });
+    call.catch(() => {});
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await new Promise((resolve) => setImmediate(resolve));
+    // The turn is cancelled, but the request it started has not stopped yet.
+    expect(settled).toBe(false);
+    finishSend?.();
+    await expect(call).rejects.toThrow(/cancelled by the caller/);
+    expect(sendSettled).toBe(true);
+  });
+
   it("does not dispatch at all when the turn is already cancelled", async () => {
     let sent = 0;
     const fakeNode = {

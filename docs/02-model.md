@@ -47,7 +47,8 @@ join（凭 workgroup_id + 密码）→ 双方登记 → 拿到 target 自述 + �
 
 ### 2.4 orca node 身份（Ed25519 公钥）
 
-- **生成时机**：首次启动时由 `security/identity.ts` 在 `<data_root>/identity.json` 生成 Ed25519 密钥对（私钥 PKCS8 PEM，文件权限 0600）；`orca_node_id` = 原始 32 字节公钥的 base64url。
+- **生成时机**：首次启动时由 `security/identity.ts` 在 `<data_root>/identity.json` 生成 Ed25519 密钥对（私钥 PKCS8 PEM，文件权限 0600）；`orca_node_id` = 原始 32 字节公钥的 base64url。检查与写入在 DSH 的文件锁（`withFileLock`）下进行、写入是原子的，所以两个进程同时首启也只会得到同一个身份。
+- **文件损坏**：`identity.json` 存在但读不出或解析不出合法私钥时直接报错，**不会**悄悄生成新身份（那会让节点换一个 id）；要换身份就自己删掉它。
 - **格式**：43 字符、字符集 `[A-Za-z0-9_-]`；可验证、不可伪造。UI/日志显示缩略（前 6 + `…` + 后 4）。
 - **换身份**：删除 `<data_root>/identity.json` 并重启会生成新密钥对（面板的“完全重置”同时删除 `config.json`、`peers.json`，并删掉凭据库里该 workgroup 的密码）；新身份需重新入组。
 - **持久化**：`identity.json` 存 `{orca_node_id, private_key_pem, created_at}`（公钥由私钥推导，不单独存）；`config.json` 记录 `orca_node_id`，启动时与身份文件校验，不一致则拒绝启动。

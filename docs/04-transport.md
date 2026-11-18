@@ -56,7 +56,7 @@
 | 403  | `not_a_member`、`local_only`、`not_task_origin`                                                                             |
 | 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
-| 409  | `permission_denied`、`grant_invalid`、`grant_expired`                                                                       |
+| 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`grant_replayed`                                                     |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
 | 413  | `body_too_large`                                                                                                            |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |

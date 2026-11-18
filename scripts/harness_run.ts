@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   try {
     const writeConfig = async (index: number): Promise<string> => {
       const dataRoot = join(root, `orca-node-${index}`);
-      const config = createOrcaNodeConfig({
+      const config = await createOrcaNodeConfig({
         workgroup_id: workgroupId,
         workgroup_password: password,
         data_root: dataRoot,

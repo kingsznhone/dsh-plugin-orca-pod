@@ -57,8 +57,8 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function makeNode(workgroupId: WorkgroupId, password: string): OrcaNode {
-  const config = createOrcaNodeConfig({
+async function makeNode(workgroupId: WorkgroupId, password: string): Promise<OrcaNode> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,
     data_root: tempDir(),
@@ -88,8 +88,8 @@ function text(body: string) {
 async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
   const workgroupId = wg(`wg-ui-${Math.random().toString(16).slice(2, 8)}`);
   const password = "ui-surface-password";
-  const a = makeNode(workgroupId, password);
-  const b = makeNode(workgroupId, password);
+  const a = await makeNode(workgroupId, password);
+  const b = await makeNode(workgroupId, password);
   await a.start();
   await b.start();
   await a.join(b.endpoints[0]!);

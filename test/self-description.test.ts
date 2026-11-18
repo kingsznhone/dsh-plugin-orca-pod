@@ -17,15 +17,17 @@ afterEach(async () => {
 
 async function pair(): Promise<[OrcaNode, OrcaNode]> {
   const workgroupId = wg(`wg-${randomBytes(6).toString("hex")}`);
-  const nodes = [0, 1].map(() =>
-    createOrcaNode({
-      config: createOrcaNodeConfig({
-        workgroup_id: workgroupId,
-        workgroup_password: "same password",
-        data_root: mkdtempSync(join(tmpdir(), "orca-self-")),
-        port: 0,
+  const nodes = await Promise.all(
+    [0, 1].map(async () =>
+      createOrcaNode({
+        config: await createOrcaNodeConfig({
+          workgroup_id: workgroupId,
+          workgroup_password: "same password",
+          data_root: mkdtempSync(join(tmpdir(), "orca-self-")),
+          port: 0,
+        }),
       }),
-    }),
+    ),
   );
   for (const node of nodes) {
     await node.start();

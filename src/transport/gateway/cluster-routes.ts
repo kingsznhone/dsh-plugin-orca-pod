@@ -70,9 +70,14 @@ function admit(deps: GatewayDeps, kind: AdmissionKind, caller: OrcaNodeId, body:
 }
 
 /** Roster view including self, digested together. */
+/**
+ * The directory this node hands out in join and heartbeat answers (§3.5): only
+ * itself and the members it hears from. A node that went quiet or a candidate
+ * it never reached is not passed on, so no one keeps a dead node circulating.
+ */
 function roster(deps: GatewayDeps): { self: SelfRecord; members: PeerView[]; digest: string } {
   const self = deps.orcaNode.self();
-  const members = [...deps.peers.list(), self];
+  const members = [...deps.peers.directory(), self];
   return { self, members, digest: membersDigest(members) };
 }
 
@@ -190,9 +195,11 @@ export function clusterRoutes(app: FastifyInstance, deps: GatewayDeps): void {
     return response;
   });
 
+  // Inspection for the CLI (`members`, resolving a peer's id): every record this
+  // node holds, offline ones included. No node merges it into its own table.
   app.get("/cluster/members", { config: { access: "member" } }, async () => {
-    const { members, digest } = roster(deps);
-    const response: MembersResponse = { members_digest: digest, members };
+    const members = [...deps.peers.list(), deps.orcaNode.self()];
+    const response: MembersResponse = { members_digest: membersDigest(members), members };
     return response;
   });
 

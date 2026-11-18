@@ -51,7 +51,7 @@ describe("orca-node CLI", () => {
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "orca-cli-test-"));
-    config = createOrcaNodeConfig({
+    config = await createOrcaNodeConfig({
       workgroup_id: wg("cli-test"),
       workgroup_password: "correct horse",
       data_root: root,
@@ -301,7 +301,7 @@ describe("orca-node CLI", () => {
 describe("config validation", () => {
   it("rejects a config with a missing required field instead of filling a default", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orca-config-"));
-    const created = createOrcaNodeConfig({
+    const created = await createOrcaNodeConfig({
       workgroup_id: wg("orca-kdf"),
       workgroup_password: "kdf-password-123",
       data_root: dir,

@@ -24,8 +24,8 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function nodeFor(dataRoot: string): OrcaNode {
-  const config = createOrcaNodeConfig({
+async function nodeFor(dataRoot: string): Promise<OrcaNode> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: wg("orca-persist"),
     workgroup_password: "secret",
     data_root: dataRoot,
@@ -47,7 +47,7 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 5000): Promise
 describe("orca node persistence", () => {
   it("serves a completed task after a restart", async () => {
     const dataRoot = tempDir();
-    const first = nodeFor(dataRoot);
+    const first = await nodeFor(dataRoot);
     await first.start();
     const task = await first.sendTask(first.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
@@ -59,7 +59,7 @@ describe("orca node persistence", () => {
     });
     await first.stop();
 
-    const second = nodeFor(dataRoot);
+    const second = await nodeFor(dataRoot);
     await second.start();
     const after = await second.getTask(second.endpoints[0]!, task.id);
     expect(after.status.state).toBe("completed");
@@ -67,7 +67,7 @@ describe("orca node persistence", () => {
 
   it("marks an interrupted task failed(node_restart) after a restart", async () => {
     const dataRoot = tempDir();
-    const first = nodeFor(dataRoot);
+    const first = await nodeFor(dataRoot);
     await first.start();
     const task = await first.sendTask(first.endpoints[0]!, {
       message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
@@ -79,7 +79,7 @@ describe("orca node persistence", () => {
     });
     await first.stop();
 
-    const second = nodeFor(dataRoot);
+    const second = await nodeFor(dataRoot);
     await second.start();
     const after = await second.getTask(second.endpoints[0]!, task.id);
     expect(after.status.state).toBe("failed");

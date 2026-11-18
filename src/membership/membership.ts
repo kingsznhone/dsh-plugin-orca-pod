@@ -5,6 +5,12 @@ export interface PeerStore {
   upsert(peer: PeerView): void;
   get(orcaNodeId: OrcaNodeId): PeerView | undefined;
   list(): PeerView[];
+  /**
+   * The members this node vouches for to others: the ones it has heard from
+   * itself and that are not offline (§3.5). Candidates it never reached and
+   * nodes gone quiet stay in `list()` but are never passed on.
+   */
+  directory(): PeerView[];
   remove(orcaNodeId: OrcaNodeId): void;
   /** Mark a peer as recently heard from. Returns false when the orca node is unknown. */
   touch(orcaNodeId: OrcaNodeId): boolean;
@@ -49,6 +55,13 @@ export type MembershipTimings = {
   /** Per-heartbeat request timeout (half the interval by convention). */
   heartbeatTimeoutMs: number;
 };
+
+/**
+ * Consecutive failed heartbeats after which a candidate this node has never
+ * reached is dropped (and tombstoned): someone else's memory of a node is not
+ * a reason to keep dialing it forever (§3.5).
+ */
+export const CANDIDATE_MAX_FAILURES = 5;
 
 const DEFAULT_MEMBERSHIP_TIMINGS: MembershipTimings = {
   intervalMs: 2000,
@@ -106,6 +119,8 @@ export type Membership = {
   /** Monotonic clock used by this instance (same source as the watchdog). */
   now(): number;
   list(): PeerView[];
+  /** What this node passes on to others (`PeerStore.directory`). */
+  directory(): PeerView[];
   get(orcaNodeId: OrcaNodeId): PeerView | null;
   getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null;
   remove(orcaNodeId: OrcaNodeId): void;
@@ -222,6 +237,9 @@ export function createMembership(options: CreateMembershipOptions): Membership {
         .map(toView)
         .sort((left, right) => left.orca_node_id.localeCompare(right.orca_node_id));
     },
+    directory(): PeerView[] {
+      return peers.list().filter((peer) => peer.state === "online" || peer.state === "suspect");
+    },
     remove(orcaNodeId: OrcaNodeId): void {
       remove(orcaNodeId);
     },
@@ -272,7 +290,14 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     if (!record) return;
     record.fails += 1;
     const nowMs = monotonicMs();
-    if (record.view.state === "offline") {
+    // A candidate never reached: give up after a few tries instead of dialing
+    // someone else's memory forever; the tombstone keeps a stale list from
+    // adding it straight back (§3.5).
+    if (record.view.state === "unknown" && record.fails >= CANDIDATE_MAX_FAILURES) {
+      remove(orcaNodeId);
+      return;
+    }
+    if (record.view.state === "offline" || record.view.state === "unknown") {
       record.probe_fails += 1;
       const backoff = timings.recoverProbeMs * 2 ** (record.probe_fails - 1);
       record.next_probe_ms = nowMs + Math.min(backoff, timings.maxRecoverProbeMs);
@@ -351,7 +376,8 @@ export function createMembership(options: CreateMembershipOptions): Membership {
   function needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean {
     const record = records.get(orcaNodeId);
     if (!record) return false;
-    if (record.view.state !== "offline") return true;
+    // Offline nodes and unreached candidates are probed on the backoff schedule.
+    if (record.view.state !== "offline" && record.view.state !== "unknown") return true;
     return nowMs >= record.next_probe_ms;
   }
 
@@ -374,6 +400,7 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     needsProbe,
     now: monotonicMs,
     list: peers.list,
+    directory: peers.directory,
     get,
     getRecord,
     remove,

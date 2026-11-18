@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { createMembership } from "../src/membership/membership.ts";
 import { candidateEndpointAllowed } from "../src/membership/screening.ts";
-import { detectLocalEndpoints, isBlockedFetchPort, isLoopbackEndpoint, pickFreePort } from "../src/transport/net.ts";
+import {
+  bindUrl,
+  detectLocalEndpoints,
+  isBlockedFetchPort,
+  isLoopbackEndpoint,
+  pickFreePort,
+} from "../src/transport/net.ts";
 import type { PeerView, OrcaNodeId } from "../src/protocol/peer.ts";
 import { labelId } from "./fixtures/ids.ts";
 
@@ -102,5 +108,17 @@ describe("peer origin (§7.7)", () => {
     expect(membership.originOf(labelId("CCCCCC"))).toBe("candidate");
     membership.peers.upsert(peer(labelId("CCCCCC"), "http://127.0.0.1:2"));
     expect(membership.originOf(labelId("CCCCCC"))).toBe("explicit");
+  });
+});
+
+describe("bind address URLs (B21)", () => {
+  it("brackets IPv6 literals and keeps host names, by DSH's bind rule", () => {
+    expect(bindUrl("192.168.1.2", 11811)).toBe("http://192.168.1.2:11811");
+    expect(bindUrl("fd00::5", 11811)).toBe("http://[fd00::5]:11811");
+    expect(bindUrl("::ffff:127.0.0.1", 11811)).toBe("http://127.0.0.1:11811");
+    expect(bindUrl("localhost", 11811)).toBe("http://localhost:11811");
+    // A zone id has no URL form.
+    expect(bindUrl("fe80::1%eth0", 11811)).toBeUndefined();
+    for (const url of detectLocalEndpoints(11811)) expect(URL.canParse(url)).toBe(true);
   });
 });

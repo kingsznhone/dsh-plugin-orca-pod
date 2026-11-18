@@ -75,12 +75,12 @@ function newWorkgroupId(): WorkgroupId {
   return wg(`wg-${randomBytes(6).toString("hex")}`);
 }
 
-function makeNode(
+async function makeNode(
   workgroupId: WorkgroupId,
   password: string,
   options: { timings?: Partial<MembershipTimings>; fetch?: FetchLike; display_name?: string } = {},
-): OrcaNode {
-  const config = createOrcaNodeConfig({
+): Promise<OrcaNode> {
+  const config = await createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,
     display_name: options.display_name,
@@ -172,12 +172,12 @@ describe("transport jitter during formation", () => {
 
   it("keeps a peer online through a 15-heartbeat one-way outbound failure", async () => {
     const workgroupId = newWorkgroupId();
-    const a = makeNode(workgroupId, "jitter", { display_name: "a" });
-    const b = makeNode(workgroupId, "jitter", { display_name: "b" });
+    const a = await makeNode(workgroupId, "jitter", { display_name: "a" });
+    const b = await makeNode(workgroupId, "jitter", { display_name: "b" });
 
     let aHost = "";
     let blocked = false;
-    const c = makeNode(workgroupId, "jitter", {
+    const c = await makeNode(workgroupId, "jitter", {
       display_name: "c",
       fetch: (url, init) => {
         if (blocked && aHost !== "" && url.host === aHost) throw new TypeError("simulated one-way partition");
@@ -230,8 +230,8 @@ describe("transport jitter during formation", () => {
     let blocked = false;
     const gate = (): boolean => blocked;
 
-    const a = makeNode(workgroupId, "jitter", { timings: SHORT_OUTAGE, fetch: jittered({ block: gate }) });
-    const b = makeNode(workgroupId, "jitter", { timings: SHORT_OUTAGE, fetch: jittered({ block: gate }) });
+    const a = await makeNode(workgroupId, "jitter", { timings: SHORT_OUTAGE, fetch: jittered({ block: gate }) });
+    const b = await makeNode(workgroupId, "jitter", { timings: SHORT_OUTAGE, fetch: jittered({ block: gate }) });
 
     try {
       const aUrl = (await a.start()).url;
@@ -266,8 +266,8 @@ describe("transport jitter during formation", () => {
   it("refuses a heartbeat response that claims another node", async () => {
     const workgroupId = newWorkgroupId();
     const forgedId = "ocRQy-mZ2YzHZOVJEQCkFnxmLuG2p51Yp4jq27Cz1ag";
-    const a = makeNode(workgroupId, "jitter", { timings: JITTER });
-    const c = makeNode(workgroupId, "jitter", {
+    const a = await makeNode(workgroupId, "jitter", { timings: JITTER });
+    const c = await makeNode(workgroupId, "jitter", {
       timings: JITTER,
       fetch: rewriteJson("/cluster/heartbeat", (body) => ({ ...body, from: forgedId })),
     });

@@ -69,14 +69,14 @@ async function serve(args: Values<typeof SERVE>): Promise<void> {
   const exists = await loadConfig(configFile).catch(() => null);
   const config =
     exists ??
-    createOrcaNodeConfig({
+    (await createOrcaNodeConfig({
       workgroup_id: workgroupId,
       workgroup_password: password,
       display_name: args.name ?? `host-${process.pid}`,
       bind_host: args.host ?? "0.0.0.0",
       port: Number(args.port ?? DEFAULT_PORT),
       endpoints: args.endpoint === undefined ? [] : [args.endpoint],
-    });
+    }));
   if (!exists) await saveConfig(configFile, config);
   const orcaNode = createOrcaNode({ config, logger: console });
   const { url } = await orcaNode.start();
@@ -88,7 +88,7 @@ async function join(args: Values<typeof JOIN>): Promise<void> {
   const peer = required(args.peer, "peer");
   const workgroupId = WorkgroupIdSchema.parse(required(args.workgroup, "workgroup"));
   const password = required(args.password, "password");
-  const config = createOrcaNodeConfig({
+  const config = await createOrcaNodeConfig({
     workgroup_id: workgroupId,
     workgroup_password: password,
     display_name: args.name ?? `guest-${process.pid}`,

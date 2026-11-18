@@ -124,7 +124,7 @@ describe("acceptance: membership under partition", () => {
 describe("acceptance: single slot concurrency", () => {
   it("starts exactly one agent turn for ten concurrent dispatches", async () => {
     const root = await tempDir();
-    const config = createOrcaNodeConfig({
+    const config = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: root,
@@ -159,13 +159,13 @@ describe("acceptance: password rotation", () => {
     const rootA = await tempDir("orca-rot-a-");
     const rootB = await tempDir("orca-rot-b-");
 
-    const configA1 = createOrcaNodeConfig({
+    const configA1 = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: rootA,
       port: 0,
     });
-    const configB = createOrcaNodeConfig({
+    const configB = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: rootB,
@@ -180,7 +180,7 @@ describe("acceptance: password rotation", () => {
     await b.stop();
 
     const rotatedRoot = await tempDir("orca-rot-new-");
-    const rotated = createOrcaNodeConfig({
+    const rotated = await createOrcaNodeConfig({
       workgroup_id: WORKGROUP,
       workgroup_password: "a brand new password",
       data_root: rotatedRoot,

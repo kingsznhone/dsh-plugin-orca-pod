@@ -4,7 +4,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 
-import { isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
+import { bindUrlHost, isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
 import { DEFAULT_PORT } from "../protocol/constants.ts";
 import { isHttpEndpoint } from "../protocol/peer.ts";
 
@@ -77,17 +77,24 @@ export function isDirectLoopbackRequest(request: {
  * the given port. IPv4 comes first (the reliable LAN path); link-local IPv6
  * (`fe80:` prefix, needs a zone id) is skipped.
  */
+/**
+ * The URL a node bound to `host` is dialed at, by DSH's rule for bind literals
+ * (`bindUrlHost`: IPv6 bracketed, mapped loopback canonical, host names as
+ * they are); undefined when the address has no URL form (an interface zone id).
+ */
+export function bindUrl(host: string, port: number): string | undefined {
+  const urlHost = bindUrlHost(host);
+  return urlHost === undefined ? undefined : `http://${urlHost}:${port}`;
+}
+
 export function detectLocalEndpoints(port: number): string[] {
   const external = Object.values(networkInterfaces())
     .flat()
     .filter((address): address is NetworkInterfaceInfo => address !== undefined && !address.internal);
-  const ipv4 = external
-    .filter((address) => address.family !== "IPv6")
-    .map((address) => `http://${address.address}:${port}`);
-  const ipv6 = external
-    .filter((address) => address.family === "IPv6" && !/^fe80:/i.test(address.address))
-    .map((address) => `http://[${address.address}]:${port}`);
-  return [...new Set([...ipv4, ...ipv6])];
+  const ipv4 = external.filter((address) => address.family !== "IPv6");
+  const ipv6 = external.filter((address) => address.family === "IPv6" && !/^fe80:/i.test(address.address));
+  const urls = [...ipv4, ...ipv6].map((address) => bindUrl(address.address, port));
+  return [...new Set(urls.filter((url): url is string => url !== undefined))];
 }
 
 /** Listen-address choices for setup UIs: loopback, every interface, then each detected local address. */
