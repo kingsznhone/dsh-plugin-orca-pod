@@ -33,9 +33,20 @@
   },
   "linter": {
     "enabled": true,
-    "rules": { "preset": "recommended" }
+    "rules": {
+      "preset": "recommended",
+      "style": { "noEnum": "error", "noNamespace": "error" }
+    }
   },
   "overrides": [
+    {
+      "includes": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "style": { "noParameterProperties": "error" }
+        }
+      }
+    },
     {
       "includes": ["src/transport/gateway/a2a-routes.ts"],
       "linter": {

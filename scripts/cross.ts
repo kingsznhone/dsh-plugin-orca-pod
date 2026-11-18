@@ -171,13 +171,15 @@ async function fetchBlob(args: Values<typeof FETCH>): Promise<void> {
 function printHelp(): void {
   console.log("usage:");
   console.log(
-    `  node scripts/cross.ts serve --workgroup <id> --password <secret> [--port ${DEFAULT_PORT}] [--host 0.0.0.0] [--endpoint http://ip:port] [--name host]`,
+    `  node --import tsx scripts/cross.ts serve --workgroup <id> --password <secret> [--port ${DEFAULT_PORT}] [--host 0.0.0.0] [--endpoint http://ip:port] [--name host]`,
   );
-  console.log("  node scripts/cross.ts join  --peer <url> --workgroup <id> --password <secret> [--name guest]");
   console.log(
-    "  node scripts/cross.ts task  --config <file> --peer <url> [--text hello] [--echo '<json>'] [--auto-resume]",
+    "  node --import tsx scripts/cross.ts join  --peer <url> --workgroup <id> --password <secret> [--name guest]",
   );
-  console.log("  node scripts/cross.ts fetch --url <link printed by orca-node publish>");
+  console.log(
+    "  node --import tsx scripts/cross.ts task  --config <file> --peer <url> [--text hello] [--echo '<json>'] [--auto-resume]",
+  );
+  console.log("  node --import tsx scripts/cross.ts fetch --url <link printed by orca-node publish>");
 }
 
 const [command = "help", ...rest] = process.argv.slice(2);

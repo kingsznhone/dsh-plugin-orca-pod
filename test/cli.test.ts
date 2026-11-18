@@ -26,7 +26,7 @@ function runCli(args: string[], input?: string, env: NodeJS.ProcessEnv = process
   return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
-      ["--no-warnings", CLI, ...args],
+      ["--no-warnings", "--import", "tsx", CLI, ...args],
       { env, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
         const code =

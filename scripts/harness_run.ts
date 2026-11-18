@@ -26,7 +26,7 @@ import { isTerminal, type TaskView } from "../src/protocol/task.ts";
 import { type MembersResponse, WorkgroupIdSchema } from "../src/protocol/peer.ts";
 
 const execFileAsync = promisify(execFile);
-const CLI = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../lib/cli/main.js", import.meta.url));
 const NODE = process.execPath;
 const START_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 30_000;

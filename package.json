@@ -58,7 +58,7 @@
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p client",
     "test": "vitest run",
-    "harness": "node --no-warnings scripts/harness_run.ts"
+    "harness": "npm run build && node --no-warnings --import tsx scripts/harness_run.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.7.0",
@@ -98,6 +98,7 @@
     "@types/node": "^26.6.6",
     "@types/react": "^18.3.31",
     "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }
