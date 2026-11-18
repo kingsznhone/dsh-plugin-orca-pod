@@ -327,7 +327,7 @@ export class PodTool {
       },
     };
     throwIfAborted(signal);
-    const view = await orcaNode.delegation.sendTask(peer, input, { signal });
+    const view = await orcaNode.delegation.sendTask(peer, input, signal);
     if (signal.aborted) {
       // The remote accepted the task after the caller's turn was cancelled: the
       // caller never learns its id, so it must not keep running unobserved.
@@ -343,12 +343,12 @@ export class PodTool {
 
   async status(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
     const orcaNode = await this.requireNode(signal);
-    return taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
+    return taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, signal));
   }
 
   async cancel(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
     const orcaNode = await this.requireNode(signal);
-    return taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, { signal }));
+    return taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal));
   }
 
   async members(signal: AbortSignal): Promise<MembersResult> {

@@ -16,9 +16,10 @@ const RUNTIME: RuntimeInfo = {
 
 function profile(config: { display_name?: string; task_timeout_s?: number } = {}, models = new ModelCatalog()) {
   return new SelfProfile(
-    { orca_node_id: labelId("SELF"), workgroup_id: wg("grp"), display_name: config.display_name ?? "", ...config },
+    { orca_node_id: labelId("SELF"), workgroup_id: wg("grp"), display_name: config.display_name ?? "" },
     RUNTIME,
     models,
+    config.task_timeout_s ?? 3600,
   );
 }
 
@@ -42,7 +43,7 @@ describe("SelfProfile", () => {
     expect(self.record().busy).toBeNull();
   });
 
-  it("reads its model catalog live and its task budget from the config", () => {
+  it("reads its model catalog live and advertises the task budget it is given", () => {
     const models = new ModelCatalog();
     const self = profile({ task_timeout_s: 90 }, models);
     expect(self.peer().models).toBeUndefined();
@@ -50,7 +51,6 @@ describe("SelfProfile", () => {
     expect(self.peer().models?.map((offer) => offer.id)).toEqual(["m"]);
     expect(self.description().models?.map((offer) => offer.id)).toEqual(["m"]);
     expect(self.peer().max_task_ttl_s).toBe(90);
-    expect(profile().peer().max_task_ttl_s).toBe(3600);
   });
 
   it("answers as a self record with its workgroup", () => {

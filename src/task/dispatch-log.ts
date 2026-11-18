@@ -69,10 +69,9 @@ export class DispatchLog {
 
   /**
    * On startup, mark every non-terminal entry `unknown` — the origin cannot know
-   * what the remote task did while the origin was down. Returns the count.
+   * what the remote task did while the origin was down.
    */
-  markInFlightUnknown(): number {
-    let count = 0;
+  markInFlightUnknown(): void {
     for (const entry of this.store.list()) {
       if (isTerminal(entry.state)) continue;
       this.store.save({
@@ -81,9 +80,7 @@ export class DispatchLog {
         last_error: "origin_restart",
         updated_at: new Date().toISOString(),
       });
-      count += 1;
     }
-    return count;
   }
 
   private save(entry: DispatchEntry): void {

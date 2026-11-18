@@ -15,7 +15,6 @@ export { PodError } from "./core/errors.ts";
 export type { PodErrorCode } from "./core/errors.ts";
 export { OrcaNode, createPersistentStorage } from "./node/orca-node.ts";
 export type { OrcaNodeOptions, OrcaNodeStorage } from "./node/orca-node.ts";
-export type { ApprovalOptions } from "./task/delegation.ts";
 export type { FetchLike } from "./mesh/peer-client.ts";
 export type { NodeLogger } from "./core/events.ts";
 export { ConfigValidationError, parseSettings, safeParseSettings } from "./node/settings.ts";

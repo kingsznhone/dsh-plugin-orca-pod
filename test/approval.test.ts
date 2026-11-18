@@ -188,11 +188,15 @@ describe("Phase 3 approval round trip", () => {
   });
 
   it("rejects an expired grant", async () => {
-    const { origin, targetUrl } = await threeNodes();
+    const { origin, targetUrl, identity } = await threeNodes();
     const submitted = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
 
-    await origin.delegation.approveTask(targetUrl, suspended, { ttlS: -1 });
+    const expired = signGrant(identity, {
+      ...grantFor(suspended, origin.orcaNodeId),
+      expires_at: new Date(Date.now() - 1000).toISOString(),
+    });
+    await signedResume(targetUrl, identity, resumeMessage(submitted.id, { grant: expired }));
 
     const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
     expect(failed.status.reason).toBe("grant_expired");

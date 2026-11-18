@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore, type FileBlobRegistry } from "../../src/core/blobs.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
 import { ModelCatalog } from "../../src/core/model-catalog.ts";
@@ -61,6 +62,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     },
     RUNTIME,
     new ModelCatalog(),
+    DEFAULT_TASK_TIMEOUT_S,
   );
   profile.setEndpoints([GATEWAY_ENDPOINT]);
   const membership = new Membership(identity.orcaNodeId);

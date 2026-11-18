@@ -1,8 +1,16 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkgroupId } from "../core/wire/peer.ts";
 import { isMissingFile } from "../core/errors.ts";
+
+export type WorkspaceUsage = { bytes: number; files: number };
+
+/** `undefined` when the path vanished meanwhile (an agent may delete files under us); other errors surface. */
+function ifMissing(error: unknown): undefined {
+  if (isMissingFile(error)) return undefined;
+  throw error;
+}
 
 /**
  * One workspace per (data_root, workgroup) (§6.7). Created when the node starts and kept
@@ -13,46 +21,57 @@ import { isMissingFile } from "../core/errors.ts";
  * the workspace: the agent may write anywhere under cwd. It lives under
  * `<data_root>/state/<workgroup_id>/` instead (§6.7).
  */
-export type WorkspacePaths = {
+export class Workspace {
   /** Agent cwd and the only write root for the group. */
-  root: string;
+  readonly root: string;
   /** Cross-session notes; writable, never leaves this orcaNode. */
-  notes: string;
+  readonly notes: string;
   /** Gateway-owned state outside the agent's reach. */
-  state: string;
-};
+  readonly state: string;
 
-/** Where the workspace of a workgroup lives; nothing is created yet (`ensureWorkspace` does that). */
-export function workspacePathsOf(dataRoot: string, workgroupId: WorkgroupId): WorkspacePaths {
-  const root = join(dataRoot, "workgroups", workgroupId);
-  return { root, notes: join(root, "notes"), state: join(dataRoot, "state", workgroupId) };
-}
-
-/** Create the workspace directories if they are missing; running it twice changes nothing. */
-export function ensureWorkspace(workspace: WorkspacePaths): void {
-  for (const dir of [workspace.root, workspace.notes, join(workspace.state, "tasks")]) {
-    mkdirSync(dir, { recursive: true });
+  /** Only names the directories; `ensure()` creates them. */
+  constructor(dataRoot: string, workgroupId: WorkgroupId) {
+    this.root = join(dataRoot, "workgroups", workgroupId);
+    this.notes = join(this.root, "notes");
+    this.state = join(dataRoot, "state", workgroupId);
   }
-}
 
-export type WorkspaceUsage = { bytes: number; files: number };
-
-/** `undefined` when the path vanished meanwhile (an agent may delete files under us); other errors surface. */
-function ifMissing(error: unknown): undefined {
-  if (isMissingFile(error)) return undefined;
-  throw error;
-}
-
-/** Size and file count of everything under `root`, measured without blocking the event loop (§6.13). */
-export async function measureWorkspace(root: string): Promise<WorkspaceUsage> {
-  const entries = (await readdir(root, { withFileTypes: true, recursive: true }).catch(ifMissing)) ?? [];
-  const usage = { bytes: 0, files: 0 };
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const stat = await lstat(join(entry.parentPath, entry.name)).catch(ifMissing);
-    if (stat === undefined) continue;
-    usage.bytes += stat.size;
-    usage.files += 1;
+  /** Create the workspace directories if they are missing; running it twice changes nothing. */
+  ensure(): void {
+    for (const dir of [this.root, this.notes, join(this.state, "tasks")]) {
+      mkdirSync(dir, { recursive: true });
+    }
   }
-  return usage;
+
+  /** Size and file count of everything under the root, measured without blocking the event loop (§6.13). */
+  async measure(): Promise<WorkspaceUsage> {
+    const entries = (await readdir(this.root, { withFileTypes: true, recursive: true }).catch(ifMissing)) ?? [];
+    const usage = { bytes: 0, files: 0 };
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const stat = await lstat(join(entry.parentPath, entry.name)).catch(ifMissing);
+      if (stat === undefined) continue;
+      usage.bytes += stat.size;
+      usage.files += 1;
+    }
+    return usage;
+  }
+
+  /** Names of the regular files at the top of `notes/`, sorted; none when the directory does not exist yet. */
+  noteFiles(): string[] {
+    try {
+      return readdirSync(this.notes, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .sort();
+    } catch (error) {
+      if (isMissingFile(error)) return [];
+      throw error;
+    }
+  }
+
+  /** Where the `index`-th (from 1) artifact of a task is kept: under the node's own state, outside the agent's reach. */
+  artifactPath(taskId: string, index: number): string {
+    return join(this.state, "artifacts", taskId, String(index));
+  }
 }

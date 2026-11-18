@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { afterEach } from "vitest";
 
 import { DiskBlobRegistry, MemoryFileBlobStore, type FileBlobRegistry } from "../../src/core/blobs.ts";
+import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
 import type { OrcaNodeId } from "../../src/core/wire/peer.ts";
 import { EchoExecutor } from "../../src/executor/echo.ts";
 import type { LocalExecutor } from "../../src/executor/executor.ts";
 import { SingleSlotTaskRunner, type TaskRunnerOptions } from "../../src/task/runner.ts";
 import { MemoryTaskStore, type TaskStore } from "../../src/task/task-store.ts";
 import type { SubmitTaskInput, TaskView } from "../../src/task/wire.ts";
-import { ensureWorkspace, workspacePathsOf, type WorkspacePaths } from "../../src/task/workspace.ts";
+import { Workspace } from "../../src/task/workspace.ts";
 import { labelId, wg } from "./ids.ts";
 
 const dirs: string[] = [];
@@ -35,14 +36,14 @@ export type RunnerSetup = TaskRunnerOptions & {
   executor: LocalExecutor;
   blobs: FileBlobRegistry;
   store: TaskStore;
-  workspace: WorkspacePaths;
+  workspace: Workspace;
 };
 
 /** A runner setup on a fresh temp workspace; override what a test cares about. */
 export function runnerSetup(overrides: Partial<RunnerSetup> = {}): RunnerSetup {
   const dataRoot = tempDir();
-  const workspace = workspacePathsOf(dataRoot, wg("runner-test"));
-  ensureWorkspace(workspace);
+  const workspace = new Workspace(dataRoot, wg("runner-test"));
+  workspace.ensure();
   return {
     executor: new EchoExecutor(),
     blobs: new DiskBlobRegistry(new MemoryFileBlobStore()),
@@ -52,6 +53,7 @@ export function runnerSetup(overrides: Partial<RunnerSetup> = {}): RunnerSetup {
     selfOrcaNodeId: SELF,
     workgroupId: wg("runner-test"),
     dataRoot,
+    taskTimeoutS: DEFAULT_TASK_TIMEOUT_S,
     maxWorkspaceBytes: 1024 ** 3,
     maxWorkspaceFiles: 100_000,
     ...overrides,

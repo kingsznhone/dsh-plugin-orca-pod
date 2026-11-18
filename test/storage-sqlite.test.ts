@@ -82,7 +82,7 @@ describe("sqlite task store", () => {
     store.save(storedTask("completed", "DONE1"));
 
     const runner = createTestRunner({ store });
-    expect(runner.recover()).toBe(1);
+    runner.start();
 
     const failed = runner.get("WORKING1");
     expect(failed?.status.state).toBe("failed");

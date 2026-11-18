@@ -255,8 +255,8 @@ describe("orca_pod tool", () => {
     const cancelled: string[] = [];
     const fakeNode = {
       delegation: {
-        sendTask: async (_peer: string, _input: unknown, options?: { signal?: AbortSignal }) => {
-          signals.push(options?.signal);
+        sendTask: async (_peer: string, _input: unknown, signal?: AbortSignal) => {
+          signals.push(signal);
           // The remote accepts, but the user cancels the turn before the reply lands.
           controller.abort();
           return { id: "task-late", status: { state: "submitted" } };
@@ -291,10 +291,10 @@ describe("orca_pod tool", () => {
     let sendSettled = false;
     const fakeNode = {
       delegation: {
-        sendTask: (_peer: string, _input: unknown, options: { signal: AbortSignal }) =>
+        sendTask: (_peer: string, _input: unknown, signal: AbortSignal) =>
           new Promise((resolve) => {
             // The outbound request notices the abort but takes a moment to wind down.
-            options.signal.addEventListener("abort", () => {
+            signal.addEventListener("abort", () => {
               finishSend = () => {
                 sendSettled = true;
                 resolve({ id: "task-slow", status: { state: "submitted" } });

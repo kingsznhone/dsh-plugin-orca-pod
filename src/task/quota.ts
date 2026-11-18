@@ -1,6 +1,6 @@
 import { errorMessage, PodError } from "../core/errors.ts";
 import type { NodeLogger } from "../core/events.ts";
-import { measureWorkspace, type WorkspaceUsage } from "./workspace.ts";
+import type { Workspace, WorkspaceUsage } from "./workspace.ts";
 
 export type QuotaLimits = { maxBytes: number; maxFiles: number };
 
@@ -16,7 +16,7 @@ export class WorkspaceQuota {
   private walks = 0;
 
   constructor(
-    private readonly root: string,
+    private readonly workspace: Workspace,
     private readonly limits: QuotaLimits,
     private readonly logger: NodeLogger,
   ) {}
@@ -24,7 +24,7 @@ export class WorkspaceQuota {
   /** Walk the workspace without blocking; a newer walk supersedes one that finishes late. */
   measure(): void {
     const walk = ++this.walks;
-    measureWorkspace(this.root).then(
+    this.workspace.measure().then(
       (measured) => {
         if (walk === this.walks) this.usage = measured;
       },

@@ -4,25 +4,7 @@ import { describe, expect, it } from "vitest";
 import { EventBus } from "../src/core/events.ts";
 import { DispatchLog } from "../src/task/dispatch-log.ts";
 import { MemoryDispatchStore } from "../src/task/dispatch-store.ts";
-import { TaskSlot } from "../src/task/slot.ts";
 import type { DispatchEvent, TaskView } from "../src/task/wire.ts";
-
-describe("TaskSlot", () => {
-  it("is held by one task at a time and freed only by its holder", () => {
-    const slot = new TaskSlot();
-    expect(slot.isFree()).toBe(true);
-    expect(slot.holder).toBeNull();
-
-    slot.claim("a");
-    expect(slot.isFree()).toBe(false);
-    expect(slot.holder).toBe("a");
-
-    slot.release("b");
-    expect(slot.holder).toBe("a");
-    slot.release("a");
-    expect(slot.isFree()).toBe(true);
-  });
-});
 
 function view(id: string, state: TaskView["status"]["state"], reason?: string): TaskView {
   return { kind: "task", id, contextId: `ctx-${id}`, status: { state, timestamp: "2026-01-01T00:00:00.000Z", reason } };

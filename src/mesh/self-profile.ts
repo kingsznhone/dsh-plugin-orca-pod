@@ -1,4 +1,3 @@
-import { DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
 import type { ModelCatalog } from "../core/model-catalog.ts";
 import {
   runtimeDigest,
@@ -16,8 +15,6 @@ export type SelfProfileConfig = {
   orca_node_id: OrcaNodeId;
   workgroup_id: WorkgroupId;
   display_name: string;
-  /** Advertised per-task budget (§6.9). */
-  task_timeout_s?: number;
 };
 
 /**
@@ -30,15 +27,14 @@ export type SelfProfileConfig = {
 export class SelfProfile {
   private urls: readonly string[] = [];
   private holder: BusyState | null = null;
-  private readonly maxTaskTtlS: number;
 
   constructor(
     private readonly config: SelfProfileConfig,
     private readonly runtime: RuntimeInfo,
     private readonly models: ModelCatalog,
-  ) {
-    this.maxTaskTtlS = config.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
-  }
+    /** Advertised per-task budget, the cap the task runner enforces (§6.9). */
+    private readonly maxTaskTtlS: number,
+  ) {}
 
   get orcaNodeId(): OrcaNodeId {
     return this.config.orca_node_id;

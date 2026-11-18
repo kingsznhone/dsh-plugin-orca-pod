@@ -25,17 +25,6 @@ import {
   type TaskView,
 } from "./wire.ts";
 
-export interface ApprovalOptions {
-  /** How long the signed grant stays valid, default 300s. */
-  ttlS?: number;
-}
-
-/** Per-call options of a task read or control call. */
-export type TaskCallOptions = {
-  /** Aborts the outbound request (for example when the caller's turn is cancelled). */
-  signal?: AbortSignal;
-};
-
 /** What a delegation is told besides its collaborators. */
 export type DelegationOptions = {
   workgroupId: WorkgroupId;
@@ -45,11 +34,6 @@ export type DelegationOptions = {
 
 /** Grant validity is deliberately short: it only has to cover one resume. */
 const GRANT_TTL_S = 300;
-
-/** The abort signal is only passed along when the caller gave one. */
-function callOptions(options: TaskCallOptions): TaskCallOptions {
-  return options.signal === undefined ? {} : { signal: options.signal };
-}
 
 /**
  * Signed JSON-RPC call to a peer's `/a2a` (§4.7); every method answers with a
@@ -118,25 +102,25 @@ export class Delegation {
    * URL would receive the admission proof just because a tool call named it.
    * Add a member with `join` (the plugin's `connect`, the CLI's `serve --peer`) first.
    */
-  async sendTask(peerUrl: string, input: SubmitTaskInput, options: TaskCallOptions = {}): Promise<TaskView> {
+  async sendTask(peerUrl: string, input: SubmitTaskInput, signal?: AbortSignal): Promise<TaskView> {
     const peerId = this.client.known(peerUrl);
     const state = peerId === this.identity.orcaNodeId ? "online" : (this.membership.get(peerId)?.state ?? "gone");
     if (state !== "online") throw new PodError("peer_not_online", `peer ${peerId} is ${state}`);
-    const view = await rpc(this.client, peerUrl, "message/send", input, callOptions(options));
+    const view = await rpc(this.client, peerUrl, "message/send", input, { signal });
     this.log.recordSend(peerUrl, view);
     return view;
   }
 
-  getTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView> {
-    return this.taskCall(peerUrl, "tasks/get", { id: taskId }, options);
+  getTask(peerUrl: string, taskId: string, signal?: AbortSignal): Promise<TaskView> {
+    return this.taskCall(peerUrl, "tasks/get", { id: taskId }, signal);
   }
 
-  cancelTask(peerUrl: string, taskId: string, options?: TaskCallOptions): Promise<TaskView> {
-    return this.taskCall(peerUrl, "tasks/cancel", { id: taskId }, options);
+  cancelTask(peerUrl: string, taskId: string, signal?: AbortSignal): Promise<TaskView> {
+    return this.taskCall(peerUrl, "tasks/cancel", { id: taskId }, signal);
   }
 
   /** This node is the origin: sign a grant for the request the task is parked on and resume it (§7.11). */
-  async approveTask(peerUrl: string, view: TaskView, options: ApprovalOptions = {}): Promise<TaskView> {
+  async approveTask(peerUrl: string, view: TaskView): Promise<TaskView> {
     const request = permissionRequestOf(view);
     if (request === null) throw new Error("task is not waiting for a permission decision");
     const issuedAt = Date.now();
@@ -151,7 +135,7 @@ export class Delegation {
       permission_mode: request.requested_mode,
       request_id: request.request_id,
       issued_at: new Date(issuedAt).toISOString(),
-      expires_at: new Date(issuedAt + (options.ttlS ?? GRANT_TTL_S) * 1000).toISOString(),
+      expires_at: new Date(issuedAt + GRANT_TTL_S * 1000).toISOString(),
     };
     return this.resume(peerUrl, view, { grant: signGrant(this.identity, grant) });
   }
@@ -165,9 +149,9 @@ export class Delegation {
     peerUrl: string,
     method: M,
     params: A2AParams<M>,
-    options: TaskCallOptions = {},
+    signal?: AbortSignal,
   ): Promise<TaskView> {
-    const view = await rpc(this.client, peerUrl, method, params, callOptions(options));
+    const view = await rpc(this.client, peerUrl, method, params, { signal });
     this.log.refresh(view);
     return view;
   }

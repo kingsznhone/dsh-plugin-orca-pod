@@ -9,8 +9,6 @@
  * node (see §7.12) and should not need a tool round-trip.
  */
 
-import { readdirSync } from "node:fs";
-
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { OpenedBlob } from "../core/blobs.ts";
@@ -135,17 +133,6 @@ export interface PodConfigView {
 }
 
 const REQUESTED_PREVIEW_CHARS = 160;
-
-/** List regular entries of one directory, sorted; missing paths yield []. */
-function entries(dir: string): Array<{ name: string; is_dir: boolean }> {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .map((entry) => ({ name: entry.name, is_dir: entry.isDirectory() }))
-      .sort((left, right) => left.name.localeCompare(right.name));
-  } catch {
-    return [];
-  }
-}
 
 const podOf = (view: TaskView): PodTaskMetadata => view.metadata?.pod ?? {};
 
@@ -298,14 +285,9 @@ export class PodAdmin {
   }
 
   workspace(): WorkspaceView | null {
-    const paths = this.lifecycle.node?.workspace ?? null;
-    if (paths === null) return null;
-    return {
-      ...paths,
-      notes_files: entries(paths.notes)
-        .filter((entry) => !entry.is_dir)
-        .map((entry) => entry.name),
-    };
+    const workspace = this.lifecycle.node?.workspace;
+    if (workspace === undefined) return null;
+    return { root: workspace.root, notes: workspace.notes, state: workspace.state, notes_files: workspace.noteFiles() };
   }
 
   /** A file a member published, fetched by this node for the panel (§5.6). */

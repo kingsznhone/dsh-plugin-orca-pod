@@ -1,8 +1,7 @@
 /**
  * Permission grants on the target side (§7.11): a grant crosses the trust
  * boundary in a resume message and is parsed once here (`parseSignedGrant`);
- * `checkGrant` only verifies and never consumes, and the ledger is told
- * separately once a grant has been accepted.
+ * `GrantLedger.accept` verifies it and remembers it in one step.
  */
 
 import { PodError, type PodErrorCode } from "../core/errors.ts";
@@ -13,7 +12,7 @@ import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 
 const GRANT_DOMAIN = "orca-pod/grant";
 
-/** A grant as it arrives in a resume message; the signature is checked later, by `checkGrant`. */
+/** A grant as it arrives in a resume message; the signature is checked later, by `GrantLedger.accept`. */
 export function parseSignedGrant(raw: unknown): SignedGrant {
   const parsed = parseSchema(SignedGrantSchema, raw);
   if (parsed.ok) return parsed.value;
@@ -33,30 +32,6 @@ export type GrantExpectation = {
 /** Why a grant is not accepted: a `PodErrorCode`, and the `reason` the task fails with. */
 export type GrantFailure = Extract<PodErrorCode, "grant_invalid" | "grant_expired" | "grant_replayed">;
 
-/**
- * Returns the failure reason, or null when the grant is genuine and matches what
- * was asked. Pure: accepting the grant (`GrantLedger.consume`) is the caller's step.
- */
-export function checkGrant(
-  grant: SignedGrant,
-  expected: GrantExpectation,
-  ledger: GrantLedger,
-  now = Date.now(),
-): GrantFailure | null {
-  if (!verifyGrant(grant.origin_orca_node, grant)) return "grant_invalid";
-  if (grant.origin_orca_node !== expected.origin) return "grant_invalid";
-  if (grant.workgroup_id !== expected.workgroupId) return "grant_invalid";
-  if (grant.tool !== expected.pending.tool) return "grant_invalid";
-  // The origin grants exactly the mode the task asked for; the target already checked it against its ceiling.
-  if (grant.permission_mode !== expected.pending.requested_mode) return "grant_invalid";
-  if (Date.parse(grant.expires_at) <= now) return "grant_expired";
-  // The grant allows exactly the request this task is parked on, for this task on this node.
-  if (grant.request_id !== expected.pending.request_id) return "grant_invalid";
-  if (ledger.has(grant.grant_id, now)) return "grant_replayed";
-  if (grant.task_id !== expected.taskId || grant.target_orca_node !== expected.selfOrcaNodeId) return "grant_invalid";
-  return null;
-}
-
 const LEDGER_LIMIT = 1024;
 
 /**
@@ -66,14 +41,31 @@ const LEDGER_LIMIT = 1024;
 export class GrantLedger {
   private readonly consumed = new Map<string, number>();
 
-  has(grantId: string, now = Date.now()): boolean {
-    const expiresAt = this.consumed.get(grantId);
-    return expiresAt !== undefined && expiresAt > now;
+  /**
+   * Returns the failure reason, or null when the grant is genuine, matches what
+   * was asked and has not been seen before; then it is remembered, so the same
+   * grant is never accepted twice.
+   */
+  accept(grant: SignedGrant, expected: GrantExpectation): GrantFailure | null {
+    const now = Date.now();
+    if (!verifyGrant(grant.origin_orca_node, grant)) return "grant_invalid";
+    if (grant.origin_orca_node !== expected.origin) return "grant_invalid";
+    if (grant.workgroup_id !== expected.workgroupId) return "grant_invalid";
+    if (grant.tool !== expected.pending.tool) return "grant_invalid";
+    // The origin grants exactly the mode the task asked for; the target already checked it against its ceiling.
+    if (grant.permission_mode !== expected.pending.requested_mode) return "grant_invalid";
+    if (Date.parse(grant.expires_at) <= now) return "grant_expired";
+    // The grant allows exactly the request this task is parked on, for this task on this node.
+    if (grant.request_id !== expected.pending.request_id) return "grant_invalid";
+    const seenUntil = this.consumed.get(grant.grant_id);
+    if (seenUntil !== undefined && seenUntil > now) return "grant_replayed";
+    if (grant.task_id !== expected.taskId || grant.target_orca_node !== expected.selfOrcaNodeId) return "grant_invalid";
+    this.remember(grant, now);
+    return null;
   }
 
-  consume(grant: SignedGrant): void {
+  private remember(grant: SignedGrant, now: number): void {
     if (this.consumed.size >= LEDGER_LIMIT) {
-      const now = Date.now();
       for (const [id, expiresAt] of this.consumed) if (expiresAt <= now) this.consumed.delete(id);
       // Still full of live grants: forget the oldest rather than grow without bound.
       const oldest = this.consumed.keys().next();

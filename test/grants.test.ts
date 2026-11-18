@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { signGrant, checkGrant, GrantLedger, parseSignedGrant, type GrantExpectation } from "../src/task/grants.ts";
+import { signGrant, GrantLedger, parseSignedGrant, type GrantExpectation } from "../src/task/grants.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
 import type { Grant, PermissionRequest } from "../src/core/wire/grant.ts";
 
@@ -43,35 +43,38 @@ function grant(overrides: Partial<Grant> = {}) {
   });
 }
 
-describe("checkGrant", () => {
-  it("verifies without consuming: only the ledger records a use", () => {
+describe("GrantLedger.accept", () => {
+  it("accepts a grant once: the first use is remembered, a second one is a replay", () => {
     const ledger = new GrantLedger();
     const signed = grant();
-    expect(checkGrant(signed, expected, ledger)).toBeNull();
-    expect(checkGrant(signed, expected, ledger)).toBeNull();
+    expect(ledger.accept(signed, expected)).toBeNull();
+    expect(ledger.accept(signed, expected)).toBe("grant_replayed");
+  });
 
-    ledger.consume(signed);
-    expect(checkGrant(signed, expected, ledger)).toBe("grant_replayed");
+  it("does not remember a grant it rejected", () => {
+    const ledger = new GrantLedger();
+    expect(ledger.accept(grant(), { ...expected, taskId: "another-task" })).toBe("grant_invalid");
+    expect(ledger.accept(grant(), expected)).toBeNull();
   });
 
   it("rejects a grant that is expired, for another tool, request, workgroup or origin", () => {
     const ledger = new GrantLedger();
-    expect(checkGrant(grant({ expires_at: new Date(Date.now() - 1000).toISOString() }), expected, ledger)).toBe(
+    expect(ledger.accept(grant({ expires_at: new Date(Date.now() - 1000).toISOString() }), expected)).toBe(
       "grant_expired",
     );
-    expect(checkGrant(grant({ tool: "delete" }), expected, ledger)).toBe("grant_invalid");
+    expect(ledger.accept(grant({ tool: "delete" }), expected)).toBe("grant_invalid");
     // The origin grants exactly the mode the task asked for, no wider.
-    expect(checkGrant(grant({ permission_mode: "danger-full-access" }), expected, ledger)).toBe("grant_invalid");
-    expect(checkGrant(grant({ request_id: "other" }), expected, ledger)).toBe("grant_invalid");
-    expect(checkGrant(grant({ workgroup_id: wg("elsewhere") }), expected, ledger)).toBe("grant_invalid");
-    expect(checkGrant(grant(), { ...expected, origin: fakeNodeId("SOMEONE-ELSE") }, ledger)).toBe("grant_invalid");
-    expect(checkGrant({ ...grant(), sig: "forged" }, expected, ledger)).toBe("grant_invalid");
+    expect(ledger.accept(grant({ permission_mode: "danger-full-access" }), expected)).toBe("grant_invalid");
+    expect(ledger.accept(grant({ request_id: "other" }), expected)).toBe("grant_invalid");
+    expect(ledger.accept(grant({ workgroup_id: wg("elsewhere") }), expected)).toBe("grant_invalid");
+    expect(ledger.accept(grant(), { ...expected, origin: fakeNodeId("SOMEONE-ELSE") })).toBe("grant_invalid");
+    expect(ledger.accept({ ...grant(), sig: "forged" }, expected)).toBe("grant_invalid");
   });
 
   it("only accepts a grant for this very task on this very node", () => {
     const ledger = new GrantLedger();
-    expect(checkGrant(grant({ task_id: "another-task" }), expected, ledger)).toBe("grant_invalid");
-    expect(checkGrant(grant({ target_orca_node: fakeNodeId("STRANGER") }), expected, ledger)).toBe("grant_invalid");
+    expect(ledger.accept(grant({ task_id: "another-task" }), expected)).toBe("grant_invalid");
+    expect(ledger.accept(grant({ target_orca_node: fakeNodeId("STRANGER") }), expected)).toBe("grant_invalid");
   });
 });
 

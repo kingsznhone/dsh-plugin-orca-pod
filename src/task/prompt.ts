@@ -5,28 +5,12 @@
  * (§5.6); the agent fetches what it needs.
  */
 
-import { readdir } from "node:fs/promises";
-
 import { CLI_PATH } from "../core/entry.ts";
-import { isMissingFile } from "../core/errors.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 
 const MAX_NOTES = 20;
 /** Note names come from files an agent wrote, so they are data: no control characters, no markup. */
 const SAFE_NOTE_NAME = /^[^\p{C}<>]{1,128}$/u;
-
-/** Top-level files in the workgroup `notes/` directory, capped for the prompt (§6.7). */
-export async function listNotes(notesDir: string): Promise<string[]> {
-  const entries = await readdir(notesDir, { withFileTypes: true }).catch((error: unknown) => {
-    if (isMissingFile(error)) return [];
-    throw error;
-  });
-  return entries
-    .filter((entry) => entry.isFile() && SAFE_NOTE_NAME.test(entry.name))
-    .map((entry) => `notes/${entry.name}`)
-    .sort()
-    .slice(0, MAX_NOTES);
-}
 
 type PromptParts = {
   taskId: string;
@@ -34,7 +18,8 @@ type PromptParts = {
   dataRoot: string;
   /** The origin's text; untrusted. */
   text: string;
-  notes: string[];
+  /** File names at the top of the workgroup `notes/` directory (§6.7). */
+  noteFiles: string[];
 };
 
 /**
@@ -71,8 +56,9 @@ const CLOSING_TAG = "</untrusted-task-input>";
 /** Trusted sections first; the origin's text last, so nothing in it can pose as one of ours (§6.7). */
 export function composePrompt(parts: PromptParts): string {
   const sections = [preamble(parts)];
-  if (parts.notes.length > 0) {
-    const list = parts.notes.map((note) => `- ${JSON.stringify(note)}`).join("\n");
+  const notes = parts.noteFiles.filter((name) => SAFE_NOTE_NAME.test(name)).slice(0, MAX_NOTES);
+  if (notes.length > 0) {
+    const list = notes.map((name) => `- ${JSON.stringify(`notes/${name}`)}`).join("\n");
     sections.push(`[orca-pod] Notes from earlier tasks in this workgroup (read before you start):\n${list}`);
   }
   const text = parts.text.replaceAll(CLOSING_TAG, `<\\/${CLOSING_TAG.slice(2)}`);

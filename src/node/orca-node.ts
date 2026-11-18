@@ -24,7 +24,7 @@ import { Delegation } from "../task/delegation.ts";
 import { MemoryDispatchStore, SqliteDispatchStore, type DispatchStore } from "../task/dispatch-store.ts";
 import { SingleSlotTaskRunner } from "../task/runner.ts";
 import { MemoryTaskStore, SqliteTaskStore, type TaskStore } from "../task/task-store.ts";
-import { ensureWorkspace, workspacePathsOf, type WorkspacePaths } from "../task/workspace.ts";
+import { Workspace } from "../task/workspace.ts";
 import { workgroupKey, type OrcaNodeConfig } from "./config.ts";
 import type { PodEventInput } from "./events.ts";
 
@@ -125,7 +125,7 @@ export class OrcaNode {
   /** Tasks this node hands to others, and the log of them. */
   readonly delegation: Delegation;
   /** Workspace directories, for UI browsing. */
-  readonly workspace: WorkspacePaths;
+  readonly workspace: Workspace;
 
   private readonly executor: LocalExecutor;
   private readonly taskStore: TaskStore;
@@ -154,13 +154,13 @@ export class OrcaNode {
     const blobs = new DiskBlobRegistry(this.fileBlobStore);
     /** One scrypt derivation per start (§7.1). */
     const key = workgroupKey(config);
-    this.workspace = workspacePathsOf(config.data_root, config.workgroup_id);
+    this.workspace = new Workspace(config.data_root, config.workgroup_id);
     /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
     const maxTaskTtlS = config.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
 
     this.models = new ModelCatalog(config, logger);
     this.membership = new Membership(config.orca_node_id, { timings: options.timings, clock: options.clock });
-    this.profile = new SelfProfile(config, options.runtime ?? collectRuntime(), this.models);
+    this.profile = new SelfProfile(config, options.runtime ?? collectRuntime(), this.models, maxTaskTtlS);
     this.profile.setEndpoints(endpointsFrom(config, config.port));
     this.client = new HttpPeerClient(identity, this.profile, this.membership, {
       fetch: options.fetch ?? ((url, init) => fetch(url, init)),
@@ -216,7 +216,7 @@ export class OrcaNode {
 
   /** Bind the listener and start the heartbeat; resolves with the URL peers should dial. */
   async start(): Promise<{ url: string; port: number }> {
-    ensureWorkspace(this.workspace);
+    this.workspace.ensure();
     this.tasks.start();
     const address = await this.gateway.listen(this.config.bind_host, this.config.port);
     const port = Number(new URL(address).port);

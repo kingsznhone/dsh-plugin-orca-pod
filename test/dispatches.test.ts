@@ -72,7 +72,7 @@ describe("dispatch store (13.4)", () => {
     store.save(entry({ task_id: "done", state: "completed" }));
     store.save(entry({ task_id: "failed", state: "failed" }));
 
-    expect(new DispatchLog(store, new EventBus()).markInFlightUnknown()).toBe(2);
+    new DispatchLog(store, new EventBus()).markInFlightUnknown();
     expect(store.get("running")).toMatchObject({ state: "unknown", last_error: "origin_restart" });
     expect(store.get("parked")?.state).toBe("unknown");
     expect(store.get("done")?.state).toBe("completed");
