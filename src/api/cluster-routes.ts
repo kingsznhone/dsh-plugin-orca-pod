@@ -27,7 +27,6 @@ import type { SelfProfile } from "../mesh/self-profile.ts";
 import { PodError } from "../core/errors.ts";
 import { EXPLICIT_DIAL_POLICY, screenEndpoint } from "../mesh/screening.ts";
 import { isDirectLoopbackRequest } from "../core/net.ts";
-import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { parseInput } from "./input.ts";
 
 /** The recorded profile of a peer: what it described, with endpoints screened (§7.7). */
@@ -82,7 +81,6 @@ export class ClusterRoutes {
   constructor(
     private readonly profile: SelfProfile,
     private readonly membership: Membership,
-    private readonly tasks: SingleSlotTaskRunner,
     /** Workgroup key behind the admission proofs (§7.1). */
     private readonly key: Buffer,
     private readonly nonces: NonceCache,
@@ -150,7 +148,7 @@ export class ClusterRoutes {
     const { members, digest } = this.roster();
     return {
       from: this.profile.orcaNodeId,
-      busy: this.tasks.busy(),
+      busy: this.profile.busy,
       members_digest: digest,
       members: body.digest === digest ? null : members,
     };

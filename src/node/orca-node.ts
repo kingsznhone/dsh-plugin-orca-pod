@@ -3,10 +3,9 @@ import { cpus, platform as osPlatform, release as osRelease, totalmem } from "no
 
 import { Gateway } from "../api/gateway.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore, type FileBlobStore } from "../core/blobs.ts";
-import type { OpenedBlob } from "../core/blobs.ts";
-import { DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
+import { DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
 import { EventBus, type NodeLogger } from "../core/events.ts";
-import { loadIdentity, type NodeIdentity } from "../core/identity.ts";
+import { requireIdentity, type NodeIdentity } from "../core/identity.ts";
 import { ModelCatalog } from "../core/model-catalog.ts";
 import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
 import { storeDbPath } from "../core/sqlite.ts";
@@ -126,12 +125,17 @@ export class OrcaNode {
   readonly delegation: Delegation;
   /** Workspace directories, for UI browsing. */
   readonly workspace: Workspace;
+  /**
+   * A file a member published, streamed (§5.6): this node's own from disk,
+   * another member's fetched from the first of its addresses that answers. A
+   * file is named by who published it and its sha256, never by a URL.
+   */
+  readonly blobs: BlobFetcher;
 
   private readonly executor: LocalExecutor;
   private readonly taskStore: TaskStore;
   private readonly fileBlobStore: FileBlobStore;
   private readonly dispatchStore: DispatchStore;
-  private readonly files: BlobFetcher;
   private readonly heartbeatLoop: HeartbeatLoop;
   private readonly gateway: Gateway;
 
@@ -142,16 +146,13 @@ export class OrcaNode {
     const { storage } = options;
     const logger = options.logger ?? SILENT;
     // `createOrcaNodeConfig` made the identity; a config without one is not this node's.
-    const identity = loadIdentity(config.data_root);
-    if (identity === null || identity.orcaNodeId !== config.orca_node_id) {
-      throw new Error("identity.json is missing or does not match config.orca_node_id");
-    }
+    const identity = requireIdentity(config.data_root, config.orca_node_id);
     this.identity = identity;
     this.events = new EventBus(logger);
     this.taskStore = storage?.taskStore ?? new MemoryTaskStore();
     this.fileBlobStore = storage?.fileBlobStore ?? new MemoryFileBlobStore();
     this.dispatchStore = storage?.dispatchStore ?? new MemoryDispatchStore();
-    const blobs = new DiskBlobRegistry(this.fileBlobStore);
+    const blobRegistry = new DiskBlobRegistry(this.fileBlobStore);
     /** One scrypt derivation per start (§7.1). */
     const key = workgroupKey(config);
     this.workspace = new Workspace(config.data_root, config.workgroup_id);
@@ -166,14 +167,14 @@ export class OrcaNode {
       fetch: options.fetch ?? ((url, init) => fetch(url, init)),
       // Every outbound call needs a deadline (§4.7): a peer that accepts the
       // connection and then stalls would otherwise hang a tool call or the tracker.
-      timeoutMs: config.request_timeout_ms ?? 30_000,
+      timeoutMs: config.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS,
     });
     this.executor =
       options.executor ??
       (config.executor === "acp"
         ? new AcpExecutor(config.acp ?? {}, config.data_root, this.models, logger)
         : new EchoExecutor());
-    this.tasks = new SingleSlotTaskRunner(this.executor, blobs, this.taskStore, this.workspace, {
+    this.tasks = new SingleSlotTaskRunner(this.executor, blobRegistry, this.taskStore, this.workspace, {
       logger,
       selfOrcaNodeId: config.orca_node_id,
       workgroupId: config.workgroup_id,
@@ -194,8 +195,8 @@ export class OrcaNode {
       workgroupId: config.workgroup_id,
       logger,
     });
-    this.files = new BlobFetcher(blobs, this.mesh, this.client, config.orca_node_id);
-    this.gateway = new Gateway(this.profile, this.membership, this.tasks, this.files, key);
+    this.blobs = new BlobFetcher(blobRegistry, this.mesh, this.client, config.orca_node_id);
+    this.gateway = new Gateway(this.profile, this.membership, this.tasks, this.blobs, key);
 
     // The subsystems tell, the node decides who needs to know.
     this.tasks.events.subscribe((event) => {
@@ -234,14 +235,5 @@ export class OrcaNode {
     this.taskStore.close();
     this.fileBlobStore.close();
     this.dispatchStore.close();
-  }
-
-  /**
-   * A file a member published, streamed (§5.6): this node's own from disk,
-   * another member's fetched from the first of its addresses that answers. A
-   * file is named by who published it and its sha256, never by a URL.
-   */
-  fetchBlob(nodeId: OrcaNodeId, blobId: string, signal?: AbortSignal): Promise<OpenedBlob> {
-    return this.files.fetch(nodeId, blobId, signal);
   }
 }

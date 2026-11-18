@@ -167,9 +167,9 @@ describe("UI data surface", () => {
     const blobId = view.artifacts![0]!.artifactId;
 
     // a dials b where b answers; the reference carries no address.
-    expect(await readAll((await a.fetchBlob(b.orcaNodeId, blobId)).stream)).toBe("hello");
+    expect(await readAll((await a.blobs.fetch(b.orcaNodeId, blobId)).stream)).toBe("hello");
     // b answered: its 404 stands, no other address is tried.
-    await expect(a.fetchBlob(b.orcaNodeId, "0".repeat(64))).rejects.toMatchObject({ code: "blob_not_found" });
+    await expect(a.blobs.fetch(b.orcaNodeId, "0".repeat(64))).rejects.toMatchObject({ code: "blob_not_found" });
   });
 
   it("exposes workspace paths, notes and artifact links through the admin surface", async () => {

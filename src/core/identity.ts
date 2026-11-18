@@ -117,6 +117,15 @@ function parseJson(text: string): unknown {
   }
 }
 
+/** The identity of the node `expected`: `config.json` and `identity.json` must agree on who this node is. */
+export function requireIdentity(dataRoot: string, expected: OrcaNodeId): NodeIdentity {
+  const identity = loadIdentity(dataRoot);
+  if (identity === null || identity.orcaNodeId !== expected) {
+    throw new Error("identity.json is missing or does not match config.orca_node_id");
+  }
+  return identity;
+}
+
 /**
  * Load the node identity, creating and persisting one on first start. The
  * check and the write run under DSH's file lock and the write is atomic, so two

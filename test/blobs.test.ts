@@ -173,8 +173,9 @@ describe("a2a busy response", () => {
     vi.spyOn(tasks, "submit").mockImplementation(() => {
       throw new PodError("orca_node_busy", "node is busy");
     });
-    vi.spyOn(tasks, "busy").mockReturnValue(holder);
     const harness = createHarness(tasks);
+    // The node keeps its profile in step with the runner; the gateway reports the profile.
+    harness.profile.setBusy(holder);
     const payload = JSON.stringify({
       jsonrpc: "2.0",
       id: "req-1",

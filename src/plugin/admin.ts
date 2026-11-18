@@ -292,7 +292,7 @@ export class PodAdmin {
 
   /** A file a member published, fetched by this node for the panel (§5.6). */
   blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob> {
-    return this.requireNode().fetchBlob(node, blobId);
+    return this.requireNode().blobs.fetch(node, blobId);
   }
 
   /** Effective config plus setup state; the password itself is never returned. */

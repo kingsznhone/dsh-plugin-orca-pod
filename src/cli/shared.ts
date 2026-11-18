@@ -6,7 +6,8 @@ import { parseArgs } from "node:util";
 import { configPath, defaultDataRoot, loadConfig, type OrcaNodeConfig } from "../node/config.ts";
 import { MembersResponseSchema, type PeerView } from "../core/wire/peer.ts";
 import type { TaskView } from "../task/wire.ts";
-import { loadIdentity, type NodeIdentity } from "../core/identity.ts";
+import { DEFAULT_REQUEST_TIMEOUT_MS } from "../core/constants.ts";
+import { requireIdentity } from "../core/identity.ts";
 import { HttpPeerClient } from "../mesh/peer-client.ts";
 import { bindUrl } from "../core/net.ts";
 
@@ -84,14 +85,6 @@ export function localControlEndpoint(config: OrcaNodeConfig): string {
   return `http://${host}:${config.port}`;
 }
 
-export function nodeIdentity(config: OrcaNodeConfig): NodeIdentity {
-  const identity = loadIdentity(config.data_root);
-  if (identity === null || identity.orcaNodeId !== config.orca_node_id) {
-    throw new Error("identity.json is missing or does not match config.orca_node_id");
-  }
-  return identity;
-}
-
 /**
  * The one signing client of this process, with the identity read once. It reaches
  * this node (over loopback) and the members this node knows: a peer the local
@@ -100,10 +93,10 @@ export function nodeIdentity(config: OrcaNodeConfig): NodeIdentity {
 export async function peerClient(config: OrcaNodeConfig, peer: string): Promise<HttpPeerClient> {
   let roster: PeerView[] = [];
   const client = new HttpPeerClient(
-    nodeIdentity(config),
+    requireIdentity(config.data_root, config.orca_node_id),
     { endpoints: [localControlEndpoint(config), localEndpoint(config), ...config.endpoints] },
     { list: () => roster },
-    { fetch: (url, init) => fetch(url, init), timeoutMs: config.request_timeout_ms ?? 30_000 },
+    { fetch: (url, init) => fetch(url, init), timeoutMs: config.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS },
   );
   if (client.idOf(peer) === undefined) {
     const members = await client.call(localEndpoint(config), {

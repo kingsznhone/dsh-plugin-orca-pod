@@ -42,9 +42,9 @@ export class Gateway {
   readonly app: FastifyInstance;
 
   constructor(
-    profile: SelfProfile,
+    private readonly profile: SelfProfile,
     membership: Membership,
-    private readonly tasks: SingleSlotTaskRunner,
+    tasks: SingleSlotTaskRunner,
     files: BlobFetcher,
     /** Workgroup key behind the admission proofs (§7.1). */
     key: Buffer,
@@ -57,7 +57,7 @@ export class Gateway {
     this.app.setErrorHandler((error, request, reply) => this.handleError(error, request, reply));
     const nonces = new NonceCache();
     new AccessPolicy(profile.orcaNodeId, membership, nonces, Date.now()).install(this.app);
-    new ClusterRoutes(profile, membership, tasks, key, nonces).register(this.app);
+    new ClusterRoutes(profile, membership, key, nonces).register(this.app);
     new A2aRoutes(profile.orcaNodeId, tasks).register(this.app);
     new BlobRoutes(files).register(this.app);
   }
@@ -110,7 +110,7 @@ export class Gateway {
     const body = {
       code: pod.code,
       message: pod.message,
-      ...(busy ? { retry_after_s: BUSY_RETRY_AFTER_S, holder: this.tasks.busy() } : {}),
+      ...(busy ? { retry_after_s: BUSY_RETRY_AFTER_S, holder: this.profile.busy } : {}),
     };
     if (busy) reply.header("retry-after", String(BUSY_RETRY_AFTER_S));
     const rpcId = (request.body as { id?: unknown } | null | undefined)?.id ?? null;
