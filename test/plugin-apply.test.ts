@@ -65,7 +65,7 @@ interface RegisteredTool {
 interface FakeServices {
   tools: { register(definition: ToolDefinition, options?: ToolRegistrationOptions): Cleanup | undefined };
   webServer: { register(route: WebRoute): Cleanup };
-  agents: { get(id: string): undefined };
+  agents: { get(id: string): unknown };
   sandboxPolicy: { resolve(request: { session?: unknown }): Record<string, unknown> };
   llm: { listProviders(): never[]; listModels(provider: string): Promise<never[]> };
   agentDefaultModel: { currentSelection(): Record<string, unknown> };
@@ -226,10 +226,11 @@ function fakeHost() {
   };
 }
 
-async function applied(overrides: Partial<Settings> = {}) {
+async function applied(overrides: Partial<Settings> = {}, prepare?: (host: ReturnType<typeof fakeHost>) => void) {
   const root = await mkdtemp(join(tmpdir(), "orca-apply-"));
   roots.push(root);
   const host = fakeHost();
+  prepare?.(host);
   apply(host.ctx as unknown as Context, parseSettings({ data_root: root, ...overrides }));
   return host;
 }
@@ -248,6 +249,26 @@ describe("plugin apply", () => {
     // agents, permission presets, panel route, settings page, llm, default model.
     expect(host.scopes.flatMap((scope) => scope.cleanups)).toHaveLength(6);
     for (const dispose of host.disposers) await dispose();
+  });
+
+  it("resumes tracking for the sessions the host already runs once the node is up", async () => {
+    // The workgroup password is stored, so the pod really starts a node.
+    const host = await applied({ workgroup_id: wg("wg-resume"), port: 0 }, (fake) =>
+      fake.secrets.set("ORCA_POD_PASSWORD_WG_RESUME", "pw"),
+    );
+    const agent = { id: "live-session", status: "idle" as const, inject: () => {}, followup: () => {} };
+    host.services.agents.get = (id) => (id === "live-session" ? agent : undefined);
+    const restore = vi.spyOn(trackers[0]!, "restore");
+    try {
+      await vi.waitFor(() => expect(restore).toHaveBeenCalled());
+      const [dispatches, resolveAgent] = restore.mock.calls[0]!;
+      // It read the dispatch log of the running node, and resolves sessions through the host's registry.
+      expect(dispatches).toEqual([]);
+      expect(resolveAgent(agent.id as never)).toBe(agent);
+      expect(resolveAgent("other" as never)).toBeUndefined();
+    } finally {
+      for (const dispose of host.disposers) await dispose();
+    }
   });
 
   it("hides the tool until the workgroup credentials exist", async () => {
