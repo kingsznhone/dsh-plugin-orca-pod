@@ -65,7 +65,7 @@ function signatureOf(peers: PeerView[]): string {
  */
 export class Workgroup {
   /** Fires when something a panel would render about the roster changed (§9.2). */
-  readonly events = new EventBus<MembersEvent>();
+  readonly events: EventBus<MembersEvent>;
 
   private readonly dialer: EndpointDialer;
   private readonly logger: NodeLogger;
@@ -80,6 +80,7 @@ export class Workgroup {
     options: WorkgroupOptions,
   ) {
     this.logger = options.logger;
+    this.events = new EventBus(options.logger);
     this.dialer = new EndpointDialer(membership, options.logger, {
       allowPublicPeers: options.allow_public_peers,
       allowLoopbackPeers: options.allow_loopback_peers,

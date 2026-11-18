@@ -424,7 +424,7 @@ const busyError = (): PodError => new PodError("orca_node_busy", "orca node is b
 
 export class SingleSlotTaskRunner {
   /** Fires after every observable task change, for the UI and for whoever tracks `busy()` (§9.2). */
-  readonly events = new EventBus<TaskEvent>();
+  readonly events: EventBus<TaskEvent>;
   readonly slot = new TaskSlot();
   readonly ledger = new GrantLedger();
   readonly quota: WorkspaceQuota;
@@ -441,6 +441,7 @@ export class SingleSlotTaskRunner {
     readonly workspace: WorkspacePaths,
     options: TaskRunnerOptions,
   ) {
+    this.events = new EventBus(options.logger);
     this.options = {
       ...options,
       taskTimeoutS: options.taskTimeoutS ?? DEFAULT_TASK_TIMEOUT_S,

@@ -20,6 +20,16 @@ describe("EventBus", () => {
     expect(seen).toEqual([1, 2]);
   });
 
+  it("reports a throwing listener to the logger it was given", () => {
+    const warnings: string[] = [];
+    const bus = new EventBus<{ type: "tick" }>({ warn: (message) => warnings.push(message) });
+    bus.subscribe(() => {
+      throw new Error("ui bug");
+    });
+    bus.emit({ type: "tick" });
+    expect(warnings).toEqual(["orca-pod: an event listener threw: ui bug"]);
+  });
+
   it("keeps delivering when a listener throws", () => {
     const bus = new EventBus<{ type: "tick" }>();
     let delivered = 0;

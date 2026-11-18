@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { PodError } from "../core/errors.ts";
-import { EventBus } from "../core/events.ts";
+import { EventBus, type NodeLogger } from "../core/events.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import { describeIssue, parseSchema } from "../core/schema.ts";
 import type { Grant, ResumeControl } from "../core/wire/grant.ts";
@@ -34,6 +34,13 @@ export interface ApprovalOptions {
 export type TaskCallOptions = {
   /** Aborts the outbound request (for example when the caller's turn is cancelled). */
   signal?: AbortSignal;
+};
+
+/** What a delegation is told besides its collaborators. */
+export type DelegationOptions = {
+  workgroupId: WorkgroupId;
+  /** Hears about a subscriber that threw while being told of a dispatch change. */
+  logger?: NodeLogger;
 };
 
 /** Grant validity is deliberately short: it only has to cover one resume. */
@@ -84,17 +91,20 @@ export async function rpc<M extends A2AMethod>(
  */
 export class Delegation {
   /** Fires when a dispatch-log entry changed (§9.2). */
-  readonly events = new EventBus<DispatchEvent>();
+  readonly events: EventBus<DispatchEvent>;
   /** What this node handed to peers, so a restart does not lose track (§8.3). */
   readonly log: DispatchLog;
+  private readonly workgroupId: WorkgroupId;
 
   constructor(
     private readonly identity: NodeIdentity,
     private readonly client: HttpPeerClient,
     private readonly membership: Membership,
     dispatches: DispatchStore,
-    private readonly workgroupId: WorkgroupId,
+    options: DelegationOptions,
   ) {
+    this.workgroupId = options.workgroupId;
+    this.events = new EventBus(options.logger);
     this.log = new DispatchLog(dispatches, this.events);
   }
 

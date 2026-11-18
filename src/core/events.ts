@@ -25,14 +25,18 @@ export type Stamped<E> = E & { at: string };
 export class EventBus<E extends object> {
   private readonly listeners = new Set<(event: Stamped<E>) => void>();
 
+  /** `logger`, when given, hears about a listener that threw; without it the failure is silent. */
+  constructor(private readonly logger?: NodeLogger) {}
+
   emit(input: E): void {
     if (this.listeners.size === 0) return;
     const event = { ...input, at: new Date().toISOString() };
     for (const listener of [...this.listeners]) {
       try {
         listener(event);
-      } catch {
+      } catch (error) {
         // A UI listener must not break task execution or heartbeat.
+        this.logger?.warn(`orca-pod: an event listener threw: ${errorMessage(error)}`);
       }
     }
   }

@@ -111,7 +111,7 @@ const SILENT: NodeLogger = { warn() {} };
 export class OrcaNode {
   readonly identity: NodeIdentity;
   /** Everything a UI panel may re-render: task, member and dispatch changes of all subsystems (§9.2). */
-  readonly events = new EventBus<PodEventInput>();
+  readonly events: EventBus<PodEventInput>;
   /** The model routes this node offers and the default a task gets (§6.15). */
   readonly models: ModelCatalog;
   readonly membership: Membership;
@@ -147,6 +147,7 @@ export class OrcaNode {
       throw new Error("identity.json is missing or does not match config.orca_node_id");
     }
     this.identity = identity;
+    this.events = new EventBus(logger);
     this.taskStore = storage?.taskStore ?? new MemoryTaskStore();
     this.fileBlobStore = storage?.fileBlobStore ?? new MemoryFileBlobStore();
     this.dispatchStore = storage?.dispatchStore ?? new MemoryDispatchStore();
@@ -190,7 +191,10 @@ export class OrcaNode {
       allow_loopback_peers: config.allow_loopback_peers,
     });
     this.heartbeatLoop = new HeartbeatLoop(this.membership, this.mesh, options.timings?.intervalMs === undefined);
-    this.delegation = new Delegation(identity, this.client, this.membership, this.dispatchStore, config.workgroup_id);
+    this.delegation = new Delegation(identity, this.client, this.membership, this.dispatchStore, {
+      workgroupId: config.workgroup_id,
+      logger,
+    });
     this.files = new BlobFetcher(blobs, this.mesh, this.client, config.orca_node_id);
     this.gateway = new Gateway(this.profile, this.membership, this.tasks, this.files, key);
 
