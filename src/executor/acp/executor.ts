@@ -5,22 +5,13 @@
  * task's resume message answers the prompt.
  */
 
-import type {
-  PromptResponse,
-  RequestPermissionResponse,
-  SessionConfigOptionCategory,
-  SessionUpdate,
-  StopReason,
-} from "@agentclientprotocol/sdk";
+import type { PromptResponse, RequestPermissionResponse, StopReason } from "@agentclientprotocol/sdk";
 
 import { CLI_PATH, IN_TASK_ENV } from "../../core/entry.ts";
-import { errorMessage, abortError } from "../../core/errors.ts";
+import { abortError } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
 import type { ModelCatalog } from "../../core/model-catalog.ts";
-import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { describeModelRequest } from "../../core/wire/model.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
 import { KILL_GRACE_MS } from "../process.ts";
 import type { SessionRoute } from "./connection.ts";
@@ -33,10 +24,7 @@ import {
   type AcpPermissionAsk,
 } from "./permissions.ts";
 import type { AcpExecutorConfig } from "./config.ts";
-import { AcpSessionPool, type OpenSession } from "./session.ts";
-
-/** The DSH-facing ACP config plus what the node adds to it. */
-export type AcpExecutorOptions = AcpExecutorConfig & { data_root?: string };
+import { AcpSessionPool, type AcpSession } from "./session.ts";
 
 /** Stop reasons that end a prompt without an answer (§6.14); anything else completes the task. */
 const FAILED_STOP_REASONS: Partial<Record<StopReason, string>> = {
@@ -68,60 +56,6 @@ class AsyncQueue<T> {
   }
 }
 
-function textOf(update: SessionUpdate): string {
-  return update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" ? update.content.text : "";
-}
-
-/** Responses are typed, not validated by the SDK: a prompt without a stop reason is a broken server. */
-function stopReasonOf(result: PromptResponse | undefined): StopReason {
-  if (typeof result?.stopReason !== "string") throw new Error("acp prompt returned no stopReason");
-  return result.stopReason;
-}
-
-/**
- * ACP selects the model per session (§6.15) through the session's config
- * options, found by their ACP category (`model`, `thought_level`) rather than
- * by id; the ACP server rejects unknown values. The effort is
- * written only when the task (or the node default) supplies one: DeepSeek
- * models expose a fixed default effort, and dsh-acp rejects the empty
- * "provider default" value for them. Returns why it failed, or null.
- */
-async function selectModel(
-  session: OpenSession,
-  model: ModelSelection | undefined,
-  reasoningEffort: ReasoningEffortId | undefined,
-): Promise<string | null> {
-  const { connection, sessionId } = session;
-  /** Set the option the agent files under `category`; the agent answers with its options as they are now. */
-  const set = async (category: SessionConfigOptionCategory, value: string): Promise<void> => {
-    const option = session.configOptions.find((candidate) => candidate.category === category);
-    if (option === undefined) throw new Error(`the agent offers no "${category}" option`);
-    const answer = await connection.request("session/set_config_option", { sessionId, configId: option.id, value });
-    session.configOptions = answer?.configOptions ?? session.configOptions;
-  };
-  try {
-    // dsh-acp names a model option by its route, `[provider, model]` as JSON.
-    if (model !== undefined) await set("model", JSON.stringify([model.provider, model.model]));
-    if (reasoningEffort !== undefined) await set("thought_level", reasoningEffort);
-    return null;
-  } catch (error) {
-    return `cannot select ${describeModelRequest(model, reasoningEffort)}: ${errorMessage(error)}`;
-  }
-}
-
-/** Suspending sets the task to input-required; coming back means the origin granted the mode (a denial aborts the run). */
-function suspensionFor(request: AcpPermissionAsk, requestedMode: SandboxMode): Suspension {
-  return {
-    kind: "permission",
-    tool: request.title,
-    requested: {
-      tool_call_id: request.toolCallId,
-      ...(request.kind === undefined ? {} : { tool_kind: request.kind }),
-    },
-    requestedMode,
-  };
-}
-
 /**
  * One task run on an open session. It owns what the run accumulates: the queue
  * of what the child said, the permission replies the child still waits for, the
@@ -139,7 +73,7 @@ class AcpRun {
 
   constructor(
     private readonly input: ExecuteInput,
-    private readonly session: OpenSession,
+    private readonly session: AcpSession,
   ) {
     this.mode = input.permissionMode;
     this.route = this.makeRoute();
@@ -147,11 +81,10 @@ class AcpRun {
 
   /** Drive the prompt to its end; a suspension is yielded and answered with the granted mode. */
   async *drive(signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
-    const { connection, sessionId } = this.session;
-    const detach = connection.attach(sessionId, this.route);
+    const detach = this.session.attach(this.route);
     const disarm = this.armAbort(signal);
 
-    connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text: this.input.prompt }] }).then(
+    this.session.prompt(this.input.prompt).then(
       (result) => this.events.push({ kind: "prompt-done", result }),
       (error: Error) => this.events.push({ kind: "prompt-error", error }),
     );
@@ -164,7 +97,9 @@ class AcpRun {
         const event = await this.events.next();
         if (event.kind === "prompt-error") throw event.error;
         if (event.kind === "prompt-done") {
-          const stop = stopReasonOf(event.result);
+          // Responses are typed, not validated by the SDK: a prompt without a stop reason is a broken server.
+          const stop = event.result?.stopReason;
+          if (typeof stop !== "string") throw new Error("acp prompt returned no stopReason");
           if (this.aborted || stop === "cancelled") throw abortError();
           const reason = FAILED_STOP_REASONS[stop];
           terminal =
@@ -185,7 +120,7 @@ class AcpRun {
         // Suspending sets the task to input-required; coming back means the
         // origin granted the mode (a denial aborts the run instead), and the
         // rest of the task runs under it.
-        this.mode = (yield { type: "suspend", suspend: suspensionFor(request, requestedMode) }) ?? requestedMode;
+        this.mode = (yield { type: "suspend", suspend: AcpRun.suspensionFor(request, requestedMode) }) ?? requestedMode;
         reply(outcomeFor(request.options, "allow"));
       }
     } finally {
@@ -203,7 +138,9 @@ class AcpRun {
   private makeRoute(): SessionRoute {
     return {
       update: (update) => {
-        this.transcript += textOf(update);
+        if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
+          this.transcript += update.content.text;
+        }
       },
       permission: (params) => {
         const request = parsePermissionRequest(params);
@@ -232,14 +169,13 @@ class AcpRun {
    * Returns the function that disarms it.
    */
   private armAbort(signal: AbortSignal): () => void {
-    const { connection, sessionId } = this.session;
     let forceClose: NodeJS.Timeout | undefined;
     const onAbort = (): void => {
       this.aborted = true;
       for (const reply of [...this.open]) reply(CANCELLED);
-      connection.cancel(sessionId);
+      this.session.cancel();
       forceClose = setTimeout(() => {
-        if (connection.isAttached(sessionId, this.route)) void connection.close();
+        if (this.session.isAttached(this.route)) void this.session.forceClose();
       }, KILL_GRACE_MS);
       forceClose.unref();
     };
@@ -250,13 +186,27 @@ class AcpRun {
       clearTimeout(forceClose);
     };
   }
+
+  /** Suspending sets the task to input-required; coming back means the origin granted the mode (a denial aborts the run). */
+  private static suspensionFor(request: AcpPermissionAsk, requestedMode: SandboxMode): Suspension {
+    return {
+      kind: "permission",
+      tool: request.title,
+      requested: {
+        tool_call_id: request.toolCallId,
+        ...(request.kind === undefined ? {} : { tool_kind: request.kind }),
+      },
+      requestedMode,
+    };
+  }
 }
 
 export class AcpExecutor implements LocalExecutor {
   private readonly sessions: AcpSessionPool;
 
   constructor(
-    config: AcpExecutorOptions,
+    config: AcpExecutorConfig,
+    dataRoot: string,
     /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (§6.15). */
     private readonly models: ModelCatalog,
     logger: NodeLogger,
@@ -271,7 +221,7 @@ export class AcpExecutor implements LocalExecutor {
           ...process.env,
           [IN_TASK_ENV]: "1",
           ORCA_POD_CLI: CLI_PATH,
-          ...(config.data_root === undefined ? {} : { ORCA_POD_DATA_ROOT: config.data_root }),
+          ORCA_POD_DATA_ROOT: dataRoot,
         },
       },
       config.mcp_servers ?? [],
@@ -286,8 +236,7 @@ export class AcpExecutor implements LocalExecutor {
   async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
     const session = await this.sessions.open(input);
     const defaults = this.models.defaults();
-    const failure = await selectModel(
-      session,
+    const failure = await session.selectModel(
       input.model ?? defaults.model ?? undefined,
       input.reasoningEffort ?? defaults.reasoningEffort ?? undefined,
     );

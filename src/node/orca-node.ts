@@ -171,7 +171,7 @@ export class OrcaNode {
     this.executor =
       options.executor ??
       (config.executor === "acp"
-        ? new AcpExecutor({ ...config.acp, data_root: config.data_root }, this.models, logger)
+        ? new AcpExecutor(config.acp ?? {}, config.data_root, this.models, logger)
         : new EchoExecutor());
     this.tasks = new SingleSlotTaskRunner(this.executor, blobs, this.taskStore, this.workspace, {
       logger,

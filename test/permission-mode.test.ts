@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { AcpExecutor, type AcpExecutorOptions } from "../src/executor/acp/executor.ts";
+import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
+import { AcpExecutor } from "../src/executor/acp/executor.ts";
 import { ModelCatalog } from "../src/core/model-catalog.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { createOrcaNodeConfig } from "../src/node/config.ts";
@@ -19,7 +20,7 @@ import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
-const acpExecutor = (config: AcpExecutorOptions) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
+const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, tmpdir(), new ModelCatalog(), { warn() {} });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 

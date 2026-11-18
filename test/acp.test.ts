@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
 import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
-import { AcpExecutor, type AcpExecutorOptions } from "../src/executor/acp/executor.ts";
+import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
+import { AcpExecutor } from "../src/executor/acp/executor.ts";
 import { ModelCatalog } from "../src/core/model-catalog.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
@@ -16,7 +17,7 @@ import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
-const acpExecutor = (config: AcpExecutorOptions) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
+const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, tmpdir(), new ModelCatalog(), { warn() {} });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const LIVE: OrcaNode[] = [];
