@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMembership } from "../src/mesh/membership.ts";
+import { Membership } from "../src/mesh/membership.ts";
 import { candidateEndpointAllowed } from "../src/mesh/screening.ts";
 import {
   bindUrl,
@@ -101,12 +101,12 @@ describe("candidate endpoint filtering (§7.7)", () => {
 
 describe("peer origin (§7.7)", () => {
   it("marks joined peers explicit and roster-only peers candidate", () => {
-    const membership = createMembership({ selfOrcaNodeId: labelId("AAAAAA") });
-    membership.peers.upsert(peer(labelId("BBBBBB"), "http://127.0.0.1:1"));
+    const membership = new Membership(labelId("AAAAAA"));
+    membership.upsert(peer(labelId("BBBBBB"), "http://127.0.0.1:1"));
     expect(membership.originOf(labelId("BBBBBB"))).toBe("explicit");
     membership.mergeRemote([peer(labelId("CCCCCC"), "http://127.0.0.1:2")]);
     expect(membership.originOf(labelId("CCCCCC"))).toBe("candidate");
-    membership.peers.upsert(peer(labelId("CCCCCC"), "http://127.0.0.1:2"));
+    membership.upsert(peer(labelId("CCCCCC"), "http://127.0.0.1:2"));
     expect(membership.originOf(labelId("CCCCCC"))).toBe("explicit");
   });
 });

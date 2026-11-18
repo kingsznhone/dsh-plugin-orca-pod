@@ -5,10 +5,9 @@ import { parseArgs } from "node:util";
 
 import { configPath, defaultDataRoot, loadConfig, type OrcaNodeConfig } from "../node/config.ts";
 import { MembersResponseSchema, type PeerView } from "../core/wire/peer.ts";
-import type { PeerClient } from "../mesh/peer-client.ts";
 import type { TaskView } from "../task/wire.ts";
 import { loadIdentity, type NodeIdentity } from "../core/identity.ts";
-import { createPeerClient } from "../mesh/peer-client.ts";
+import { HttpPeerClient } from "../mesh/peer-client.ts";
 import { bindUrl } from "../core/net.ts";
 
 export const OPTIONS = {
@@ -98,15 +97,14 @@ export function nodeIdentity(config: OrcaNodeConfig): NodeIdentity {
  * this node (over loopback) and the members this node knows: a peer the local
  * node has not joined is refused, not joined behind the caller's back.
  */
-export async function peerClient(config: OrcaNodeConfig, peer: string): Promise<PeerClient> {
+export async function peerClient(config: OrcaNodeConfig, peer: string): Promise<HttpPeerClient> {
   let roster: PeerView[] = [];
-  const client = createPeerClient({
-    identity: nodeIdentity(config),
-    fetch: (url, init) => fetch(url, init),
-    timeoutMs: config.request_timeout_ms ?? 30_000,
-    selfEndpoints: () => [localControlEndpoint(config), localEndpoint(config), ...config.endpoints],
-    roster: () => roster,
-  });
+  const client = new HttpPeerClient(
+    nodeIdentity(config),
+    { endpoints: [localControlEndpoint(config), localEndpoint(config), ...config.endpoints] },
+    { list: () => roster },
+    { fetch: (url, init) => fetch(url, init), timeoutMs: config.request_timeout_ms ?? 30_000 },
+  );
   if (client.idOf(peer) === undefined) {
     const members = await client.call(localEndpoint(config), {
       method: "GET",

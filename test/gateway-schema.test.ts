@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
-import { createMembership } from "../src/mesh/membership.ts";
+import { Membership } from "../src/mesh/membership.ts";
 import { runtimeDigest, type SelfRecord } from "../src/core/wire/peer.ts";
 import type { SubmitTaskInput, TaskRunner } from "../src/task/wire.ts";
 import { NonceCache, buildAuthHeader } from "../src/core/signing.ts";
@@ -37,7 +37,7 @@ const tasks: TaskRunner = {
 function harness() {
   const key = randomBytes(32);
   const self = generateNodeIdentity();
-  const membership = createMembership({ selfOrcaNodeId: self.orcaNodeId });
+  const membership = new Membership(self.orcaNodeId);
   const record: SelfRecord = {
     orca_node_id: self.orcaNodeId,
     display_name: "schema-test",
@@ -60,7 +60,7 @@ function harness() {
     },
     identity: self,
     workgroupKey: key,
-    peers: membership.peers,
+    peers: membership,
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,
@@ -112,7 +112,7 @@ function harness() {
       ...extra,
     };
   };
-  return { app, self, peers: membership.peers, post, joinBody, heartbeatBody };
+  return { app, self, peers: membership, post, joinBody, heartbeatBody };
 }
 
 describe("gateway body schemas", () => {

@@ -5,7 +5,7 @@ import type { NodeIdentity } from "../core/identity.ts";
 import type { SelfRecord, OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 import type { TaskRunner } from "../task/wire.ts";
 import type { FileBlobRegistry, OpenedBlob } from "../core/blobs.ts";
-import type { PeerStore } from "../mesh/membership.ts";
+import type { Membership } from "../mesh/membership.ts";
 import { a2aRoutes } from "./a2a-routes.ts";
 import { installAccessPolicy } from "./access.ts";
 import { blobRoutes } from "./blob-routes.ts";
@@ -25,7 +25,7 @@ export type GatewayDeps = {
   orcaNode: GatewayOrcaNode;
   identity: NodeIdentity;
   workgroupKey: Buffer;
-  peers: PeerStore;
+  peers: Membership;
   nonceCache: NonceCache;
   /** When this gateway process started; requests older than this are replays (§7.1). */
   startedAt: number;

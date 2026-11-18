@@ -43,10 +43,7 @@ const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
  * Known violations, as `from -> to` paths relative to `src/`. Only removals are
  * allowed: a fixed edge must leave this list, and a new violation fails.
  */
-const ALLOWED_VIOLATIONS: string[] = [
-  // `rpc()` moves into task/delegation.ts with the mesh/ client rewrite (phase 3).
-  "mesh/peer-client.ts -> task/wire.ts",
-];
+const ALLOWED_VIOLATIONS: string[] = [];
 
 /** Known cycles that only a type closes, as the sorted file keys joined by `, `. Only removals are allowed. */
 const ALLOWED_TYPE_CYCLES: string[] = [

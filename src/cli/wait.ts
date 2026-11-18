@@ -2,6 +2,7 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { rpc } from "../task/delegation.ts";
 import { isTerminal } from "../task/wire.ts";
 import { normalizePeerUrl } from "../core/net.ts";
 import {
@@ -25,7 +26,7 @@ export async function run({ flags }: CommandArgs): Promise<number> {
   const task = required(flags.task, "task");
   const timeoutS = positiveSeconds(flags.timeout, "timeout");
   const deadlineMs = timeoutS === undefined ? Number.POSITIVE_INFINITY : Date.now() + timeoutS * 1000;
-  const refresh = () => client.rpc(peer, "tasks/get", { id: task });
+  const refresh = () => rpc(client, peer, "tasks/get", { id: task });
 
   let view = await refresh();
   // A permission request waits for a human on the origin's UI: report it instead of waiting.

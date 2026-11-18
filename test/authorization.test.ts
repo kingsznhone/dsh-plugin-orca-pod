@@ -8,8 +8,7 @@ import { admissionProof } from "../src/mesh/admission.ts";
 import { runtimeDigest, type BusyState, type PeerView, type SelfRecord } from "../src/core/wire/peer.ts";
 import type { TaskRunner } from "../src/task/wire.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { createMembership } from "../src/mesh/membership.ts";
-import type { PeerStore } from "../src/mesh/membership.ts";
+import { Membership } from "../src/mesh/membership.ts";
 import { MemoryFileBlobStore, DiskBlobRegistry } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
@@ -64,7 +63,7 @@ type Harness = {
   key: Buffer;
   identity: NodeIdentity;
   orcaNodeId: string;
-  peers: PeerStore;
+  peers: Membership;
   fileBlobs: FileBlobRegistry;
   sign(method: string, path: string, body?: Uint8Array | string): string;
 };
@@ -73,7 +72,7 @@ function createHarness(): Harness {
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
   const orcaNodeId = identity.orcaNodeId;
-  const peers = createMembership({ selfOrcaNodeId: orcaNodeId }).peers;
+  const peers = new Membership(orcaNodeId);
   const fileBlobs = new DiskBlobRegistry(new MemoryFileBlobStore());
   const deps: GatewayDeps = {
     orcaNode: {

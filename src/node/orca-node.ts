@@ -18,15 +18,18 @@ import { createDelegation, type ApprovalOptions, type TaskCallOptions } from "..
 import { EchoExecutor } from "../executor/echo.ts";
 import { createAcpExecutor } from "../executor/acp/executor.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
+import { DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
 import { EventBus } from "../core/events.ts";
 import { ModelCatalog } from "../core/model-catalog.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import type { NodeLogger } from "../core/events.ts";
 import { bindUrl, detectLocalEndpoints, isBlockedFetchPort, pickFreePort } from "../core/net.ts";
 import { createGateway } from "../api/gateway.ts";
-import { createPeerClient, type FetchLike } from "../mesh/peer-client.ts";
-import { createWorkgroup, type LeaveResult } from "../mesh/workgroup.ts";
-import { createMembership, type MembershipClock, type MembershipTimings } from "../mesh/membership.ts";
+import { HttpPeerClient, type FetchLike } from "../mesh/peer-client.ts";
+import { HeartbeatLoop } from "../mesh/heartbeat.ts";
+import { SelfProfile } from "../mesh/self-profile.ts";
+import { Workgroup, type LeaveResult } from "../mesh/workgroup.ts";
+import { Membership, type MembershipClock, type MembershipTimings } from "../mesh/membership.ts";
 import type {
   HeartbeatResponse,
   JoinResponse,
@@ -231,7 +234,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
   const workspace = workspaceManager.ensure();
   const logger = options.logger ?? SILENT;
   /** Advertised per-task budget; also the hard cap the task runner enforces (§6.9). */
-  const maxTaskTtlS = config.task_timeout_s ?? 3600;
+  const maxTaskTtlS = config.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
   const executor: LocalExecutor =
     options.executor ??
     (config.executor === "acp"
@@ -243,35 +246,22 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
         })
       : new EchoExecutor());
 
-  let endpoints = endpointsFrom(config, config.port);
-  const membership = createMembership({
-    selfOrcaNodeId: config.orca_node_id,
-    timings: options.timings,
-    clock: options.clock,
-  });
-  const client = createPeerClient({
-    identity,
+  const membership = new Membership(config.orca_node_id, { timings: options.timings, clock: options.clock });
+  const profile = new SelfProfile(config, options.runtime ?? collectRuntime(), models);
+  profile.setEndpoints(endpointsFrom(config, config.port));
+  const client = new HttpPeerClient(identity, profile, membership, {
     fetch: options.fetch ?? ((url, init) => fetch(url, init)),
     // Every outbound call needs a deadline (§4.7): a peer that accepts the
     // connection and then stalls would otherwise hang a tool call or the tracker.
     timeoutMs: config.request_timeout_ms ?? 30_000,
-    selfEndpoints: () => endpoints,
-    roster: () => membership.list(),
   });
-  const group = createWorkgroup({
-    config,
-    key,
-    runtime: options.runtime ?? collectRuntime(),
-    maxTaskTtlS,
-    membership,
-    models,
-    client,
+  const group = new Workgroup(key, membership, client, profile, {
     logger,
-    endpoints: () => endpoints,
-    busy: () => tasks.busy(),
-    emit: (event) => events.emit(event),
-    adaptiveHeartbeat: options.timings?.intervalMs === undefined,
+    allow_public_peers: config.allow_public_peers,
+    allow_loopback_peers: config.allow_loopback_peers,
   });
+  const heartbeatLoop = new HeartbeatLoop(membership, group, options.timings?.intervalMs === undefined);
+  group.events.subscribe((event) => events.emit(event));
   const tasks = createTaskRunner({
     executor,
     fileBlobs,
@@ -290,6 +280,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     onEvent: (view) => {
       events.emit({ type: "task", view });
       // The busy holder is part of every member record; re-render it too.
+      profile.setBusy(tasks.busy());
       group.emitMembersIfChanged();
     },
   });
@@ -305,12 +296,12 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     orcaNode: {
       orca_node_id: config.orca_node_id,
       workgroup_id: config.workgroup_id,
-      self: group.self,
+      self: () => group.self(),
       fetchBlob,
     },
     identity,
     workgroupKey: key,
-    peers: membership.peers,
+    peers: membership,
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,
@@ -361,7 +352,7 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
     orcaNodeId: config.orca_node_id,
     config,
     get endpoints(): string[] {
-      return [...endpoints];
+      return [...profile.endpoints];
     },
     get heartbeatIntervalMs(): number {
       return membership.timings.intervalMs;
@@ -371,26 +362,27 @@ export function createOrcaNode(options: CreateNodeOptions): OrcaNode {
       tasks.recover();
       const address = await listen();
       const port = Number(new URL(address).port);
-      endpoints = endpointsFrom(config, port);
+      const urls = endpointsFrom(config, port);
+      profile.setEndpoints(urls);
       delegation.start();
-      group.start();
-      return { url: endpoints[0], port };
+      heartbeatLoop.start();
+      return { url: urls[0], port };
     },
     async stop() {
-      group.stop();
+      heartbeatLoop.stop();
       await app.close();
       await executor.close?.();
       taskStore.close();
       fileBlobStore.close();
       dispatches.close();
     },
-    self: group.self,
-    members: group.members,
-    membersDigest: group.membersDigest,
+    self: () => group.self(),
+    members: () => group.members(),
+    membersDigest: () => group.digest(),
     setModelCatalog: (offers, defaultModel, defaultEffort) => models.update(offers, defaultModel, defaultEffort),
-    join: group.join,
-    heartbeat: group.heartbeat,
-    leave: group.leave,
+    join: (peerUrl) => group.join(peerUrl),
+    heartbeat: (peerUrl) => group.heartbeat(peerUrl),
+    leave: () => group.leave(),
     sendTask: delegation.sendTask,
     getTask: delegation.getTask,
     cancelTask: delegation.cancelTask,

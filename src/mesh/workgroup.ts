@@ -1,32 +1,26 @@
-import { createAdmission } from "./admission.ts";
 import { PodError } from "../core/errors.ts";
-import type { NodeLogger } from "../core/events.ts";
-import { heartbeatIntervalMsFor, type Membership } from "./membership.ts";
+import { EventBus, type NodeLogger } from "../core/events.ts";
 import {
   HeartbeatResponseSchema,
   JoinResponseSchema,
-  membersDigest as computeMembersDigest,
-  runtimeDigest,
-  type BusyState,
+  membersDigest,
   type HeartbeatResponse,
   type JoinResponse,
   type OrcaNodeId,
   type PeerView,
-  type RuntimeInfo,
   type SelfRecord,
-  type WorkgroupId,
 } from "../core/wire/peer.ts";
 import { AckSchema } from "../core/wire/reply.ts";
-import type { HeartbeatRequest, JoinRequest, SelfDescription, MembersEvent } from "./wire.ts";
-import type { ModelCatalog } from "../core/model-catalog.ts";
-import type { PeerClient } from "./peer-client.ts";
-import { candidateEndpointAllowed } from "./screening.ts";
+import { createAdmission } from "./admission.ts";
+import { EndpointDialer } from "./dialer.ts";
+import type { Membership } from "./membership.ts";
+import type { HttpPeerClient } from "./peer-client.ts";
+import type { SelfProfile } from "./self-profile.ts";
+import type { HeartbeatRequest, JoinRequest, MembersEvent } from "./wire.ts";
 
-/** The part of the node config a workgroup reads: who this node is and what it may dial or advertise. */
-export type WorkgroupConfig = {
-  orca_node_id: OrcaNodeId;
-  workgroup_id: WorkgroupId;
-  display_name: string;
+/** What a workgroup reads from the node config besides who the node is (that is the profile's). */
+export type WorkgroupOptions = {
+  logger: NodeLogger;
   allow_public_peers?: boolean;
   allow_loopback_peers?: boolean;
 };
@@ -34,175 +28,168 @@ export type WorkgroupConfig = {
 /** Which peers answered a `leave` and so know this node is gone. */
 export type LeaveResult = { left: OrcaNodeId[] };
 
-type WorkgroupDeps = {
-  config: WorkgroupConfig;
-  /** Workgroup key behind the admission proofs (§7.1). */
-  key: Buffer;
-  runtime: RuntimeInfo;
-  /** Advertised per-task budget (§6.9). */
-  maxTaskTtlS: number;
-  membership: Membership;
-  /** The model routes and default advertised to peers (§6.15). */
-  models: ModelCatalog;
-  client: PeerClient;
-  logger: NodeLogger;
-  /** Advertised dial URLs; they change once the listener is bound. */
-  endpoints: () => string[];
-  busy: () => BusyState | null;
-  emit: (event: MembersEvent) => void;
-  /** Pinned timings keep their heartbeat period; otherwise it follows the mesh size (§3.3). */
-  adaptiveHeartbeat: boolean;
-};
-
-export type Workgroup = {
-  self(): SelfRecord;
-  members(): PeerView[];
-  membersDigest(): string;
-  /** Admit this node at `peerUrl` with the workgroup password; the only call that may reach a stranger. */
-  join(peerUrl: string): Promise<JoinResponse>;
-  heartbeat(peerUrl: string): Promise<HeartbeatResponse>;
-  /** URLs a member can be dialed at, screened, the last one that worked first; empty for a non-member. */
-  endpointsOf(nodeId: OrcaNodeId): Promise<string[]>;
-  leave(): Promise<LeaveResult>;
-  /** Emit a `members` event if something a panel would render changed (§9.2). */
-  emitMembersIfChanged(): void;
-  /** Begin the heartbeat loop. */
-  start(): void;
-  stop(): void;
-};
-
 /** A 401 proves the peer no longer shares this password (§7.1). */
 function isAdmissionRejection(error: unknown): boolean {
   return error instanceof PodError && error.status === 401;
 }
 
-/** How long one candidate-endpoint screening verdict is reused (§7.7). */
-const VERDICT_TTL_MS = 60_000;
+/**
+ * The response carries no signature of its own, so it must not be able to
+ * speak for a node other than the one we dialed (§7.1). First contact is TOFU:
+ * with nothing to compare it with, any answer is taken.
+ */
+function assertAnsweredBy(route: string, peerUrl: string, claimed: OrcaNodeId, expected: OrcaNodeId | undefined): void {
+  if (expected !== undefined && claimed !== expected) {
+    throw new Error(`${route} from ${peerUrl} claimed ${claimed} but ${expected} was expected`);
+  }
+}
 
-export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
-  const { config, membership, client, logger } = deps;
-  const selfId = config.orca_node_id;
-  const ids = { workgroupId: config.workgroup_id, orcaNodeId: selfId };
+/** The roster fields a panel renders; two rosters with the same signature need no event. */
+function signatureOf(peers: PeerView[]): string {
+  return peers
+    .map((peer) => {
+      const model = peer.default_model ? `${peer.default_model.provider}/${peer.default_model.model}` : "";
+      return (
+        `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
+        `:${peer.models?.length ?? 0}:${model}:${peer.default_reasoning_effort ?? ""}`
+      );
+    })
+    .sort()
+    .join("|");
+}
 
-  // ---- self record ----
+/**
+ * This node's side of the workgroup (§3): it admits itself at a peer (`join`),
+ * keeps the members' records fresh (`heartbeat`), says goodbye (`leave`) and
+ * tells its listeners when the roster changed.
+ */
+export class Workgroup {
+  /** Fires when something a panel would render about the roster changed (§9.2). */
+  readonly events = new EventBus<MembersEvent>();
 
-  function selfPeer(): PeerView {
-    const offers = deps.models.offers();
-    const defaults = deps.models.defaults();
-    return {
-      orca_node_id: selfId,
-      // A fresh node with no display name shows its generated id (§9.2 wizard default).
-      display_name: config.display_name.length > 0 ? config.display_name : selfId,
-      endpoints: deps.endpoints(),
-      runtime: deps.runtime,
-      runtime_digest: runtimeDigest(deps.runtime),
-      state: "online",
-      busy: deps.busy(),
-      last_recv_at: new Date().toISOString(),
-      max_task_ttl_s: deps.maxTaskTtlS,
-      models: offers.length > 0 ? offers : undefined,
-      default_model: defaults.model,
-      default_reasoning_effort: defaults.reasoningEffort,
-    };
+  private readonly dialer: EndpointDialer;
+  private readonly logger: NodeLogger;
+  private membersSignature = "";
+
+  constructor(
+    /** Workgroup key behind the admission proofs (§7.1). */
+    private readonly key: Buffer,
+    private readonly membership: Membership,
+    private readonly client: HttpPeerClient,
+    private readonly profile: SelfProfile,
+    options: WorkgroupOptions,
+  ) {
+    this.logger = options.logger;
+    this.dialer = new EndpointDialer(membership, options.logger, {
+      allowPublicPeers: options.allow_public_peers,
+      allowLoopbackPeers: options.allow_loopback_peers,
+    });
   }
 
-  /** Every member this node knows, for its own panel and events. */
-  function roster(): PeerView[] {
-    return [...membership.list(), selfPeer()];
+  self(): SelfRecord {
+    return this.profile.record();
+  }
+
+  members(): PeerView[] {
+    return this.membership.list();
   }
 
   /** What this node passes on (§3.5): itself and the members it hears from; its digest is what peers compare. */
-  const digest = (): string => computeMembersDigest([...membership.directory(), selfPeer()]);
-
-  // ---- change events ----
-
-  /** The roster fields a panel renders; two rosters with the same signature need no event. */
-  let membersSignature = "";
-  function signatureOf(peers: PeerView[]): string {
-    return peers
-      .map((peer) => {
-        const model = peer.default_model ? `${peer.default_model.provider}/${peer.default_model.model}` : "";
-        return (
-          `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
-          `:${peer.models?.length ?? 0}:${model}:${peer.default_reasoning_effort ?? ""}`
-        );
-      })
-      .sort()
-      .join("|");
+  digest(): string {
+    return membersDigest([...this.membership.directory(), this.profile.peer()]);
   }
 
-  function emitMembersIfChanged(): void {
-    const current = roster();
+  /** Emit a `members` event if something a panel would render changed (§9.2). */
+  emitMembersIfChanged(): void {
+    const current = this.roster();
     const signature = signatureOf(current);
-    if (signature === membersSignature) return;
-    membersSignature = signature;
-    deps.emit({ type: "members", members: current, digest: computeMembersDigest(current) });
+    if (signature === this.membersSignature) return;
+    this.membersSignature = signature;
+    this.events.emit({ type: "members", members: current, digest: membersDigest(current) });
   }
 
-  // ---- join / heartbeat / leave ----
-
-  /**
-   * What this node says about itself in a join and in every heartbeat (§3.3).
-   * The request signature covers it, so a peer can take it as this node's word.
-   */
-  function selfDescription(): SelfDescription {
-    const self = selfPeer();
-    return {
-      display_name: self.display_name,
-      endpoints: self.endpoints,
-      runtime: self.runtime,
-      max_task_ttl_s: self.max_task_ttl_s,
-      models: self.models,
-      default_model: self.default_model,
-      default_reasoning_effort: self.default_reasoning_effort,
-    };
-  }
-
-  /**
-   * The response carries no signature of its own, so it must not be able to
-   * speak for a node other than the one we dialed (§7.1). First contact is TOFU:
-   * with nothing to compare it with, any answer is taken.
-   */
-  function assertAnsweredBy(
-    route: string,
-    peerUrl: string,
-    claimed: OrcaNodeId,
-    expected: OrcaNodeId | undefined,
-  ): void {
-    if (expected !== undefined && claimed !== expected) {
-      throw new Error(`${route} from ${peerUrl} claimed ${claimed} but ${expected} was expected`);
-    }
-  }
-
-  async function join(peerUrl: string): Promise<JoinResponse> {
+  /** Admit this node at `peerUrl` with the workgroup password; the only call that may reach a stranger. */
+  async join(peerUrl: string): Promise<JoinResponse> {
     // A first contact has no receiver id to sign to; a known URL must keep answering as the same node.
-    const expected = client.idOf(peerUrl);
-    const request: JoinRequest = { ...createAdmission("join", deps.key, ids), ...selfDescription() };
-    const response = await client.call(
+    const expected = this.client.idOf(peerUrl);
+    const request: JoinRequest = { ...this.admission("join"), ...this.profile.description() };
+    const response = await this.client.call(
       peerUrl,
       { method: "POST", path: "/cluster/join", payload: request, reply: JoinResponseSchema },
       { target: expected ?? "" },
     );
     assertAnsweredBy("/cluster/join", peerUrl, response.self.orca_node_id, expected);
-    membership.peers.upsert(response.self);
-    client.learn(peerUrl, response.self.orca_node_id);
-    membership.observeInbound(response.self.orca_node_id);
-    membership.mergeRemote(response.members);
-    emitMembersIfChanged();
+    this.membership.upsert(response.self);
+    this.client.learn(peerUrl, response.self.orca_node_id);
+    this.membership.observeInbound(response.self.orca_node_id);
+    this.membership.mergeRemote(response.members);
+    this.emitMembersIfChanged();
     return response;
   }
 
-  function sendHeartbeat(peerUrl: string, targetId: OrcaNodeId): Promise<HeartbeatResponse> {
+  /** One heartbeat to a URL the node already knows. */
+  async heartbeat(peerUrl: string): Promise<HeartbeatResponse> {
+    return this.pulse(peerUrl, this.client.known(peerUrl), true);
+  }
+
+  /**
+   * Heartbeat one peer by trying its advertised URLs in order (IPv4/IPv6, LAN,
+   * public): a single unreachable URL must not mark the peer offline (§7.7).
+   */
+  async heartbeatPeer(peer: PeerView): Promise<void> {
+    for (const endpoint of await this.dialer.dialOrder(peer)) {
+      try {
+        await this.pulse(endpoint, peer.orca_node_id, false);
+        this.dialer.prefer(peer.orca_node_id, endpoint);
+        return;
+      } catch (error) {
+        // Every URL belongs to the same node, so a credential mismatch is final.
+        if (isAdmissionRejection(error)) return;
+      }
+    }
+    this.membership.observeOutboundFail(peer.orca_node_id);
+  }
+
+  /** URLs a member can be dialed at, screened, the last one that worked first; empty for a non-member. */
+  async endpointsOf(nodeId: OrcaNodeId): Promise<string[]> {
+    const peer = this.membership.get(nodeId);
+    return peer === undefined ? [] : this.dialer.dialOrder(peer);
+  }
+
+  /** Leave the workgroup (§9.2): tell each peer, best effort, then clear the roster. */
+  async leave(): Promise<LeaveResult> {
+    const left: OrcaNodeId[] = [];
+    for (const peer of this.membership.list()) {
+      if (await this.notifyLeave(peer)) left.push(peer.orca_node_id);
+      this.forgetPeer(peer.orca_node_id);
+    }
+    this.emitMembersIfChanged();
+    return { left };
+  }
+
+  /** Every member this node knows, for its own panel and events. */
+  private roster(): PeerView[] {
+    return [...this.membership.list(), this.profile.peer()];
+  }
+
+  private admission(kind: "join" | "heartbeat") {
+    return createAdmission(kind, this.key, {
+      workgroupId: this.profile.workgroupId,
+      orcaNodeId: this.profile.orcaNodeId,
+    });
+  }
+
+  private sendHeartbeat(peerUrl: string, targetId: OrcaNodeId): Promise<HeartbeatResponse> {
     const request: HeartbeatRequest = {
-      ...createAdmission("heartbeat", deps.key, ids),
-      busy: deps.busy(),
-      digest: digest(),
-      self: selfDescription(),
+      ...this.admission("heartbeat"),
+      busy: this.profile.busy,
+      digest: this.digest(),
+      self: this.profile.description(),
     };
-    return client.call(
+    return this.client.call(
       peerUrl,
       { method: "POST", path: "/cluster/heartbeat", payload: request, reply: HeartbeatResponseSchema },
-      { target: targetId, timeoutMs: membership.timings.heartbeatTimeoutMs },
+      { target: targetId, timeoutMs: this.membership.timings.heartbeatTimeoutMs },
     );
   }
 
@@ -211,60 +198,61 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
    * member (403): join once so it re-admits us, then send again. A real password
    * mismatch makes that join fail with 401, which the caller turns into a drop (§7.1).
    */
-  async function heartbeatWithRejoin(peerUrl: string, targetId: OrcaNodeId): Promise<HeartbeatResponse> {
+  private async heartbeatWithRejoin(peerUrl: string, targetId: OrcaNodeId): Promise<HeartbeatResponse> {
     try {
-      return await sendHeartbeat(peerUrl, targetId);
+      return await this.sendHeartbeat(peerUrl, targetId);
     } catch (error) {
       if (!(error instanceof PodError && (error.status === 404 || error.code === "not_a_member"))) throw error;
-      await join(peerUrl);
-      return sendHeartbeat(peerUrl, targetId);
+      await this.join(peerUrl);
+      return this.sendHeartbeat(peerUrl, targetId);
     }
   }
 
-  /** Forget everything this node holds about a peer. */
-  function forgetPeer(nodeId: OrcaNodeId): void {
-    membership.remove(nodeId);
-    preferredEndpoints.delete(nodeId);
-    client.forget(nodeId);
-  }
-
-  /** Drop a node that failed admission: it is not part of this mesh anymore. */
-  function dropPeer(nodeId: OrcaNodeId, reason: string): void {
-    if (membership.get(nodeId) !== null) logger.warn(`orca-pod: dropping node ${nodeId} (${reason}, §7.1)`);
-    membership.peers.remove(nodeId);
-    forgetPeer(nodeId);
-    emitMembersIfChanged();
-  }
-
   /** `observeFailure: false` lets the caller count one failure per peer, not per URL. */
-  async function pulse(peerUrl: string, targetId: OrcaNodeId, observeFailure: boolean): Promise<HeartbeatResponse> {
+  private async pulse(peerUrl: string, targetId: OrcaNodeId, observeFailure: boolean): Promise<HeartbeatResponse> {
     try {
-      const response = await heartbeatWithRejoin(peerUrl, targetId);
+      const response = await this.heartbeatWithRejoin(peerUrl, targetId);
       assertAnsweredBy("/cluster/heartbeat", peerUrl, response.from, targetId);
-      membership.observeInbound(response.from);
-      membership.observeOutboundOk(response.from);
-      if (response.members) membership.mergeRemote(response.members);
-      emitMembersIfChanged();
+      this.membership.observeInbound(response.from);
+      this.membership.observeOutboundOk(response.from);
+      if (response.members) this.membership.mergeRemote(response.members);
+      this.emitMembersIfChanged();
       return response;
     } catch (error) {
       if (isAdmissionRejection(error)) {
         // This peer still uses another password: stop answering it and forget the
         // record (§7.1). Its own heartbeats to us fail identically, so the whole
         // old mesh drops the changed node instead of keeping it "online" forever.
-        dropPeer(targetId, "workgroup admission rejected");
+        this.dropPeer(targetId, "workgroup admission rejected");
       } else if (observeFailure) {
-        membership.observeOutboundFail(targetId);
+        this.membership.observeOutboundFail(targetId);
       }
       throw error;
     }
   }
 
+  /** Forget everything this node holds about a peer. */
+  private forgetPeer(nodeId: OrcaNodeId): void {
+    this.membership.remove(nodeId);
+    this.dialer.forget(nodeId);
+    this.client.forget(nodeId);
+  }
+
+  /** Drop a node that failed admission: it is not part of this mesh anymore. */
+  private dropPeer(nodeId: OrcaNodeId, reason: string): void {
+    if (this.membership.get(nodeId) !== undefined) {
+      this.logger.warn(`orca-pod: dropping node ${nodeId} (${reason}, §7.1)`);
+    }
+    this.forgetPeer(nodeId);
+    this.emitMembersIfChanged();
+  }
+
   /** Tell one peer we are leaving; true when it acknowledged. A peer that is already gone must not keep us from leaving. */
-  async function notifyLeave(peer: PeerView): Promise<boolean> {
+  private async notifyLeave(peer: PeerView): Promise<boolean> {
     const [endpoint] = peer.endpoints;
     if (endpoint === undefined) return false;
     try {
-      await client.call(
+      await this.client.call(
         endpoint,
         { method: "POST", path: "/cluster/leave", reply: AckSchema },
         { target: peer.orca_node_id },
@@ -274,129 +262,4 @@ export function createWorkgroup(deps: WorkgroupDeps): Workgroup {
       return false;
     }
   }
-
-  /** Leave the workgroup (§9.2): tell each peer, best effort, then clear the roster. */
-  async function leave(): Promise<LeaveResult> {
-    const left: OrcaNodeId[] = [];
-    for (const peer of membership.list()) {
-      if (await notifyLeave(peer)) left.push(peer.orca_node_id);
-      forgetPeer(peer.orca_node_id);
-    }
-    emitMembersIfChanged();
-    return { left };
-  }
-
-  // ---- endpoint screening and the heartbeat loop ----
-
-  /** Last endpoint that worked per peer, tried first on the next round. */
-  const preferredEndpoints = new Map<string, string>();
-  /**
-   * Screening verdicts per candidate endpoint, kept only briefly: a lookup per
-   * tick would be wasteful, but a verdict kept for the whole process would never
-   * notice that a name now points somewhere else.
-   */
-  const verdicts = new Map<string, { allowed: boolean; until: number }>();
-  /** Peers whose refused endpoint was already logged; one line per peer is enough. */
-  const warned = new Set<string>();
-
-  /** An endpoint from another node's member list is screened before it is dialed (§7.7). */
-  async function endpointAllowed(peer: PeerView, endpoint: string): Promise<boolean> {
-    const now = Date.now();
-    let verdict = verdicts.get(endpoint);
-    if (verdict === undefined || verdict.until <= now) {
-      const allowed = await candidateEndpointAllowed(endpoint, {
-        allowPublicPeers: config.allow_public_peers,
-        allowLoopbackPeers: config.allow_loopback_peers,
-      });
-      verdict = { allowed, until: now + VERDICT_TTL_MS };
-      verdicts.set(endpoint, verdict);
-    }
-    if (!verdict.allowed && !warned.has(peer.orca_node_id)) {
-      warned.add(peer.orca_node_id);
-      logger.warn(`orca-pod: refusing candidate endpoint ${endpoint} from ${peer.orca_node_id} (§7.7)`);
-    }
-    return verdict.allowed;
-  }
-
-  /** Dialable URLs of one peer: screened if it came from a remote list, last good first. */
-  async function dialOrder(peer: PeerView): Promise<string[]> {
-    const candidate = membership.originOf(peer.orca_node_id) === "candidate";
-    const allowed: string[] = [];
-    for (const endpoint of peer.endpoints) {
-      if (!candidate || (await endpointAllowed(peer, endpoint))) allowed.push(endpoint);
-    }
-    const preferred = preferredEndpoints.get(peer.orca_node_id);
-    return preferred !== undefined && allowed.includes(preferred)
-      ? [preferred, ...allowed.filter((endpoint) => endpoint !== preferred)]
-      : allowed;
-  }
-
-  /**
-   * Heartbeat one peer by trying its advertised URLs in order (IPv4/IPv6, LAN,
-   * public): a single unreachable URL must not mark the peer offline (§7.7).
-   */
-  async function heartbeatPeer(peer: PeerView): Promise<void> {
-    for (const endpoint of await dialOrder(peer)) {
-      try {
-        await pulse(endpoint, peer.orca_node_id, false);
-        preferredEndpoints.set(peer.orca_node_id, endpoint);
-        return;
-      } catch (error) {
-        // Every URL belongs to the same node, so a credential mismatch is final.
-        if (isAdmissionRejection(error)) return;
-      }
-    }
-    membership.observeOutboundFail(peer.orca_node_id);
-  }
-
-  let timer: NodeJS.Timeout | null = null;
-  let stopped = true;
-
-  function schedule(): void {
-    if (stopped) return;
-    // ±10% jitter: senders must not stay phase-locked, and the receiver's
-    // suspect window (1.25 ticks) leaves room for this spread.
-    timer = setTimeout(() => void tick(), membership.timings.intervalMs * (0.9 + Math.random() * 0.2));
-    timer.unref();
-  }
-
-  async function tick(): Promise<void> {
-    if (stopped) return;
-    // §3.3: cadence follows mesh size (one pulse per node per second) so cluster traffic stays linear.
-    if (deps.adaptiveHeartbeat) membership.setIntervalMs(heartbeatIntervalMsFor(membership.list().length + 1));
-    membership.evaluate();
-    const now = membership.now();
-    const due = membership
-      .list()
-      .filter((peer) => peer.endpoints.length > 0 && membership.needsProbe(peer.orca_node_id, now));
-    await Promise.allSettled(due.map(heartbeatPeer));
-    emitMembersIfChanged();
-    schedule();
-  }
-
-  return {
-    self: () => ({ ...selfPeer(), workgroup_id: config.workgroup_id }),
-    members: () => membership.list(),
-    membersDigest: digest,
-    join,
-    async heartbeat(peerUrl) {
-      return pulse(peerUrl, client.known(peerUrl), true);
-    },
-    async endpointsOf(nodeId) {
-      const peer = membership.get(nodeId);
-      return peer === null ? [] : dialOrder(peer);
-    },
-    leave,
-    emitMembersIfChanged,
-    start() {
-      stopped = false;
-      void tick();
-      emitMembersIfChanged();
-    },
-    stop() {
-      stopped = true;
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-    },
-  };
 }

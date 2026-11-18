@@ -5,6 +5,7 @@ import process from "node:process";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { parseEchoScript } from "../executor/echo.ts";
 import { runningInTask } from "../core/entry.ts";
+import { rpc } from "../task/delegation.ts";
 import { parseSchema, describeIssue } from "../core/schema.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
@@ -122,7 +123,7 @@ export async function run({ flags }: CommandArgs): Promise<number> {
     parts: [{ kind: "text", text }],
     ...(flags.context !== undefined ? { contextId: flags.context } : {}),
   };
-  const view = await client.rpc(peer, "message/send", {
+  const view = await rpc(client, peer, "message/send", {
     message,
     metadata: Object.keys(sent).length > 0 ? sent : undefined,
   });

@@ -1,6 +1,7 @@
 /** `orca-node status`: print one task as its peer reports it. */
 
 import { normalizePeerUrl } from "../core/net.ts";
+import { rpc } from "../task/delegation.ts";
 import {
   COMMON_OPTIONS,
   loadNodeConfig,
@@ -17,7 +18,7 @@ export async function run({ flags }: CommandArgs): Promise<number> {
   const config = await loadNodeConfig(flags);
   const peer = normalizePeerUrl(required(flags.peer, "peer"));
   const task = required(flags.task, "task");
-  const view = await (await peerClient(config, peer)).rpc(peer, "tasks/get", { id: task });
+  const view = await rpc(await peerClient(config, peer), peer, "tasks/get", { id: task });
   printView(view, flags);
   return 0;
 }

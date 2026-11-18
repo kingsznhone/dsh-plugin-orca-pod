@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CANDIDATE_MAX_FAILURES, createMembership, type MembershipTimings } from "../src/mesh/membership.ts";
+import { CANDIDATE_MAX_FAILURES, Membership, type MembershipTimings } from "../src/mesh/membership.ts";
 import type { PeerView, OrcaNodeId } from "../src/core/wire/peer.ts";
 import { labelId } from "./fixtures/ids.ts";
 
@@ -31,8 +31,7 @@ function peerView(orcaNodeId: OrcaNodeId, overrides: Partial<PeerView> = {}): Pe
 
 function setup() {
   let now = 1000;
-  const membership = createMembership({
-    selfOrcaNodeId: labelId("AAAAAA"),
+  const membership = new Membership(labelId("AAAAAA"), {
     timings: TIMINGS,
     clock: { monotonicMs: () => now, wallIso: () => new Date(now).toISOString() },
   });
@@ -78,7 +77,6 @@ describe("membership watchdog", () => {
     advance(700);
     membership.evaluate();
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("suspect");
-    expect(membership.getRecord(labelId("BBBBBB"))?.suspect_reason).toBe("quiet");
 
     advance(600);
     membership.evaluate();
@@ -86,11 +84,11 @@ describe("membership watchdog", () => {
 
     advance(5100);
     membership.evaluate();
-    expect(membership.get(labelId("BBBBBB"))).toBeNull();
+    expect(membership.get(labelId("BBBBBB"))).toBeUndefined();
     expect(membership.isTombstoned(labelId("BBBBBB"))).toBe(true);
 
     membership.mergeRemote([peerView(labelId("BBBBBB"))]);
-    expect(membership.get(labelId("BBBBBB"))).toBeNull();
+    expect(membership.get(labelId("BBBBBB"))).toBeUndefined();
   });
 
   it("marks suspect(unreachable) when sends fail but heartbeats still arrive", () => {
@@ -104,7 +102,6 @@ describe("membership watchdog", () => {
     membership.observeOutboundFail(labelId("BBBBBB"));
 
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("suspect");
-    expect(membership.getRecord(labelId("BBBBBB"))?.suspect_reason).toBe("unreachable");
 
     membership.observeOutboundOk(labelId("BBBBBB"));
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("online");
@@ -127,26 +124,26 @@ describe("membership watchdog", () => {
 
     membership.mergeRemote([peerView(labelId("BBBBBB"))]);
     membership.observeInbound(labelId("BBBBBB"));
-    expect(membership.get(labelId("BBBBBB"))).toBeNull();
-    expect(membership.peers.touch(labelId("BBBBBB"))).toBe(false);
+    expect(membership.get(labelId("BBBBBB"))).toBeUndefined();
+    expect(membership.touch(labelId("BBBBBB"))).toBe(false);
   });
 
   it("lets a removed node back in through its own join, while stale lists stay blocked", () => {
     const { membership } = setup();
-    membership.peers.upsert(peerView(labelId("BBBBBB")));
+    membership.upsert(peerView(labelId("BBBBBB")));
     membership.remove(labelId("BBBBBB"));
     expect(membership.isTombstoned(labelId("BBBBBB"))).toBe(true);
 
     // The node leaves and re-joins within the tombstone window: the gateway
     // verified its admission proof, so the record must exist afterwards.
-    membership.peers.upsert(peerView(labelId("BBBBBB")));
+    membership.upsert(peerView(labelId("BBBBBB")));
     expect(membership.get(labelId("BBBBBB"))?.state).toBe("online");
     expect(membership.isTombstoned(labelId("BBBBBB"))).toBe(false);
-    expect(membership.peers.touch(labelId("BBBBBB"))).toBe(true);
+    expect(membership.touch(labelId("BBBBBB"))).toBe(true);
 
     membership.remove(labelId("BBBBBB"));
     membership.mergeRemote([peerView(labelId("BBBBBB"))]);
-    expect(membership.get(labelId("BBBBBB"))).toBeNull();
+    expect(membership.get(labelId("BBBBBB"))).toBeUndefined();
   });
 
   it("offline peers back off probe attempts", () => {
@@ -175,11 +172,11 @@ describe("membership watchdog", () => {
       advance(TIMINGS.maxRecoverProbeMs);
     }
     membership.observeOutboundFail(d);
-    expect(membership.get(d)).toBeNull();
+    expect(membership.get(d)).toBeUndefined();
     expect(membership.isTombstoned(d)).toBe(true);
     // A stale list cannot bring it straight back.
     membership.mergeRemote([peerView(d)]);
-    expect(membership.get(d)).toBeNull();
+    expect(membership.get(d)).toBeUndefined();
   });
 
   it("keeps a candidate that answers, so its failures start over", () => {
@@ -226,16 +223,16 @@ describe("membership watchdog", () => {
       a.membership.mergeRemote(c.membership.directory());
       c.membership.mergeRemote(a.membership.directory());
     }
-    expect(c.membership.get(d)).toBeNull();
+    expect(c.membership.get(d)).toBeUndefined();
     expect(a.membership.directory().some((peer) => peer.orca_node_id === d)).toBe(false);
     // A keeps its own offline record until the record TTL, then prunes it for good.
     a.advance(TIMINGS.recordTtlMs);
     a.membership.evaluate();
-    expect(a.membership.get(d)).toBeNull();
+    expect(a.membership.get(d)).toBeUndefined();
     c.membership.mergeRemote(a.membership.directory());
     a.membership.mergeRemote(c.membership.directory());
-    expect(a.membership.get(d)).toBeNull();
-    expect(c.membership.get(d)).toBeNull();
+    expect(a.membership.get(d)).toBeUndefined();
+    expect(c.membership.get(d)).toBeUndefined();
   });
 
   it("lets a dropped candidate back in when it joins itself, tombstone or not", () => {
@@ -245,7 +242,7 @@ describe("membership watchdog", () => {
     for (let attempt = 0; attempt < CANDIDATE_MAX_FAILURES; attempt += 1) membership.observeOutboundFail(d);
     expect(membership.isTombstoned(d)).toBe(true);
     // The node comes back and joins with a verified admission proof.
-    membership.peers.upsert(peerView(d));
+    membership.upsert(peerView(d));
     expect(membership.get(d)?.state).toBe("online");
     expect(membership.isTombstoned(d)).toBe(false);
   });

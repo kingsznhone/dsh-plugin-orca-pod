@@ -1,21 +1,5 @@
 import type { OrcaNodeId, PeerState, PeerView } from "../core/wire/peer.ts";
 
-/** Peer directory contract; callers only depend on this interface. */
-export interface PeerStore {
-  upsert(peer: PeerView): void;
-  get(orcaNodeId: OrcaNodeId): PeerView | undefined;
-  list(): PeerView[];
-  /**
-   * The members this node vouches for to others: the ones it has heard from
-   * itself and that are not offline (§3.5). Candidates it never reached and
-   * nodes gone quiet stay in `list()` but are never passed on.
-   */
-  directory(): PeerView[];
-  remove(orcaNodeId: OrcaNodeId): void;
-  /** Mark a peer as recently heard from. Returns false when the orca node is unknown. */
-  touch(orcaNodeId: OrcaNodeId): boolean;
-}
-
 /**
  * Membership bookkeeping (§3.3): the only evidence that a peer is online is the
  * local arrival time of its heartbeat. State lives here, never in someone
@@ -81,8 +65,14 @@ export type MembershipClock = {
   wallIso?: () => string;
 };
 
+/** What a `Membership` is built from besides its own id. */
+export type MembershipOptions = {
+  timings?: Partial<MembershipTimings>;
+  clock?: MembershipClock;
+};
+
 /** How this orca node learned about a peer (§3.5, §7.7). */
-type PeerOrigin = "explicit" | "candidate";
+export type PeerOrigin = "explicit" | "candidate";
 
 type PeerRecord = {
   view: PeerView;
@@ -98,41 +88,6 @@ type PeerRecord = {
   offline_since_ms: number | null;
 };
 
-export type Membership = {
-  /** PeerStore facade for the gateway (join / touch / busy update / remove). */
-  readonly peers: PeerStore;
-  readonly selfOrcaNodeId: OrcaNodeId;
-  readonly timings: MembershipTimings;
-  /** Retarget the expected cadence; also rederives suspect/offline/timeout windows. */
-  setIntervalMs(intervalMs: number): void;
-  /** Record an inbound signed message from `orcaNodeId`; returns false when unknown. */
-  observeInbound(orcaNodeId: OrcaNodeId): boolean;
-  observeOutboundOk(orcaNodeId: OrcaNodeId): void;
-  observeOutboundFail(orcaNodeId: OrcaNodeId): void;
-  /** Remote lists only add/update records; they never touch online state. */
-  mergeRemote(members: readonly PeerView[] | null | undefined): void;
-  /** Whether a peer was joined explicitly or only seen in a remote list (§7.7). */
-  originOf(orcaNodeId: OrcaNodeId): PeerOrigin | null;
-  /** Apply timeout transitions and prune stale records. */
-  evaluate(): PeerView[];
-  needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean;
-  /** Monotonic clock used by this instance (same source as the watchdog). */
-  now(): number;
-  list(): PeerView[];
-  /** What this node passes on to others (`PeerStore.directory`). */
-  directory(): PeerView[];
-  get(orcaNodeId: OrcaNodeId): PeerView | null;
-  getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null;
-  remove(orcaNodeId: OrcaNodeId): void;
-  isTombstoned(orcaNodeId: OrcaNodeId): boolean;
-};
-
-type CreateMembershipOptions = {
-  selfOrcaNodeId: OrcaNodeId;
-  timings?: Partial<MembershipTimings>;
-  clock?: MembershipClock;
-};
-
 function resolveTimings(overrides: Partial<MembershipTimings> = {}): MembershipTimings {
   const merged = { ...DEFAULT_MEMBERSHIP_TIMINGS, ...overrides };
   if (overrides.intervalMs !== undefined && overrides.heartbeatTimeoutMs === undefined) {
@@ -145,133 +100,178 @@ function toView(record: PeerRecord): PeerView {
   return { ...record.view };
 }
 
-export function createMembership(options: CreateMembershipOptions): Membership {
-  const selfOrcaNodeId = options.selfOrcaNodeId;
-  const timings = resolveTimings(options.timings);
-  const monotonicMs = options.clock?.monotonicMs ?? (() => performance.now());
-  const wallIso = options.clock?.wallIso ?? (() => new Date().toISOString());
-  const records = new Map<OrcaNodeId, PeerRecord>();
-  const tombstones = new Map<OrcaNodeId, number>();
-  /** One missed tick is suspect, three is offline; jitter means a tick needs slack. */
-  function setIntervalMs(intervalMs: number): void {
+/**
+ * The node's latest self-description replaces the recorded one, model catalog
+ * included: a catalog it no longer advertises must not linger here (§3.3).
+ */
+function profilePatch(record: PeerRecord, view: PeerView): void {
+  record.view.display_name = view.display_name;
+  record.view.endpoints = view.endpoints;
+  record.view.runtime = view.runtime;
+  record.view.runtime_digest = view.runtime_digest;
+  record.view.busy = view.busy ?? null;
+  if (view.max_task_ttl_s !== undefined) record.view.max_task_ttl_s = view.max_task_ttl_s;
+  record.view.models = view.models;
+  record.view.default_model = view.default_model ?? null;
+  record.view.default_reasoning_effort = view.default_reasoning_effort ?? null;
+}
+
+/** Move a record between online, suspect and offline by how long it has been quiet. */
+function reassess(record: PeerRecord, nowMs: number, timings: MembershipTimings): void {
+  if (record.view.state === "offline" || record.last_recv_ms === null) return;
+  const age = nowMs - record.last_recv_ms;
+  if (age >= timings.offlineAfterMs) {
+    record.view.state = "offline";
+    record.suspect_reason = null;
+    record.offline_since_ms = nowMs;
+    record.next_probe_ms = nowMs;
+    return;
+  }
+  if (age >= timings.suspectAfterMs) {
+    if (record.view.state === "online") {
+      record.view.state = "suspect";
+      record.suspect_reason = "quiet";
+    } else if (record.suspect_reason === "unreachable") {
+      record.suspect_reason = "quiet";
+    }
+    return;
+  }
+  if (record.view.state === "suspect") {
+    record.view.state = "online";
+    record.suspect_reason = null;
+  }
+}
+
+/** A node that has been offline for the record TTL is forgotten. */
+function shouldPrune(record: PeerRecord, nowMs: number, timings: MembershipTimings): boolean {
+  return (
+    record.view.state === "offline" &&
+    record.offline_since_ms !== null &&
+    nowMs - record.offline_since_ms >= timings.recordTtlMs
+  );
+}
+
+export class Membership {
+  private readonly current: MembershipTimings;
+  private readonly monotonicMs: () => number;
+  private readonly wallIso: () => string;
+  private readonly records = new Map<OrcaNodeId, PeerRecord>();
+  private readonly tombstones = new Map<OrcaNodeId, number>();
+
+  constructor(
+    readonly selfOrcaNodeId: OrcaNodeId,
+    options: MembershipOptions = {},
+  ) {
+    this.current = resolveTimings(options.timings);
+    this.monotonicMs = options.clock?.monotonicMs ?? (() => performance.now());
+    this.wallIso = options.clock?.wallIso ?? (() => new Date().toISOString());
+  }
+
+  get timings(): Readonly<MembershipTimings> {
+    return this.current;
+  }
+
+  /** Monotonic clock used by this instance (same source as the watchdog). */
+  now(): number {
+    return this.monotonicMs();
+  }
+
+  /**
+   * Retarget the expected cadence; also rederives the suspect, offline and
+   * timeout windows. One missed tick is suspect, three is offline; jitter means
+   * a tick needs slack.
+   */
+  setIntervalMs(intervalMs: number): void {
+    const timings = this.current;
     timings.intervalMs = Math.round(intervalMs);
     timings.suspectAfterMs = Math.round(timings.intervalMs * 1.25);
     timings.offlineAfterMs = timings.intervalMs * 3;
     timings.heartbeatTimeoutMs = Math.max(100, Math.round(timings.intervalMs / 2));
   }
 
-  function createRecord(view: PeerView, state: PeerState, nowMs: number, origin: PeerOrigin): PeerRecord {
-    return {
-      view: { ...view, state, last_recv_at: state === "unknown" ? null : wallIso() },
-      origin,
-      last_ok_at: null,
-      fails: 0,
-      suspect_reason: null,
-      last_recv_ms: state === "unknown" ? null : nowMs,
-      last_ok_ms: null,
-      probe_fails: 0,
-      next_probe_ms: 0,
-      offline_since_ms: state === "offline" ? nowMs : null,
-    };
+  // ---- the directory ----
+
+  /** Record a node that proved itself with a verified join (or whose answer to ours we verified). */
+  upsert(peer: PeerView): void {
+    if (peer.orca_node_id === this.selfOrcaNodeId) return;
+    const existing = this.records.get(peer.orca_node_id);
+    const nowMs = this.monotonicMs();
+    if (existing) {
+      profilePatch(existing, peer);
+      existing.origin = "explicit";
+      return;
+    }
+    // An explicit upsert is the node itself, admitted by a verified join (or
+    // its answer to ours). Tombstones only keep stale *remote lists* from
+    // reviving a removed id; they must not lock out a node that rejoins on its
+    // own, or the gateway would answer 200 and then reject its every request.
+    this.tombstones.delete(peer.orca_node_id);
+    this.records.set(peer.orca_node_id, this.createRecord(peer, "online", nowMs, "explicit"));
+  }
+
+  get(orcaNodeId: OrcaNodeId): PeerView | undefined {
+    const record = this.records.get(orcaNodeId);
+    return record ? toView(record) : undefined;
+  }
+
+  list(): PeerView[] {
+    return [...this.records.values()]
+      .map(toView)
+      .sort((left, right) => left.orca_node_id.localeCompare(right.orca_node_id));
   }
 
   /**
-   * The node's latest self-description replaces the recorded one, model catalog
-   * included: a catalog it no longer advertises must not linger here (§3.3).
+   * The members this node vouches for to others: the ones it has heard from
+   * itself and that are not offline (§3.5). Candidates it never reached and
+   * nodes gone quiet stay in `list()` but are never passed on.
    */
-  function profilePatch(record: PeerRecord, view: PeerView): void {
-    record.view.display_name = view.display_name;
-    record.view.endpoints = view.endpoints;
-    record.view.runtime = view.runtime;
-    record.view.runtime_digest = view.runtime_digest;
-    record.view.busy = view.busy ?? null;
-    if (view.max_task_ttl_s !== undefined) record.view.max_task_ttl_s = view.max_task_ttl_s;
-    record.view.models = view.models;
-    record.view.default_model = view.default_model ?? null;
-    record.view.default_reasoning_effort = view.default_reasoning_effort ?? null;
+  directory(): PeerView[] {
+    return this.list().filter((peer) => peer.state === "online" || peer.state === "suspect");
   }
 
-  function getRecord(orcaNodeId: OrcaNodeId): PeerRecord | null {
-    return records.get(orcaNodeId) ?? null;
+  /** Forget a node; its id is tombstoned so a stale remote list cannot bring it back. */
+  remove(orcaNodeId: OrcaNodeId): void {
+    if (!this.records.delete(orcaNodeId)) return;
+    this.tombstones.set(orcaNodeId, this.monotonicMs() + this.current.tombstoneMs);
   }
 
-  function markOnline(record: PeerRecord, nowMs: number): void {
-    record.view.state = "online";
-    record.view.last_recv_at = wallIso();
-    record.suspect_reason = null;
-    record.last_recv_ms = nowMs;
-    record.fails = 0;
-    record.probe_fails = 0;
-    record.next_probe_ms = 0;
-    record.offline_since_ms = null;
-  }
-
-  function remove(orcaNodeId: OrcaNodeId): void {
-    if (!records.delete(orcaNodeId)) return;
-    tombstones.set(orcaNodeId, monotonicMs() + timings.tombstoneMs);
-  }
-
-  const peers: PeerStore = {
-    upsert(peer: PeerView): void {
-      if (peer.orca_node_id === selfOrcaNodeId) return;
-      const existing = records.get(peer.orca_node_id);
-      const nowMs = monotonicMs();
-      if (existing) {
-        profilePatch(existing, peer);
-        existing.origin = "explicit";
-        return;
-      }
-      // An explicit upsert is the node itself, admitted by a verified join (or
-      // its answer to ours). Tombstones only keep stale *remote lists* from
-      // reviving a removed id; they must not lock out a node that rejoins on its
-      // own, or the gateway would answer 200 and then reject its every request.
-      tombstones.delete(peer.orca_node_id);
-      records.set(peer.orca_node_id, createRecord(peer, "online", nowMs, "explicit"));
-    },
-    get(orcaNodeId: OrcaNodeId): PeerView | undefined {
-      const record = records.get(orcaNodeId);
-      return record ? toView(record) : undefined;
-    },
-    list(): PeerView[] {
-      return [...records.values()]
-        .map(toView)
-        .sort((left, right) => left.orca_node_id.localeCompare(right.orca_node_id));
-    },
-    directory(): PeerView[] {
-      return peers.list().filter((peer) => peer.state === "online" || peer.state === "suspect");
-    },
-    remove(orcaNodeId: OrcaNodeId): void {
-      remove(orcaNodeId);
-    },
-    touch(orcaNodeId: OrcaNodeId): boolean {
-      const record = records.get(orcaNodeId);
-      if (!record) return false;
-      markOnline(record, monotonicMs());
-      return true;
-    },
-  };
-
-  function isTombstoned(orcaNodeId: OrcaNodeId): boolean {
-    const until = tombstones.get(orcaNodeId);
-    if (until === undefined) return false;
-    if (monotonicMs() < until) return true;
-    tombstones.delete(orcaNodeId);
-    return false;
-  }
-
-  function observeInbound(orcaNodeId: OrcaNodeId): boolean {
-    if (orcaNodeId === selfOrcaNodeId) return true;
-    const record = records.get(orcaNodeId);
+  /** Mark a peer as recently heard from. Returns false when the orca node is unknown. */
+  touch(orcaNodeId: OrcaNodeId): boolean {
+    const record = this.records.get(orcaNodeId);
     if (!record) return false;
-    markOnline(record, monotonicMs());
+    this.markOnline(record, this.monotonicMs());
     return true;
   }
 
-  function observeOutboundOk(orcaNodeId: OrcaNodeId): void {
-    const record = records.get(orcaNodeId);
+  /** Whether a peer was joined explicitly or only seen in a remote list (§7.7). */
+  originOf(orcaNodeId: OrcaNodeId): PeerOrigin | null {
+    return this.records.get(orcaNodeId)?.origin ?? null;
+  }
+
+  isTombstoned(orcaNodeId: OrcaNodeId): boolean {
+    const until = this.tombstones.get(orcaNodeId);
+    if (until === undefined) return false;
+    if (this.monotonicMs() < until) return true;
+    this.tombstones.delete(orcaNodeId);
+    return false;
+  }
+
+  // ---- evidence ----
+
+  /** Record an inbound signed message from `orcaNodeId`; returns false when unknown. */
+  observeInbound(orcaNodeId: OrcaNodeId): boolean {
+    if (orcaNodeId === this.selfOrcaNodeId) return true;
+    const record = this.records.get(orcaNodeId);
+    if (!record) return false;
+    this.markOnline(record, this.monotonicMs());
+    return true;
+  }
+
+  observeOutboundOk(orcaNodeId: OrcaNodeId): void {
+    const record = this.records.get(orcaNodeId);
     if (!record) return;
-    record.last_ok_ms = monotonicMs();
-    record.last_ok_at = wallIso();
+    record.last_ok_ms = this.monotonicMs();
+    record.last_ok_at = this.wallIso();
     record.fails = 0;
     record.probe_fails = 0;
     record.next_probe_ms = 0;
@@ -285,16 +285,17 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     }
   }
 
-  function observeOutboundFail(orcaNodeId: OrcaNodeId): void {
-    const record = records.get(orcaNodeId);
+  observeOutboundFail(orcaNodeId: OrcaNodeId): void {
+    const record = this.records.get(orcaNodeId);
     if (!record) return;
     record.fails += 1;
-    const nowMs = monotonicMs();
+    const nowMs = this.monotonicMs();
+    const timings = this.current;
     // A candidate never reached: give up after a few tries instead of dialing
     // someone else's memory forever; the tombstone keeps a stale list from
     // adding it straight back (§3.5).
     if (record.view.state === "unknown" && record.fails >= CANDIDATE_MAX_FAILURES) {
-      remove(orcaNodeId);
+      this.remove(orcaNodeId);
       return;
     }
     if (record.view.state === "offline" || record.view.state === "unknown") {
@@ -311,99 +312,66 @@ export function createMembership(options: CreateMembershipOptions): Membership {
     }
   }
 
-  function mergeRemote(members: readonly PeerView[] | null | undefined): void {
+  /** Remote lists only add records; they never touch online state. */
+  mergeRemote(members: readonly PeerView[] | null | undefined): void {
     if (!members) return;
-    const nowMs = monotonicMs();
+    const nowMs = this.monotonicMs();
     for (const member of members) {
-      if (member.orca_node_id === selfOrcaNodeId) continue;
-      if (isTombstoned(member.orca_node_id)) continue;
+      if (member.orca_node_id === this.selfOrcaNodeId) continue;
+      if (this.isTombstoned(member.orca_node_id)) continue;
       // A third-party roster is only a hint for nodes we have never met (§7.1).
       // Once a record exists, only that node's own signed self-description may
       // update its endpoints or profile; otherwise any member could redirect
       // everyone's traffic to itself.
-      if (records.get(member.orca_node_id)) continue;
-      records.set(member.orca_node_id, createRecord(member, "unknown", nowMs, "candidate"));
+      if (this.records.get(member.orca_node_id)) continue;
+      this.records.set(member.orca_node_id, this.createRecord(member, "unknown", nowMs, "candidate"));
     }
   }
 
-  /** Move a record between online, suspect and offline by how long it has been quiet. */
-  function reassess(record: PeerRecord, nowMs: number): void {
-    if (record.view.state === "offline" || record.last_recv_ms === null) return;
-    const age = nowMs - record.last_recv_ms;
-    if (age >= timings.offlineAfterMs) {
-      record.view.state = "offline";
-      record.suspect_reason = null;
-      record.offline_since_ms = nowMs;
-      record.next_probe_ms = nowMs;
-      return;
-    }
-    if (age >= timings.suspectAfterMs) {
-      if (record.view.state === "online") {
-        record.view.state = "suspect";
-        record.suspect_reason = "quiet";
-      } else if (record.suspect_reason === "unreachable") {
-        record.suspect_reason = "quiet";
-      }
-      return;
-    }
-    if (record.view.state === "suspect") {
-      record.view.state = "online";
-      record.suspect_reason = null;
-    }
-  }
-
-  /** A node that has been offline for the record TTL is forgotten. */
-  function shouldPrune(record: PeerRecord, nowMs: number): boolean {
-    return (
-      record.view.state === "offline" &&
-      record.offline_since_ms !== null &&
-      nowMs - record.offline_since_ms >= timings.recordTtlMs
-    );
-  }
-
-  function evaluate(): PeerView[] {
-    const nowMs = monotonicMs();
-    for (const [orcaNodeId, record] of [...records]) {
-      reassess(record, nowMs);
-      if (shouldPrune(record, nowMs)) {
-        records.delete(orcaNodeId);
-        tombstones.set(orcaNodeId, nowMs + timings.tombstoneMs);
+  /** Apply timeout transitions and prune stale records. */
+  evaluate(): PeerView[] {
+    const nowMs = this.monotonicMs();
+    for (const [orcaNodeId, record] of [...this.records]) {
+      reassess(record, nowMs, this.current);
+      if (shouldPrune(record, nowMs, this.current)) {
+        this.records.delete(orcaNodeId);
+        this.tombstones.set(orcaNodeId, nowMs + this.current.tombstoneMs);
       }
     }
-    return [...records.values()].map(toView);
+    return [...this.records.values()].map(toView);
   }
 
-  function needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean {
-    const record = records.get(orcaNodeId);
+  needsProbe(orcaNodeId: OrcaNodeId, nowMs: number): boolean {
+    const record = this.records.get(orcaNodeId);
     if (!record) return false;
     // Offline nodes and unreached candidates are probed on the backoff schedule.
     if (record.view.state !== "offline" && record.view.state !== "unknown") return true;
     return nowMs >= record.next_probe_ms;
   }
 
-  function get(orcaNodeId: OrcaNodeId): PeerView | null {
-    const record = records.get(orcaNodeId);
-    return record ? toView(record) : null;
+  private createRecord(view: PeerView, state: PeerState, nowMs: number, origin: PeerOrigin): PeerRecord {
+    return {
+      view: { ...view, state, last_recv_at: state === "unknown" ? null : this.wallIso() },
+      origin,
+      last_ok_at: null,
+      fails: 0,
+      suspect_reason: null,
+      last_recv_ms: state === "unknown" ? null : nowMs,
+      last_ok_ms: null,
+      probe_fails: 0,
+      next_probe_ms: 0,
+      offline_since_ms: state === "offline" ? nowMs : null,
+    };
   }
 
-  return {
-    peers,
-    selfOrcaNodeId,
-    timings,
-    setIntervalMs,
-    observeInbound,
-    observeOutboundOk,
-    observeOutboundFail,
-    mergeRemote,
-    originOf: (orcaNodeId) => records.get(orcaNodeId)?.origin ?? null,
-    evaluate,
-    needsProbe,
-    now: monotonicMs,
-    list: peers.list,
-    directory: peers.directory,
-    get,
-    getRecord,
-    remove,
-    isTombstoned,
-  };
+  private markOnline(record: PeerRecord, nowMs: number): void {
+    record.view.state = "online";
+    record.view.last_recv_at = this.wallIso();
+    record.suspect_reason = null;
+    record.last_recv_ms = nowMs;
+    record.fails = 0;
+    record.probe_fails = 0;
+    record.next_probe_ms = 0;
+    record.offline_since_ms = null;
+  }
 }

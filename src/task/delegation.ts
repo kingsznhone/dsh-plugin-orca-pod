@@ -1,17 +1,59 @@
 import { randomUUID } from "node:crypto";
 
+import { z } from "zod";
+
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import { signGrant } from "./grants.ts";
 import type { DispatchStore } from "./dispatch-store.ts";
 import type { DispatchEntry, A2AMethod, A2AParams, DispatchEvent } from "./wire.ts";
 import { PodError } from "../core/errors.ts";
+import { describeIssue, parseSchema } from "../core/schema.ts";
+import { ErrorReplySchema } from "../core/wire/reply.ts";
 
 import type { NodeIdentity } from "../core/identity.ts";
 import type { Membership } from "../mesh/membership.ts";
-import { controlMessage, isTerminal, permissionRequestOf, type SubmitTaskInput, type TaskView } from "./wire.ts";
+import {
+  RpcResultSchema,
+  controlMessage,
+  isTerminal,
+  permissionRequestOf,
+  type SubmitTaskInput,
+  type TaskView,
+} from "./wire.ts";
 import type { Grant, ResumeControl } from "../core/wire/grant.ts";
-import type { PeerClient } from "../mesh/peer-client.ts";
+import { remoteError, type CallOptions, type HttpPeerClient } from "../mesh/peer-client.ts";
 import type { WorkgroupId } from "../core/wire/peer.ts";
+
+/**
+ * Signed JSON-RPC call to a peer's `/a2a` (§4.7); every method answers with a
+ * task view. A peer may also answer 200 with an error envelope, which is an error too.
+ */
+export async function rpc<M extends A2AMethod>(
+  client: HttpPeerClient,
+  endpoint: string,
+  method: M,
+  params: A2AParams<M>,
+  options: CallOptions = {},
+): Promise<TaskView> {
+  const json = await client.call(
+    endpoint,
+    {
+      method: "POST",
+      path: "/a2a",
+      label: method,
+      payload: { jsonrpc: "2.0", id: randomUUID(), method, params },
+      reply: z.unknown(),
+    },
+    options,
+  );
+  const envelope = ErrorReplySchema.safeParse(json);
+  if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, 200, envelope.data);
+  const parsed = parseSchema(RpcResultSchema, json);
+  if (!parsed.ok) {
+    throw new PodError("peer_error", `${method} 200: unexpected reply: ${describeIssue(parsed.issue)}`, 502);
+  }
+  return parsed.value.result;
+}
 
 export interface ApprovalOptions {
   /** How long the signed grant stays valid, default 300s. */
@@ -21,7 +63,7 @@ export interface ApprovalOptions {
 type DelegationDeps = {
   identity: NodeIdentity;
   workgroupId: WorkgroupId;
-  client: PeerClient;
+  client: HttpPeerClient;
   membership: Membership;
   /** Origin-side log of what this node handed to peers, so a restart does not lose track (§8.3). */
   dispatches: DispatchStore;
@@ -133,7 +175,7 @@ export function createDelegation(deps: DelegationDeps): Delegation {
     const peerId = client.known(peerUrl);
     const state = peerId === selfId ? "online" : (deps.membership.get(peerId)?.state ?? "gone");
     if (state !== "online") throw new PodError("peer_not_online", `peer ${peerId} is ${state}`);
-    const view = await client.rpc(peerUrl, "message/send", input, callOptions(options));
+    const view = await rpc(client, peerUrl, "message/send", input, callOptions(options));
     recordDispatch(peerUrl, view);
     return view;
   }
@@ -145,7 +187,7 @@ export function createDelegation(deps: DelegationDeps): Delegation {
     params: A2AParams<M>,
     options: TaskCallOptions = {},
   ): Promise<TaskView> {
-    const view = await client.rpc(peerUrl, method, params, callOptions(options));
+    const view = await rpc(client, peerUrl, method, params, callOptions(options));
     refreshDispatch(view);
     return view;
   }

@@ -11,7 +11,7 @@ import { PodError } from "../src/core/errors.ts";
 import { runtimeDigest, type BusyState, type SelfRecord } from "../src/core/wire/peer.ts";
 import type { TaskRunner } from "../src/task/wire.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { createMembership } from "../src/mesh/membership.ts";
+import { Membership } from "../src/mesh/membership.ts";
 import { createGateway, type GatewayDeps } from "../src/api/gateway.ts";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 
@@ -90,7 +90,7 @@ function createHarness(
     },
     identity,
     workgroupKey: key,
-    peers: createMembership({ selfOrcaNodeId: orcaNodeId }).peers,
+    peers: new Membership(orcaNodeId),
     nonceCache: new NonceCache(),
     startedAt: Date.now(),
     tasks,

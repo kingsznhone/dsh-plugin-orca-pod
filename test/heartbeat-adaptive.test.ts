@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createMembership,
+  Membership,
   HEARTBEAT_INTERVAL_MAX_MS,
   HEARTBEAT_INTERVAL_MIN_MS,
   heartbeatIntervalMsFor,
@@ -42,12 +42,11 @@ describe("heartbeatIntervalMsFor", () => {
 describe("adaptive membership windows", () => {
   it("derives one-miss suspect and three-miss offline from the cadence", () => {
     let nowMs = 0;
-    const membership = createMembership({
-      selfOrcaNodeId: labelId("SELF"),
+    const membership = new Membership(labelId("SELF"), {
       timings: { intervalMs: 5000 },
       clock: { monotonicMs: () => nowMs, wallIso: () => new Date(0).toISOString() },
     });
-    membership.peers.upsert(peer(labelId("PEER01")));
+    membership.upsert(peer(labelId("PEER01")));
     // The first inbound heartbeat is what makes the peer online.
     membership.observeInbound(labelId("PEER01"));
 
