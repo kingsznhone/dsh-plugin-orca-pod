@@ -5,10 +5,24 @@ import { ApprovalBroker } from "../src/plugin/broker.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
 import type { PermissionRequest } from "../src/core/wire/grant.ts";
 import type { TaskView } from "../src/task/wire.ts";
-import { labelId } from "./fixtures/ids.ts";
+import type { Agent } from "@deepseek-ai/dsh-agent";
+import { SessionId } from "@deepseek-ai/dsh-session";
+import { fakeNodeId, labelId } from "./fixtures/ids.ts";
 import { catalogFeed, idleLifecycle, lifecycleWithNode, logger } from "./fixtures/pod.ts";
 
 const PEER = "http://127.0.0.1:11812";
+
+function waitFor(check: () => boolean, timeoutMs = 1000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = (): void => {
+      if (check()) return resolve();
+      if (Date.now() - started > timeoutMs) return reject(new Error("timed out"));
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
 const TASK = "TASK01";
 
 const REQUEST: PermissionRequest = {
@@ -55,7 +69,13 @@ function fakeNode(): {
     // What the admin surface reads to label the nodes in an approval.
     profile: { record: () => ({ orca_node_id: labelId("SELF00"), display_name: "self", endpoints: [] as string[] }) },
     membership: { list: () => [] as unknown[] },
+    client: { idOf: () => undefined },
     delegation: {
+      log: { annotate() {} },
+      // The task stays suspended in what the tracker reads: it has not polled again since the decision.
+      async getTask() {
+        return suspended({ ...REQUEST, requested_by: fakeNodeId("NODE02") });
+      },
       async approveTask(_peer: string, view: TaskView) {
         if (node.failNext) {
           node.failNext = false;
@@ -179,5 +199,25 @@ describe("approval broker", () => {
     park(broker);
     await admin.deny(PEER, TASK, "no");
     expect(node.denied.at(-1)!.reason).toBe("no");
+  });
+
+  it("shows an answered request no more, even while the tracker still holds the suspended view it polled", async () => {
+    const node = fakeNode();
+    const lifecycle = lifecycleWithNode(node);
+    const broker = new ApprovalBroker(lifecycle);
+    const tracker = new Tracker(lifecycle, broker, logger, { intervalMs: 60_000 });
+    const admin = new PodAdmin(lifecycle, tracker, broker, catalogFeed());
+    try {
+      const agent = { id: SessionId("session-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent;
+      tracker.track(agent, PEER, TASK);
+      await waitFor(() => broker.list().length === 1);
+      expect(admin.approvals()).toHaveLength(1);
+
+      await admin.approve(PEER, TASK);
+      // The next poll is a minute away: until then nothing but the broker may speak for this task.
+      expect(admin.approvals()).toEqual([]);
+    } finally {
+      tracker.stop();
+    }
   });
 });

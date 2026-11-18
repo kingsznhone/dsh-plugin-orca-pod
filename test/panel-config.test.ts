@@ -6,6 +6,7 @@
  */
 
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,7 @@ import { PodLifecycle } from "../src/plugin/lifecycle.ts";
 import { MemoryPodStores } from "../src/plugin/stores.ts";
 import { PanelPatchSchema, parseSettings } from "../src/node/settings.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
+import { PodTool } from "../src/plugin/tools.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
 import { wg } from "./fixtures/ids.ts";
 import { catalogFeed, idleLifecycle, logger } from "./fixtures/pod.ts";
@@ -129,6 +131,42 @@ describe("panel configuration lifecycle", () => {
       expect(stores.raw()).toEqual(before);
       expect(handle.config.workgroup_password).toBe("rotated");
       expect(handle.node).not.toBeNull();
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it("makes a tool call wait for an in-place restart instead of reporting that nothing runs", async () => {
+    const root = await tempRoot("orca-panel-");
+    const { handle, stores } = await started(bundle(root));
+    try {
+      // Hold the restart at the point where the old node is gone and the new one is not up yet.
+      const readSecret = stores.readSecret.bind(stores);
+      let reachedBoot!: () => void;
+      const reached = new Promise<void>((resolve) => (reachedBoot = resolve));
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      vi.spyOn(stores, "readSecret").mockImplementationOnce(async (ref) => {
+        reachedBoot();
+        await gate;
+        return readSecret(ref);
+      });
+      const rotating = handle.reconfigure({ workgroup_password: "rotated" });
+      await reached;
+
+      const broker = new ApprovalBroker(handle);
+      const tool = new PodTool(handle, new Tracker(handle, broker, logger, { intervalMs: 60_000 })).definition();
+      const call = tool
+        .execute({ method: "members" }, { signal: new AbortController().signal } as unknown as ToolRunContext)
+        .then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+      release();
+      await rotating;
+      const outcome = await call;
+      expect(outcome).toHaveProperty("value");
+      expect(JSON.stringify((outcome as { value: unknown }).value)).toContain(handle.node!.orcaNodeId);
     } finally {
       await handle.stop();
     }
