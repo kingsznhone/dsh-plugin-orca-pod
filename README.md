@@ -29,7 +29,7 @@ orca-pod/
 │   ├── api/              # 入站 HTTP：gateway、access（访问策略）、cluster-routes、a2a-routes、blob-routes、input
 │   ├── node/             # orca-node（组合根 OrcaNode）、config（config.json）、settings（字段表）、events
 │   ├── cli/              # main（orca-node 分派）+ 每个子命令一个文件、shared；orca-pod（install bin）、install
-│   └── plugin/           # DSH bundle：admin / broker / bundle / catalog / config / lifecycle / panel-api / peers-file / services / skill / stores / tools / tracker / web
+│   └── plugin/           # DSH bundle：broker / bundle / catalog / config / panel / panel-api / panel-routes / peers-file / pod / services / skill / stores / tools / tracker
 └── test/                 # vitest 套件
 ```
 

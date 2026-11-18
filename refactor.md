@@ -1,425 +1,313 @@
-# 重构方案（第二轮）：自由函数、包装、类型转发
+# 重构方案（第三轮）：插件侧按人的直觉重排
 
-> 状态：**已实施**（2026-11-18，分支 `refactor/classes`，基于 `64a453f`；提交 `refactor2(0)`–`refactor2(7)` 与文档同步）。第 8 步的 C10、L4 随后也做了（`parseOrThrow` 的回调收 `SchemaIssue` 而不是字符串，因为 echo 脚本与网关输入要用 path；`parseSchema` 留给 settings 与测试；`core/stream.ts` 的 `readAll` 返回 null 表示超限）；§5.8 G12 的 `withBody` 因被模块常量 `POST_ACTIONS` 在加载时使用而保留为模块函数；`Pick<Context, …>` 的宿主上下文参数（catalog / services / stores / web）保留。K5 选了“删除”。
-> 第一轮（目录重组 + 闭包工厂改 class，D41）已完成，§1 只保留它留下的约束和出入记录。
-> 范围：`src/` 的全部运行期代码、`test/` 跟着改、`biome.json` 一处。线上协议、zod schema、错误码、HTTP 路由、存储表结构都**不变**；行为上的细小变化逐条列在 §8。
+> 状态：**已实施**（2026-11-18 起草并实施，分支 `refactor/classes`，基于 `ea0e3ab`；提交 `refactor3(0)`–`refactor3(7)`，与方案的出入见文末“实施记录”）。
+> 前两轮已完成：第一轮（D41）做目录重组，把闭包工厂改成 class；第二轮（D42）处理自由函数、包装、只为测试存在的公开面，以及单一来源。两轮的规则继续有效，摘要见 §1。
+> 范围：`src/plugin/` 全部文件、`src/task/delegation.ts` 与 `dispatch-log.ts` 各一处、`test/` 跟着改、`client/types.ts` 的一行 import 路径、文档。线上协议、zod schema、错误码、HTTP 路由（`/orca-api/*` 的路径与响应形状）和存储表结构都**不变**；行为上的细小变化逐条列在 §7。
 
 ## 0. 为什么还要一轮
 
-第一轮把 `createX(deps)` 闭包工厂换成了 class，但不少地方只换了外壳。这一轮逐个读完 `src/` 的 85 个文件（56 个 class、132 个导出函数、107 个模块私有函数），问题集中在五类：
+两轮重构之后，每个 class 单独读都干净，但插件侧整体仍然不符合直觉：读者心里的模型是"插件有一个节点"，代码里的现实是"插件有一个槽位，里面时有时无一个节点，节点每次重启都换一个"。这个差别没有进类型，于是每个协作者各自处理。问题分五类：
 
-| 类别 | 典型例子 |
+| 类别 | 证据 |
 | --- | --- |
-| **自由函数其实是某个 class 的方法** | `plugin/catalog.ts` 的六个函数都把 `logger` 当参数传；`checkGrant(grant, expected, ledger)` 带着 `GrantLedger`；`selectModel(session, …)` 回写 `session.configOptions` |
-| **数据袋 + 一组操作它的函数** | `Membership` 的 `PeerRecord` 加 `profilePatch` / `reassess` / `shouldPrune` / `toView`；`WorkspacePaths` 加三个自由函数；ACP 的 `OpenSession` 加 `selectModel` |
-| **封装被打开** | `SingleSlotTaskRunner` 公开 8 个字段和 `settle()` / `recover()`，只为同文件的 `TaskRecord` 能读 |
-| **转发与包装** | `OrcaNode.self()` → `Workgroup.self()` → `profile.record()`；`Tracker.subscribe` / `ApprovalBroker.subscribe` 包一层私有 `ChangeSignal`，而唯一的订阅者只有测试在用；`callOptions()` 是空操作 |
-| **同一件事算好几遍、类型被转手** | `task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S` 算三次；"节点没在运行"判断写四遍；`busy` 有两个来源；`ReturnType<PodAdmin["self"]>`、为测试设的 `Pick<…>` |
+| **两种生命期没进类型** | 插件 fiber 是长命的，`OrcaNode` 每次改配置、reset 都会换一个新的。`plugin/` 里有 17 处读 `lifecycle.node` / `requireNode()` / `ready`，各自用一种空值策略：返回 `[]` / `null`（`admin.ts:186`）、`?.` 静默跳过（`tracker.ts:339`，没有节点时派发记录就少写一个 session，宿主重启后恢复不了跟踪）、抛错（`broker.ts:109`）、先等 `ready` 再抛错（`tools.ts:263`） |
+| **一个状态拆成了多个可空字段** | `runningNode`、`listenUrl`、`listenPort`、`startedAtIso` 总是一起赋值、一起清空；再加上 `isConfigured`、`failure`、`disposed`，等于用 7 个字段表示一个状态机。`ready` 只在 `start()` 里赋值（`lifecycle.ts:132`），原地重启（只改密码、`adopt`、reset 后没写入东西）时它早已 resolve，可 `boot()` 已经把节点置空，于是工具调用拿到 "orca node is not running"，而节点其实正在启动 |
+| **同一件事有两条路径** | 模型目录装到节点上有两条路：`lifecycle.startNode` 调 `catalog.advertise(node)`，`feed.refresh` 也推给 `host.node`；`ModelCatalogFeed` 与 `PodLifecycle` 互相持有。待审批有两个来源：broker 的 `parked` 和 tracker 的 `view.request`，由 `admin.waitingApprovals()` 合并；用户批准后 broker 删掉提示，tracker 手里的旧视图里请求还在，于是这张卡片以 `agent_id: null` 重新出现，直到下一轮轮询 |
+| **控制流照搬宿主机制，顺序只写在注释里** | `reconfigure` 的后半段取决于 `restartsOnWrite`，宿主可能在 `await persist()` 还没返回时就销毁了当前实例；"Outside the queue on purpose"、"The secret goes first"、"before the first join" 这些顺序约束只在注释里。`reconfigure` / `disconnect` / `reset` 各写一遍"写配置 → 没变就原地 boot"，写法还不一样。`reconfigure` 先把密码从 `effective` 里解构掉，才能得到可以持久化的配置 |
+| **名字说机制，不说是什么；`new` 只为副作用** | `PodLifecycle` 实际就是"这个 pod"；`PodAdmin` 实际是面板的 view-model；面板的契约类型一半在 `admin.ts`、一半在 `panel-api.ts`。`new PodPlugin(ctx, config)` 创建后就丢弃，它的构造器里还调用了 `lifecycle.start()`、注册钩子和工具，违反了 §1 "构造器不碰外部"。`Tracker.track(…, { record: false })` 是布尔开关参数 |
 
-模块级的**可变状态**为零（`rg "^(export )?let |^const \w+ = new (Map|Set)" src` 只找到 `cli/orca-pod.ts` 一个不可变的查找表），"自由变量"这一项只涉及常量，规则见 R6。
-
-## 1. 第一轮留下的约束（继续有效）
+## 1. 继续有效的约束
 
 - 8 个上下文 `core ← {mesh, executor} ← task ← api ← node ← {cli, plugin}`，同层互不引用，**仅类型的环也算违规**，`test/architecture.test.ts` 的两个允许清单保持为空。
-- 服务用 class，协作者用构造器参数属性；私有协作者由拥有者 `new`，共享对象由创建者传入；子系统对外通知用自己的 `readonly events` / `changes`。
-- 不做依赖注入：没有容器、`XDeps`、端口接口、Provider；只有多实现时才设接口。
-- 构造器不写盘、不联网、不启计时器（SQLite store 与 `OptionalService` 是写明的例外）。
-- 测试使用真实对象和 `vi.spyOn`，**设计不为测试让步**。
+- 服务用 class，协作者用构造器参数属性；私有协作者由拥有者 `new`，共享对象由创建者传入；子系统对外通知用自己的 `readonly events` / `changes`。不做依赖注入：没有容器、`XDeps`、端口接口、`createX` 工厂。
+- 构造器不写盘、不联网、不启计时器（SQLite store 与 `OptionalService` 是写明的例外；订阅一个 `ChangeSignal` 不算碰外部）。
+- 第二轮的 R1–R10（D42）照旧：单处使用的小函数内联，class 专用的写成 `private` / `private static`，不留只为测试存在的公开面，默认值和检查只有一个来源，类型不转手。
+- 测试使用真实对象和 `vi.spyOn`，**设计不为测试让步**，必要时重写测试。
 
-第一轮与方案的出入（D41 引用了这里），本轮逐条复核：
+第二轮 §1 里的一条出入在本轮撤回：
 
-| 第一轮的出入 | 本轮 |
+| 出入 | 本轮 |
 | --- | --- |
-| `DEFAULT_PORT` 留在 `core/constants.ts`（面板前端要读，`net.ts` 依赖 `node:net`） | 保留 |
-| `TaskRecord` 并进 `task/runner.ts`（记录读 runner 公开字段，拆文件就成类型环） | **撤回**：K1 让记录不再认识 runner，回到 `task/record.ts` |
-| `Gateway(profile, membership, tasks, files, key)`，新增 `mesh/BlobFetcher` | 保留 |
-| `rpc()` 是导出函数，`Delegation` 与 CLI 共用 | 保留（CLI 在没有节点的进程里也要发这个调用） |
-| `PodStores.writeConfig` 返回写入后的 `RawConfig \| null` | 保留 |
-| `ModelCatalogFeed.watch(host: { node, ready })` 结构类型 | 保留（直接写 `PodLifecycle` 会和 `lifecycle.ts` 互相 `import type`） |
-| `PodTool` 的 `sandbox` 是 `{ current(): SandboxReader \| undefined }` | **撤回**（G5）：只为测试能传字面量，而测试照样在做类型断言 |
-| SQLite store 在构造时打开数据库 | 保留 |
+| `ModelCatalogFeed.watch(host: { node, ready })` 用结构类型（直接写 `PodLifecycle` 会形成类型环） | **撤回**（K3）：feed 不再认识 pod，`CatalogHost` 与 `watch` 一起删除 |
 
-## 2. 判定规则
-
-### 2.1 模块级函数的去留（按顺序判断，先命中的生效）
-
-| 规则 | 条件 | 处理 |
-| --- | --- | --- |
-| **R1 内联** | 只有一个调用点，且函数体不超过三行，或只是给一个表达式起名 | 内联到调用点 |
-| **R3 搬成方法** | 参数里带着某个 class 的状态或协作者（`logger`、`services`、`ledger`、`session`），或连续调用同一个对象的多个方法（feature envy） | 成为那个 class 的方法，**导出的也一样**，测试经 class 测 |
-| **R4 收成 class** | 一个类型加上一组以它为参数的函数 | 新 class，函数成为方法 |
-| **R2 收为私有方法** | 未导出，所有调用方都在同一个 class 里 | 该 class 的 `private` 方法；不读 `this` 的写成 `private static` |
-| **R5 保留为函数** | 被 ≥ 2 个模块调用的无状态纯计算（签名验签、解析、筛查、摘要、线上形状工具）；或导出后有独立单元测试的纯契约（`taskNoticeLine`、`systemdQuote`、`parseAuthHeader`）；CLI 子命令的一次性过程 | 不动 |
-
-R2 的理由：一个文件读起来就是"这个 class 和它的常量"，只为它服务的行为放在它里面，从 class 就能找全；也避免同一个概念散成"class + 旁边几个看似通用、其实只此一家的函数"。
-
-### 2.2 其余规则
+## 2. 本轮的判定规则
 
 | 规则 | 内容 |
 | --- | --- |
-| **R6 常量** | 可调参数和协议常量留在模块顶层，不改成 `static readonly`（只有改名的收益，没有别的收益）。不允许出现模块级可变状态 |
-| **R7 只为测试存在的公开面** | 只有测试在读的公开方法、公开字段、返回值、选项字段、`Pick<…>` / 结构参数类型、依赖袋，一律删除或改为私有；测试改走真实入口。R5 里有独立契约的纯函数不算 |
-| **R8 转发** | 一行转发，且目标本身已经公开可达的，删除，调用方直接用目标。转发是在隐藏一个私有协作者，或附带了空值检查、组合等逻辑（门面）的，保留 |
-| **R9 单一来源** | 同一个默认值、同一个检查、同一个派生值只在拥有者那里算一次，再把结果传下去；调用方已经保证了的事，被调用方不再检查 |
-| **R10 类型不转手** | 不用 `ReturnType<…>` / `Awaited<ReturnType<…>>` 给已有类型换个写法；不用 `X & { 偷带字段 }` 把一个参数塞进另一个配置对象；不为测试对外部类型做 `Pick`。只有描述一个线上子集时才保留 `Pick`（`PeerSummary`、`ModelOffer`、`Profile`） |
+| **H1 一个状态一个值** | 总是一起赋值、一起清空的字段合成一个对象；用几个布尔或可空字段划分出来的状态，改成判别联合 |
+| **H2 生命期写进类型** | 跨重启存在的对象（插件 fiber 级）和一次运行的对象（节点级）在类型上分开；每个消费者"没有节点时怎么办"必须写得出来，并且只能从 §3 K1 的四种策略里选 |
+| **H3 一个事实一个所有者、一条路径** | 同一份数据只有一个登记处；把 A 装到 B 上只有一条代码路径；所有者之间的引用是单向的 |
+| **H4 顺序约束进结构** | 必须先做 X 再做 Y 的地方，由一个方法按顺序做完（或者让 Y 拿着 X 的结果），而不是靠调用方读注释。要用 "on purpose" / "must … first" 注释来解释的顺序，都是本轮要消除的对象 |
+| **H5 名字说是什么** | class 名是领域名词（pod、面板模型），不是机制（lifecycle、admin）；一个契约放在一个文件里 |
+| **H6 构造只组装** | 构造器只建对象和订阅；启动、注册钩子是显式的方法调用；`new` 出来的对象要么被持有，要么立刻被调用 |
 
-另外三条面向对象的检查项，散落在 §5 的清单里：**迪米特**（`a.b.c()` 穿过别人的协作者）、**tell, don't ask**（先问状态再替对方做事）、**布尔开关参数**（一个参数切换两种行为）。
+验收时的 grep：`rg -n "on purpose|must .* first|before the first" src/plugin` 剩下的每一条都要能说明，为什么不能改由结构保证。
 
 ## 3. 重点设计变更
 
-### K1 `TaskRecord` 与 `SingleSlotTaskRunner` 解耦
+### K1 `PodLifecycle` → `Pod`：状态机进类型
 
-现状（`task/runner.ts`）：`TaskRecord(runner, init)` 读 `runner.options` 的 7 个字段，调用 `runner.slot.claim/release`、`runner.ledger`、`runner.events.emit`（4 处）、`runner.store.save`、`runner.blobs.register`、`runner.workspace.*`、`runner.executor.run` 和 `runner.settle()`。为此 runner 公开了 `slot`、`ledger`、`quota`、`options`、`executor`、`blobs`、`store`、`workspace` 八个字段，外加 `settle()`。全仓库除 `TaskRecord` 外没有任何人读这些字段（`recover()` 另有一个测试）。
-
-改法：**记录只管"这一个任务的状态机和执行循环"，账本、槽位、存储、事件归 runner。**
+文件 `plugin/lifecycle.ts` → `plugin/pod.ts`，class `PodLifecycle` → `Pod`。
 
 ```ts
-// task/record.ts —— 不 import runner
-export class TaskRecord {
-  readonly id: string;
-  readonly origin: OrcaNodeId;
-  readonly createdAt: string;
-  /** 每次可观察的变化 notify 一次；runner 订阅。 */
-  readonly changes: ChangeSignal;
+/** One started node; replaced as a whole on every restart, never mutated. */
+export type PodRun = { readonly node: OrcaNode; readonly port: number };
 
-  constructor(
-    init: RecordInit,
-    private readonly executor: LocalExecutor,
-    private readonly blobs: FileBlobRegistry,
-    private readonly workspace: Workspace,      // K2
-    private readonly settings: TaskSettings,    // selfOrcaNodeId、dataRoot、permissionCeiling、permissionTtlS、resultMaxBytes
-  ) { … }
+export type PodStatus =
+  | { kind: "unconfigured" }              // no workgroup or no stored password: the panel shows the wizard
+  | { kind: "starting" }                  // a (re)start is queued or running
+  | { kind: "running"; run: PodRun }
+  | { kind: "failed"; error: Error }
+  | { kind: "stopped" };                  // the plugin fiber unloaded
 
-  get state(): TaskState;
-  get waiting(): PermissionRequest | null;      // 停在哪个权限请求上
-  snapshot(): TaskView;
-  begin(): void;
-  grant(mode: SandboxMode): void;               // 原 resume 的成功分支 → proceed
-  deny(reason: string): void;                   // permission_denied
-  reject(failure: GrantFailure): void;          // grant 未通过
-  cancel(): void;
+export class Pod {
+  get status(): PodStatus;
+  /** The current run, or null in every other status. Read-only projections use this. */
+  get run(): PodRun | null;
+  /** Settles when no (re)start is queued or running — every restart, not only the first. */
+  settled(): Promise<void>;
+  /** The current run, or an error that names the status (not set up / failed: … / stopped / starting). */
+  requireRun(): PodRun;
+
+  /** The stored plugin config with `data_root` fixed; never holds the password. */
+  get settings(): RootedSettings;
+  get configured(): boolean;              // settings.workgroup_id && a stored password
+  get passwordSet(): boolean;
+  get rememberedPeers(): readonly string[];
+
+  start(): void;
+  stop(): Promise<void>;
+  reconfigure(patch: PanelPatch): Promise<void>;   // K2
+  addPeer(peer: string): Promise<void>;
+  disconnect(): Promise<void>;
+  reset(): Promise<void>;
 }
 ```
 
-```text
-SingleSlotTaskRunner（全部字段 private；对外只剩 events、start、submit、get、originOf、list、resume、cancel、busy）
-  submit：new TaskRecord(...)，订阅 record.changes，每次变化依次：
-    ① 按状态同步槽位：submitted / working 占槽；input-required 与终态释放（只释放自己占着的）
-    ② 落盘（失败记一条 warning，即原来的 attempt）
-    ③ events.emit({ type: "task", view })
-    ④ 终态：从 live 删除、取消订阅、quota.measure()（原 settle）
-  resume(taskId, message, caller)：原有前置检查 → parseResume(message)
-    denied → record.deny(reason)
-    grant  → ledger.accept(grant, { taskId, self, workgroup, origin: record.origin, pending: record.waiting })
-             失败 → record.reject(failure)；成功 → record.grant(grant.permission_mode)
-```
+- 删除的字段：`runningNode`、`listenUrl`、`listenPort`、`startedAtIso`、`failure`、`disposed`、`readyPromise`、`effective`，换成 `status: PodStatus` 和 `booting: Promise<void>`。`isConfigured` 由 `settings` 与 `password` 推出，不再单独存。
+- 删除的 getter：`node`、`url`（只有测试读，改读 `run.node.profile.endpoints[0]`）、`port`（并进 `PodRun`）、`startedAt`（没有读者）、`error`（并进 `status`）、`config`（K2）、`ready`（改为 `settled()`）。
+- 所有重启都经由一个私有方法 `restart()`：同步地把 `status` 设成 `starting`，再把 `boot()` 排进队列，并把 `booting` 指向它。`settled()` 返回 `booting`。这样修好了 §0 里的 `ready` 漏洞：工具在原地重启期间会等重启结束，而不是立即报"没在运行"。
 
-连带：`TaskSlot` 只剩 runner 自己用，并进 runner 成为 `private holder: string | null`，删除 `task/slot.ts`（T2）；`checkGrant` 变成 `GrantLedger.accept`，验证通过就记账（T4），记录不再需要 `ledger`、`selfOrcaNodeId`、`workgroupId`；`recover()`、`settle()` 变私有。
+**消费者的四种策略（H2）**，每一处读取都标明用的是哪一种：
 
-顺序约束：① 必须在 ③ 之前。`OrcaNode` 订阅 `tasks.events` 后会读 `tasks.busy()`，这和现在 `finish` / `park` / `proceed` 里"先动槽位再发事件"的顺序一致。`ChangeSignal` 会吞掉监听器的异常（记日志）；①–④ 本身不抛（② 已经包了 try），所以不改变现有语义。
-
-### K2 `Workspace` class
-
-现状：`task/workspace.ts` 是类型 `WorkspacePaths` 加 `workspacePathsOf`、`ensureWorkspace`、`measureWorkspace` 三个自由函数；"列出 notes 目录"写了两遍（`task/prompt.ts:19` 异步，`plugin/admin.ts:140` 同步）；artifact 路径在 `TaskRecord.addArtifact` 里手拼。
-
-```ts
-export class Workspace {
-  readonly root: string;    // agent 的 cwd
-  readonly notes: string;
-  readonly state: string;   // 网关自己的状态，agent 碰不到
-  constructor(dataRoot: string, workgroupId: WorkgroupId) {}   // 只算路径
-  ensure(): void;                                 // 原 ensureWorkspace，由 OrcaNode.start() 调用
-  measure(): Promise<WorkspaceUsage>;             // 原 measureWorkspace
-  noteFiles(): string[];                          // notes/ 顶层文件名，排好序；目录不存在时为 []
-  artifactPath(taskId: string, index: number): string;
-}
-```
-
-使用方：`OrcaNode.workspace: Workspace`；`WorkspaceQuota(workspace, limits, logger)`；`prompt.ts` 用 `noteFiles()`，再套自己的 `SAFE_NOTE_NAME` 过滤和 `MAX_NOTES` 上限（这是提示词的策略，留在 `prompt.ts`），`listNotes` 删除；`PodAdmin.workspace()` 用 `noteFiles()`，`entries()` 删除。
-
-### K3 `Membership` 的成员记录变成 class
-
-现状（`mesh/membership.ts`）：`PeerRecord` 有 10 个字段；状态迁移分散在 `toView`、`profilePatch`、`reassess`、`shouldPrune` 四个自由函数，`createRecord`、`markOnline` 两个私有方法，以及 `observeOutboundOk` / `observeOutboundFail` 里的十几行内联赋值。
-
-改法：模块私有的 `class PeerEntry`，持有原记录的全部字段：
-
-| 方法 | 来源 |
-| --- | --- |
-| `static explicit(view, nowMs, wallIso)` / `static candidate(view)` | `createRecord` |
-| `snapshot(): PeerView` | `toView` |
-| `describe(view)` | `profilePatch` |
-| `heard(nowMs, wallIso)` | `markOnline` |
-| `answered(nowMs, wallIso)` | `observeOutboundOk` 的主体 |
-| `missed(nowMs, timings): "drop" \| "kept"` | `observeOutboundFail` 的主体；从未联系上的候选达到上限时返回 `drop`，由 `Membership` 删除并立墓碑 |
-| `reassess(nowMs, timings)` | `reassess` |
-| `expired(nowMs, timings)` | `shouldPrune` |
-| `due(nowMs)` | `needsProbe` 的判断 |
-
-`Membership` 只留两张 Map（记录、墓碑）、时钟和节奏。同时做 M2（`touch` 并入 `observeInbound`）和 M3（`Membership.due()` 取代 `now()` + `needsProbe(id, nowMs)`）。
-
-### K4 `AcpSession` class
-
-现状：`OpenSession = { connection, sessionId, configOptions }` 是数据形状；自由函数 `selectModel(session, …)` 回写 `session.configOptions`；`AcpRun` 穿过 `session.connection` 调 `request("session/prompt")`、`attach`、`cancel`、`isAttached`、`close`。
-
-```ts
-export class AcpSession {
-  constructor(private readonly connection: AcpConnection, readonly id: string, private options: SessionConfigOption[]) {}
-  selectModel(model, effort): Promise<string | null>;   // 原自由函数；失败时返回原因
-  prompt(text: string): Promise<PromptResponse>;
-  attach(route: SessionRoute): () => void;
-  isAttached(route: SessionRoute): boolean;
-  cancel(): void;
-  forceClose(): Promise<void>;                            // 中止宽限期过后强关子进程
-}
-```
-
-`AcpSessionPool` 存 `Map<string, AcpSession>`；`AcpRun(input, session)` 只调用 `session` 自己的方法。
-
-### K5 插件侧只为测试存在的变化通知
-
-现状：`Tracker` 和 `ApprovalBroker` 各持一个私有 `ChangeSignal`，再用 `subscribe()` 转发。唯一的订阅者是 `PodAdmin.subscribe`，而 `PodAdmin.subscribe` 只有 `test/ui-surface.test.ts:295` 在用：面板靠轮询 `/orca-api/state`，没有推送通道。`PodAdmin.subscribe` 还有一个潜在错误：它只挂在调用那一刻的节点上，节点重启后就收不到了。
-
-改法（推荐）：删除 `Tracker` 和 `ApprovalBroker` 的 `changes` 与 `subscribe`，删除 `PodAdmin.subscribe`，`ApprovalBroker` 的构造参数去掉 `logger`。`broker.test.ts:143` 和 `ui-surface.test.ts:295` 改成在操作之后读 `broker.list()` / `admin.approvals()`。`ChangeSignal` 本身保留（`ModelCatalog.changes` 在生产中有订阅者）。
-
-如果打算近期做推送：保留信号，但按 §1 的约定公开为 `readonly changes`，删掉 `subscribe` 转发，并让 `PodAdmin` 跟随节点重启重新挂接。**需要你拍板选哪一种。**
-
-### K6 `ModelCatalogFeed` 收回发现逻辑
-
-现状（`plugin/catalog.ts:39-109`）：`listProviders`、`listModels`、`discoverOffers`、`defaultSelection`、`defaultEfforts`、`discoverModelCatalog` 六个函数，每个都收 `logger`，后两个还收 `services`，而这两样都是 `ModelCatalogFeed` 自己的字段。`listProviders` 用 `async` + `try` 包了一个同步调用（`LlmRuntime.listProviders(): LlmProviderInfo[]`）。
-
-改法：两个服务成为字段 `private llm?: LlmRuntime`、`private defaultModel?: AgentDefaultModelConfig`；六个函数成为私有方法，`listProviders` 去掉 `async`；`CatalogServices` 类型和 `discoverModelCatalog` 导出删除。`model-selection.test.ts:194` 改为构造 feed，用一个会同步回调 `inject` 的假 `ctx` 驱动 `watch()`。顺带 C9：`advertise()` 不再传多余的第三个参数。
-
-### K7 单一来源（汇总）
-
-| 重复的事实 | 现在 | 之后 | 编号 |
-| --- | --- | --- | --- |
-| 任务时限默认值 | `orca-node.ts:159`、`runner.ts:447`、`self-profile.ts:40` 各 `?? DEFAULT_TASK_TIMEOUT_S` 一次 | `OrcaNode` 算一次，把数值传给两者 | T9 |
-| 出站超时默认值 | `orca-node.ts:169`、`cli/shared.ts:106` 各写一次 `?? 30_000` | `core/constants.ts` 的 `DEFAULT_REQUEST_TIMEOUT_MS` | N3 |
-| 本节点 busy | `tasks.busy()`（`cluster-routes.ts:153`、`gateway.ts:113`）和 `profile.busy`（心跳请求）两个来源 | 只读 `profile.busy` | A1 |
-| 读 identity.json 并核对 id | `orca-node.ts:145`、`cli/shared.ts:87`，错误文案一字不差 | `core/identity.ts` 的 `requireIdentity(dataRoot, expected)` | N2 |
-| "节点没在运行" | `lifecycle.ts:218`、`admin.ts:395`、`broker.ts:124`、`tools.ts:401` | `PodLifecycle.requireNode()` | G3 |
-| 消息里的文字 | `task/wire.ts:62` 用 `\n` 拼，`cli/shared.ts:122` 只取第一段，`tracker.ts:103` 用空格拼 | 都用 `messageText` | L2 |
-| 启动失败 | `lifecycle.ts` 里 `startListening` 和 `boot` 各写一次 `failure` | 只在 `boot` 写 | G8 |
-
-### K8 只为测试存在的公开面（汇总）
-
-| 位置 | 只为测试存在的东西 | 编号 |
+| 策略 | 写法 | 用在 |
 | --- | --- | --- |
-| `cli/install.ts`、`cli/orca-pod.ts` | `PathExists`、`ConfigDeps`、`InstallDeps`、`MainDeps` 依赖袋——正是 D41 禁止的 `XDeps` | L1 |
-| `plugin/tools.ts`、`plugin/tracker.ts` | `SandboxReader`、`SandboxSource`、`TrackerAgent` 三个 `Pick` / 结构类型 | G5 |
-| `plugin/tools.ts` | 公开的 `send` / `status` / `cancel` / `members` / `connect`，以及导出的 `sessionSandboxMode` | G6 |
-| `plugin/admin.ts`、`tracker.ts`、`broker.ts` | `subscribe` 与背后的 `ChangeSignal` | K5 |
-| `plugin/tracker.ts` | `size()` | G14 |
-| `task/delegation.ts`、`src/index.ts` | `ApprovalOptions.ttlS` | T7 |
-| `task/runner.ts`、`task/dispatch-log.ts` | 公开的 `recover()`，以及两个只给测试读的返回计数 | T10 |
-| `mesh/membership.ts` | `now()`、`evaluate()` 的返回值 | M3、M4 |
+| 展示：没有就是空 | `pod.run?.node` | `PanelModel` 的 `self` / `members` / `recent` / `workspace` / `approvals` 的标签 |
+| 动作：等重启结束，失败要说出原因 | `await pod.settled()` → `pod.requireRun()` | `PodTool`（带 abort）、`ApprovalBroker.decide`、`PanelModel` 的 `task` / `cancel` / `blob` |
+| 后台：没有就跳过这一轮 | `const run = pod.run; if (run === null) return;` | `Tracker.poll`、`Pod` 内部安装模型目录（K3） |
+| 写副作用 | 不允许依赖"碰巧有节点" | 原来 `tracker.ts:339` 的 `annotate`，由 K5 消除 |
 
-## 4. 总览
+`PanelModel` 的面板动作是否也要等 `settled()`：要，否则面板在保存设置后立即点"取消任务"会碰到同样的问题。`settled()` 不等 `addPeer` 的 join（join 不是重启）。
 
-| 类别 | 编号 |
-| --- | --- |
-| 设计变更（新 class / 解耦） | K1–K4、K6（T1、T3、M1、E1、G4） |
-| 删除转发与包装 | M2、M6、M12、N1、T2、T6、G1/K5、G11 |
-| 单一来源 / 过度检查 | K7 全表、C8、C9、M5、L3 |
-| 只为测试的公开面 | K8 全表 |
-| 类型转手 | M9、M10、E6、T6、G5、G10、N5 |
-| 自由函数内联或收为私有方法（机械） | C7、M7、M11、E2–E5、T5、T8、A2、N4、G2、G9、G12、G15 |
-| 死代码、注释、配置 | C1–C6、C11、N5、X1 |
+### K2 配置提交只有一条路径
 
-优先级：**P1** 设计上的问题，先做；**P2** 明显的冗余或封装缺口；**P3** 机械整理，可以批量做，也可以跳过。
+现状：`reconfigure`、`disconnect`、`reset` 各自调 `persist()`，`persist` 在宿主不会重启插件时调 `adopt()`，调用方再根据返回值决定是否原地 `boot()`。三处写法不同，密码要先从 `effective` 里解构掉才能持久化。
 
-## 5. 逐模块清单
+改法：
 
-### 5.1 core
+```ts
+/**
+ * Make a panel action durable, then run the pod on the result. When the host
+ * restarts the plugin on a config write, this instance is about to be disposed
+ * and does nothing more; otherwise it restarts in place on what was stored.
+ */
+private async commit(change: (raw: RawConfig) => RawConfig): Promise<void> {
+  const written = await this.stores.writeConfig(change);       // outside the queue: a host restart drains it
+  if (written !== null && this.stores.restartsOnWrite) return;
+  if (written !== null) this.saved = this.rooted(parseSettings(written));
+  await this.restart();
+}
+```
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| C1 | `core/net.ts:74-90` | `detectLocalEndpoints` 的文档注释被插到 `bindUrl` 上方：`bindUrl` 头上叠了两段，`detectLocalEndpoints` 一段都没有 | 挪回原位 | 文档 | P3 |
-| C2 | `core/blobs.ts:133-146` | "File-backed blob registry" 整段注释悬在 `sha256Tap` 前面 | 挪到 `DiskBlobRegistry` 上 | 文档 | P3 |
-| C3 | `core/wire/peer.ts:10-16` | `OrcaNodeId` 头上叠了两段 JSDoc，第一段不归属任何声明 | 合并 | 文档 | P3 |
-| C4 | `task/wire.ts:148`、`:181` | 两段悬空注释，后面紧跟空行 | 删除或并入下面的声明 | 文档 | P3 |
-| C5 | `core/entry.ts:4-9` | 还写着"源码检出靠 Node 类型剥离直接跑 `.ts`"，D41 之后已经不成立 | 改成"vitest / tsx 加载 `src/`，发布包跑 `lib/`" | 文档 | P3 |
-| C6 | `executor/process.ts:1-5` | 头注释说本文件有 abort errors，但 `abortError` 早已在 `core/errors.ts` | 随 E5 删除整个文件 | 文档 | P3 |
-| C7 | `core/blobs.ts:166` `hashFile` | 模块私有，只有 `DiskBlobRegistry.register` 调用 | `private static` | R2 | P3 |
-| C8 | `core/identity.ts:68` | 参数已经是品牌类型 `OrcaNodeId`，函数里又 `isOrcaNodeId` 一次；两个调用方（`verifyAuth`、`verifyGrant`）传进来的都是校验过的 id | 删掉这次检查（保留解码外面的 `try`） | R9 | P3 |
-| C9 | `plugin/catalog.ts:140` → `core/model-catalog.ts:44` | 唯一的生产调用方传 `defaultModel?.reasoningEffort ?? null` 当第三个参数，而 `update` 内部本来就会回退到它 | 调用方不传第三个参数 | R9 | P3 |
-| C10 | `core/schema.ts:17` `parseSchema` | 把 zod 的 `safeParse` 结果再包一层；12 个调用方里有 11 个拿到 `issue` 就 `describeIssue` 然后抛错，只有 `node/settings.ts` 用结构化的 issue | 加 `parseOrThrow(schema, raw, fail: (detail: string) => Error)`，11 处改用；`parseSchema` 只留给 settings | 包装 | P3（可选） |
-| C11 | `core/sqlite.ts:79`、`task/dispatch-store.ts:11` | `JsonTable.remove`、`DispatchStore.remove` 和两个实现都没有调用方 | 删除 | 死代码 | P2 |
+- `reconfigure(patch)`：先校验合并后的结果，再写密码，最后 `commit`。"密码先于配置"由方法内的顺序保证，注释只说明原因，不再承担约束。
+- `disconnect()`：`commit` 只在插件配置里确实有 `peers` 时调用（现状如此）。
+- `reset()`：清密码 → `commit`。
+- `adopt()` 删除：只有 `persist` 调用它（R7），其职责并进 `commit`。
+- 密码不再塞进设置对象里：`Pod` 持有 `saved: RootedSettings`（`workgroup_password` 恒为 `""`）和 `password: string | undefined`，只在 `startNode` 里合成一次 `{ ...saved, workgroup_password: password }` 交给 `createOrcaNodeConfig`。`reconfigure` 里的 `const { workgroup_password: _password, ...persisted } = this.effective` 随之消失。
+- `PanelModel.config()` 读 `pod.settings`、`pod.passwordSet`、`pod.status`，不再读 `config.workgroup_password.length`。
 
-### 5.2 mesh
+### K3 模型目录单向流动
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| M1 | `membership.ts:77-152`、`:270-313`、`:352-376` | 成员记录是数据袋，迁移逻辑散在自由函数和内联赋值里 | K3 | R4 | P1 |
-| M2 | `membership.ts:239` `touch` / `:262` `observeInbound` | 同一件事有两个入口，区别只在 `observeInbound` 对自己返回 true；`cluster-routes.ts:139` 已经先排除了自己 | 并成 `observeInbound` | R8 | P2 |
-| M3 | `membership.ts:175` `now()`、`:344` `needsProbe(id, nowMs)`；`heartbeat.ts:45-48` | 调用方从 membership 取时钟，再原样传回给它；`HeartbeatLoop.tick` 用 membership 的谓词去过滤 membership 的列表 | `Membership.due(): PeerView[]`（有端点且该探测了的成员）；删除 `now()` | R3、R7 | P2 |
-| M4 | `membership.ts:332` `evaluate()` | 返回值只有测试在读 | 返回 `void`，测试读 `list()` | R7 | P3 |
-| M5 | `membership.ts:316` `mergeRemote(members \| null \| undefined)` | 允许传空，而唯一可能传空的调用方（`workgroup.ts:248`）已经判过一次 | 参数改为 `readonly PeerView[]` | R9 | P3 |
-| M6 | `workgroup.ts:90` `self()`、`:94` `members()`；`node/orca-node.ts:223` `self()` | `OrcaNode.self()` → `Workgroup.self()` → `profile.record()` 两跳转发；`Workgroup.members()` 没有调用方 | 三个都删；21 处 `node.self()`（src 4 处、test 17 处）改成 `node.profile.record()`，只取 id 的直接用 `node.orcaNodeId` | R8 | P2 |
-| M7 | `workgroup.ts:32`、`:41`、`:48` | `isAdmissionRejection`、`assertAnsweredBy`、`signatureOf` 只服务 `Workgroup` | `private static` | R2 | P3 |
-| M8 | `workgroup.ts:242` `pulse(…, observeFailure: boolean)` | 布尔开关参数，两个调用方各传一个常量 | `pulse` 不再记失败；`heartbeat()` 自己 catch，调用 `observeOutboundFail` 后重抛（`dropPeer` 分支不变） | 开关参数 | P3 |
-| M9 | `workgroup.ts:22` `WorkgroupOptions` | 把 config 的 snake_case 字段原样搬进来，构造器里再改名成 `DialPolicy`，`logger` 也混在里面 | `options: { logger; dial: DialPolicy }`，由 `OrcaNode` 从 config 转换一次 | R10 | P3 |
-| M10 | `workgroup.ts:29` `LeaveResult` | 导出的类型只有一处使用 | 内联 | R10 | P3 |
-| M11 | `peer-client.ts:73-143`、`:207-273` | `unwrap`、`expectReply` 各只被 `call` 用一次，`Reply` 只是两者之间的中转形状；`readCapped`、`parseJson`、`unwrapError`、`trimSlash` 只服务这个 class；`download` 照抄了 `send` 里构造签名头的代码 | `unwrap`、`expectReply` 内联进 `call`；其余改 `private static`；抽出 `private authorization(method, url, target, body?)` 供两者共用 | R1、R2 | P2 |
-| M12 | `screening.ts:74` `candidateEndpointAllowed` | 一行包装 `screenEndpoint(…) === "allowed"`，生产中只有 `EndpointDialer` 调用 | 内联进 `EndpointDialer`；`ssrf.test.ts` 改测 `screenEndpoint` | R1 | P3 |
+现状：bundle 先 `new PodLifecycle(…, feed)`，再 `feed.watch(lifecycle)`；目录装到节点上有两条路。
 
-### 5.3 executor
+改法：**feed 只管从宿主读，pod 只管往节点上装。**
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| E1 | `acp/session.ts:55`、`acp/executor.ts:89` | `OpenSession` 加 `selectModel`；`AcpRun` 穿过 `session.connection` 调用 | K4 | R3、R4、迪米特 | P1 |
-| E2 | `acp/session.ts:32`、`:46`、`:58` | `readSessions`、`writeSessions`、`toAcpMcpServers` 只服务 `AcpSessionPool` | 前两个改成私有方法 `loadBindings(podDir)` / `saveBindings(podDir, map)`；`toAcpMcpServers` 内联进构造器 | R1、R2 | P2 |
-| E3 | `acp/executor.ts:71`、`:76`、`:113` | `textOf`、`stopReasonOf` 各只有一处调用；`suspensionFor` 只给 `AcpRun` 用 | 前两个内联；`suspensionFor` 改为 `AcpRun` 的私有方法 | R1、R2 | P3 |
-| E4 | `acp/connection.ts:47`、`:66`、`:87` | 导出的 `spawnAcpChild` 只有一处 `new AcpConnection(spawnAcpChild(spec))`；`childOutput`、`childInput` 只服务构造器 | `static AcpConnection.spawn(spec)`（构造器仍然接收子进程，保持无副作用）；两个流适配改 `private static` | R2 | P3 |
-| E5 | `executor/process.ts` | 只剩 `terminateChild` / `killTree`，唯一的调用方是 `AcpConnection.fail`；`KILL_GRACE_MS` 由 connection 和 `acp/executor.ts` 共用 | 并进 `acp/connection.ts`（`private static terminate`，`KILL_GRACE_MS` 从那里导出），删除 `process.ts` | R2 | P3 |
-| E6 | `acp/executor.ts:39` `AcpExecutorOptions = AcpExecutorConfig & { data_root?: string }` | 节点把 `data_root` 塞进 ACP 配置对象，只是为了在构造器里再取出来放进环境变量 | `AcpExecutor(config, dataRoot, models, logger)` | R10 | P3 |
+```ts
+export class ModelCatalogFeed {
+  /** Bumps when a refresh produced a new catalog. */
+  readonly changes: ChangeSignal;
+  constructor(ctx: Pick<Context, "inject">, logger: Logger);   // follows `llm` / `agentDefaultModel` (OptionalService, §1 的例外)
+  current(): HostModelCatalog;
+  refresh(): Promise<void>;
+}
+```
 
-### 5.4 task
+- 删除 `watch`、`advertise`、`reasoningEfforts()`、`CatalogHost`、`host` 字段。面板改读 `feed.current().reasoningEfforts`。
+- `Pod` 在构造器里订阅 `catalog.changes`，回调里调用私有方法 `advertise()`：有 run 就 `run.node.models.update(…)`，没有就跳过（后台策略）。
+- `startNode` 在第一次 join 之前调用同一个 `advertise(node)`，这是唯一的安装路径。启动成功后调用 `void this.catalog.refresh()`，保留现在"节点起来后再读一次目录"的行为（宿主的 provider 可能在 `apply` 之后才加载完）。读的结果经由 `changes` 回到 `advertise`。
+- `test/fixtures/pod.ts` 的 `catalogFeed()` 不变（假 ctx 的 `inject` 什么也不做）。
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| T1 | `runner.ts:102-455` | runner 为 `TaskRecord` 公开 8 个字段和 `settle()` | K1 | 封装、迪米特 | P1 |
-| T2 | `task/slot.ts` | 一个可空字符串包成了 class；K1 之后只有 runner 自己用 | 并进 runner，删除文件 | 包装 | P2（随 K1） |
-| T3 | `workspace.ts:16-58`、`prompt.ts:19`、`plugin/admin.ts:140`、`runner.ts:311` | 路径袋加自由函数；notes 列表写了两遍；artifact 路径手拼 | K2 | R4 | P1 |
-| T4 | `grants.ts:40` `checkGrant(grant, expected, ledger, now)` | 参数里带着账本，调用方先 check 再 `consume`，分两步 | `GrantLedger.accept(grant, expected): GrantFailure \| null`，验证通过就记账 | R3 | P2 |
-| T5 | `grants.ts:17` `parseSignedGrant` | 唯一的调用方是 `meta.ts:52` | 内联 | R1 | P3 |
-| T6 | `delegation.ts:34`、`:50` | `TaskCallOptions` 只是 `{ signal? }`；`callOptions()` 把 `{ signal: undefined }` 变成 `{}`，对 `CallOptions` 来说没有区别 | `getTask(peer, id, signal?)` 等方法直接收 `signal`，删除这两个 | R1、R10 | P3 |
-| T7 | `delegation.ts:28` `ApprovalOptions`（`src/index.ts` 也导出了它） | 只有 `approval.test.ts:195` 传 `ttlS: -1`，用来造过期的 grant | 删除参数和导出；测试用 `signGrant` 自己签一个过期 grant，经 `rpc` 发出 | R7 | P3 |
-| T8 | `runner.ts:84`、`:89`、`:423` | `nowIso` 和同文件里直接写的 `new Date().toISOString()` 混用；`truncateMessage`、`busyError` 只服务本文件的 class | `nowIso` 内联；另两个改 `private static` | R1、R2 | P3 |
-| T9 | `orca-node.ts:159`、`runner.ts:447`、`self-profile.ts:40` | 任务时限默认值算了三次 | K7 | R9 | P2 |
-| T10 | `runner.ts:555`、`dispatch-log.ts:74` | `recover()` 为测试公开；两个返回计数只有测试读 | 改为 `void`，`recover` 私有，测试走 `start()` | R7 | P3 |
+### K4 待审批只有一个登记处
 
-### 5.5 api
+现状：tracker 每次看到请求都会 `broker.park`，broker 本来就有完整列表；`admin.waitingApprovals()` 再把 `tracker.list()` 里 broker 没有的请求补进来，补进来的只可能是刚刚被批准或拒绝、还没轮询到的那一个（§0 里的卡片重现）。
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| A1 | `cluster-routes.ts:85`、`:153`；`gateway.ts:113` | `ClusterRoutes` 收 runner 只为调 `busy()`；`profile.busy` 已经由 `OrcaNode` 在每个任务事件里同步成同一个值 | 读 `profile.busy`；`ClusterRoutes` 去掉 `tasks` 参数 | R9 | P2 |
-| A2 | `cluster-routes.ts:62`、`gateway.ts:25`、`blob-routes.ts:12` | `dialableEndpoints`、`toPodError`、`send` 各只服务一个 class | `private` / `private static` | R2 | P3 |
+改法：
 
-### 5.6 node
+- `PanelModel.approvals()` 只读 `broker.list()`；删除 `waitingApprovals` 和 `PendingApproval`。
+- `PodApproval.agent_id` 由 `string | null` 收窄为 `string`（client 里 `approval.agent_id !== null` 的过滤仍能编译，只是恒为真）。
+- `Tracker.list()` 与 `TrackedTask` 删除：生产代码里唯一的读者没了（R7）。`tracker.test.ts`、`plugin.test.ts` 改为观察 agent 收到的通知、`broker.list()`，以及 `getTask` 的调用次数。
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| N1 | `orca-node.ts:218`、`:254` | `workgroupId` getter 没有调用方；`fetchBlob()` 是转发给私有字段 `files` 的一行代码 | 删除 `workgroupId`；把 `files` 公开为 `readonly blobs: BlobFetcher`，删除 `fetchBlob`（`plugin/admin.ts`、`ui-surface.test.ts` 改为 `node.blobs.fetch`） | R8 | P2 |
-| N2 | `orca-node.ts:145-148`、`cli/shared.ts:87-93` | identity 校验写了两遍 | K7 | R9 | P2 |
-| N3 | `orca-node.ts:169`、`cli/shared.ts:106` | 出站超时默认值是两份字面量 | K7。不给 settings 字段加 `default`：那样会写进 `config.json`，也会改变面板上"未覆盖 = null"的语义 | R9 | P3 |
-| N4 | `orca-node.ts:32`、`:89` | `collectRuntime`、`endpointsFrom` 只服务 `OrcaNode` | `private static` | R2 | P3 |
-| N5 | `node/events.ts:13` `PodEventListener` | 没有任何地方使用 | 删除 | 死代码 | P3 |
+### K5 派发时就记下会话；tracker 不再碰 pod
 
-### 5.7 cli
+现状：`PodTool.send` → `delegation.sendTask` 写派发记录 → `tracker.track` 再经 `lifecycle.node?.delegation.log.annotate` 补写 `agent_id`；为了让恢复时不再写一次，`track` 多了 `{ record: false }` 开关。`NoticeDelivery` 只为了算出发布者 id 才持有 lifecycle。
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| L1 | `install.ts:88`、`:220`、`:311`；`orca-pod.ts:133` | 为测试替换 `existsSync`、`mkdir`、`writeFile`、`prompt` 和输出流而设的依赖袋；`PathExists` 还要穿过四个函数 | 文件操作在测试里用临时目录；只保留碰不得的外部进程：`installService(plan, options, run = runNativeCommand)`；`main` 的提示和输出用 `vi.spyOn(process.stdout, "write")` 或明确的参数 | R7 | P2 |
-| L2 | `shared.ts:122`、`plugin/tracker.ts:103` | 第二、第三种取消息文字的写法 | K7 | R9 | P3（多段文字时输出会变成换行分隔） |
-| L3 | `log.ts:17` | 又按 `updated_at` 排了一次序，而 `SqliteDispatchStore.list()` 已经 `ORDER BY updated_at` | 删掉这次排序 | R9 | P3 |
-| L4 | `send.ts:46`、`plugin/web.ts:90`、`mesh/peer-client.ts:79` | "读完一个字节流（带上限）"写了三份 | `core` 加 `readAll(source: AsyncIterable<Uint8Array>, maxBytes?)`，三处共用，各自包装错误 | R9 | P3（可选） |
+改法：
 
-### 5.8 plugin
+- `Delegation.sendTask(peerUrl, input, options?: { signal?: AbortSignal; agentId?: SessionId })`，由 `DispatchLog.recordSend(peerUrl, view, agentId?)` 在创建条目时一并写入；删除 `DispatchLog.annotate`。派发记录里的 `agent_id` 从此和条目同时存在，不再依赖"碰巧有节点"。
+- `Tracker.track(agent, peer, taskId)`：没有开关。任务 id 是 ulid，新派发不可能撞上已放弃的键，所以"跳过本进程已放弃的任务"对两条入口都成立，`abandoned.delete` 删除。
+- `Tracker.restore(dispatches, resolveAgent)`：删除 `onlyAgentId`。bundle 为新建 session 恢复时传 `(id) => (id === agent.id ? agent : undefined)`，两种调用的语义相同。
+- 发布者 id 在轮询时就算好：`pollEntry` 拿到终态时调用 `node.client.idOf(entry.peer)`，结果放进 `FinishedTask`；`NoticeDelivery` 的构造参数去掉 lifecycle。`Tracker` 对 pod 的读取只剩 `poll` 里那一处（后台策略）。
 
-| 编号 | 位置 | 问题 | 改法 | 规则 | 级 |
-| --- | --- | --- | --- | --- | --- |
-| G1 | `tracker.ts:311`、`:418`；`broker.ts:44`、`:114`；`admin.ts:384` | 只为测试存在的变化通知 | K5 | R7、R8 | P2 |
-| G2 | `admin.ts:140-209`、`web.ts:108` | 投影层由 8 个自由函数组成；`labeller()` 返回闭包，是一个没有名字的对象；`podState(admin)` 连着调用 admin 的六个方法 | 新增 `RosterLabels` class（`label(key)`）；`localRow`、`dispatchRow`、`artifactsOf`、`preview`、`podOf`、`isActive` 改为 `PodAdmin` 的私有方法；`podState` → `PodAdmin.state()`；`entries()` 由 K2 取代 | R2、R3、R4 | P2 |
-| G3 | `lifecycle.ts:218`、`admin.ts:395`、`broker.ts:124`、`tools.ts:401` | "节点没在运行"写了四遍 | K7：`PodLifecycle.requireNode()`；`PodTool` 先等 `ready` 再调用它 | R9、tell-don't-ask | P2 |
-| G4 | `catalog.ts:39-109` | 发现逻辑的六个自由函数 | K6 | R3 | P2 |
-| G5 | `tools.ts:37`、`:267`；`tracker.ts:39` | `SandboxReader`、`SandboxSource`、`TrackerAgent`：为测试设的 `Pick` / 结构类型，而测试仍然在写 `as unknown as SandboxReader` | 参数直接写 `SandboxPolicyService`、`OptionalService<"sandboxPolicy">`、`Agent`；测试照旧做类型断言 | R7、R10 | P2 |
-| G6 | `tools.ts:50-264`、`:302-375` | `send` / `status` / `cancel` / `members` / `connect` 是公开方法，但只经 `run()` 调用；`describeError` 导出了却只在本文件用；`sessionSandboxMode` 为测试导出；另有 `renderJson`、`optional`、`need`、`parseCall`、`taskStatus`、`peerSummary`、`taskMode`、`throwIfAborted`、`waitUnlessAborted`、`json` 十个只服务 `PodTool` 的函数 | 五个方法改为 `private`；其余改 `private static`；测试经 `definition().execute` 走 | R2、R7 | P3 |
-| G7 | `lifecycle.ts:246-249`、`peers-file.ts:26`、`:61` | `reset` 先问出 `peers.path` 去删文件，再调用 `peers.forgetInMemory()` | `RememberedPeers.remove()` 一次删文件并清内存；`path`、`forgetInMemory` 删除 | tell-don't-ask | P3 |
-| G8 | `lifecycle.ts:299-304`、`:355-368` | 启动失败记两次；`startNode` 又把 `boot` 刚清过的 `failure` 清了一次 | K7 | R9 | P3 |
-| G9 | `lifecycle.ts:39-67` | `toError`、`applyPanelFields`、`withoutSecret`、`needsSetup` | `needsSetup`、`withoutSecret` 内联；另两个改 `private static` | R1、R2 | P3 |
-| G10 | `panel-api.ts:39-48`、`web.ts:257` | `PodState` 的字段写成 `ReturnType<PodAdmin["self"]>` 等；`Awaited<ReturnType<PodAdmin["blob"]>>` 其实就是 `OpenedBlob` | 直接写类型名（`PodPeer<SelfRecord> \| null`、`PodConfigView`……）；`client/` 用到的类型名不变 | R10 | P3 |
-| G11 | `plugin/config.ts:22`、`:38` | `createConfigSchema()` 只调用一次，用来造常量 `Config`；`validatePluginConfig` 导出了却只在本文件用 | 直接导出常量 `Config`；`validatePluginConfig` 不再导出 | R1 | P3 |
-| G12 | `web.ts:39-150` | `headerOf`、`isLocalHostHeader`、`isSameOriginPanelRequest`、`hasJsonContentType`、`sendJson`、`readJsonBody`、`rejection`、`withBody` 只服务 `PodApi` | `private static`；`POST_ACTIONS` 表留作模块常量 | R2 | P3 |
-| G13 | `bundle.ts:130`、`:140`、`:145` | 模块私有 class `PodPlugin` 的 `restore`、`onAgentCreated`、`onInboxClaimed` 是公开方法 | 改为 `private` | 封装 | P3 |
-| G14 | `tracker.ts:403` `size()` | 注释写着"tests and diagnostics"，生产代码不调用 | 删除；测试改为观察 agent 收到的通知和 `list()` | R7 | P3 |
-| G15 | `tracker.ts:97`、`:138` | `denyUntrustedBlockBreak` 只有一处调用；`trackingInterruptedLine` 只服务 `NoticeDelivery` | 前者内联进 `taskNoticeLine`；后者改为 `NoticeDelivery` 的 `private static` | R1、R2 | P3 |
+### K6 组装读起来是一个故事
 
-### 5.9 其他
+文件 `plugin/bundle.ts` 保留（`cordis.patch.yml` 与 `src/index.ts` 指向它），`PodPlugin` → `PodBundle`：
 
-| 编号 | 位置 | 问题 | 改法 | 级 |
+```ts
+export function apply(ctx: Context, config: Settings): void {
+  const bundle = new PodBundle(ctx, config);   // builds the pod, feed, broker, tracker, tool, panel; touches nothing outside
+  bundle.attach(ctx);                          // agent hooks, tool, panel route, skill, settings page, disposer
+  bundle.pod.start();                          // boot in the background; apply returns at once
+}
+```
+
+- 构造器只建对象（`OptionalService` 照 §1 例外），不调 `start()`，不调 `ctx.on` / `ctx.tools.register` / `ctx.effect`。
+- `attach(ctx)` 按"宿主里会发生什么"的顺序注册：卸载时的 disposer → agent 生命周期钩子 → 工具 → 面板路由 → skill → 设置页。每一段的注释说明宿主的行为，不说明本包内部的顺序。
+- `new PanelRoutes(…).register(ctx)` 这种"建了马上用"的写法保留（H6 允许）。
+
+### K7 命名与面板契约
+
+| 现在 | 之后 | 原因 |
+| --- | --- | --- |
+| `PodLifecycle`（`lifecycle.ts`） | `Pod`（`pod.ts`） | 它就是这个 pod：设置、密码、peers、当前运行 |
+| `PodPlugin` | `PodBundle` | 与文件名和 DSH 的"bundle"说法一致 |
+| `PodAdmin`（`admin.ts`） | `PanelModel`（`panel.ts`） | 面板的数据与动作，没有"管理员"的含义 |
+| `PodApi`（`web.ts`） | `PanelRoutes`（`panel-routes.ts`） | 它是 `/orca-api` 的路由 |
+| 面板响应类型分在 `admin.ts` 与 `panel-api.ts` | 全部在 `panel-api.ts` | 一个契约一个文件；`panel.ts` 单向 import 它 |
+| `test/fixtures/pod.ts` 的 `idleLifecycle` / `lifecycleWithNode` | `idlePod` / `podRunning(node)` | 后者 spy `status` getter，返回 `{ kind: "running", run: { node, port } }` |
+
+`client/types.ts` 只改一行 import 路径（`admin.ts` → `panel-api.ts`），导出的类型名全部不变；这是本轮对 `client/` 唯一的改动。
+
+**术语表**（写进 `docs/09-implementation.md` §9.2，代码注释照用）：
+
+| 词 | 指的是 | 不要用来指 |
+| --- | --- | --- |
+| pod | 一个 DSH profile 里的这个插件：`Pod` 加上它的 tracker、broker、工具、面板，跨节点重启存在 | 节点 |
+| node / orca node | 一个 `OrcaNode` 实例，即一次运行（`PodRun.node`） | 插件、机器 |
+| run | 一次成功启动：节点加上实际监听端口 | |
+| member | 本节点成员表里的一条记录（`Membership`） | 地址 |
+| peer | 一次调用所指向的对方，按 URL 称呼（`peer` 参数） | 成员记录 |
+| host | 宿主 DSH 进程及其服务（`ctx.*`） | 远端节点 |
+| settings / raw config / panel patch / node config | 解析后的插件配置 / profile 里存的原样配置 / 面板发来的增量 / 节点自己的 `config.json` | 互相混用 |
+
+## 4. 逐文件清单
+
+| 编号 | 位置 | 改法 | 规则 | 级 |
 | --- | --- | --- | --- | --- |
-| X1 | `biome.json:51` | override 指向已经不存在的 `src/transport/gateway/a2a-routes.ts` | 删除这条 override | P3 |
+| P1 | `lifecycle.ts` → `pod.ts` | K1：`PodStatus` / `PodRun` / `settled()` / `requireRun()`；删 7 个字段、6 个 getter | H1、H2 | P1 |
+| P2 | `pod.ts` | K2：`commit()`；`adopt` 删除；`saved` 与 `password` 分开 | H3、H4、R7 | P1 |
+| P3 | `catalog.ts` | K3：`changes` / `current()` / `refresh()`；删 `watch`、`advertise`、`reasoningEfforts`、`CatalogHost` | H3 | P1 |
+| P4 | `admin.ts` → `panel.ts` | K4：`approvals()` 只读 broker；K1 的展示 / 动作策略；类 `PanelModel`；响应类型搬到 `panel-api.ts` | H2、H3、H5 | P1 |
+| P5 | `tracker.ts` | K5：`track` 无开关、`restore` 无 `onlyAgentId`、`list` / `TrackedTask` 删除、发布者 id 在轮询时算好、`NoticeDelivery` 去掉 lifecycle | H2、H3、开关参数、R7 | P2 |
+| P6 | `task/delegation.ts`、`task/dispatch-log.ts` | K5：`sendTask` 收 `{ signal, agentId }`；`recordSend` 收 `agentId`；`annotate` 删除 | H4 | P2 |
+| P7 | `tools.ts` | `requireNode(signal)` → 等 `pod.settled()` 再 `pod.requireRun()`；`send` 把 `exec.agent?.id` 交给 `sendTask` | H2 | P2 |
+| P8 | `broker.ts` | `decide` 先等 `settled()` 再 `requireRun()`；构造参数类型 `Pod` | H2 | P2 |
+| P9 | `bundle.ts` | K6：`PodBundle` 的构造 / `attach` / `pod.start()` 三段；`restore` 用新的 `Tracker.restore` | H6 | P2 |
+| P10 | `web.ts` → `panel-routes.ts` | 类 `PanelRoutes`，读 `panel-api.ts` 的类型 | H5 | P3 |
+| P11 | `panel-api.ts` | 接收 `PodArtifact`、`PodPeer`、`PodApproval`、`PodTaskRow`、`PodTaskDetail`、`WorkspaceView`、`PodAdvancedConfig`、`PodConfigView`、`PodState` | H5 | P3 |
+| P12 | `client/types.ts` | import 路径一行 | | P3 |
+| P13 | `test/fixtures/pod.ts` 与 6 个测试文件 | 跟随 K1 / K4 / K5 / K7 改写，断言不减少 | | 随各步 |
 
-## 6. 考察过但保留的
+## 5. 考察过但保留的
 
 | 对象 | 为什么保留 |
 | --- | --- |
-| 签名验签、准入证明、grant 签名、地址筛查、摘要、`core/wire/*` 的工具函数 | R5：无状态的纯计算，多个模块共用，或者本身就是协议契约 |
-| `admissionProof` / `verifyAdmissionProof` 只为测试导出 | 这是 HMAC 原语，测试要用固定的 `ts` / `nonce` 伪造请求（重放、时钟偏差），走 `createAdmission` 做不到 |
-| `taskNoticeLine`、`systemdQuote`、`parseSkillDocument`、`parseAuthHeader`、`siblingEntry`、`validateConfig` | R5：导出的纯契约，有独立的单元测试 |
-| `rpc()`、`remoteError` | CLI 在没有节点的进程里也要发 A2A 调用 |
-| `BlobFetcher.open` 一行转发 | 如果让 `BlobRoutes` 直接拿 registry，`Gateway` 就需要第 6 个构造参数 |
-| `PodAdmin.approve` / `deny` / `cancel` / `connect` 等 | 面板的门面：`PodApi` 只认 `PodAdmin`，其中不少方法附带了"返回最新配置"的组合 |
-| `PollLoop(round, hasWork)`、`OptionalService(onChange)` 的构造回调 | 一个是私有协作者，一个是 Cordis 订阅；§1 的"不传回调"约束管的是子系统之间的通知 |
-| `HttpPeerClient` 的 `SelfEndpoints` / `Roster` 结构参数 | 生产代码里有两种调用方（节点、CLI） |
-| `ModelCatalogFeed.watch(host: CatalogHost)` | 见 §1 |
-| `settings.ts` 的 `FIELDS` 表、`field()`、`fromFields()` | 字段表是唯一真源，类型断言集中在一处，正是它的设计 |
-| CLI 子命令的 `run()`、`install.ts` 的计划与渲染函数 | 一次性过程加纯计算 |
-| 模块级常量 | R6 |
-| `newTaskId(now?, prng?)` | 纯函数上的可选参数，不影响任何 class 的设计 |
+| `Tracker` / `ApprovalBroker` 活在插件 fiber 级，而不是每次运行一个 | 它们跟踪的是派发记录里的远端任务，派发记录在 `<data_root>` 的 SQLite 里，跨节点重启存在；节点换了，下一轮用新节点继续轮询。reset 删掉 identity 之后，旧任务的轮询会得到 401/403，tracker 按现有逻辑放弃并发出通知，行为不变 |
+| `Tracker`、`ApprovalBroker`、`ModelCatalogFeed`、`RememberedPeers` 这几个名字 | 已经是领域名词，说的就是"是什么" |
+| `PodStores` / `HostPodStores` / `MemoryPodStores` | 名字一般，但改名的收益只是措辞，K2 之后它的职责（密码 + 原样配置 + `restartsOnWrite`）已经单一 |
+| `Settings` / `RootedSettings` / `RawConfig` / `ConfigFields` / `PanelPatch` / `OrcaNodeConfig` / `Config` | 各自对应真实存在的不同形状（解析后、定了根目录、存储原样、可清空的增量、面板子集、节点 `config.json`、Standard Schema 外壳）。问题出在没有地方把它们并排说清，用 §3 的术语表解决，不合并类型 |
+| `SerialQueue`、`OptionalService` | 机制本身清楚；问题出在使用方 |
+| `withBody` / `POST_ACTIONS` | 第二轮的理由不变 |
+| `core/`、`mesh/`、`executor/`、`api/`、`node/` | 本轮没有发现同类问题；K5 只碰 `task/` 的两个方法签名 |
 
-## 7. 迁移顺序
+## 6. 迁移顺序
 
-每一步结束时 `npm run check` 全绿（用 PowerShell 跑：Bash 工具下 vitest 会出错），并单独提交。**机械整理（R1 / R2）和设计变更不放在同一个提交里**，方便评审。
+每一步结束时 `npm run check` 全绿（用 PowerShell 跑），并单独提交；涉及 plugin 的步骤另跑 `npm run harness`。**改名（第 5 步）单独成一个提交**，不和设计变更混在一起，方便评审。
 
-| 步 | 内容 | 编号 | 另跑 |
-| --- | --- | --- | --- |
-| 0 | 死代码、注释、配置 | C1–C6、C11、M10、N5、X1，以及 `Workgroup.members`、`OrcaNode.workgroupId` | |
-| 1 | mesh 设计 | K3（M1）、M2、M3、M4、M5、M6、M8、M9 | |
-| 2 | executor 设计 | K4（E1）、E2、E6 | `npm run harness`，`scripts/e2e-acp.mjs` 能跑的话也跑一遍 |
-| 3 | task 设计 | K2（T3）→ T4 → K1（T1、T2）→ T6、T7、T9、T10 | `npm run harness` |
-| 4 | api 与 node | A1、N1、N2、N3 | |
-| 5 | plugin 设计 | K5（先确认选哪一种）、K6、G2、G3、G5、G7、G8 | `npm run harness` |
-| 6 | cli | L1、L2、L3 | |
-| 7 | 机械整理：R1 / R2 全部条目 | C7、C8、C9、M7、M11、M12、E3、E4、E5、T5、T8、A2、N4、G6、G9、G10、G11、G12、G13、G14、G15 | |
-| 8 | 可选项 | C10、L4 | |
-| 9 | 文档同步（§9） | | |
+| 步 | 内容 | 编号 |
+| --- | --- | --- |
+| 0 | 先补测试，暴露现有漏洞：原地重启期间的工具调用应等到新节点；批准之后 `approvals()` 不应再出现同一个任务 | （测试先红） |
+| 1 | `Pod` 状态机，但暂时保留旧文件名与类名 | P1、P7、P8（K1） |
+| 2 | 配置提交单一路径 | P2（K2） |
+| 3 | 模型目录单向 | P3（K3） |
+| 4 | 审批单一来源、派发时记会话、tracker 去掉 pod | P4 的 K4 部分、P5、P6 |
+| 5 | 改名与搬家：`pod.ts`、`panel.ts`、`panel-routes.ts`、类型并入 `panel-api.ts`、fixtures、`client/types.ts` | P4 余下部分、P10、P11、P12、P13 |
+| 6 | 组装：`PodBundle` 三段 | P9（K6） |
+| 7 | 文档同步（§8） | |
 
 每步的检查清单：
 
 - [ ] `npm run check` 全绿，架构测试的两个允许清单仍然为空；
-- [ ] 用 `rg` 确认旧名字已经没有引用，也没有留下别名；
-- [ ] 跑第一轮那三条丢失 `this` 的 grep（对象字面量里的 `obj.method`、实参位置的 `obj.method`、解构实例方法），逐条确认；
-- [ ] 第 7 步之后：`rg -n "^(async )?function " src` 剩下的每一个都能对上 R5，`rg -n "ReturnType<|Pick<" src` 剩下的每一个都能对上 R10；
-- [ ] K7 收尾：`rg -n "orca node is not running|DEFAULT_TASK_TIMEOUT_S|30_000" src` 每一项都只剩一个来源。
+- [ ] 第 1 步之后：`rg -n "lifecycle\.node|\.node\?\.|requireNode|\.ready\b" src/plugin` 为空；每一处 `pod.run` / `pod.requireRun()` 都对得上 K1 表里的一种策略；
+- [ ] 第 3 步之后：`rg -n "models\.update" src/plugin` 只剩 `Pod.advertise` 一处；
+- [ ] 第 4 步之后：`rg -n "annotate|record: false|onlyAgentId|waitingApprovals|tracker\.list" src` 为空；
+- [ ] 第 5 步之后：`rg -n "PodLifecycle|PodAdmin|PodApi\b|PodPlugin|lifecycleWithNode|idleLifecycle" src test docs client` 为空，也没有留下别名；
+- [ ] 收尾：`rg -n "on purpose|must .* first|before the first" src/plugin`，逐条确认无法改由结构保证。
 
-## 8. 行为变化与风险
+## 7. 行为变化与风险
 
 行为变化（都不涉及线上协议）：
 
-1. **L2**：`orca-node status` / `wait` 的文本输出改为显示所有 text part、用换行分隔（现在只显示第一段）；tracker 通知里多段文字也改为换行分隔。如果不想改输出，就跳过 L2。
-2. **K2**：组装提示词时列 notes 目录从异步 `readdir` 改为同步，只读一个目录的顶层，开销可以忽略。
-3. **K5**：生产行为不变（面板本来就靠轮询）。
-4. **A1**：busy 的值不变，只是来源变了：`profile.busy` 在每个任务事件里都会和 `tasks.busy()` 同步。
+1. **K1**：原地重启期间，工具调用、批准 / 拒绝、面板的取消 / 详情 / 下载会等重启结束，而不是立即报 "orca node is not running"。错误文案按状态区分：未设置 / 启动失败：原因 / 已停止。
+2. **K3**：每次启动成功后都会重新读一次宿主的模型目录（现在只在第一次启动后读）。
+3. **K4**：批准或拒绝之后，这张卡片立即消失，不会以 `agent_id: null` 重新出现到下一轮轮询。
+4. **K5**：派发记录里的 `agent_id` 在创建条目时就写入；没有 `exec.agent` 的调用（CLI 或无 session 的宿主）照旧不写。
+5. **K2**：插件配置里没有 `peers` 键、但继承层里有 peers 时，`disconnect` 的写入是空操作，现在不重启，之后会原地重启（随后会按继承层的 `peers` 重新加入）。这种情况现在就不一致，本轮不另作处理，只记录在案。
 
 风险：
 
-- **K1 的顺序**：槽位同步必须在 `events.emit` 之前，否则 `OrcaNode` 发出的成员事件会带着旧的 busy。`a2a.test`、`approval.test` 已经覆盖了"占槽 → 挂起让槽 → 恢复抢槽"，改动后必须全绿。
-- **K1 的异常**：记录的变化改走 `ChangeSignal`，监听器里抛的异常会被吞掉并记日志。runner 的监听器只做赋值、带 try 的落盘、`emit` 和 `measure`，都不会抛；但以后往里加逻辑时要记住这一点。
-- **R2 的改动量**：大量函数改成 `private static`，纯属机械操作，单独成一个提交（第 7 步）。转换时不要把方法当回调传出去（第一轮 §11.1 的规则）。
-- **测试改写面**：K5、K6、G5、G6、L1、T7 都会改测试的写法，但不减少被测的行为；每条测试原来断言的东西，改写后都要有对应的断言。
+- **K1 的 `starting` 状态**：`restart()` 必须同步设置 `status` 和 `booting`，否则在"排进队列"和"开始执行"之间进来的调用会看到旧状态。第 0 步的测试覆盖这一点。
+- **`stop()` 与重启的竞争**：`stop()` 先等 `queue.drain()`，再把状态设成 `stopped`；`boot()` 开头检查 `stopped` 后直接返回。语义与现在的 `disposed` 相同，只是并进了状态。
+- **宿主重启路径**：`commit` 在 `restartsOnWrite` 时直接返回，之后不能再碰 `this`（实例即将被销毁）。`plugin-apply.test.ts` 与 `panel-config.test.ts` 要覆盖两种 stores。
+- **测试改写面**：`panel-config.test.ts`（26 处读 lifecycle 的 getter）、`tracker.test.ts`（8 处 `list()`）、`broker.test.ts`、`plugin.test.ts`、`ui-surface.test.ts`、`web.test.ts`。每条测试原来断言的东西，改写后都要有对应的断言。
 
-## 9. 文档同步
+## 8. 文档同步
 
-- `docs/DECISIONS.md`：
-  - D41 的"与方案的出入"删掉"`TaskRecord` 并进 `task/runner.ts`"那一条；
-  - 新增 **D42**：模块级函数的去留规则（R1–R5）；只为测试存在的公开面一律删除（R7）；默认值和检查只有一个来源（R9）；类型不转手（R10）。理由写"第一轮只换了外壳"，以及 §0 的五类症状。
+- `docs/DECISIONS.md`：新增 **D43**：插件侧的状态是判别联合 `PodStatus`，`Pod` 之外的消费者只能按四种策略读取当前运行；每个事实只有一个所有者、一条路径；顺序约束由结构保证。理由写 §0 的五类症状。同时把头部的"编号 D1–D42"改为 D1–D43。
 - `docs/09-implementation.md`：
-  - §9.1 文件表：新增 `task/record.ts`，删除 `task/slot.ts`、`executor/process.ts`；
-  - §9.2 读入口表（`09-implementation.md:58`）：`node.fetchBlob` → `node.blobs.fetch`；
-  - `OrcaNode` 那一段（`:126`）：去掉 `workgroupId`、`self()`、`fetchBlob`，加上 `node.blobs`，`node.workspace` 改为 `Workspace` class；
-  - 存储那一条（`:219`）：`workspacePathsOf` / `ensureWorkspace` 改写为 `Workspace` 的构造器和 `ensure()`；
-  - §9.6 工程约定补上 R1–R10。
-- `README.md` 和 `scripts/` 里没有用到这一轮要删的 API（已用 `rg` 核实），不需要改。
-- 完成后更新记忆 `class-refactor-direction`：第二轮已完成，以及 D42 的要点。
+  - §9.2 插件段落（`:163`）按新文件名、新类名重写，并加入 §3 的术语表；
+  - §9.2 的设置 / 密码 / peers 那一条（`:65`）：`adopt` 改为 `commit` 的描述；
+  - 组装示例（`:180`）改成 `apply` 的三行；
+  - 测试表（`:122`）：`PodLifecycle` → `Pod`。
+- `docs/07-security.md` 里出现的旧类名、旧文件名逐个替换（`rg "PodLifecycle|PodAdmin|PodApi\b|PodPlugin|lifecycle\.ts|admin\.ts|web\.ts" docs README.md` 只命中它和 09）。
+- 完成后更新记忆 `class-refactor-direction`：第三轮（D43）已完成，以及 H1–H6 的要点。
 
-## 10. 不做的事
+## 9. 不做的事
 
-- 不改线上协议、zod schema、错误码、HTTP 路由、存储表结构；
+- 不改线上协议、zod schema、错误码、HTTP 路由与响应形状、存储表结构；
 - 不新增依赖，不改目录划分和分层；
-- 不把模块级常量改成 `static readonly`；
-- 不把 DTO（`PeerView`、`TaskView`、`DispatchEntry`……）做成富领域对象：`PeerEntry` 和 `AcpSession` 是模块内部的状态对象，不出现在线上；
-- 不重写 CLI 子命令的结构；
-- 不合并三个 SQLite 连接（第一轮就留到以后，理由不变）；
-- 不改 `client/` 的代码：面板只做类型导入，`panel-api.ts` 导出的类型名保持不变。
+- 不动 `core/`、`mesh/`、`executor/`、`api/`、`node/`；`task/` 只改 K5 的两个签名；
+- 不把 tracker / broker 改成每次运行一个（§5）；
+- 不合并配置相关的类型（§5），只用术语表说清；
+- 不改 `client/` 的代码，除了 `types.ts` 的一行 import 路径。
+
+## 10. 实施记录（与方案的出入）
+
+每一步结束时 `npm run check` 全绿，涉及 plugin 的步骤另跑了 `npm run harness`（PASS）。出入如下，行为都没有超出 §7：
+
+1. **`Pod` 内部不是单个 `status` 字段。** `status` 对外仍是 K1 的判别联合，但内部是 `outcome`（上一次启动的结果，只在串行队列里写）加 `restarting` 计数，`status` 由它们推导：`restarting > 0` 即 `starting`。原因：`restart()` 要同步变成 `starting`，而排队中的旧节点还得有人拆，单字段会把它弄丢。`restarting` 在节点开始监听、目录装好之后就减掉，rejoin peers 留在同一条队列里，所以启动时面板在慢 join 期间仍然看得到节点（与原行为一致）；`settled()` 则等到 rejoin 结束。
+2. **`stop()` 排进队列**，而不是“先 drain 再置 `stopped`”：队列里排在它后面的重启在 `bringUp()` 开头看到 `stopped` 就什么都不做，比方案的写法少一个竞争窗口。
+3. **K3 与步骤 1 之间有一个临时垫片**（`feed.watch` 的适配对象，在 `bundle.ts` 里，步骤 3 删掉），因为 `Pod` 不再有 `node` / `ready`。
+4. **K6：`bundle.start()` 而不是 `bundle.pod.start()`。** 启动之后还要恢复已在运行的会话（必须在节点起来后做；`agents` 服务在构造时就可能出现，那一次是空操作），所以启动入口放在 `PodBundle` 上，`pod` 不对外。
+5. **第 0 步的审批测试**在步骤 1 的提交里临时标成 `it.fails`，步骤 4 翻回 `it`，让每个提交都是绿的。
+6. **已知小出入（K5）**：调用方取消了正在发送的 `send`、而随后的 `cancelTask` 也失败时，派发记录里这一条现在带着 `agent_id`（以前没有），宿主重启后会被当作该会话的派发恢复追踪。
+7. 测试文件名未改（`web.test.ts` 等），只改了内容与夹具名。

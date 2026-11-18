@@ -92,7 +92,7 @@ sig = Ed25519(identity.private_key,
 - 任务 prompt、结论文本、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
 - **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义），notes 清单在块外、notes 文件名 JSON 转义（`src/tasks/prompt.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；正文里的文件名只是数据，取不取由 agent 在本任务的权限模式下决定；
-- **origin 侧**：tracker 通知只给状态/原因/产物名，远端结论放进 `<untrusted-remote-result>` 块并截断到 800 字符（结束标签转义），并提示 agent 用 `orca_pod` 的 `status` 自己拉全文；权限请求不进对话，面板卡片只显示 `requested` 的 160 字符预览（`src/plugin/tracker.ts`、`admin.ts`）；
+- **origin 侧**：tracker 通知只给状态/原因/产物名，远端结论放进 `<untrusted-remote-result>` 块并截断到 800 字符（结束标签转义），并提示 agent 用 `orca_pod` 的 `status` 自己拉全文；权限请求不进对话，面板卡片只显示 `requested` 的 160 字符预览（`src/plugin/tracker.ts`、`panel.ts`）；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
 - 可观测：谁（origin_orca_node）、何时、对哪个任务、用了什么 mode——留在任务记录与派发日志里（`tasks/get`、`orca-node log`），不另落一份审计文件。
 
