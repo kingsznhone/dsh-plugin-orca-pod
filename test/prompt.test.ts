@@ -40,18 +40,18 @@ async function waitForTerminal(runner: SingleSlotTaskRunner, taskId: string, tim
 }
 
 describe("task prompt", () => {
-  it("tells the agent how files are named, fetched and handed back, and that it cannot delegate", async () => {
+  it("tells the agent where files are handed over and handed back, and that it cannot delegate", async () => {
     const prompts: string[] = [];
     const runner = createTestRunner({ executor: promptRecorder(prompts) });
     const view = runner.submit({ message: message("summarize the report") });
     await waitForTerminal(runner, view.id);
 
     const preamble = prompts[0]!.slice(0, prompts[0]!.indexOf("<untrusted-task-input>"));
-    expect(preamble).toContain("Files are named <orca node id>/<sha256>");
-    expect(preamble).toContain("fetch <orca node id>/<sha256> --output <file> --json");
-    expect(preamble).toContain("publish <path> --json");
-    expect(preamble).toContain("put the name it prints in your summary");
+    expect(preamble).toContain(`inbox/${view.id}/`);
+    expect(preamble).toContain(`outbox/${view.id}/`);
+    expect(preamble).toContain("this node publishes them when you finish");
     expect(preamble).toContain("single-hop");
+    expect(preamble).not.toContain("ORCA_POD_CLI");
     expect(preamble).not.toContain("send --peer");
   });
 

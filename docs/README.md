@@ -53,11 +53,11 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - orca node 之间是 **full mesh**，10 台以内不做 ring、不做 gossip、不做中心调度器。
 - **任务只有一跳**：origin → target 是一次请求；target 上执行任务的 agent 不能再派任务（执行器会话里 `send` 拒绝），做不完就以 `BLOCKED:` 结论交回。没有回调、没有广播。orca node 只被任务请求唤醒，忙时 429 而不是排队。
 - **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
-- orca node 身份 = 首次启动生成的 **Ed25519 公钥**（`<data_root>/identity.json`，43 字符 base64url；面板显示缩略，如 `psB9aQ…3Zlw`）。节点用自己的私钥签每个请求，别人用公钥验签——id 就是公钥，可验证、不可伪造。
-- 入组 = `workgroup_id` + **非空密码**：密码只派生 `/cluster/join` 与每拍心跳的准入证明（HMAC）；**请求认证靠节点 Ed25519 签名，没有 session token、没有 TTL**。换密码 = 重建组。
+- orca node 身份 = 首次启动生成的 **Ed25519 公钥**（私钥种子以 base58 存在 DSH 凭据库的 `orca-pod/node` 记录里，43 字符 base64url；面板显示缩略，如 `psB9aQ…3Zlw`；一台机器一个节点）。节点用自己的私钥签每个请求，别人用公钥验签——id 就是公钥，可验证、不可伪造。
+- 入组 = `workgroup_id` + **非空密码**：密码只派生每个节点间请求头里的 workgroup 证明（HMAC，与 Ed25519 签名同时带，答复也由应答方签名）；**没有 session token、没有 TTL**。换密码 = 重建组。
 - 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询；没有 SSE、没有 push。
-- 文件交换按**名字**：节点只发布自己机器上的文件，名字是 `<节点 id>/<sha256>`，不含地址；谁需要谁让自己的节点去拉（`orca-node fetch`）——产物的名字写在结论文本里由 origin 取，交给任务的文件写在任务书里由 target 上的 agent 取；结论文本内联返回，`notes/` 不出本机。
+- 文件交换按**名字**：节点只发布自己机器上的文件，名字是 `<节点 id>/<sha256>`，不含地址；谁需要谁让自己的节点去拉（`orca_pod` 的 `fetch`；任务里的文件由执行器在 `inbox/` 与 `outbox/` 交接）——产物的名字写在结论文本里由 origin 取，交给任务的文件写在任务书里由 target 上的 agent 取；结论文本内联返回，`notes/` 不出本机。
 - **任务与产物凭 id 交接**：同 workgroup 任意 orca node 知道 `task_id` / `blob_id` 就能读；没有列表接口，也没有 per-task ACL——id 就是句柄。
 - **交接靠工作区**：同一 workgroup 的任务共享一份持久工作区（agent 的 cwd 就是 workgroup 根）与 `notes/`；后到的 agent 读现场决定接着干什么，协议不定义“续跑”。
 - **权限跟着发起会话走**：任务继承发起会话的权限模式（没继承到就按只读）；target 按这个模式自动应答 ACP 的权限请求，模式之外的请求挂起为 `input-required`，由 origin 的人在 UI 上决定；target 永不本地弹窗。

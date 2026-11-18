@@ -6,7 +6,7 @@ import { errorMessage } from "./errors.ts";
  * The node and the DSH plugin run in one process, so a UI panel does not need a
  * new wire protocol: it subscribes here instead of polling `tasks/get`. Events
  * are best-effort notifications, never a source of truth — a listener that
- * misses one recovers by reading `tasks.list()` / `membership.list()` again.
+ * misses one recovers by reading `tasks.list()` / `mesh.list()` again.
  *
  * Delivery is synchronous and a listener must never throw into the node: a UI
  * bug would otherwise break task execution.

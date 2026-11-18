@@ -4,21 +4,25 @@
  * Every operation is a method on `orca_pod` instead of a separate tool, so the
  * agent's context carries one schema rather than five (send/status/cancel/
  * members/connect). Task methods are
- * non-blocking wrappers over `OrcaNode`: `send` returns a task id immediately
+ * non-blocking wrappers over `Orca`: `send` returns a task id immediately
  * and callers poll `status` for the result.
  */
 
+import { mkdir } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+
+import { blobRefText, parseBlobRef, saveBlob } from "../core/blobs.ts";
 import { normalizePeerUrl } from "../core/net.ts";
 import { DEFAULT_PORT } from "../core/constants.ts";
-import { isTerminal, type SubmitTaskInput, type TaskState, type TaskView } from "../task/wire.ts";
+import { isTerminal, type SubmitTaskInput, type TaskFile, type TaskState, type TaskView } from "../task/wire.ts";
 import { parseModelSpec } from "../core/wire/model.ts";
 import { narrowPermissionMode } from "../core/wire/permission.ts";
 import type { PeerView } from "../core/wire/peer.ts";
 import { runningInTask } from "../core/entry.ts";
 import { abortError, errorMessage, PodError } from "../core/errors.ts";
-import type { OrcaNode } from "../node/orca-node.ts";
+import type { Orca } from "../node/orca.ts";
 
-import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
+import { canonicalPath, writableRoots, type SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import { SANDBOX_MODES, type SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import { snapshotJsonValue, type JsonValue } from "@deepseek-ai/dsh-util-values";
@@ -39,7 +43,8 @@ const ASYNC_NOTE =
 
 const METHODS_HELP =
   "Methods: " +
-  "send (peer, text; optional echo, permission_mode, model, reasoning_effort) dispatches a task; " +
+  "send (peer, text; optional files, echo, permission_mode, model, reasoning_effort) dispatches a task to a node; " +
+  "fetch (ref, output) saves a file a task handed back, named <orca node id>/<sha256> in its artifacts; " +
   "status (peer, task_id) reads one task; " +
   "cancel (peer, task_id) requests cancellation; " +
   "members (no arguments) lists this node and its peers; " +
@@ -47,7 +52,7 @@ const METHODS_HELP =
 
 // ---- what a call carries ----
 
-const METHOD_NAMES = ["send", "status", "cancel", "members", "connect"] as const;
+const METHOD_NAMES = ["send", "fetch", "status", "cancel", "members", "connect"] as const;
 
 /**
  * Every argument of every method, declared once in DSH's tool schema DSL: DSH
@@ -63,9 +68,20 @@ const PARAMETERS = {
   },
   peer: {
     type: "string",
-    description: `Target peer: http://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}). Required by send, status, cancel and connect.`,
+    description:
+      "Target node: its id, its display name (when that is unique) or an address it has. Required by send, status and cancel. " +
+      `For connect it is the address of a node to join: http://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}).`,
   },
   text: { type: "string", description: "send: task text sent as an A2A user message part." },
+  files: {
+    type: "array",
+    items: { type: "string" },
+    description:
+      "send: files the task needs, each a local path or a file a member published as <orca node id>/<sha256>. " +
+      "They are placed in the task's inbox/ directory before it starts; whatever the task leaves in its outbox/ comes back as artifacts.",
+  },
+  ref: { type: "string", description: "fetch: the file to save, as <orca node id>/<sha256>." },
+  output: { type: "string", description: "fetch: where to save it; the session's sandbox must allow writing there." },
   task_id: { type: "string", description: 'status/cancel: task id returned by method "send".' },
   echo: {
     type: "object",
@@ -92,12 +108,14 @@ const PARAMETERS = {
 } as const satisfies ParameterSchemaSpec;
 
 type ToolArgs = InferArgs<typeof PARAMETERS>;
-type TextKey = "peer" | "text" | "task_id" | "reasoning_effort";
+type TextKey = "peer" | "text" | "task_id" | "reasoning_effort" | "ref" | "output";
 
 type PeerArgs = { peer: string };
 type TaskArgs = PeerArgs & { task_id: string };
+type FetchArgs = { ref: string; output: string };
 type SendArgs = PeerArgs & {
   text: string;
+  files: string[];
   echo: ToolArgs["echo"];
   permission_mode: SandboxMode | undefined;
   model: string | undefined;
@@ -107,6 +125,7 @@ type SendArgs = PeerArgs & {
 /** One call of the tool: its method and the arguments that method takes. */
 type PodCall =
   | { method: "send"; args: SendArgs }
+  | { method: "fetch"; args: FetchArgs }
   | { method: "status" | "cancel"; args: TaskArgs }
   | { method: "connect"; args: PeerArgs }
   | { method: "members" };
@@ -119,7 +138,8 @@ type PeerSummary = Pick<
   "orca_node_id" | "display_name" | "endpoints" | "state" | "busy" | "runtime" | "last_recv_at" | "max_task_ttl_s"
 >;
 
-type SendResult = { task_id: string; state: TaskState; peer: string };
+type SendResult = { task_id: string; state: TaskState; peer: string; node: string };
+type FetchResult = { path: string; size: number };
 type TaskStatusResult = TaskView & { terminal: boolean };
 type ConnectResult = { peer: string; members: PeerSummary[]; members_digest: string };
 type MembersResult = { self: PeerSummary } & Omit<ConnectResult, "peer">;
@@ -165,7 +185,6 @@ export class PodTool {
       );
     }
     const { signal } = exec;
-    const peer = normalizePeerUrl(args.peer);
     const permissionMode = PodTool.taskMode(
       args.permission_mode,
       PodTool.sessionSandboxMode(this.sandbox?.current(), exec),
@@ -175,12 +194,15 @@ export class PodTool {
     if (args.model !== undefined && model === undefined) {
       throw new Error("model must be a provider/model string");
     }
-    const orcaNode = await this.awaitNode(signal);
+    const orca = await this.awaitOrca(signal);
+    const node = orca.mesh.resolve(args.peer);
+    const files = await this.attach(orca, args.files, exec);
     const input: SubmitTaskInput = {
       message: { role: "user", parts: [{ kind: "text", text: args.text }] },
       metadata: {
         echo: args.echo,
         pod: {
+          ...(files.length === 0 ? {} : { files }),
           permission_mode: permissionMode,
           model,
           reasoning_effort: model === undefined ? args.reasoning_effort : undefined,
@@ -188,50 +210,112 @@ export class PodTool {
       },
     };
     PodTool.throwIfAborted(signal);
-    const view = await orcaNode.delegation.sendTask(peer, input, { signal, agentId: exec.agent?.id });
+    const view = await node.sendTask(input, { signal, agentId: exec.agent?.id });
     if (signal.aborted) {
       // The remote accepted the task after the caller's turn was cancelled: the
       // caller never learns its id, so it must not keep running unobserved.
       // Best effort; the dispatch log still lists it for the panel.
-      orcaNode.delegation.cancelTask(peer, view.id).catch(() => {});
+      node.cancelTask(view.id).catch(() => {});
       throw abortError("cancelled by the caller");
     }
     // Track the task so the dispatching agent is told when it finishes, even
     // after its turn ends.
-    if (exec.agent !== undefined) this.tracker.track(exec.agent, peer, view.id);
-    return { task_id: view.id, state: view.status.state, peer };
+    if (exec.agent !== undefined) this.tracker.track(exec.agent, node.id, view.id);
+    return { task_id: view.id, state: view.status.state, peer: node.displayName, node: node.id };
+  }
+
+  /**
+   * The files a task is handed (§3.8): a published file is named as it is, a
+   * local path is published by this node first, so the target can fetch it from
+   * here before the agent starts.
+   */
+  private async attach(orca: Orca, items: string[], exec: ToolRunContext): Promise<TaskFile[]> {
+    const files: TaskFile[] = [];
+    for (const item of items) {
+      const ref = parseBlobRef(item);
+      if (ref !== null) {
+        files.push({ ref: blobRefText(ref), name: ref.blob });
+        continue;
+      }
+      PodTool.throwIfAborted(exec.signal);
+      const path = resolve(this.workingDirectory(exec), item);
+      const blob = await orca.publish(path).catch((error: unknown) => {
+        throw new Error(`cannot hand over ${item}: ${errorMessage(error)}`);
+      });
+      files.push({ ref: blobRefText({ node: orca.orcaNodeId, blob: blob.blob_id }), name: basename(path) });
+    }
+    return files;
+  }
+
+  /** Save a file a task handed back, where the session sandbox lets it write (§3.8). */
+  private async fetch(args: FetchArgs, exec: ToolRunContext): Promise<FetchResult> {
+    const ref = parseBlobRef(args.ref);
+    if (ref === null) throw new Error("ref must be <orca node id>/<sha256>, as a task artifacts name it");
+    const output = resolve(this.workingDirectory(exec), args.output);
+    this.assertWritable(output, exec);
+    const orca = await this.awaitOrca(exec.signal);
+    const opened = await orca.mesh.require(ref.node).fetchBlob(ref.blob, exec.signal);
+    await mkdir(dirname(output), { recursive: true });
+    const { size } = await saveBlob(opened, output, ref.blob);
+    return { path: output, size };
+  }
+
+  /** The session own directory, which relative paths are read against; the process one when there is none. */
+  private workingDirectory(exec: ToolExecution): string {
+    const session = exec.agent?.session;
+    const policy = this.sandbox?.current();
+    return policy === undefined || session === undefined ? process.cwd() : policy.resolve({ session }).workspaceRoot;
+  }
+
+  /** The session sandbox decides where this tool may write; without one to ask, it does not write. */
+  private assertWritable(path: string, exec: ToolExecution): void {
+    const session = exec.agent?.session;
+    const policy = this.sandbox?.current();
+    if (policy === undefined || session === undefined) {
+      throw new Error(
+        "the session sandbox policy is not available, so it cannot be checked that this path may be written",
+      );
+    }
+    const resolved = policy.resolve({ session });
+    if (resolved.mode === "danger-full-access") return;
+    const target = canonicalPath(dirname(path));
+    const allowed = writableRoots(resolved).some((root) => {
+      const inside = relative(root, target);
+      return inside === "" || (!inside.startsWith("..") && !isAbsolute(inside));
+    });
+    if (!allowed) throw new Error(`the session sandbox (${resolved.mode}) does not allow writing to ${path}`);
   }
 
   private async status(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-    const orcaNode = await this.awaitNode(signal);
-    return PodTool.taskStatus(await orcaNode.delegation.getTask(normalizePeerUrl(args.peer), args.task_id, signal));
+    const orca = await this.awaitOrca(signal);
+    return PodTool.taskStatus(await orca.mesh.resolve(args.peer).getTask(args.task_id, signal));
   }
 
   private async cancel(args: TaskArgs, signal: AbortSignal): Promise<TaskStatusResult> {
-    const orcaNode = await this.awaitNode(signal);
-    return PodTool.taskStatus(await orcaNode.delegation.cancelTask(normalizePeerUrl(args.peer), args.task_id, signal));
+    const orca = await this.awaitOrca(signal);
+    return PodTool.taskStatus(await orca.mesh.resolve(args.peer).cancelTask(args.task_id, signal));
   }
 
   private async members(signal: AbortSignal): Promise<MembersResult> {
-    const orcaNode = await this.awaitNode(signal);
+    const { mesh } = await this.awaitOrca(signal);
     return {
-      self: PodTool.peerSummary(orcaNode.profile.record()),
-      members: orcaNode.membership.list().map(PodTool.peerSummary),
-      members_digest: orcaNode.mesh.digest(),
+      self: PodTool.peerSummary(mesh.self.selfRecord()),
+      members: mesh.peers().map((node) => PodTool.peerSummary(node.view())),
+      members_digest: mesh.digest(),
     };
   }
 
   private async connect(args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
     const peer = normalizePeerUrl(args.peer);
-    await this.awaitNode(signal);
-    // Joining persists the peer; do not start it for a turn that is already gone.
+    await this.awaitOrca(signal);
+    // Connecting persists the peer; do not start it for a turn that is already gone.
     PodTool.throwIfAborted(signal);
     await this.pod.addPeer(peer);
-    const orcaNode = await this.awaitNode(signal);
+    const { mesh } = await this.awaitOrca(signal);
     return {
       peer,
-      members: orcaNode.membership.list().map(PodTool.peerSummary),
-      members_digest: orcaNode.mesh.digest(),
+      members: mesh.peers().map((node) => PodTool.peerSummary(node.view())),
+      members_digest: mesh.digest(),
     };
   }
 
@@ -239,10 +323,12 @@ export class PodTool {
   private run(
     call: PodCall,
     exec: ToolRunContext,
-  ): Promise<SendResult | TaskStatusResult | MembersResult | ConnectResult> {
+  ): Promise<SendResult | FetchResult | TaskStatusResult | MembersResult | ConnectResult> {
     switch (call.method) {
       case "send":
         return this.send(call.args, exec);
+      case "fetch":
+        return this.fetch(call.args, exec);
       case "status":
         return this.status(call.args, exec.signal);
       case "cancel":
@@ -259,9 +345,9 @@ export class PodTool {
    * node is not usable. A restart is the host's work, not this call's, so a
    * cancelled turn may stop waiting for it right away.
    */
-  private async awaitNode(signal: AbortSignal): Promise<OrcaNode> {
+  private async awaitOrca(signal: AbortSignal): Promise<Orca> {
     await PodTool.waitUnlessAborted(this.pod.settled(), signal);
-    return this.pod.requireRun().node;
+    return this.pod.requireRun().orca;
   }
 
   private static renderJson(_args: unknown, value: unknown): ContentBlock[] {
@@ -294,6 +380,11 @@ export class PodTool {
           args: {
             peer: PodTool.need(args, "peer"),
             text: PodTool.need(args, "text"),
+            files: (args.files ?? []).map((item) => {
+              const path = item.trim();
+              if (path.length === 0) throw new Error("files must not contain a blank entry");
+              return path;
+            }),
             echo: args.echo,
             permission_mode: args.permission_mode,
             model: args.model,
@@ -301,6 +392,8 @@ export class PodTool {
           },
         };
       }
+      case "fetch":
+        return { method, args: { ref: PodTool.need(args, "ref"), output: PodTool.need(args, "output") } };
       case "status":
       case "cancel":
         return { method, args: { peer: PodTool.need(args, "peer"), task_id: PodTool.need(args, "task_id") } };

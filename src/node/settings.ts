@@ -1,8 +1,8 @@
 /**
  * The one description of a node's settings: every field is declared once in
- * `FIELDS` with its schema, default and who may edit it. `config.json`, the
- * DSH plugin `Config`, the panel and the install/CLI flags all go
- * through `parseSettings`; nothing else validates a setting.
+ * `FIELDS` with its schema, default and who may edit it. The settings file, the
+ * panel and the tests all go through `parseSettings`; nothing else validates a
+ * setting.
  */
 
 import { z } from "zod";
@@ -10,7 +10,6 @@ import { z } from "zod";
 import { normalizePeerUrl } from "../core/net.ts";
 import { DEFAULT_PORT } from "../core/constants.ts";
 import { HarnessError } from "@deepseek-ai/dsh-error";
-import { credentialRef, isCredentialRefName, type CredentialRef } from "@deepseek-ai/dsh-credentials";
 import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../core/wire/model.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
 import { WorkgroupIdSchema, normalizeEndpoints } from "../core/wire/peer.ts";
@@ -32,7 +31,7 @@ type Field<T> = {
   default?: Readonly<T>;
   /** The panel may set it. */
   panel?: true;
-  /** Plugin-only: not written to `config.json`. */
+  /** Not part of the node config: the node is not given it, or it is not written to the settings file. */
   local?: true;
 };
 
@@ -62,45 +61,16 @@ const PeersSchema = z.array(z.string()).transform((value, ctx) => {
   }
 });
 
-/** A DSH credential reference, by DSH's own grammar (an environment-variable style name). */
-const CredentialRefSchema = z
-  .string()
-  .refine(isCredentialRefName, "must be an environment-variable style name ([A-Za-z_][A-Za-z0-9_]*)")
-  .transform(credentialRef);
-
-/**
- * Credential reference of a workgroup's password: the explicit
- * `workgroup_password_ref`, else `ORCA_POD_PASSWORD_<WORKGROUP>` with the id
- * upper-cased and `-` turned into `_`. The DSH credential store is shared by
- * every profile of one DSH home, so the name is per workgroup: profiles in the
- * same workgroup share its password, profiles in different ones never collide.
- * It is also the environment variable a headless host can export instead.
- */
-export function passwordRefFor(
-  settings: Pick<Settings, "workgroup_id" | "workgroup_password_ref">,
-): CredentialRef | undefined {
-  if (settings.workgroup_password_ref !== undefined) return settings.workgroup_password_ref;
-  if (settings.workgroup_id === undefined) return undefined;
-  return credentialRef(`ORCA_POD_PASSWORD_${settings.workgroup_id.toUpperCase().replaceAll("-", "_")}`);
-}
-
 /** The field table: the single place a setting's type, default and editability live. */
 const FIELDS = {
-  /** Unset until the panel wizard (or the CLI) picks one. */
+  /** Unset until the panel wizard picks one. */
   workgroup_id: field(WorkgroupIdSchema, { panel: true }),
   /**
-   * Plaintext input only (CLI, install, and the in-memory effective config of
-   * the plugin): it derives the workgroup key and is never persisted. Empty
-   * means "not configured yet". The plugin config refuses it: there the password
-   * lives in the DSH credential store under `workgroup_password_ref` (§7.3).
+   * Plaintext input only (a panel edit, a test): it derives the workgroup key and
+   * is never written to the settings file. Empty means "not configured yet". The
+   * stored password is a DSH credential (section 3.6 of the plan).
    */
   workgroup_password: field(z.string(), { default: "", panel: true, local: true }),
-  /**
-   * Plugin only: name of the DSH credential reference holding the workgroup
-   * password. Unset means the name derived from the workgroup id
-   * (`passwordRefFor`), so two workgroups never share a stored password.
-   */
-  workgroup_password_ref: field(CredentialRefSchema, { local: true }),
   /** Defaults to the shortened orca node id. */
   display_name: field(NonEmpty, { panel: true }),
   /** Listen address; `127.0.0.1` keeps a fresh install local until an interface is chosen. */
@@ -109,12 +79,8 @@ const FIELDS = {
   port: field(z.number().int().min(0).max(65535), { default: DEFAULT_PORT, panel: true }),
   /** Advertised dial URLs, best first; empty derives them from the listen address (§3.2). */
   endpoints: field(EndpointsSchema, { default: [], panel: true }),
-  /** Peers joined on startup (plugin only). */
+  /** Peers joined on startup. */
   peers: field(PeersSchema, { default: [], panel: true, local: true }),
-  /** Directory of config, identity and stores; defaults to `defaultDataRoot()`. */
-  data_root: field(NonEmpty),
-  /** Register the bundled `orca-node` skill with the host's skills service (plugin only). */
-  skill_injection: field(z.boolean(), { default: false, local: true }),
   /** `acp` drives a real DSH ACP session; `echo` is the debugging script machine (§6.2). */
   executor: field(ExecutorKindSchema, { panel: true }),
   acp: field(AcpExecutorConfigSchema),
@@ -159,7 +125,7 @@ export type Settings = { [K in KeysWith<{ default: unknown }>]: FieldValue<Field
   [K in Exclude<keyof FieldTable, KeysWith<{ default: unknown }>>]?: FieldValue<FieldTable[K]>;
 };
 
-/** The part of `Settings` that is persisted in `config.json`: everything but the `local` fields. */
+/** The part of `Settings` the node is configured with: everything but the `local` fields. */
 export type NodeSettings = Omit<Settings, KeysWith<{ local: true }>>;
 
 type FieldKey = keyof FieldTable;
@@ -176,7 +142,7 @@ function fromFields<R>(entries: Iterable<readonly [FieldKey, unknown]>): R {
   return Object.fromEntries(entries) as R;
 }
 
-/** Settings as the profile stores them: every key optional, `null` or absent means "default". */
+/** Settings as the settings file stores them: every key optional, `null` or absent means "default". */
 export type ConfigFields = { [K in keyof Settings]?: Settings[K] | null };
 
 /** A panel edit: the panel's own fields, a value sets one and `null` clears it back to its default. */
@@ -210,7 +176,7 @@ export class ConfigValidationError extends HarnessError {
 }
 
 /**
- * Parse untrusted settings (config.json, plugin config, panel patches, flags).
+ * Parse untrusted settings (the settings file, panel patches).
  * `undefined` and `null` both mean "unset": the default applies, so a panel
  * patch clears a field by sending `null`. Unknown keys are ignored.
  */
@@ -237,7 +203,7 @@ export function parseSettings(input: unknown): Settings {
   return result.value;
 }
 
-/** Drop the plugin-only settings, leaving what `config.json` holds. */
+/** Drop the settings the node is not configured with (the password, the peers to join). */
 export function nodeSettings(settings: Settings): NodeSettings {
   return fromFields<NodeSettings>(
     FIELD_ENTRIES.filter(([key, meta]) => meta.local !== true && settings[key] !== undefined).map(([key]) => [

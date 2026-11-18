@@ -12,6 +12,7 @@ import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { SignedGrant } from "../core/wire/grant.ts";
 import { PodError } from "../core/errors.ts";
+import { type BlobRef, parseBlobRef } from "../core/blobs.ts";
 import { describeIssue, parseOrThrow } from "../core/schema.ts";
 import { SignedGrantSchema } from "../core/wire/grant.ts";
 
@@ -23,6 +24,8 @@ export type TaskMeta = {
   effort: ReasoningEffortId | undefined;
   /** Origin's requested lifetime in seconds; the local cap still applies. */
   taskTtlS: number | undefined;
+  /** Files to fetch into the task's inbox before it starts (§3.8). */
+  files: { ref: BlobRef; name: string }[];
   echo: EchoScript;
 };
 
@@ -32,12 +35,14 @@ export type TaskMeta = {
  * `TaskMetadataSchema`; the echo script is checked here, by its executor's parser.
  */
 export function parsePodMetadata(metadata: TaskMetadata | undefined): TaskMeta {
-  const { permission_mode, model, reasoning_effort, task_ttl_s } = metadata?.pod ?? {};
+  const { permission_mode, model, reasoning_effort, task_ttl_s, files } = metadata?.pod ?? {};
   return {
     permissionMode: permission_mode ?? "read-only",
     model,
     effort: reasoning_effort ?? model?.reasoningEffort,
     taskTtlS: task_ttl_s,
+    // The schema checked every ref; a text that is not one cannot get here.
+    files: (files ?? []).map(({ ref, name }) => ({ ref: parseBlobRef(ref) as BlobRef, name })),
     echo: parseEchoScript(metadata?.echo),
   };
 }

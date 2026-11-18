@@ -9,10 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { nodeParts } from "./support/node.ts";
+import { Orca } from "../src/node/orca.ts";
 import type { PodEvent } from "../src/node/events.ts";
-import type { MembershipTimings } from "../src/mesh/membership.ts";
+import type { MeshTimings } from "../src/mesh/timings.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { isTerminal } from "../src/task/wire.ts";
 import { shortenNodeId } from "../src/core/identity.ts";
@@ -27,12 +27,13 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/wire/peer.ts";
+import { peersOf } from "./support/node.ts";
 
 const LEAF = fakeNodeId("orca-node-leaf");
 
 const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
-const FAST: Partial<MembershipTimings> = {
+const FAST: Partial<MeshTimings> = {
   intervalMs: 50,
   suspectAfterMs: 150,
   offlineAfterMs: 300,
@@ -43,7 +44,7 @@ const FAST: Partial<MembershipTimings> = {
 };
 
 const dirs: string[] = [];
-const started: OrcaNode[] = [];
+const started: Orca[] = [];
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "orca-ui-"));
@@ -56,14 +57,14 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function makeNode(workgroupId: WorkgroupId, password: string): Promise<OrcaNode> {
-  const config = await createOrcaNodeConfig({
+async function makeNode(workgroupId: WorkgroupId, password: string): Promise<Orca> {
+  const config = nodeParts({
     workgroup_id: workgroupId,
     workgroup_password: password,
     data_root: tempDir(),
     port: 0,
   });
-  const node = new OrcaNode(config, { storage: createPersistentStorage(config), timings: FAST });
+  const node = new Orca(...config, { persistent: true, timings: FAST });
   started.push(node);
   return node;
 }
@@ -84,16 +85,16 @@ function text(body: string) {
 }
 
 /** Two joined persistent orca nodes; `b` is the target of dispatches. */
-async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
+async function startPair(): Promise<{ a: Orca; b: Orca }> {
   const workgroupId = wg(`wg-ui-${Math.random().toString(16).slice(2, 8)}`);
   const password = "ui-surface-password";
   const a = await makeNode(workgroupId, password);
   const b = await makeNode(workgroupId, password);
   await a.start();
   await b.start();
-  await a.mesh.join(b.profile.endpoints[0]!);
+  await a.mesh.probe(b.mesh.self.endpoints[0]!);
   await waitFor(
-    () => a.membership.list(),
+    () => peersOf(a),
     (members) => members.some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"),
     { label: "a sees b online" },
   );
@@ -101,7 +102,7 @@ async function startPair(): Promise<{ a: OrcaNode; b: OrcaNode }> {
 }
 
 /** A pod over an already running node: the pod, its approval broker, tracker and panel model. */
-function podOver(node: OrcaNode, options?: TrackerOptions) {
+function podOver(node: Orca, options?: TrackerOptions) {
   const pod = podRunning(node);
   const broker = new ApprovalBroker(pod);
   const tracker = new Tracker(pod, broker, logger, options);
@@ -120,7 +121,7 @@ describe("UI data surface", () => {
       throw new Error("broken UI listener");
     });
 
-    const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
       message: text("hello from a"),
       metadata: { echo: { steps: [], final: { state: "completed", text: "done" }, artifacts: [] } },
     });
@@ -144,33 +145,35 @@ describe("UI data surface", () => {
       (event) => event.type === "dispatch" && event.entry.task_id === submitted.id,
     );
     expect(dispatchEvents.length).toBeGreaterThanOrEqual(1);
-    expect(a.delegation.log.list().map((entry) => entry.task_id)).toContain(submitted.id);
+    expect(a.dispatches.list().map((entry) => entry.task_id)).toContain(submitted.id);
 
     offA();
     offB();
     offThrower();
     const before = eventsOnA.length;
-    await a.delegation.sendTask(b.profile.endpoints[0]!, { message: text("second") });
+    await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({ message: text("second") });
     expect(eventsOnA.length).toBe(before);
   });
 
   it("fetches a member's file by who published it and its sha256", async () => {
     const { a, b } = await startPair();
-    const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
       message: text("produce an artifact"),
       metadata: ARTIFACT,
     });
     const view = await waitFor(
-      () => a.delegation.getTask(b.profile.endpoints[0]!, submitted.id),
+      () => a.mesh.resolve(b.mesh.self.endpoints[0]!).getTask(submitted.id),
       (current: TaskView) => isTerminal(current.status.state),
       { label: "artifact task completes" },
     );
     const blobId = view.artifacts![0]!.artifactId;
 
     // a dials b where b answers; the reference carries no address.
-    expect(await readAll((await a.blobs.fetch(b.orcaNodeId, blobId)).stream)).toBe("hello");
+    expect(await readAll((await a.mesh.require(b.orcaNodeId).fetchBlob(blobId)).stream)).toBe("hello");
     // b answered: its 404 stands, no other address is tried.
-    await expect(a.blobs.fetch(b.orcaNodeId, "0".repeat(64))).rejects.toMatchObject({ code: "blob_not_found" });
+    await expect(a.mesh.require(b.orcaNodeId).fetchBlob("0".repeat(64))).rejects.toMatchObject({
+      code: "blob_not_found",
+    });
   });
 
   it("exposes workspace paths, notes and artifact links through the panel model", async () => {
@@ -181,7 +184,7 @@ describe("UI data surface", () => {
     const workspace = panel.workspace()!;
     expect(workspace.notes_files).toEqual(["STATUS.md"]);
 
-    const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
       message: text("produce an artifact"),
       metadata: ARTIFACT,
     });
@@ -192,9 +195,10 @@ describe("UI data surface", () => {
     );
     const row = rows.find((entry) => entry.id === submitted.id)!;
     expect(row).toMatchObject({
-      peer: b.profile.endpoints[0],
+      peer: b.orcaNodeId,
+      node: b.orcaNodeId,
       cancellable: false,
-      who: a.profile.record().display_name,
+      who: a.mesh.self.selfRecord().display_name,
     });
     expect(row.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
     // The panel saves it through this node.
@@ -209,7 +213,7 @@ describe("UI data surface", () => {
     const { panel: panelA } = podOver(a);
     const { panel: panelB } = podOver(b);
 
-    const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
       message: text("keep working"),
       metadata: { echo: { final: { state: "hang", text: "" } } },
     });
@@ -219,22 +223,23 @@ describe("UI data surface", () => {
       { label: "task runs on b" },
     );
 
-    // The origin knows it only through its dispatch log: the target is the peer's URL and
+    // The origin knows it only through its dispatch log: the target is the node it went to and
     // there are no artifact links this node could sign.
     const dispatched = panelA.recent(10).find((row) => row.id === submitted.id)!;
     expect(dispatched).toMatchObject({
-      peer: b.profile.endpoints[0],
-      who: b.profile.record().display_name,
+      peer: b.orcaNodeId,
+      node: b.orcaNodeId,
+      who: b.mesh.self.selfRecord().display_name,
       cancellable: true,
       artifacts: [],
     });
 
-    // The target runs it locally: the row addresses its own URL, and a call there works.
+    // The target runs it locally: the row addresses its own node, and a call there works.
     const local = panelB.recent(10).find((row) => row.id === submitted.id)!;
-    expect(local.peer).toBe(b.profile.endpoints[0]);
+    expect(local.peer).toBe(b.orcaNodeId);
     expect(panelB.recent(10).filter((row) => row.id === submitted.id)).toHaveLength(1);
     const detail = await panelB.task(local.peer, local.id);
-    expect(detail).toMatchObject({ origin: a.profile.record().display_name, dispatch: null });
+    expect(detail).toMatchObject({ origin: a.mesh.self.selfRecord().display_name, dispatch: null });
     expect((await panelB.cancel(local.peer, local.id)).status.state).toBe("canceled");
     await waitFor(
       () => panelB.recent(10),
@@ -247,7 +252,7 @@ describe("UI data surface", () => {
   it("serves a remote task with its dispatch record and no artifact link this node cannot sign", async () => {
     const { a, b } = await startPair();
     const { panel: panelA } = podOver(a);
-    const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, {
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
       message: text("produce an artifact"),
       metadata: ARTIFACT,
     });
@@ -257,11 +262,11 @@ describe("UI data surface", () => {
       { label: "task completes on b" },
     );
 
-    const detail = await panelA.task(b.profile.endpoints[0]!, submitted.id);
+    const detail = await panelA.task(b.mesh.self.endpoints[0]!, submitted.id);
     expect(detail.task.id).toBe(submitted.id);
-    expect(detail.dispatch).toMatchObject({ task_id: submitted.id, peer: b.profile.endpoints[0] });
+    expect(detail.dispatch).toMatchObject({ task_id: submitted.id, node: b.orcaNodeId });
     expect(detail.artifacts).toEqual([{ name: "out.txt", blob_id: expect.any(String), bytes: 5, node: b.orcaNodeId }]);
-    expect(detail.origin).toBe(a.profile.record().display_name);
+    expect(detail.origin).toBe(a.mesh.self.selfRecord().display_name);
   });
 
   it("lists pending approvals from tracked remote tasks", async () => {
@@ -294,11 +299,12 @@ describe("UI data surface", () => {
         },
       },
     };
-    vi.spyOn(b.delegation, "getTask").mockResolvedValue(suspended);
+    // b tracks a task that runs on a, which it knows from a's hello.
+    vi.spyOn(b.mesh.require(a.orcaNodeId), "getTask").mockResolvedValue(suspended);
     const { tracker, panel } = podOver(b, { intervalMs: 20 });
     tracker.track(
       { id: SessionId("agent-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent,
-      "http://127.0.0.1:1",
+      a.orcaNodeId,
       suspended.id,
     );
     const approvals = await waitFor(
@@ -309,7 +315,7 @@ describe("UI data surface", () => {
     // The broker holds what the tracker saw: one entry, answerable by the UI.
     expect(approvals).toMatchObject([
       {
-        id: `http://127.0.0.1:1|${suspended.id}`,
+        id: `${a.orcaNodeId}|${suspended.id}`,
         task_id: suspended.id,
         tool: "write_file",
         agent_id: "agent-1",
@@ -319,12 +325,14 @@ describe("UI data surface", () => {
     tracker.stop();
 
     // Approving a task that is not blocked on a permission request is reported.
-    const submitted = await a.delegation.sendTask(b.profile.endpoints[0]!, { message: text("finished quickly") });
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({ message: text("finished quickly") });
     await waitFor(
       () => b.tasks.list(),
       (tasks) => tasks.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
       { label: "task completes" },
     );
-    await expect(panel.approve(b.profile.endpoints[0]!, submitted.id)).rejects.toThrow(/no pending permission request/);
+    await expect(panel.approve(b.mesh.self.endpoints[0]!, submitted.id)).rejects.toThrow(
+      /no pending permission request/,
+    );
   });
 });

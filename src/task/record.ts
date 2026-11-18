@@ -17,13 +17,14 @@ import { randomUUID } from "node:crypto";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
 
-import type { FileBlobRegistry } from "../core/blobs.ts";
+import type { FetchBlob, FileBlobRegistry } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import { narrowPermissionMode } from "../core/wire/permission.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor/executor.ts";
+import { TaskFiles } from "./files.ts";
 import type { GrantFailure } from "./grants.ts";
 import type { TaskMeta } from "./meta.ts";
 import { composePrompt } from "./prompt.ts";
@@ -34,8 +35,10 @@ import type { Workspace } from "./workspace.ts";
 export type TaskSettings = {
   logger: NodeLogger;
   selfOrcaNodeId: OrcaNodeId;
-  /** Data root, so the prompt can point an agent at the local CLI (§6.14). */
-  dataRoot: string;
+  /** Fetches the files an origin attaches to a task from the member that published them (§3.8). */
+  fetchBlob: FetchBlob;
+  /** The largest single file taken into a task's inbox or handed back from its outbox. */
+  maxFileBytes: number;
   /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
   permissionCeiling?: SandboxMode;
   /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
@@ -64,6 +67,7 @@ export class TaskRecord {
   private readonly meta: TaskMeta;
   private readonly ttlS: number;
   private readonly text: string;
+  private readonly files: TaskFiles;
   private readonly abort = new AbortController();
   /** Effective mode: inherited and capped at the start, widened by a grant (§7.12). */
   private mode: SandboxMode;
@@ -89,6 +93,7 @@ export class TaskRecord {
     this.meta = init.meta;
     this.ttlS = init.ttlS;
     this.text = init.text;
+    this.files = new TaskFiles(this.id, init.meta.files, workspace, blobs, settings.fetchBlob, settings.maxFileBytes);
     // The ceiling only narrows what the origin asked for (§7.10); a grant widens it later (§7.12).
     this.mode =
       settings.permissionCeiling === undefined
@@ -153,7 +158,7 @@ export class TaskRecord {
     this.changes.notify();
   }
 
-  /** The single exit: after this the task holds no timer, permission request or directory. */
+  /** The single exit: after this the task holds no timer, permission request or inbox/outbox directory. */
   private finish(state: TaskState, message: A2AMessage | undefined, reason?: string): void {
     if (this.over) return;
     this.view.status = {
@@ -165,6 +170,9 @@ export class TaskRecord {
     this.clearTtl();
     this.clearPermissionTimer();
     this.request = null;
+    this.files.clear().catch((error: unknown) => {
+      this.settings.logger.warn(`task ${this.id}: its inbox/outbox could not be removed: ${errorMessage(error)}`);
+    });
     this.changes.notify();
   }
 
@@ -192,13 +200,14 @@ export class TaskRecord {
 
   private async prepare(): Promise<ExecuteInput> {
     const { meta, settings, workspace } = this;
+    const inputs = await this.files.stage(this.abort.signal);
     return {
       taskId: this.id,
       contextId: this.view.contextId,
       prompt: composePrompt({
         taskId: this.id,
         selfOrcaNodeId: settings.selfOrcaNodeId,
-        dataRoot: settings.dataRoot,
+        inputs,
         text: this.text,
         noteFiles: workspace.noteFiles(),
       }),
@@ -234,9 +243,9 @@ export class TaskRecord {
           await this.addArtifact(event.name, event.content);
           break;
         case "completed":
-          return this.finish("completed", textMessage(event.text));
+          return this.finish("completed", textMessage(await this.handBack(event.text)));
         case "failed":
-          return this.finish("failed", textMessage(event.text), event.reason ?? "executor_error");
+          return this.finish("failed", textMessage(await this.handBack(event.text)), event.reason ?? "executor_error");
         default:
           return assertNever(event);
       }
@@ -260,6 +269,18 @@ export class TaskRecord {
       { artifactId: blob.blob_id, name, mediaType: "text/plain", bytes: blob.size },
     ];
     this.changes.notify();
+  }
+
+  /**
+   * The task ends: publish what the agent left in its outbox and attach it to
+   * the task as artifacts (§3.8). Files that could not be handed back are named
+   * in the text the origin reads.
+   */
+  private async handBack(text: string): Promise<string> {
+    const { artifacts, note } = await this.files.publish((this.view.artifacts ?? []).length + 1);
+    if (this.over) return text;
+    if (artifacts.length > 0) this.view.artifacts = [...(this.view.artifacts ?? []), ...artifacts];
+    return note === null ? text : `${text}\n\n[orca-pod] ${note}`;
   }
 
   /** Ask the origin to let this task continue with a wider mode (§7.12); the executor waits for the answer. */

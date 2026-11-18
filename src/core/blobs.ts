@@ -7,7 +7,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { rename, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -16,7 +17,7 @@ import type { StatementSync } from "node:sqlite";
 import { z } from "zod";
 
 import { PodError } from "./errors.ts";
-import { SqliteDb } from "./sqlite.ts";
+import type { SqliteDb } from "./sqlite.ts";
 import { type OrcaNodeId, OrcaNodeIdSchema } from "./wire/peer.ts";
 
 /** A blob id is the sha256 of the file, as lowercase hex. */
@@ -59,12 +60,13 @@ export type FileBlob = {
 export interface FileBlobStore {
   save(blob: FileBlob): void;
   get(blobId: string): FileBlob | undefined;
-  /** SQLite handles need closing so Windows can delete the data dir. */
-  close(): void;
 }
 
 /** A published file, open for streaming. */
 export type OpenedBlob = { stream: Readable; size: number | undefined };
+
+/** Open a file some member published, wherever it lives (§5.6); supplied by whoever owns the mesh. */
+export type FetchBlob = (ref: BlobRef, signal?: AbortSignal) => Promise<OpenedBlob>;
 
 export interface FileBlobRegistry {
   register(path: string, ttlS?: number): Promise<FileBlob>;
@@ -85,23 +87,32 @@ export class MemoryFileBlobStore implements FileBlobStore {
   get(blobId: string): FileBlob | undefined {
     return this.entries.get(blobId);
   }
-
-  close(): void {}
 }
 
 /**
  * Durable file-blob mapping (§5.6), in the same database as tasks so one
- * `data_root` holds all node state. The CLI writes rows directly; the gateway
- * reads them, which is why publishing needs no network route at all.
+ * `data_root` holds all node state. This node writes rows when it publishes a
+ * file and the gateway reads them, which is why publishing needs no network route at all.
  */
 export class SqliteFileBlobStore implements FileBlobStore {
-  private readonly handle: SqliteDb;
-  private readonly upsert: StatementSync;
-  private readonly selectOne: StatementSync;
+  /** Prepared on first use, because the database opens after the store is built. */
+  private statements: { upsert: StatementSync; selectOne: StatementSync } | undefined;
 
-  constructor(path: string) {
-    this.handle = new SqliteDb(path);
-    this.handle.db.exec(
+  constructor(private readonly handle: SqliteDb) {}
+
+  save(blob: FileBlob): void {
+    if (!this.handle.closed) this.prepared().upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
+  }
+
+  get(blobId: string): FileBlob | undefined {
+    const row = this.handle.closed ? undefined : (this.prepared().selectOne.get(blobId) as FileBlob | undefined);
+    return row && { ...row, size: Number(row.size) };
+  }
+
+  private prepared(): NonNullable<SqliteFileBlobStore["statements"]> {
+    if (this.statements !== undefined) return this.statements;
+    const { db } = this.handle;
+    db.exec(
       `CREATE TABLE IF NOT EXISTS file_blobs (
          blob_id TEXT PRIMARY KEY,
          path TEXT NOT NULL,
@@ -109,43 +120,65 @@ export class SqliteFileBlobStore implements FileBlobStore {
          expires_at TEXT
        )`,
     );
-    this.upsert = this.handle.db.prepare(
-      `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
-    );
-    this.selectOne = this.handle.db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?");
-  }
-
-  save(blob: FileBlob): void {
-    if (!this.handle.closed) this.upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
-  }
-
-  get(blobId: string): FileBlob | undefined {
-    const row = this.handle.closed ? undefined : (this.selectOne.get(blobId) as FileBlob | undefined);
-    return row && { ...row, size: Number(row.size) };
-  }
-
-  close(): void {
-    this.handle.close();
+    this.statements = {
+      upsert: db.prepare(
+        `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
+      ),
+      selectOne: db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?"),
+    };
+    return this.statements;
   }
 }
 
 /**
  * A pass-through that hashes (sha256) and counts what flows through it: a file
  * is named by this digest when it is published and checked against it when it
- * is fetched (§5.6).
+ * is fetched (§5.6). It fails the stream once more than `maxBytes` have passed.
  */
-export function sha256Tap(): { stream: Transform; digest(): { sha: string; size: number } } {
+export function sha256Tap(maxBytes = Number.POSITIVE_INFINITY): {
+  stream: Transform;
+  digest(): { sha: string; size: number };
+} {
   const hash = createHash("sha256");
   let size = 0;
   const stream = new Transform({
     transform(chunk: Buffer, _encoding, done) {
       hash.update(chunk);
       size += chunk.length;
-      done(null, chunk);
+      if (size > maxBytes) done(new PodError("blob_too_large", `the file is larger than ${maxBytes} bytes`));
+      else done(null, chunk);
     },
   });
   return { stream, digest: () => ({ sha: hash.digest("hex"), size }) };
+}
+
+/**
+ * Write a fetched file to `path`: the bytes go to `<path>.part` first and are
+ * moved into place only when their sha256 is the one the file is named by (§5.6)
+ * and they stay within `maxBytes`. Nothing is left behind on failure.
+ */
+export async function saveBlob(
+  opened: OpenedBlob,
+  path: string,
+  sha: string,
+  maxBytes = Number.POSITIVE_INFINITY,
+): Promise<{ size: number }> {
+  const tap = sha256Tap(maxBytes);
+  const partial = `${path}.part`;
+  try {
+    await pipeline(opened.stream, tap.stream, createWriteStream(partial));
+    const digest = tap.digest();
+    if (digest.sha !== sha) {
+      throw new PodError("peer_error", `the file fetched as ${sha} hashes to ${digest.sha}; nothing was written`, 502);
+    }
+    await rename(partial, path);
+    return { size: digest.size };
+  } catch (error) {
+    opened.stream.destroy();
+    await rm(partial, { force: true });
+    throw error;
+  }
 }
 
 /**
@@ -159,8 +192,8 @@ export function sha256Tap(): { stream: Transform; digest(): { sha: string; size:
  * while the `blob_id` itself is the bare sha256.
  *
  * Registration is a local capability, not an HTTP route: publishing a path is
- * equivalent to reading it. The CLI therefore writes the mapping straight into
- * the node's SQLite database; peers only ever see that name, never a path.
+ * equivalent to reading it. Only this node's own code (the `orca_pod` tool, the
+ * task runner) registers files; peers only ever see the name, never a path.
  */
 export class DiskBlobRegistry implements FileBlobRegistry {
   constructor(private readonly store: FileBlobStore) {}

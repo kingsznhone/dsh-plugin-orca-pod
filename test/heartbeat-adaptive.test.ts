@@ -1,30 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  Membership,
-  HEARTBEAT_INTERVAL_MAX_MS,
-  HEARTBEAT_INTERVAL_MIN_MS,
-  heartbeatIntervalMsFor,
-} from "../src/mesh/membership.ts";
-import type { PeerView, OrcaNodeId } from "../src/core/wire/peer.ts";
+import { HEARTBEAT_INTERVAL_MAX_MS, HEARTBEAT_INTERVAL_MIN_MS, heartbeatIntervalMsFor } from "../src/mesh/timings.ts";
 import { createMesh, waitFor } from "./support/harness.ts";
+import { peersOf } from "./support/node.ts";
 import { labelId } from "./fixtures/ids.ts";
+import { listed, testMesh } from "./support/mesh.ts";
 
 async function eventually(probe: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
   await waitFor(probe, (ok) => ok, { timeoutMs, label });
-}
-
-function peer(orcaNodeId: OrcaNodeId): PeerView {
-  return {
-    orca_node_id: orcaNodeId,
-    display_name: orcaNodeId,
-    endpoints: [`http://127.0.0.1:1`],
-    runtime: null,
-    runtime_digest: "digest",
-    state: "unknown",
-    busy: null,
-    last_recv_at: null,
-  };
 }
 
 describe("heartbeatIntervalMsFor", () => {
@@ -41,34 +24,33 @@ describe("heartbeatIntervalMsFor", () => {
 
 describe("adaptive membership windows", () => {
   it("derives one-miss suspect and three-miss offline from the cadence", () => {
-    let nowMs = 0;
-    const membership = new Membership(labelId("SELF"), {
-      timings: { intervalMs: 5000 },
-      clock: { monotonicMs: () => nowMs, wallIso: () => new Date(0).toISOString() },
-    });
+    const table = testMesh({ intervalMs: 5000 });
+    const { mesh } = table;
     const stateAfterEvaluate = () => {
-      membership.evaluate();
-      return membership.get(labelId("PEER01"))?.state;
+      mesh.evaluate();
+      return mesh.get(labelId("PEER01"))?.state;
     };
-    membership.upsert(peer(labelId("PEER01")));
-    // The first inbound heartbeat is what makes the peer online.
-    membership.observeInbound(labelId("PEER01"));
+    mesh.mergeRemote([listed(labelId("PEER01"), "http://127.0.0.1:1")]);
+    // The first inbound message is what makes the peer online.
+    table.hear(labelId("PEER01"));
+    const heardAt = table.clock.monotonicMs();
 
-    membership.setIntervalMs(5000);
-    expect(membership.timings.intervalMs).toBe(5000);
-    expect(membership.timings.suspectAfterMs).toBe(6250);
-    expect(membership.timings.offlineAfterMs).toBe(15_000);
+    mesh.setIntervalMs(5000);
+    expect(mesh.timings.intervalMs).toBe(5000);
+    expect(mesh.timings.suspectAfterMs).toBe(6250);
+    expect(mesh.timings.offlineAfterMs).toBe(15_000);
 
-    nowMs = 6249;
+    table.advance(6249);
     expect(stateAfterEvaluate()).toBe("online");
 
-    nowMs = 6250;
+    table.advance(1);
     expect(stateAfterEvaluate()).toBe("suspect");
 
-    nowMs = 14_999;
+    table.advance(14_999 - 6250);
     expect(stateAfterEvaluate()).toBe("suspect");
 
-    nowMs = 15_000;
+    table.advance(1);
+    expect(table.clock.monotonicMs() - heardAt).toBe(15_000);
     expect(stateAfterEvaluate()).toBe("offline");
   });
 });
@@ -78,7 +60,7 @@ describe("node cadence follows the mesh", () => {
     const pair = await createMesh({ orcaNodes: 2, workgroupId: "adaptive-pair", password: "correct horse" });
     try {
       await eventually(
-        () => pair.orcaNodes.every((orcaNode) => orcaNode.membership.timings.intervalMs === 2000),
+        () => pair.orcaNodes.every((orcaNode) => orcaNode.mesh.timings.intervalMs === 2000),
         "pair cadence",
       );
     } finally {
@@ -91,7 +73,7 @@ describe("node cadence follows the mesh", () => {
       await eventually(
         () =>
           mesh.orcaNodes.every(
-            (orcaNode) => orcaNode.membership.list().length === 4 && orcaNode.membership.timings.intervalMs === 5000,
+            (orcaNode) => peersOf(orcaNode).length === 4 && orcaNode.mesh.timings.intervalMs === 5000,
           ),
         "five-node cadence",
         20_000,
@@ -110,7 +92,7 @@ describe("node cadence follows the mesh", () => {
     });
     try {
       await eventually(
-        () => mesh.orcaNodes.every((orcaNode) => orcaNode.membership.timings.intervalMs === 60),
+        () => mesh.orcaNodes.every((orcaNode) => orcaNode.mesh.timings.intervalMs === 60),
         "pinned cadence",
         5_000,
       );

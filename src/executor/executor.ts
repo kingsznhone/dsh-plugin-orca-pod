@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { RequestedAccessSchema, type RequestedAccess } from "../core/wire/grant.ts";
+import { MAX_TASK_FILES } from "../core/constants.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
 
@@ -16,14 +17,13 @@ const ECHO_LIMITS = {
   max_steps: 8,
   max_total_ms: 60_000,
   max_text_bytes: 8 * 1024,
-  max_artifacts: 4,
+  max_artifacts: MAX_TASK_FILES,
   max_artifact_bytes: 4 * 1024,
 } as const;
 
-const byteLength = (text: string): number => Buffer.byteLength(text, "utf8");
-
 /** A string that is at most `max` bytes in UTF-8. */
-const boundedText = (max: number) => z.string().refine((text) => byteLength(text) <= max, `must be <= ${max} bytes`);
+const boundedText = (max: number) =>
+  z.string().refine((text) => Buffer.byteLength(text, "utf8") <= max, `must be <= ${max} bytes`);
 
 const EchoSuspendSchema = z.strictObject({
   kind: z.literal("permission", 'must be "permission"'),

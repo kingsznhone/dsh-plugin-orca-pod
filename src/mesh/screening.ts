@@ -95,3 +95,59 @@ export async function screenEndpoint(endpoint: string, policy: DialPolicy = {}):
   if (addresses.length === 0) return "unresolved";
   return addresses.every((entry) => addressAllowed(entry.address, policy)) ? "allowed" : "refused";
 }
+
+/** How long one screening conclusion is reused (§7.7). */
+const SCREENING_TTL_MS = 60_000;
+
+type Cached<T> = { value: T; until: number };
+
+/**
+ * What this node has concluded about endpoints it was told of, kept briefly: a
+ * lookup per heartbeat would be wasteful, but a conclusion kept for the whole
+ * process would never notice that a name now points somewhere else.
+ *
+ * Two kinds of endpoint come through here (§7.7): a candidate, learned from
+ * someone else's member list, is screened under the node's own policy before it
+ * is dialed; the endpoints a node declares for itself in its `hello` are screened
+ * before they are recorded, under the policy of explicit contact.
+ */
+export class EndpointScreen {
+  private readonly candidates = new Map<string, Cached<boolean>>();
+  private readonly declarations = new Map<string, Cached<string[]>>();
+
+  constructor(
+    private readonly policy: DialPolicy,
+    private readonly clock: () => number = Date.now,
+  ) {}
+
+  /** Whether a candidate endpoint may be dialed. */
+  async candidate(endpoint: string): Promise<boolean> {
+    const cached = this.candidates.get(endpoint);
+    if (cached !== undefined && cached.until > this.clock()) return cached.value;
+    const value = (await screenEndpoint(endpoint, this.policy)) === "allowed";
+    this.candidates.set(endpoint, { value, until: this.clock() + SCREENING_TTL_MS });
+    return value;
+  }
+
+  /**
+   * The endpoints a node declared in its `hello` that this node is willing to dial
+   * back. The sender proved the password, so public addresses are fine, but what
+   * it declares is still input: link-local (cloud metadata), multicast and
+   * unspecified addresses are dropped, and so are loopback addresses unless the
+   * request itself came over loopback (a remote machine cannot be reached at our
+   * 127.0.0.1, so such an endpoint could only aim our heartbeats at a local
+   * service). A name that does not resolve from here is kept: it is not known to
+   * be bad. `fresh` screens again instead of reusing the last conclusion: a first
+   * contact always does.
+   */
+  async declared(declared: readonly string[], overLoopback: boolean, fresh: boolean): Promise<string[]> {
+    const key = `${overLoopback}|${declared.join(",")}`;
+    const cached = this.declarations.get(key);
+    if (!fresh && cached !== undefined && cached.until > this.clock()) return cached.value;
+    const policy = { ...EXPLICIT_DIAL_POLICY, allowLoopbackPeers: overLoopback };
+    const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, policy)));
+    const allowed = declared.filter((_, index) => verdicts[index] !== "refused");
+    this.declarations.set(key, { value: allowed, until: this.clock() + SCREENING_TTL_MS });
+    return allowed;
+  }
+}

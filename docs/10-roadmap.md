@@ -1,5 +1,7 @@
 # 10 路线图与验收
 
+> D44（第四轮重构）之后，下面按阶段记录的内容里 `/cluster/join`、`/cluster/heartbeat`、`/cluster/blob`、`orca-node` CLI、`orca-pod install`、`identity.json` / `config.json` 都已不存在：接触与心跳合并为 `/cluster/hello`，身份与密码在 DSH 凭据库，只保留 DSH 插件形态。路线图是当时的验收记录，不随之改写；现状以各章为准。
+
 > 本章给出从两台机器到 10 台机器的分阶段计划与验收标准。各阶段的当前状态以 [§10.6](10-roadmap.md#106-验收标准) 的勾选为准；本章不再记录“进展”流水账。
 
 ## 10. 路线图与验收

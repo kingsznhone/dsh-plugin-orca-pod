@@ -1,37 +1,54 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { identityPath, loadIdentity, loadOrCreateIdentity } from "../src/core/identity.ts";
+import {
+  decodeBase58,
+  encodeBase58,
+  exportIdentity,
+  generateNodeIdentity,
+  importIdentity,
+  signWithIdentity,
+  verifyWithNodeId,
+} from "../src/core/identity.ts";
 
-const tempRoot = (): string => mkdtempSync(join(tmpdir(), "orca-identity-"));
-
-describe("node identity file", () => {
-  it("has no identity before the first start, and keeps the one it creates", async () => {
-    const root = tempRoot();
-    expect(loadIdentity(root)).toBeNull();
-    const created = await loadOrCreateIdentity(root);
-    expect(loadIdentity(root)?.orcaNodeId).toBe(created.orcaNodeId);
-    expect((await loadOrCreateIdentity(root)).orcaNodeId).toBe(created.orcaNodeId);
+describe("base58", () => {
+  it("encodes the way the Bitcoin alphabet does", () => {
+    expect(encodeBase58(Buffer.from("Hello World!"))).toBe("2NEpo7TZRRrLZSi2U");
+    expect(encodeBase58(Buffer.alloc(0))).toBe("");
   });
 
-  it("refuses a damaged identity file instead of silently making a new node (B6)", async () => {
-    const root = tempRoot();
-    await loadOrCreateIdentity(root);
-    const before = readFileSync(identityPath(root), "utf8");
-    writeFileSync(identityPath(root), "{ not json");
-    expect(() => loadIdentity(root)).toThrow(/valid Ed25519 private key/);
-    await expect(loadOrCreateIdentity(root)).rejects.toThrow(/valid Ed25519 private key/);
-    // Nothing overwrote the damaged file: the owner can still restore it.
-    expect(readFileSync(identityPath(root), "utf8")).toBe("{ not json");
-    expect(before).not.toBe("{ not json");
+  it("keeps leading zero bytes as leading ones", () => {
+    expect(encodeBase58(Buffer.from([0, 0, 1]))).toBe("112");
+    expect(decodeBase58("112")).toEqual(Buffer.from([0, 0, 1]));
   });
 
-  it("gives processes that start together the same identity (B19)", async () => {
-    const root = tempRoot();
-    const ids = await Promise.all(Array.from({ length: 5 }, async () => (await loadOrCreateIdentity(root)).orcaNodeId));
-    expect(new Set(ids).size).toBe(1);
-    expect(loadIdentity(root)?.orcaNodeId).toBe(ids[0]);
+  it("round-trips random bytes", () => {
+    for (let length = 0; length < 40; length += 1) {
+      const bytes = Buffer.from(Array.from({ length }, () => Math.floor(Math.random() * 256)));
+      expect(decodeBase58(encodeBase58(bytes))).toEqual(bytes);
+    }
+  });
+
+  it("refuses a character outside the alphabet", () => {
+    expect(() => decodeBase58("0OIl")).toThrow(/not a base58 character/);
+  });
+});
+
+describe("node identity", () => {
+  it("is exported as the base58 of its 32-byte seed and imported back as the same node", () => {
+    const identity = generateNodeIdentity();
+    const text = exportIdentity(identity);
+    expect(decodeBase58(text)).toHaveLength(32);
+
+    const again = importIdentity(text);
+    expect(again.orcaNodeId).toBe(identity.orcaNodeId);
+    // The imported key signs as the same node.
+    const signature = signWithIdentity(again, "hello");
+    expect(verifyWithNodeId(identity.orcaNodeId, "hello", signature)).toBe(true);
+    expect(verifyWithNodeId(identity.orcaNodeId, "hullo", signature)).toBe(false);
+  });
+
+  it("refuses text that is not an Ed25519 seed", () => {
+    expect(() => importIdentity("not*base58")).toThrow();
+    expect(() => importIdentity(encodeBase58(Buffer.alloc(31, 7)))).toThrow(/32 bytes/);
   });
 });

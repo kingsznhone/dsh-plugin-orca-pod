@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { nodeParts } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
-import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
+import { peersOf } from "./support/node.ts";
 
 const WORKGROUP = wg("orca-accept");
 const PASSWORD = "correct horse";
@@ -35,8 +36,8 @@ async function waitFor(what: string, predicate: () => boolean, timeoutMs = 4_000
   throw new Error(`timed out waiting for ${what}`);
 }
 
-function stateOf(node: OrcaNode, orcaNodeId: string): string | undefined {
-  return node.membership.list().find((peer) => peer.orca_node_id === orcaNodeId)?.state;
+function stateOf(node: Orca, orcaNodeId: string): string | undefined {
+  return peersOf(node).find((peer) => peer.orca_node_id === orcaNodeId)?.state;
 }
 
 function hangTask() {
@@ -75,10 +76,10 @@ describe("acceptance: membership under partition", () => {
       expect(a).toBeDefined();
       await waitFor(
         "three online members",
-        () => a.membership.list().length === 2 && a.membership.list().every((peer) => peer.state === "online"),
+        () => peersOf(a).length === 2 && peersOf(a).every((peer) => peer.state === "online"),
       );
 
-      blockedPort = new URL(b.profile.endpoints[0]!).port;
+      blockedPort = new URL(b.mesh.self.endpoints[0]!).port;
       blockedIndex = 1;
       await waitFor(
         "B offline at A and C",
@@ -101,18 +102,18 @@ describe("acceptance: membership under partition", () => {
     try {
       const [a, b, c] = mesh.orcaNodes;
       if (a === undefined || b === undefined || c === undefined) throw new Error("mesh is short");
-      const created = await a.delegation.sendTask(b.profile.endpoints[0]!, {
+      const created = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
         message: { role: "user", parts: [{ kind: "text", text: "hello" }] },
         metadata: { echo: { final: { state: "completed", text: "from b" } } },
       });
-      let view = await a.delegation.getTask(b.profile.endpoints[0]!, created.id);
+      let view = await a.mesh.resolve(b.mesh.self.endpoints[0]!).getTask(created.id);
       for (let i = 0; i < 100 && view.status.state !== "completed"; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 20));
-        view = await a.delegation.getTask(b.profile.endpoints[0]!, created.id);
+        view = await a.mesh.resolve(b.mesh.self.endpoints[0]!).getTask(created.id);
       }
       expect(view.status.state).toBe("completed");
 
-      const asC = await c.delegation.getTask(b.profile.endpoints[0]!, created.id);
+      const asC = await c.mesh.resolve(b.mesh.self.endpoints[0]!).getTask(created.id);
       expect(asC.id).toBe(created.id);
       expect(asC.status.state).toBe("completed");
     } finally {
@@ -124,17 +125,17 @@ describe("acceptance: membership under partition", () => {
 describe("acceptance: single slot concurrency", () => {
   it("starts exactly one agent turn for ten concurrent dispatches", async () => {
     const root = await tempDir();
-    const config = await createOrcaNodeConfig({
+    const config = nodeParts({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: root,
       port: 0,
     });
-    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
+    const node = new Orca(...config, { persistent: true });
     await node.start();
     try {
       const results = await Promise.allSettled(
-        Array.from({ length: 10 }, () => node.delegation.sendTask(node.profile.endpoints[0]!, hangTask())),
+        Array.from({ length: 10 }, () => node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask(hangTask())),
       );
       const accepted = results.filter((result) => result.status === "fulfilled");
       const rejected = results.filter((result) => result.status === "rejected");
@@ -146,7 +147,7 @@ describe("acceptance: single slot concurrency", () => {
       }
       const running = accepted[0];
       if (running?.status === "fulfilled") {
-        await node.delegation.cancelTask(node.profile.endpoints[0]!, running.value.id);
+        await node.mesh.resolve(node.mesh.self.endpoints[0]!).cancelTask(running.value.id);
       }
     } finally {
       await node.stop();
@@ -159,40 +160,40 @@ describe("acceptance: password rotation", () => {
     const rootA = await tempDir("orca-rot-a-");
     const rootB = await tempDir("orca-rot-b-");
 
-    const configA1 = await createOrcaNodeConfig({
+    const configA1 = nodeParts({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: rootA,
       port: 0,
     });
-    const configB = await createOrcaNodeConfig({
+    const configB = nodeParts({
       workgroup_id: WORKGROUP,
       workgroup_password: PASSWORD,
       data_root: rootB,
       port: 0,
     });
-    const a1 = new OrcaNode(configA1, { storage: createPersistentStorage(configA1) });
-    const b = new OrcaNode(configB, { storage: createPersistentStorage(configB) });
+    const a1 = new Orca(...configA1, { persistent: true });
+    const b = new Orca(...configB, { persistent: true });
     await a1.start();
     await b.start();
-    await b.mesh.join(a1.profile.endpoints[0]!);
+    await b.mesh.probe(a1.mesh.self.endpoints[0]!);
     await a1.stop();
     await b.stop();
 
     const rotatedRoot = await tempDir("orca-rot-new-");
-    const rotated = await createOrcaNodeConfig({
+    const rotated = nodeParts({
       workgroup_id: WORKGROUP,
       workgroup_password: "a brand new password",
       data_root: rotatedRoot,
       port: 0,
     });
-    const a2 = new OrcaNode(rotated, { storage: createPersistentStorage(rotated) });
-    const b2 = new OrcaNode(configB, { storage: createPersistentStorage(configB) });
+    const a2 = new Orca(...rotated, { persistent: true });
+    const b2 = new Orca(...configB, { persistent: true });
     await a2.start();
     await b2.start();
     try {
-      await expect(b2.mesh.join(a2.profile.endpoints[0]!)).rejects.toMatchObject({ status: 401 });
-      expect(b2.membership.list().some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(false);
+      await expect(b2.mesh.probe(a2.mesh.self.endpoints[0]!)).rejects.toMatchObject({ status: 401 });
+      expect(peersOf(b2).some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(false);
     } finally {
       await a2.stop();
       await b2.stop();

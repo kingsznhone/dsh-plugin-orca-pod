@@ -41,7 +41,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 - 只有 `sendTask` 新建条目；`getTask`/`cancelTask`/审批只刷新已存在的条目；
 - 节点启动时把仍非终态的条目标成 `state=unknown, last_error=origin_restart`——**不把“看不见”写成“失败”**；之后重新轮询到真实状态再覆盖；
-- 人可以 `orca-node log [--json]` 直接看这张表（节点没跑也行）；
+- 面板的“全部任务”列出这张表；
 - 派发时 tracker 把发起会话的 id 写进 `agent_id`；宿主重启后，对仍在宿主里的会话恢复跟踪（[§5.2](05-tasks.md#52-任务回报)），其余任务靠 `status` 或面板查看，不静默丢失。
 
 ### 8.4 重复提交
@@ -60,7 +60,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 一句话：**任务只有一跳，构造上就没有链、没有环**。orca node 不会因为心跳互相唤醒——唤醒只来自任务请求。
 
-1. **任务不转发，也不派生**：orca node 只执行 origin 给它的任务；执行任务的 agent 不能再派新任务（执行器会话里 CLI 与插件的 `send` 拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。扇出只能发生在有人坐着的根会话里，由那个会话一次次显式派发。
+1. **任务不转发，也不派生**：orca node 只执行 origin 给它的任务；执行任务的 agent 不能再派新任务（执行器会话里插件的 `send` 拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。扇出只能发生在有人坐着的根会话里，由那个会话一次次显式派发。
 2. **没有回调**：target 从不反连 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；完成靠 origin 轮询。不存在“B 做完叫醒 A、A 又叫醒 B”。
 3. **没有广播**：心跳自适应（`N` 秒）、单向；成员变化靠 digest 拉取（[§3.1](03-membership.md#31-成员状态的判定)）；没有 gossip、没有事件订阅、没有 completion webhook。
 
@@ -86,10 +86,10 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 目前没有指标导出，也没有结构化 JSON 日志（指标的设想见 [§11](11-open-questions.md#11-未决问题)“指标”）。能观测的有：
 
-- **任务记录**：target 侧 `tasks/get`（状态、`reason`、结论、artifacts）；origin 侧 `dispatches` 派发日志与 `orca-node log`；
-- **成员状态**：`/cluster/members` 与 `orca-node members`——每个 peer 的 `state`（`online`/`suspect`/`offline`/`unknown`）、`last_recv_at`、`busy`、`max_task_ttl_s`、runtime、模型目录；
+- **任务记录**：target 侧 `tasks/get`（状态、`reason`、结论、artifacts）；origin 侧 `dispatches` 派发日志（面板“全部任务”）；老版本写的条目只有 `peer`（URL），没有 `node`：读取时 `node` 为空，tracker 不再恢复跟踪它；
+- **成员状态**：`/cluster/members` 与 `orca_pod` 的 `members`——每个 peer 的 `state`（`online`/`suspect`/`offline`/`unknown`）、`last_recv_at`、`busy`、`max_task_ttl_s`、runtime、模型目录；
 - **面板**：`/orca-api/state` 一次轮询拿到自己、成员、待审批、最近任务、工作区（[§9.2](09-implementation.md#92-面板)）；
-- **日志**：节点通过注入的 logger 记 warning（拒绝的候选端点、被丢弃的 peer、落盘失败、blob 清理失败等），插件里是 DSH 的 logger，CLI 里是 console。
+- **日志**：节点通过注入的 logger 记 warning（拒绝的候选端点、被丢弃的 peer、落盘失败、blob 清理失败等），是 DSH 的 logger。
 
 UI 的成员详情展示：显示名与 id、在线状态、忙闲（正在跑哪个任务）、最近心跳、单任务预算、运行环境（OS、CPU、内存、Node 版本）、默认/可用模型、自报地址；工作区配额在设置页的高级项里配置，面板不显示当前用量。
 

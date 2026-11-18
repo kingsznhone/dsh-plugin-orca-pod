@@ -4,10 +4,12 @@ import type { SessionId } from "@deepseek-ai/dsh-session";
 import { type PRNG, ulid } from "ulid";
 import { z } from "zod";
 
+import { parseBlobRef } from "../core/blobs.ts";
+import { MAX_TASK_FILES } from "../core/constants.ts";
 import { PermissionRequestSchema, type PermissionRequest, type ResumeControl } from "../core/wire/grant.ts";
 import { ModelSelectionSchema, ReasoningEffortSchema } from "../core/wire/model.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
-import { OrcaNodeIdSchema } from "../core/wire/peer.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId } from "../core/wire/peer.ts";
 
 /**
  * Task id: a ULID (48-bit millisecond timestamp + 80 random bits, Crockford base32).
@@ -71,6 +73,16 @@ export function controlMessage(taskId: string, control: ResumeControl, messageId
   return { role: "user", parts: [{ kind: "data", data: { ...control } }], taskId, messageId };
 }
 
+/** A file the origin hands to a task: the member-published file it is, and the name it gets in the task's inbox (§3.8). */
+const TaskFileSchema = z.object({
+  ref: z.string().refine((text) => parseBlobRef(text) !== null, "must be <orca node id>/<sha256>"),
+  name: z
+    .string()
+    .regex(/^[^\p{C}\\/<>]{1,128}$/u, "must be a plain file name")
+    .refine((name) => name !== "." && name !== ".." && !name.endsWith(".part"), "must be a plain file name"),
+});
+export type TaskFile = z.infer<typeof TaskFileSchema>;
+
 /**
  * The `pod` block of a task's metadata (§5.1). Unknown keys are kept: another
  * node may be newer. The task lifetime is narrowed further where the task is
@@ -90,6 +102,12 @@ export const PodTaskMetadataSchema = z.looseObject({
   /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
   reasoning_effort: ReasoningEffortSchema.optional(),
   task_ttl_s: z.number("must be a positive number").finite().positive("must be a positive number").optional(),
+  /** Files the target fetches into the task's inbox before the agent starts (§3.8). */
+  files: z
+    .array(TaskFileSchema)
+    .max(MAX_TASK_FILES, `must be <= ${MAX_TASK_FILES}`)
+    .refine((files) => new Set(files.map((file) => file.name)).size === files.length, "names must be unique")
+    .optional(),
 });
 export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;
 
@@ -180,8 +198,10 @@ export const RpcResultSchema = z.object({ result: TaskViewSchema });
 export type DispatchEntry = {
   /** Task id returned by the target. */
   task_id: string;
-  /** Target endpoint the task was dispatched to. */
-  peer: string;
+  /** The node the task was dispatched to; null for an entry an older version wrote, which only knew an address. */
+  node: OrcaNodeId | null;
+  /** The address older versions recorded instead of a node; kept on old entries, never written now. */
+  peer?: string;
   context_id?: string;
   /** Last observed task state; `unknown` once a restart cut the origin off from it. */
   state: TaskState | "unknown";

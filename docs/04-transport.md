@@ -16,16 +16,29 @@
 
 ### 4.2 路由表
 
-每条路由都在注册时声明 `config.access`，缺了启动即失败；一个 `preValidation` 钩子统一做“验签 → 授权”，所有错误由同一个错误处理器输出。`access` 有四类：
+每条路由都在注册时声明 `config.access`，缺了启动即失败；一个 `preValidation` 钩子统一验证请求头里的两样证明（**Ed25519 签名 + workgroup HMAC 证明**，[§7.1](07-security.md#71-workgroup-与密码)），所有错误由同一个错误处理器输出，所有给签名请求的答复也由同一个钩子签名（见下）。`access` 有三类：
 
-| access   | 谁能调用                                                                                  |
-| -------- | ----------------------------------------------------------------------------------------- |
-| `public` | 任何人                                                                                    |
-| `join`   | 任何持有 Ed25519 密钥的人（签名可以不带接收方 id，因为首次 join 还不知道它）              |
-| `member` | 本机，或成员表里的 peer。验签只证明“持有私钥”，陌生人也能生成密钥，所以还要过成员闸门     |
-| `local`  | 仅本机：回环 socket、无转发头，且签名身份就是本机自己（只有 `/cluster/blob`）              |
+| access   | 谁能调用                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------- |
+| `public` | 任何人                                                                                                  |
+| `hello`  | 两样证明都对的节点；签名可以不带接收方 id，因为首次接触还不知道它                                       |
+| `member` | 两样证明都对、且签名绑定的接收方就是本节点。**不查成员表**：成员表只决定谁在线、往哪里拨，不管准入       |
 
-`/orca-api`（面板）不是网关路由，也没有 access 级：它由 DSH web server 上的同源桥承接，只验回环 socket、无转发头、`Host`/`Origin`/`Sec-Fetch-Site` 同源与 `X-Orca-Pod` 请求头（`403 local_only` / `403 cross_origin`；非 GET 且无 JSON `Content-Type` 时为 `403 json_required`），不验节点签名——与 `/cluster/blob` 共享的只是“信任传输层事实”，不是本机签名（[§7.1](07-security.md#71-workgroup-与密码)）。
+**请求与答复的头**（所有节点间路由都一样）：
+
+```text
+请求  Authorization: Pod id=<发起方>; wg=<workgroup_id>; target=<接收方|空>; ts=…; nonce=…;
+                        sig=<Ed25519(输入)>; proof=<HMAC-SHA256(workgroup key, 输入)>
+      输入 = "orca-pod/request" | 方法 | target | 路径+查询 | sha256(body) | ts | nonce | workgroup_id
+
+答复  Pod-Reply: id=<应答方>; sig=<Ed25519("orca-pod/reply" | 请求 nonce | status | sha256(body))>
+```
+
+- 发起方在 `HttpPeerClient` 里统一验答复：已知节点的答复必须由它签名，首次接触时答复里的 `id` 就是 TOFU 记下的身份；答复签名绑定请求的 nonce，所以一个答复不能被挪去冒充另一个请求的答复。验不过按 `peer_error`。
+- **文件下载**的答复是流，事先算不出 sha256，所以签名只覆盖 status 与 `blob_id`（`subject = blob:<blob_id>`）；收完后按内容的 sha256 校验——文件本来就按 sha256 命名。
+- 内容仍是明文传输，这里只保证完整性与来源，不做加密（TLS 由前置代理终结）。
+
+`/orca-api`（面板）不是网关路由，也没有 access 级：它由 DSH web server 上的同源桥承接，只验回环 socket、无转发头、`Host`/`Origin`/`Sec-Fetch-Site` 同源与 `X-Orca-Pod` 请求头（`403 local_only` / `403 cross_origin`；非 GET 且无 JSON `Content-Type` 时为 `403 json_required`），不验节点签名（[§7.1](07-security.md#71-workgroup-与密码)）。
 
 | Method | Path                           | 用途                                                       | access                          |
 | ------ | ------------------------------ | ---------------------------------------------------------- | ------------------------------- |
@@ -33,13 +46,11 @@
 | GET    | `/.well-known/agent-card.json` | A2A Agent Card（见 §4.6）                                  | public                          |
 | POST   | `/a2a`                         | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`（§4.7） | member                          |
 | GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | member                          |
-| POST   | `/cluster/join`                | 引导/准入：返回自述 + 目录                                 | join + 密码证明                 |
-| POST   | `/cluster/heartbeat`           | 心跳 + 摘要 + 准入证明 + 完整自述；摘要不一致时响应回目录   | member + 密码证明               |
-| GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲）                           | member                          |
+| POST   | `/cluster/hello`               | 接触与心跳：自述 + 忙闲 + 摘要；答复自己的记录，摘要不一致时回目录（[§3.3](03-membership.md#33-心跳与双向看门狗)） | hello                           |
+| GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲），给对端检查用              | member                          |
 | POST   | `/cluster/leave`               | 主动离开（不是安全操作）                                   | member                          |
-| GET    | `/cluster/blob?node=&blob=`    | 本节点替 CLI 去取任一成员发布的文件（`orca-node fetch`）    | local                           |
 
-文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点 `publish` 登记的文件；取别的成员的文件由本机节点按对方宣告的地址去拨（`/cluster/blob`），所以发布方在反代后面也照样取得到。登记没有 HTTP 路由，由 `orca-node publish` 直写本机 SQLite；节点之间不推送文件。
+文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点登记的文件；取别的成员的文件由本机节点对象（`mesh.get(id).fetchBlob`）按对方宣告的地址去拨，所以发布方在反代后面也照样取得到。登记没有 HTTP 路由，由本节点自己的代码（`orca_pod` 的 `send`、任务的 outbox 发布）直写本机 SQLite；节点之间不推送文件。
 
 约定：
 
@@ -53,8 +64,10 @@
 | 状态 | 错误码                                                                                                                      |
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
-| 403  | `not_a_member`、`local_only`、`not_task_origin`                                                                             |
+| 403  | `not_task_origin`                                                                                                           |
 | 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
+| 413  | `body_too_large`、`blob_too_large`                                                                                          |
+| 502  | `peer_error`、`input_unavailable`（本节点取不到任务的输入文件；只在本机产生）                                                |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
 | 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`grant_replayed`                                                     |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
@@ -69,14 +82,14 @@
 
 | 事项     | 要求                                                                                                                                                                                                                                              |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 心跳路径 | 不要给 `/cluster/heartbeat` 加缓存；代理层保持 keep-alive 到上游                                                                                                                                                                                  |
-| 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；`local` 路由带任何转发头直接 `403 local_only`，所以代理不要转发 `/cluster/blob`                                                                           |
-| 对端地址 | 节点互通靠 **join 请求体里自报的 `endpoints`**（有序列表，可含 IPv6/IPv4、局域网与公网地址），不靠来源 IP：反代部署必须把公网 URL 配进 `endpoints`，否则对端会记下 loopback 地址、心跳发不过来；对端按顺序逐个尝试，一个地址不可达不代表 orca node 离线 |
+| 心跳路径 | 不要给 `/cluster/hello` 加缓存；代理层保持 keep-alive 到上游                                                                                                                                                                                  |
+| 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；面板入口带任何转发头直接 `403 local_only`                                                                           |
+| 对端地址 | 节点互通靠 **`hello` 请求体里自报的 `endpoints`**（有序列表，可含 IPv6/IPv4、局域网与公网地址），不靠来源 IP：反代部署必须把公网 URL 配进 `endpoints`，否则对端会记下 loopback 地址、心跳发不过来；对端按顺序逐个尝试，一个地址不可达不代表 orca node 离线 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权                                                                                                                                                                                                         |
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的（orca node 一侧是 1 MiB，没有更大的请求体）                                                                                                                                                              |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放                                                                                                                                                                                                    |
 
-`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、CLI 展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
+`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、面板展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
 
 ```json
 {
@@ -84,7 +97,7 @@
 }
 ```
 
-对端 join 时拿到整张列表，此后每次心跳按顺序逐个尝试：任何一跳成功即视为可达，并记住成功的地址下一轮排到最前；全部失败才计一次心跳失败。监听地址由 `bind_host` 决定，`endpoints` 只回答“别人怎么拨我”。
+对端收到 `hello` 时拿到整张列表，此后每次心跳按顺序逐个尝试：任何一跳成功即视为可达，并记住成功的地址下一轮排到最前；全部失败才计一次心跳失败。监听地址由 `bind_host` 决定，`endpoints` 只回答“别人怎么拨我”。
 
 ### 4.4 公网暴露清单
 
@@ -127,11 +140,11 @@
 
 用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。方法面只取其中必要的子集。
 
-**出站调用只有一个客户端**（`src/mesh/peer-client.ts`），CLI、心跳、tracker 都走它：
+**出站调用只有一个客户端**（`src/mesh/peer-client.ts`），它只负责签名、截止时间与读取上限，不知道有哪些节点；谁是对端、拨哪个地址是节点对象（`mesh/orca-node.ts`）的事。心跳、`sendTask`、tracker 都经节点对象走它：
 
 - 每次调用带 DSH `deadline` 截止时间：默认 30s（`request_timeout_ms` 可调），心跳用 interval 的一半；响应必须是 `application/json`，且读到 4 MiB 即取消流并按协议错误处理——对端挂起或返回垃圾不会无限卡住工具调用与 tracker。
-- 签名绑定接收方 `orca_node_id` 与 `path+query`（[§7.2](07-security.md#72-请求签名没有-session-token)）。接收方 id 来自：本机自己、本机拨过的 URL 记录、或成员表里自述了该 URL 的成员。
-- **不做隐式 join**：URL 不认识就是本机抛 `unknown_peer`，请求根本不发出。只有显式的 join/connect（插件 `connect`、CLI `serve --peer`、面板“连接”）才会向陌生地址发出准入证明。陌生地址是否可信，是调用者在 join 前该想清楚的事。
+- 每个请求带两样证明，签名绑定接收方 `orca_node_id` 与 `path+query`（[§7.2](07-security.md#72-请求签名没有-session-token)）。接收方 id 就是调用的那个节点对象的 id，不再按 URL 反查。
+- **按节点寻址，不做隐式接触**：工具与面板的 `peer` 参数是节点 id、唯一的显示名或该节点的 URL，统一走 `mesh.resolve`；不认识就是本机抛 `unknown_peer`，请求根本不发出。只有种子地址（设置里的 `peers`、记住的 peers、`connect` 工具、面板“连接”）才会向陌生地址发出 `hello`。陌生地址是否可信，是调用者在连接前该想清楚的事。
 - 只有 `sendTask` 会新建 origin 派发日志；`tasks/get`、`tasks/cancel`、审批等读写只刷新已存在的条目，避免面板和轮询把别人的任务记成本机派发。目标不是 `online` 时 `sendTask` 直接 `peer_not_online`。
 - 交接（C 接着在 B 上干）不单独设方法：就是一次普通的 `message/send`；C 从共享工作区里读现场，自己决定接着干什么（[§5.7](05-tasks.md#57-交接工作区即态势)）。
 

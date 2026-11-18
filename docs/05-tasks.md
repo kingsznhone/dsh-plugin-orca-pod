@@ -27,7 +27,7 @@
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`）；缺省按 `read-only`；本机 `permission_mode` 是上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。非法值 → `400 bad_request`。
 - `pod.model` / `pod.reasoning_effort`（可选）：origin 想用的模型与 effort；由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
 - `pod.task_ttl_s`（可选）：origin 期望的任务寿命；实际寿命取它与本机 `task_timeout_s`（默认 3600）的较小者。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
-- **任务只有一跳**：任务不转发，执行任务的 agent 也不能再派新任务（CLI 与插件的 `send` 在执行器会话里拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。做不完就以 `BLOCKED:` 结论交回 origin，由 origin 的会话决定把哪部分派给谁。元数据里因此没有调用链、根任务或跳数。
+- **任务只有一跳**：任务不转发，执行任务的 agent 也不能再派新任务（插件的 `send` 在执行器会话里拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。做不完就以 `BLOCKED:` 结论交回 origin，由 origin 的会话决定把哪部分派给谁。元数据里因此没有调用链、根任务或跳数。
 - 元数据是不可信输入：在 `submit` 时一次性解析成类型化的 `TaskMeta`，之后的代码不再读原始 metadata。`pod` 块类型不合法 → `400 bad_request`；`metadata.echo` 不合法 → `400 bad_echo_script`（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)），不会建出任务。
 
 ### 5.2 任务回报
@@ -80,7 +80,7 @@ tracker 的行为：
 - `followup()` 只对**仍然活着**的 session 有效：DSH 进程里还有这个 `Agent` 实例，插件才有对象可唤醒。会话已关闭/归档时没有对象，任务结果留在目标侧任务存储里，靠 `status` 重读——不存在“插件把 DSH 会话从磁盘拉起来”。
 - 会话日志仍是唯一事实源：`inject()` 的内容以 `agent/inbox/spliced` 落日志；任务状态本体在任务存储里，`status` 随时可重放，插件内存只是缓存。
 
-CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 agent 用（它们没有插件工具），不作为插件工具暴露；`orca-node log [--json]` 直接读 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），用于重启后对账。
+`orca_pod` 的 `status` 随时读一个任务；重启后对账读的是 origin 侧派发日志（[§8.3](08-reliability.md#83-目标重启)），面板的“全部任务”就是它。没有 `wait`：完成由 tracker 自动通知，agent 不需要等。
 
 ### 5.3 取消
 
@@ -124,35 +124,51 @@ CLI 的 `orca-node wait <task_id>` 只给人和测试、以及 ACP 会话里的 
 
 **文件的名字不含地址**：一个文件写作 `<orca_node_id>/<sha256>`——谁发布的、内容哈希是什么。取文件的一方问**自己的**节点，由它按成员表里对方宣告的地址、用和心跳相同的顺序去拨（上次成功的地址在前，来自他人名单的候选地址先筛查，[§7.7](07-security.md#77-ssrf--候选端点防护)）。发布方在反代后面、有多张网卡或 IPv4/IPv6 双栈都不影响：它只要在 `endpoints` 里宣告取得到它的地址（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
 
-```text
-# 在本机登记一个文件（不经过网络，不需要节点在跑）
-$ orca-node publish ./report.md --ttl 86400
-<orca_node_id>/<sha256>
-
-# 在任何成员上取它：本机节点找到发布方并拉取，写盘前校验 sha256
-$ orca-node fetch <orca_node_id>/<sha256> --output report.md
-```
-
 ```http
-GET /blobs/<blob_id>                         # 成员签名；只读本节点发布的文件
-GET /cluster/blob?node=<id>&blob=<blob_id>   # 仅本机：本节点替 CLI 去取任一成员的文件
+GET /blobs/<blob_id>                         # 成员签名；只读本节点发布的文件，答复签名覆盖 status 与 blob_id
 ```
+
+没有独立的命令行：文件由两处代办（只有 DSH 插件这一种运行形态，任务里的 agent 也看不到插件的工具）——
+
+- **宿主 agent** 用 `orca_pod` 工具：`send` 的 `files` 参数交出文件（本地路径会先由本节点登记成 `<自己>/<sha256>`），`fetch` 方法（`ref`、`output`）取回任务交回的文件；
+- **任务里的 agent** 只读写普通目录：执行器在任务开始前把交给任务的文件取到 `inbox/<task_id>/`，任务结束后把 `outbox/<task_id>/` 里的文件登记成产物（下面的“交给任务的文件”“输出”）。
 
 规则：
 
-- **登记**：`orca-node publish <path> [--ttl <seconds>]`：CLI 算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，打印文件名 `<orca_node_id>/<sha256>`。字节不复制，`GET` 时网关按映射从磁盘流式读出；映射跨重启保留。同一文件重复登记得到同一个 `blob_id`，并刷新过期时间。
-- **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥，任何成员都能让目标节点替它去读本机路径，“只有本机能登记”无法靠成员签名在网络层实现，所以登记只在本地发生：CLI 直写节点自己的数据库。这也让登记不依赖节点进程。
-- **获取**：`orca-node fetch <ref> [--output <path>]` 经回环的 `GET /cluster/blob` 让本机节点去取：引用的是自己就直接读盘；是别的成员就按拨号顺序逐个地址试，对方一旦作答（包括 `404`）就以它为准，只有连不上才换下一个地址，全都连不上 → `503 peer_not_online`；不是成员 → `404 unknown_orca_node`。下载流式进行，不受普通响应 4 MiB 上限的约束；截止时间只管等到对方开始作答，不管传输多久。CLI 边写临时文件边算 `sha256`，与引用一致才改名到位，不一致就删掉并报错。
+- **登记**：由本节点自己的代码做：算 `sha256`、把 `blob_id → {绝对路径, size, expires_at}` 写进本机 SQLite 的 `file_blobs` 表，得到文件名 `<orca_node_id>/<sha256>`。字节不复制（outbox 里的文件除外，见下），`GET` 时网关按映射从磁盘流式读出；映射跨重启保留。同一文件重复登记得到同一个 `blob_id`，并刷新过期时间。
+- **登记不是 HTTP 路由**：登记一个路径等价于授权读它，而同组共享 workgroup 密钥，任何成员都能让目标节点替它去读本机路径，“只有本机能登记”无法靠成员签名在网络层实现，所以登记只在本地发生：本节点的工具和任务运行器直写自己的数据库。
+- **获取**：`mesh.get(<发布方>).fetchBlob(blob_id)`：发布方是自己就直接读盘；是别的成员就按拨号顺序逐个地址试，对方一旦作答（包括 `404`）就以它为准，只有连不上才换下一个地址，全都连不上 → `503 peer_not_online`；不是成员 → `404 unknown_orca_node`。下载流式进行，不受普通响应 4 MiB 上限的约束；截止时间只管等到对方开始作答，不管传输多久。写盘时边写临时文件（`<目标>.part`）边算 `sha256`，与引用一致才改名到位，不一致就删掉并报错（文件按内容哈希命名，所以这一步同时是流式下载在没有整体签名时的完整性保证）。
 - **节点不接收别人的字节**：没有上传路由，也就没有接收侧的配额、临时文件与垃圾回收。
 - **读取要成员签名**：`GET /blobs/{id}` 的访问级别是 `member`，没有可以转交给组外的无签名链接。面板经本机的 `/orca-api/blob` 中转（[§9.2.1](09-implementation.md#921-同源桥pluginwebts)）。
-- **生命周期**：登记默认 **7 天**过期（`--ttl` 可改，`--ttl 0` 不过期）。过期 → `410 blob_expired`；文件被删或移走 → `410 blob_file_missing`；没登记过 → `404 blob_not_found`。文件本身属于工作区，节点不删；要保住某个产物，就在过期前取走它。
+- **生命周期**：登记默认 **7 天**过期。过期 → `410 blob_expired`；文件被删或移走 → `410 blob_file_missing`；没登记过 → `404 blob_not_found`。文件本身属于工作区，节点不删；要保住某个产物，就在过期前取走它。
 - **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道名字就能取。跨 orca node 直取（C 去 B 拿 A 的产物）是设计目标，不要加一层“看起来更安全”的检查。
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。id 泄露 = 内容泄露，按这个标准管理它。
 - 不做目录树、不做 rename、不做覆盖：要改内容就是新文件、新登记。
 
-**交给任务的文件**：origin（人通过插件工具，或上游任务里的 agent）先在本机 `publish`，把文件名写进任务书；target 上的 agent 读到后用 `orca-node fetch` 取到工作区，任务书的前言也这样提示（[§6.7](06-execution.md#67-工作区一份持久)）。节点不替 agent 预先下载、不物化、不清点数量与大小；`fetch` 是 agent 执行的命令，受本任务的权限模式约束（[§7.10](07-security.md#710-权限模式继承)）。这要求 **target 能连到 origin**：全互联 mesh 里两边互相在线即满足；origin 在对端看来是 `suspect(unreachable)`（例如在 NAT 后）时取不到，文件需要放到双方都能访问的节点上。
+**交给任务的文件**（由执行器交接，agent 不回连任何东西）：
 
-**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；大文件由子节点 `publish` 后把文件名写进结论文本，origin 按需 `fetch`，**不自动全量回传**，避免把网络当同步盘。只有 Echo 脚本会产生 `artifacts` 数组：内容写进节点自己的 `state/<workgroup_id>/artifacts/<task_id>/`、按同样的方式登记，`artifactId` 就是 `blob_id`，发布者就是跑任务的节点。
+```text
+发起方                                     目标节点
+orca_pod send { peer, text, files: [本地路径 | <node>/<sha256>] }
+  ├ 本地路径：本节点登记，得到 <自己>/<sha256>
+  └ metadata.pod.files = [{ ref, name }]  ─────▶  runner 在执行前：
+                                                   逐个 mesh.require(ref.node).fetchBlob(ref.blob)
+                                                   → 写入 <cwd>/inbox/<task_id>/<name>，校验 sha256
+                                                   任务书里列出这些路径
+                                                 agent 把要交回的文件放进 <cwd>/outbox/<task_id>/
+                                                 任务结束（completed / failed）后，runner：
+                                                   把 outbox 里的普通文件复制到本节点自己的 state 目录并登记
+                                                   → artifacts: [{ artifactId: <sha256>, name }]
+tracker 通知里列出 artifacts  ◀────────────────
+orca_pod fetch { ref, output }  → 写到 output（经会话沙箱检查可写），校验 sha256
+```
+
+- `files` 最多 `MAX_TASK_FILES`（8）个，名字必须是不含路径与控制字符的普通文件名、互不重复；单个文件上限取本节点的 `max_workspace_bytes`。outbox 同样最多 8 个；超出的、过大的或登记失败的文件不影响任务结局，在结论文本末尾以 `[orca-pod] outbox files that were not handed back: …` 说明。
+- **输入取不到**（发布方离线、文件已过期、哈希不符）：任务直接 `failed`，`reason = input_unavailable`，agent 不会启动，也不会自己重试。
+- inbox 与 outbox 在任务结束时清除：登记的文件是 outbox 的**副本**，在节点自己的 `state/<workgroup_id>/artifacts/<task_id>/` 下，agent 之后再写 outbox 也改不了别人取到的内容。
+- 这要求 **target 能连到 origin**：全互联 mesh 里两边互相在线即满足；origin 在对端看来是 `suspect(unreachable)`（例如在 NAT 后）时取不到，文件需要放到双方都能访问的节点上。
+
+**输出**：结论文本内联在 `status.message`（[§6.11](06-execution.md#611-任务结果与产物)）；任务交回的文件是 `artifacts`，名字写作 `<发布节点 id>/<artifactId>`，origin 用 `orca_pod fetch` 按需取，**不自动全量回传**，避免把网络当同步盘。Echo 脚本的 `artifacts` 走同一条路：内容写进 `state/<workgroup_id>/artifacts/<task_id>/`、按同样的方式登记。
 
 **方向**：两类文件都由需要它的一方发起请求——产物是 origin 去 target 取，交给任务的文件是 target 去 origin 取；没有任何一方往对方推字节。
 

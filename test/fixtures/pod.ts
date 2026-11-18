@@ -1,8 +1,12 @@
+import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { Context, Logger } from "@deepseek-ai/cordis";
 import { vi } from "vitest";
 
-import { parseSettings } from "../../src/node/settings.ts";
-import type { OrcaNode } from "../../src/node/orca-node.ts";
+import type { Orca } from "../../src/node/orca.ts";
 import { ModelCatalogFeed } from "../../src/plugin/catalog.ts";
 import { Pod } from "../../src/plugin/pod.ts";
 import { MemoryPodStores } from "../../src/plugin/stores.ts";
@@ -14,9 +18,23 @@ export function catalogFeed(): ModelCatalogFeed {
   return new ModelCatalogFeed({ inject() {} } as unknown as Pick<Context, "inject">, logger);
 }
 
-/** A real pod that was never started: no node, nothing configured. */
-export function idlePod(config: Record<string, unknown> = {}, stores = new MemoryPodStores(), root?: string): Pod {
-  return new Pod(parseSettings(config), logger, stores, catalogFeed(), root);
+/**
+ * A real pod that was never started: no node, nothing configured. `settings`
+ * are what the settings file holds; a `workgroup_password` among them is stored
+ * as the password instead, the way the panel would, because the file never holds it.
+ */
+export function idlePod(
+  settings: Record<string, unknown> = {},
+  stores = new MemoryPodStores(),
+  root = join(tmpdir(), `orca-pod-idle-${randomBytes(6).toString("hex")}`),
+): Pod {
+  const { workgroup_password: password, ...rest } = settings;
+  if (typeof password === "string") stores.password = password;
+  if (Object.keys(rest).length > 0) {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "settings.json"), JSON.stringify(rest));
+  }
+  return new Pod(logger, stores, catalogFeed(), root);
 }
 
 /**
@@ -25,6 +43,6 @@ export function idlePod(config: Record<string, unknown> = {}, stores = new Memor
  */
 export function podRunning(node: unknown): Pod {
   const pod = idlePod();
-  vi.spyOn(pod, "status", "get").mockReturnValue({ kind: "running", run: { node: node as OrcaNode, port: 0 } });
+  vi.spyOn(pod, "status", "get").mockReturnValue({ kind: "running", run: { orca: node as Orca, port: 0 } });
   return pod;
 }

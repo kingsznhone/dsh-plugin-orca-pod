@@ -5,23 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { OrcaNode } from "../src/node/orca-node.ts";
+import { nodeParts } from "./support/node.ts";
+import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
+import { peersOf } from "./support/node.ts";
 
-const LIVE: OrcaNode[] = [];
+const LIVE: Orca[] = [];
 
 afterEach(async () => {
   for (const node of LIVE.splice(0)) await node.stop();
 });
 
-async function pair(): Promise<[OrcaNode, OrcaNode]> {
+async function pair(): Promise<[Orca, Orca]> {
   const workgroupId = wg(`wg-${randomBytes(6).toString("hex")}`);
   const nodes = await Promise.all(
     [0, 1].map(
       async () =>
-        new OrcaNode(
-          await createOrcaNodeConfig({
+        new Orca(
+          ...nodeParts({
             workgroup_id: workgroupId,
             workgroup_password: "same password",
             data_root: mkdtempSync(join(tmpdir(), "orca-self-")),
@@ -34,13 +35,13 @@ async function pair(): Promise<[OrcaNode, OrcaNode]> {
     await node.start();
     LIVE.push(node);
   }
-  const [a, b] = nodes as [OrcaNode, OrcaNode];
-  await b.mesh.join(a.profile.endpoints[0]!);
+  const [a, b] = nodes as [Orca, Orca];
+  await b.mesh.probe(a.mesh.self.endpoints[0]!);
   return [a, b];
 }
 
-function seenBy(observer: OrcaNode, subject: OrcaNode) {
-  return observer.membership.list().find((peer) => peer.orca_node_id === subject.orcaNodeId);
+function seenBy(observer: Orca, subject: Orca) {
+  return peersOf(observer).find((peer) => peer.orca_node_id === subject.orcaNodeId);
 }
 
 describe("self-description after join (G13)", () => {
@@ -52,7 +53,7 @@ describe("self-description after join (G13)", () => {
     b.models.update([{ provider: "p", id: "m", name: "M" }], { provider: "p", model: "m" }, ReasoningEffortId("high"));
     expect(seenBy(a, b)?.models).toBeUndefined();
 
-    await b.mesh.heartbeat(a.profile.endpoints[0]!);
+    await b.mesh.probe(a.mesh.self.endpoints[0]!);
     expect(seenBy(a, b)).toMatchObject({
       models: [{ provider: "p", id: "m", name: "M" }],
       default_model: { provider: "p", model: "m", reasoningEffort: "high" },
@@ -61,7 +62,7 @@ describe("self-description after join (G13)", () => {
 
     // A catalog the node no longer advertises does not linger.
     b.models.update([], null, null);
-    await b.mesh.heartbeat(a.profile.endpoints[0]!);
+    await b.mesh.probe(a.mesh.self.endpoints[0]!);
     expect(seenBy(a, b)).toMatchObject({ default_model: null, default_reasoning_effort: null });
     expect(seenBy(a, b)?.models).toBeUndefined();
   }, 15_000);
@@ -71,7 +72,7 @@ describe("self-description after join (G13)", () => {
     a.models.update([{ provider: "pa", id: "ma", name: "MA" }], null);
     b.models.update([{ provider: "pb", id: "mb", name: "MB" }], null);
 
-    await b.mesh.join(a.profile.endpoints[0]!);
+    await b.mesh.probe(a.mesh.self.endpoints[0]!);
     // A records B's join body; B records the self record in A's answer.
     expect(seenBy(a, b)?.models).toEqual([{ provider: "pb", id: "mb", name: "MB" }]);
     expect(seenBy(b, a)?.models).toEqual([{ provider: "pa", id: "ma", name: "MA" }]);

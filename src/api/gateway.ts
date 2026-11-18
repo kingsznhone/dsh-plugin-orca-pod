@@ -1,11 +1,10 @@
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
-import { NonceCache } from "../core/signing.ts";
+import { bodySha256, buildReplyHeader, NonceCache, parseAuthHeader, REPLY_HEADER_NAME } from "../core/signing.ts";
 import { PodError, POD_ERROR_STATUS } from "../core/errors.ts";
 import { isBlockedFetchPort, pickFreePort } from "../core/net.ts";
-import type { BlobFetcher } from "../mesh/blob-fetcher.ts";
-import type { Membership } from "../mesh/membership.ts";
-import type { SelfProfile } from "../mesh/self-profile.ts";
+import type { Mesh } from "../mesh/mesh.ts";
+import type { NodeIdentity } from "../core/identity.ts";
 import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { A2aRoutes } from "./a2a-routes.ts";
 import { AccessPolicy } from "./access.ts";
@@ -24,19 +23,18 @@ const BUSY_RETRY_AFTER_S = 30;
 /**
  * The inbound HTTP surface of an orca node (§4): the signed routes of the
  * workgroup, the A2A task API and the file routes, behind one access policy and
- * one error format. The constructor only builds the routes in memory; `listen`
- * binds the port.
+ * one error format; every answer to a signed request is itself signed. The
+ * constructor only builds the routes in memory; `listen` binds the port.
  */
 export class Gateway {
   readonly app: FastifyInstance;
 
   constructor(
-    private readonly profile: SelfProfile,
-    membership: Membership,
+    private readonly mesh: Mesh,
     tasks: SingleSlotTaskRunner,
-    files: BlobFetcher,
-    /** Workgroup key behind the admission proofs (§7.1). */
+    /** Workgroup key behind the proof of every request (§7.1). */
     key: Buffer,
+    private readonly identity: NodeIdentity,
   ) {
     // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
     // shutdown must not wait for it. Routes register no Fastify schemas: each
@@ -44,11 +42,11 @@ export class Gateway {
     this.app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
     this.installBodyParsers();
     this.app.setErrorHandler((error, request, reply) => this.handleError(error, request, reply));
-    const nonces = new NonceCache();
-    new AccessPolicy(profile.orcaNodeId, membership, nonces, Date.now()).install(this.app);
-    new ClusterRoutes(profile, membership, key, nonces).register(this.app);
-    new A2aRoutes(profile.orcaNodeId, tasks).register(this.app);
-    new BlobRoutes(files).register(this.app);
+    this.app.addHook("onSend", async (request, reply, payload) => this.signReply(request, reply, payload));
+    new AccessPolicy(mesh.self.id, mesh.workgroupId, key, new NonceCache(), Date.now()).install(this.app);
+    new ClusterRoutes(mesh).register(this.app);
+    new A2aRoutes(mesh.self.id, tasks).register(this.app);
+    new BlobRoutes(mesh).register(this.app);
   }
 
   /**
@@ -75,6 +73,28 @@ export class Gateway {
     return this.app.close();
   }
 
+  /**
+   * Sign what this node answers (§7.1): the Ed25519 signature covers the nonce of the
+   * request being answered, the status and the body, so a reply can be neither
+   * changed nor moved to answer another request. Errors are signed too, whatever
+   * stopped the request, as long as it named a nonce; a stream (a file) is signed
+   * by its status and name, and the caller checks the bytes against the hash the
+   * file is named by.
+   */
+  private signReply(request: FastifyRequest, reply: FastifyReply, payload: unknown): unknown {
+    const nonce = parseAuthHeader(request.headers.authorization)?.nonce;
+    if (nonce === undefined) return payload;
+    let subject: string | undefined;
+    if (typeof payload === "string" || Buffer.isBuffer(payload)) subject = bodySha256(payload);
+    else if (request.routeOptions.config.blobReply === true) {
+      subject = `blob:${(request.params as { blob_id?: string }).blob_id ?? ""}`;
+    }
+    if (subject !== undefined) {
+      reply.header(REPLY_HEADER_NAME, buildReplyHeader(this.identity, { nonce, status: reply.statusCode, subject }));
+    }
+    return payload;
+  }
+
   private installBodyParsers(): void {
     // JSON keeps its bytes for signature verification as well as the parsed value.
     this.app.addContentTypeParser<Buffer>("application/json", { parseAs: "buffer" }, (request, body, done) => {
@@ -99,7 +119,7 @@ export class Gateway {
     const body = {
       code: pod.code,
       message: pod.message,
-      ...(busy ? { retry_after_s: BUSY_RETRY_AFTER_S, holder: this.profile.busy } : {}),
+      ...(busy ? { retry_after_s: BUSY_RETRY_AFTER_S, holder: this.mesh.self.view().busy } : {}),
     };
     if (busy) reply.header("retry-after", String(BUSY_RETRY_AFTER_S));
     const rpcId = (request.body as { id?: unknown } | null | undefined)?.id ?? null;

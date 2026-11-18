@@ -33,7 +33,8 @@ const ARTIFACT = { name: "report.md", blob_id: "art-1", bytes: 3, node: "NODE02"
 const RECENT: PodTaskRow[] = [
   {
     id: "TASK02",
-    peer: "http://127.0.0.1:11811",
+    peer: "NODE02",
+    node: "NODE02",
     state: "input-required",
     who: "node two",
     who_title: "NODE02",
@@ -43,7 +44,8 @@ const RECENT: PodTaskRow[] = [
   },
   {
     id: "TASK01",
-    peer: "http://127.0.0.1:11812",
+    peer: "NODE02",
+    node: "NODE02",
     state: "completed",
     who: "node two",
     who_title: "http://127.0.0.1:11812",
@@ -54,8 +56,9 @@ const RECENT: PodTaskRow[] = [
 ];
 
 const APPROVAL: PodApproval = {
-  id: "http://127.0.0.1:11812|TASK02",
-  peer: "http://127.0.0.1:11812",
+  id: "NODE02|TASK02",
+  peer: "NODE02",
+  node: "NODE02",
   task_id: "TASK02",
   tool: "write_file",
   requested: '{"path":"report.md"}',
@@ -84,7 +87,7 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
     members: () => [{ orca_node_id: "NODE02", state: "online", endpoints: [], busy_from: null } as unknown as PodPeer],
     recent: (limit) => RECENT.slice(0, limit),
     approvals: () => [APPROVAL],
-    config: () => ({
+    config: async () => ({
       configured: true,
       workgroup_id: "wg",
       node_id: "NODE01",
@@ -406,7 +409,7 @@ describe("panel HTTP bridge", () => {
     const result = await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=10` });
     expect(result.status).toBe(200);
     expect(result.body.recent.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
-    expect(result.body.recent[0]).toMatchObject({ peer: "http://127.0.0.1:11811", cancellable: true });
+    expect(result.body.recent[0]).toMatchObject({ peer: "NODE02", cancellable: true });
     await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=99999` });
     await invoke(handler, { url: `${POD_API_PREFIX}/tasks` });
     expect(limits).toEqual([10, 1000, 500]);

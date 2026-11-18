@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildAuthHeader } from "../src/core/signing.ts";
+import { buildAuthHeader, deriveWorkgroupKey } from "../src/core/signing.ts";
 import { signGrant } from "../src/task/grants.ts";
-import { loadIdentity, type NodeIdentity } from "../src/core/identity.ts";
+import type { NodeIdentity } from "../src/core/identity.ts";
 import { createMesh, type Mesh } from "./support/harness.ts";
-import type { OrcaNode } from "../src/node/orca-node.ts";
+import type { Orca } from "../src/node/orca.ts";
 import { permissionRequestOf } from "../src/task/wire.ts";
 import type { A2AMessage, TaskState, TaskView } from "../src/task/wire.ts";
 import type { Grant, SignedGrant } from "../src/core/wire/grant.ts";
@@ -24,9 +24,9 @@ afterEach(async () => {
 });
 
 type ApprovalMesh = {
-  origin: OrcaNode;
-  target: OrcaNode;
-  outsider: OrcaNode;
+  origin: Orca;
+  target: Orca;
+  outsider: Orca;
   targetUrl: string;
   identity: NodeIdentity;
 };
@@ -35,9 +35,7 @@ async function threeNodes(): Promise<ApprovalMesh> {
   mesh = await createMesh({ orcaNodes: 3, workgroupId: WORKGROUP, password: PASSWORD });
   const [origin, target, outsider] = mesh.orcaNodes;
   if (!origin || !target || !outsider) throw new Error("mesh did not create three orca nodes");
-  const identity = loadIdentity(origin.config.data_root);
-  if (identity === null) throw new Error("origin identity is missing");
-  return { origin, target, outsider, targetUrl: target.profile.endpoints[0]!, identity };
+  return { origin, target, outsider, targetUrl: target.mesh.self.endpoints[0]!, identity: origin.identity };
 }
 
 const permissionEcho = {
@@ -50,15 +48,15 @@ const permissionEcho = {
   final: { state: "completed", text: "written" },
 };
 
-async function submit(origin: OrcaNode, targetUrl: string): Promise<TaskView> {
-  return origin.delegation.sendTask(targetUrl, {
+async function submit(origin: Orca, targetUrl: string): Promise<TaskView> {
+  return origin.mesh.resolve(targetUrl).sendTask({
     message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
     metadata: { echo: permissionEcho },
   });
 }
 
 async function waitForState(
-  origin: OrcaNode,
+  origin: Orca,
   targetUrl: string,
   taskId: string,
   state: TaskState,
@@ -67,7 +65,7 @@ async function waitForState(
   const deadline = Date.now() + timeoutMs;
   let last: TaskView | null = null;
   while (Date.now() < deadline) {
-    last = await origin.delegation.getTask(targetUrl, taskId);
+    last = await origin.mesh.resolve(targetUrl).getTask(taskId);
     if (last.status.state === state) return last;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -100,6 +98,8 @@ async function signedResume(
       "content-type": "application/json",
       authorization: buildAuthHeader({
         identity: signer,
+        key: deriveWorkgroupKey(WORKGROUP, PASSWORD),
+        workgroupId: WORKGROUP,
         method: "POST",
         url: `${url.pathname}${url.search}`,
         targetOrcaNodeId: health.orca_node_id,
@@ -150,7 +150,7 @@ describe("Phase 3 approval round trip", () => {
     expect(request?.requested).toEqual({ path: "note.txt", bytes: 12 });
     expect(request?.expires_at).toBeUndefined();
 
-    const resumed = await origin.delegation.approveTask(targetUrl, suspended);
+    const resumed = await origin.mesh.resolve(targetUrl).approve(suspended);
     expect(resumed.status.state).not.toBe("failed");
 
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
@@ -165,7 +165,7 @@ describe("Phase 3 approval round trip", () => {
     const submitted = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
 
-    await origin.delegation.denyTask(targetUrl, suspended, "not allowed on this machine");
+    await origin.mesh.resolve(targetUrl).deny(suspended, "not allowed on this machine");
 
     const failed = await waitForState(origin, targetUrl, submitted.id, "failed");
     expect(failed.status.reason).toBe("permission_denied");
@@ -208,14 +208,12 @@ describe("Phase 3 approval round trip", () => {
     const suspended = await waitForState(origin, targetUrl, submitted.id, "input-required");
 
     const grant = signGrant(identity, grantFor(suspended, origin.orcaNodeId));
-    const outsiderIdentity = loadIdentity(outsider.config.data_root);
-    if (outsiderIdentity === null) throw new Error("outsider identity is missing");
-    const response = await signedResume(targetUrl, outsiderIdentity, resumeMessage(submitted.id, { grant }));
+    const response = await signedResume(targetUrl, outsider.identity, resumeMessage(submitted.id, { grant }));
 
     expect(response.status).toBe(403);
     expect(response.code).toBe("not_task_origin");
     // The task is untouched and still waiting for the origin.
-    const still = await origin.delegation.getTask(targetUrl, submitted.id);
+    const still = await origin.mesh.resolve(targetUrl).getTask(submitted.id);
     expect(still.status.state).toBe("input-required");
   });
 
@@ -232,7 +230,7 @@ describe("Phase 3 approval round trip", () => {
 
   it("keeps waiting past the task TTL while parked for approval", async () => {
     const { origin, targetUrl } = await threeNodes();
-    const submitted = await origin.delegation.sendTask(targetUrl, {
+    const submitted = await origin.mesh.resolve(targetUrl).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "write the note" }] },
       metadata: { echo: permissionEcho, pod: { task_ttl_s: 1 } },
     });
@@ -240,10 +238,10 @@ describe("Phase 3 approval round trip", () => {
 
     // The task TTL is paused while the task waits for a human (§7.12).
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    const still = await origin.delegation.getTask(targetUrl, submitted.id);
+    const still = await origin.mesh.resolve(targetUrl).getTask(submitted.id);
     expect(still.status.state).toBe("input-required");
 
-    await origin.delegation.approveTask(targetUrl, still);
+    await origin.mesh.resolve(targetUrl).approve(still);
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("written");
   });
@@ -252,10 +250,10 @@ describe("Phase 3 approval round trip", () => {
     mesh = await createMesh({ orcaNodes: 2, workgroupId: WORKGROUP, password: PASSWORD, approvalTimeoutS: 1 });
     const [origin, target] = mesh.orcaNodes;
     if (!origin || !target) throw new Error("mesh did not create two orca nodes");
-    const submitted = await submit(origin, target.profile.endpoints[0]!);
-    await waitForState(origin, target.profile.endpoints[0]!, submitted.id, "input-required");
+    const submitted = await submit(origin, target.mesh.self.endpoints[0]!);
+    await waitForState(origin, target.mesh.self.endpoints[0]!, submitted.id, "input-required");
 
-    const failed = await waitForState(origin, target.profile.endpoints[0]!, submitted.id, "failed", 4000);
+    const failed = await waitForState(origin, target.mesh.self.endpoints[0]!, submitted.id, "failed", 4000);
     expect(failed.status.reason).toBe("permission_timeout");
     expect(textOf(failed)).toContain("permission request timed out");
   });
@@ -276,11 +274,9 @@ describe("grant binding (§7.11)", () => {
 
   it("rejects a grant whose origin is not the task origin", async () => {
     const { origin, targetUrl, outsider, identity } = await threeNodes();
-    const outsiderIdentity = loadIdentity(outsider.config.data_root);
-    if (outsiderIdentity === null) throw new Error("outsider identity is missing");
     const view = await submit(origin, targetUrl);
     const suspended = await waitForState(origin, targetUrl, view.id, "input-required");
-    const forged = signGrant(outsiderIdentity, grantFor(suspended, outsider.orcaNodeId));
+    const forged = signGrant(outsider.identity, grantFor(suspended, outsider.orcaNodeId));
 
     // The origin still drives the resume (only it may); the grant itself is forged.
     await signedResume(targetUrl, identity, resumeMessage(suspended.id, { grant: forged }));

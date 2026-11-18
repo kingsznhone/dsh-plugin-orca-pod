@@ -12,7 +12,7 @@ describe("orca-node skill bundle", () => {
     expect(markdown).toContain("name: orca-node");
     expect(basename(SKILL_SOURCE_DIR)).toBe("orca-node");
     expect(readFileSync(join(SKILL_SOURCE_DIR, "references", "add-machine.md"), "utf8")).toContain(
-      "npx orca-pod install",
+      "install DeepSeek Harness and this plugin",
     );
   });
 

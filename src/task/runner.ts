@@ -8,7 +8,7 @@
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 
-import type { FileBlobRegistry } from "../core/blobs.ts";
+import type { FetchBlob, FileBlobRegistry } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import { EventBus, type NodeLogger } from "../core/events.ts";
 import type { BusyState, OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
@@ -34,8 +34,8 @@ export type TaskRunnerOptions = {
   logger: NodeLogger;
   selfOrcaNodeId: OrcaNodeId;
   workgroupId: WorkgroupId;
-  /** Data root, so the prompt can point an agent at the local CLI (§6.14). */
-  dataRoot: string;
+  /** Fetches the files an origin attaches to a task from the member that published them (§3.8). */
+  fetchBlob: FetchBlob;
   /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
   permissionMode?: SandboxMode;
   /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
@@ -73,7 +73,8 @@ export class SingleSlotTaskRunner {
     this.settings = {
       logger: options.logger,
       selfOrcaNodeId: options.selfOrcaNodeId,
-      dataRoot: options.dataRoot,
+      fetchBlob: options.fetchBlob,
+      maxFileBytes: options.maxWorkspaceBytes,
       permissionCeiling: options.permissionMode,
       permissionTtlS: options.permissionTtlS,
       resultMaxBytes: options.resultMaxBytes ?? 32 * 1024,

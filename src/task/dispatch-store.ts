@@ -1,14 +1,13 @@
 /** Durable and in-memory origin-side dispatch log stores (§8.3). */
 
-import { JsonTable, SqliteDb } from "../core/sqlite.ts";
+import { JsonTable, type SqliteDb } from "../core/sqlite.ts";
 import type { DispatchEntry } from "./wire.ts";
 
-/** What an origin keeps about the tasks it handed to peers; what the entries mean is decided in `task/delegation.ts`. */
+/** What an origin keeps about the tasks it handed to peers; what the entries mean is decided in `task/dispatch-log.ts`. */
 export interface DispatchStore {
   save(entry: DispatchEntry): void;
   get(taskId: string): DispatchEntry | undefined;
   list(): DispatchEntry[];
-  close(): void;
 }
 
 export class MemoryDispatchStore implements DispatchStore {
@@ -25,8 +24,6 @@ export class MemoryDispatchStore implements DispatchStore {
   list(): DispatchEntry[] {
     return [...this.entries.values()].sort((left, right) => left.created_at.localeCompare(right.created_at));
   }
-
-  close(): void {}
 }
 
 /**
@@ -35,13 +32,11 @@ export class MemoryDispatchStore implements DispatchStore {
  * `unknown` instead of inventing a failure (§8.3).
  */
 export class SqliteDispatchStore implements DispatchStore {
-  private readonly handle: SqliteDb;
   private readonly table: JsonTable<DispatchEntry>;
 
-  constructor(path: string) {
-    this.handle = new SqliteDb(path);
+  constructor(handle: SqliteDb) {
     this.table = new JsonTable<DispatchEntry>(
-      this.handle,
+      handle,
       "dispatches",
       (entry) => entry.task_id,
       (entry) => entry.updated_at,
@@ -58,9 +53,5 @@ export class SqliteDispatchStore implements DispatchStore {
 
   list(): DispatchEntry[] {
     return this.table.list();
-  }
-
-  close(): void {
-    this.handle.close();
   }
 }

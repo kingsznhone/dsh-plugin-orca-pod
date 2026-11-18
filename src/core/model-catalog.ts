@@ -4,7 +4,7 @@ import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { ChangeSignal, type NodeLogger } from "./events.ts";
 import type { ModelDefaults, ModelOffer } from "./wire/model.ts";
 
-/** What `config.json` may pin about models (§6.15). */
+/** What the settings may pin about models (§6.15). */
 export type ModelPins = {
   models?: ModelOffer[];
   default_model?: ModelSelection;
@@ -14,7 +14,7 @@ export type ModelPins = {
 /**
  * The model routes this node offers and the default a task gets when it names
  * none (§6.15). The DSH host reports the list after start-up (`update`); a pin
- * in `config.json` keeps the per-node default reproducible across UI changes.
+ * in the settings keeps the per-node default reproducible across UI changes.
  * The node advertises the catalog to peers, and an ACP session reads its default
  * from here, so both depend on this object and not on each other.
  */
@@ -38,7 +38,7 @@ export class ModelCatalog {
   }
 
   /**
-   * Replace the routes and the default the host reports. A pin in `config.json`
+   * Replace the routes and the default the host reports. A pin in the settings
    * wins over `defaultModel` and `reasoningEffort`; a route offered twice is kept once.
    */
   update(models: ModelOffer[], defaultModel: ModelSelection | null, reasoningEffort?: ReasoningEffortId | null): void {

@@ -21,8 +21,9 @@ import { boundContextSummary, createUserMessage, type ContextFormed, type UserMe
 
 import type { DispatchEntry, TaskView } from "../task/wire.ts";
 import { isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
+import { shortenNodeId } from "../core/identity.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
-import type { OrcaNode } from "../node/orca-node.ts";
+import type { OrcaNode } from "../mesh/orca-node.ts";
 import type { Pod } from "./pod.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
@@ -51,7 +52,8 @@ export interface TrackerOptions {
 
 interface PendingTask {
   agent: Agent;
-  peer: string;
+  /** The node the task runs on. */
+  node: OrcaNodeId;
   taskId: string;
   /** Consecutive transient poll failures. */
   failures: number;
@@ -59,13 +61,13 @@ interface PendingTask {
   nextAttemptAt: number;
 }
 
-type FinishedTask = PendingTask &
-  (
+type FinishedTask = PendingTask & {
+  /** The node as a person knows it: its name, and the start of its id. */
+  who: string;
+} & (
     | {
         kind: "terminal";
         view: TaskView;
-        /** The node that runs the task, as the origin knows it; undefined when its id is not known. */
-        publisher: OrcaNodeId | undefined;
       }
     | {
         kind: "interrupted";
@@ -83,18 +85,23 @@ const MAX_RETRY_DELAY_MS = 30_000;
 /** Remote results are third-party text; keep the quoted body short and inert. */
 const UNTRUSTED_RESULT_MAX_CHARS = 800;
 
-/** One terminal task reduced to the line shown to the agent. */
-export function taskNoticeLine(view: TaskView, peer: string, node?: string): string {
+/** A node as a person knows it: its display name and the start of its id, or only the id when the name is not known. */
+export function nodeLabel(node: OrcaNode | undefined, id: OrcaNodeId): string {
+  return node === undefined ? shortenNodeId(id) : `${node.displayName} (${id.slice(0, 8)})`;
+}
+
+/** One terminal task reduced to the line shown to the agent; `who` is the node it ran on, `node` its id, which names the files it handed back. */
+export function taskNoticeLine(view: TaskView, who: string, node?: string): string {
   const text = view.status.message === undefined ? undefined : messageText(view.status.message).trim();
   // A peer that cannot be reached ends its own task as completed with a
   // "BLOCKED:" report (§6.14); surface that to the origin instead of claiming
   // the work itself finished.
   const blocked = text !== undefined && /^BLOCKED\b/i.test(text);
   const state = blocked && view.status.state === "completed" ? "completed with a blocker report" : view.status.state;
-  const parts = [`task ${view.id} on ${peer} is ${state}`];
+  const parts = [`task ${view.id} on ${who} is ${state}`];
   if (view.status.reason) parts.push(`reason: ${view.status.reason}`);
   if (view.artifacts && view.artifacts.length > 0) {
-    // Named the way `orca-node fetch` takes them, when the publisher is known (§5.6).
+    // Named the way the `orca_pod` fetch method takes them, when the publisher is known (§5.6).
     const name = (id: string): string => (node === undefined ? id : `${node}/${id}`);
     parts.push(
       `artifacts: ${view.artifacts.map((artifact) => `${artifact.name} (${name(artifact.artifactId)})`).join(", ")}`,
@@ -218,8 +225,8 @@ class NoticeDelivery {
       const batch = batches.get(task.agent.id) ?? { agent: task.agent, lines: [] };
       batch.lines.push(
         task.kind === "interrupted"
-          ? NoticeDelivery.trackingInterruptedLine(task.taskId, task.peer, task.reason ?? "unknown error")
-          : taskNoticeLine(task.view, task.peer, task.publisher),
+          ? NoticeDelivery.trackingInterruptedLine(task.taskId, task.who, task.reason ?? "unknown error")
+          : taskNoticeLine(task.view, task.who, task.node),
       );
       batches.set(task.agent.id, batch);
     }
@@ -263,8 +270,8 @@ class NoticeDelivery {
    * The remote task may still be running, so this must not read like a terminal
    * state — it points the agent at `orca_pod` `status` instead.
    */
-  private static trackingInterruptedLine(taskId: string, peer: string, reason: string): string {
-    return `tracking of task ${taskId} on ${peer} was interrupted: ${reason}; the task may still be running — call orca_pod with method "status" to check it`;
+  private static trackingInterruptedLine(taskId: string, who: string, reason: string): string {
+    return `tracking of task ${taskId} on ${who} was interrupted: ${reason}; the task may still be running — call orca_pod with method "status" to check it`;
   }
 }
 
@@ -312,9 +319,9 @@ export class Tracker {
    * started. A task this process already gave up on is not taken up again (task
    * ids are unique, so a new dispatch never meets an abandoned key).
    */
-  track(agent: Agent, peer: string, taskId: string): boolean {
+  track(agent: Agent, node: OrcaNodeId, taskId: string): boolean {
     if (this.stopped) return false;
-    const key = taskKey(peer, taskId);
+    const key = taskKey(node, taskId);
     const existing = this.pending.get(key);
     if (existing !== undefined) {
       // A resumed session is a new agent object with the same id; deliver to the live one.
@@ -322,7 +329,7 @@ export class Tracker {
       return false;
     }
     if (this.abandoned.has(key)) return false;
-    this.pending.set(key, { agent, peer, taskId, failures: 0, nextAttemptAt: 0 });
+    this.pending.set(key, { agent, node, taskId, failures: 0, nextAttemptAt: 0 });
     this.loop.schedule(0);
     return true;
   }
@@ -339,10 +346,11 @@ export class Tracker {
   restore(dispatches: readonly DispatchEntry[], resolveAgent: (agentId: SessionId) => Agent | undefined): number {
     let restored = 0;
     for (const entry of dispatches) {
-      if (entry.agent_id === undefined || isTerminal(entry.state)) continue;
+      // An entry an older version wrote names an address, not a node: nothing to follow.
+      if (entry.node === null || entry.agent_id === undefined || isTerminal(entry.state)) continue;
       const agent = resolveAgent(entry.agent_id);
       if (agent === undefined) continue;
-      if (this.track(agent, entry.peer, entry.task_id)) restored += 1;
+      if (this.track(agent, entry.node, entry.task_id)) restored += 1;
     }
     if (restored > 0) this.logger.info(`orca-pod: resumed tracking ${restored} dispatched task(s)`);
     return restored;
@@ -370,7 +378,7 @@ export class Tracker {
     for (const [key, entry] of this.pending) {
       if (entry.agent.id !== agentId) continue;
       this.pending.delete(key);
-      this.broker.withdraw(entry.peer, entry.taskId);
+      this.broker.withdraw(entry.node, entry.taskId);
     }
     this.delivery.forget(agentId);
   }
@@ -382,14 +390,16 @@ export class Tracker {
       // Exponential backoff after transient failures; the timer keeps running so
       // other entries are still polled on schedule.
       if (Date.now() < entry.nextAttemptAt) continue;
-      await this.pollEntry(run.node, key, entry);
+      await this.pollEntry(run.orca.mesh.get(entry.node), key, entry);
     }
   }
 
   /** Read one tracked task and act on what it says. */
-  private async pollEntry(node: OrcaNode, key: string, entry: PendingTask): Promise<void> {
+  private async pollEntry(node: OrcaNode | undefined, key: string, entry: PendingTask): Promise<void> {
     try {
-      const view = await node.delegation.getTask(entry.peer, entry.taskId);
+      // A node that left the table cannot be asked: the same as a task that is gone.
+      if (node === undefined) throw new PodError("unknown_orca_node", `${entry.node} is no longer a known node`);
+      const view = await node.getTask(entry.taskId);
       // The entry may have been dropped (agent disposed) while the read ran.
       if (this.pending.get(key) !== entry) return;
       entry.failures = 0;
@@ -398,14 +408,14 @@ export class Tracker {
       if (request !== null) {
         // The UI answers a suspended request; the task stays tracked until it
         // finishes. Parking is idempotent per request id.
-        this.broker.park({ peer: entry.peer, view, request, agentId: entry.agent.id });
+        this.broker.park({ node: entry.node, view, request, agentId: entry.agent.id });
         return;
       }
       // Not suspended: any earlier prompt was answered elsewhere or the task settled.
-      this.broker.withdraw(entry.peer, entry.taskId);
+      this.broker.withdraw(entry.node, entry.taskId);
       if (isTerminal(view.status.state)) {
         this.pending.delete(key);
-        this.delivery.add({ ...entry, kind: "terminal", view, publisher: node.client.idOf(entry.peer) });
+        this.delivery.add({ ...entry, kind: "terminal", view, who: nodeLabel(node, entry.node) });
       }
     } catch (error) {
       // A vanished task (404) or a rejected read is final; a network timeout or
@@ -429,7 +439,9 @@ export class Tracker {
     entry.failures += 1;
     entry.nextAttemptAt = Date.now() + Math.min(this.intervalMs * 2 ** (entry.failures - 1), MAX_RETRY_DELAY_MS);
     if (entry.failures === 1) {
-      this.logger.warn(`orca-pod: poll of ${entry.taskId} on ${entry.peer} failed (retrying): ${errorMessage(error)}`);
+      this.logger.warn(
+        `orca-pod: poll of ${entry.taskId} on ${this.who(entry)} failed (retrying): ${errorMessage(error)}`,
+      );
     }
     if (entry.failures < this.maxTransientFailures) return;
     this.endTracking(key, entry, errorMessage(error));
@@ -439,8 +451,14 @@ export class Tracker {
   private endTracking(key: string, entry: PendingTask, reason: string): void {
     this.pending.delete(key);
     this.abandoned.add(key);
-    this.broker.withdraw(entry.peer, entry.taskId);
-    this.logger.warn(`orca-pod: gave up tracking ${entry.taskId} on ${entry.peer}: ${reason}`);
-    this.delivery.add({ ...entry, kind: "interrupted", reason });
+    this.broker.withdraw(entry.node, entry.taskId);
+    const who = this.who(entry);
+    this.logger.warn(`orca-pod: gave up tracking ${entry.taskId} on ${who}: ${reason}`);
+    this.delivery.add({ ...entry, kind: "interrupted", reason, who });
+  }
+
+  /** The node a task runs on, as a person knows it. */
+  private who(entry: PendingTask): string {
+    return nodeLabel(this.pod.run?.orca.mesh.get(entry.node), entry.node);
   }
 }

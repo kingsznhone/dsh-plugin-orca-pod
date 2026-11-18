@@ -1,128 +1,135 @@
 /**
- * What the pod keeps behind `PodStores` and what must outlive a node
- * restart (§7.3, §9.2): the workgroup password and the plugin config (the DSH
- * credential store and config editor, or memory without a host). The peers
- * joined at runtime are `peers-file.ts`.
+ * What the pod keeps in the DSH credential store (§3.6): the workgroup password
+ * and the node's private key. Both are machine-wide, because a machine has one
+ * node however many DSH profiles it runs (§3.9). Settings are not secrets and
+ * live in `settings-file.ts`; the peers joined at runtime in `peers-file.ts`.
  */
-
-import { isDeepStrictEqual } from "node:util";
 
 import type { Context } from "@deepseek-ai/cordis";
-import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
-import type { CredentialRef } from "@deepseek-ai/dsh-credentials";
-// `ctx.configEditor` is injected by this plugin; the service package owns the type.
-import type {} from "@deepseek-ai/dsh-config-editor";
+import { credentialKey, credentialRef, type CredentialRecord } from "@deepseek-ai/dsh-credentials";
 
-import { parseSettings, type ConfigFields } from "../node/settings.ts";
+import { exportIdentity, generateNodeIdentity, importIdentity, type NodeIdentity } from "../core/identity.ts";
+import { isRecord } from "../core/schema.ts";
 
-/**
- * A raw plugin config as stored in the profile. The Loader has checked it
- * against the plugin's `Config` schema, but it is not canonical yet (that is
- * `parseSettings`' job), and keys this version does not know are kept as they
- * are so a write never drops them.
- */
-export type RawConfig = ConfigFields & { [key: string]: unknown };
+/** The reference of the workgroup password: one name for the whole machine, also an environment variable a headless host can export. */
+export const PASSWORD_REF = credentialRef("ORCA_POD_PASSWORD");
 
-/**
- * Persistence the pod needs from its host. In DSH these are the
- * credential seam and the config editor (`HostPodStores`); without a host,
- * `MemoryPodStores` keeps both in memory.
- */
+/** The record of the node's Ed25519 private key; it belongs to this plugin, which is why it is a record and not a reference. */
+export const NODE_KEY = credentialKey("orca-pod", "node");
+
+/** What the pod needs from its host: the DSH credential store (`HostPodStores`), or memory without a host. */
 export interface PodStores {
+  /** The stored password; undefined when absent or empty. */
+  readPassword(): Promise<string | undefined>;
+  /** Whether a password is stored, without reading it: the panel's "password set". */
+  passwordConfigured(): Promise<boolean>;
+  writePassword(value: string): Promise<void>;
+  clearPassword(): Promise<void>;
+  /** The node's identity, or undefined while none was ever made; it never creates one. */
+  readIdentity(): Promise<NodeIdentity | undefined>;
   /**
-   * Whether the host restarts the plugin by itself after a config write (the DSH
-   * Loader does). When it does not, the pod applies the written config
-   * itself.
+   * The node's identity, made on first use. Two processes that ask at the same
+   * time get the same key: the write is exclusive in the store.
    */
-  readonly restartsOnWrite: boolean;
-  /** The stored password behind a credential reference; undefined when absent or empty. */
-  readSecret(ref: CredentialRef): Promise<string | undefined>;
-  writeSecret(ref: CredentialRef, value: string): Promise<void>;
-  clearSecret(ref: CredentialRef): Promise<void>;
-  /**
-   * Persist the next plugin config, derived from the stored raw one. Resolves to
-   * the stored config, or to null when `change` changes nothing. With
-   * `restartsOnWrite` the host restarts the plugin (the pod is disposed
-   * before the promise settles). Never call it from inside the pod's queue:
-   * a host restart waits for that queue to drain.
-   */
-  writeConfig(change: (raw: RawConfig) => RawConfig): Promise<RawConfig | null>;
+  identity(): Promise<NodeIdentity>;
+  deleteIdentity(): Promise<void>;
 }
 
-/**
- * The pod's persistence on a DSH host (§7.3): the password in the
- * credential store, settings in this plugin's profile entry. A config write goes
- * through `configEditor.edit`, which validates it with `Config`, writes the
- * profile patch and has the Loader restart this plugin with the new config.
- */
+/** The private key a record holds: `{ ed25519: <base58 seed> }` in a grant record's payload. */
+function identityOf(record: CredentialRecord): NodeIdentity {
+  const payload = record.kind === "grant" && isRecord(record.payload) ? record.payload : undefined;
+  if (typeof payload?.ed25519 !== "string") {
+    throw new Error("the node key in the credential store is not an Ed25519 key; delete it to make a new identity");
+  }
+  try {
+    return importIdentity(payload.ed25519);
+  } catch (error) {
+    throw new Error(
+      `the node key in the credential store is damaged (${error instanceof Error ? error.message : String(error)}); delete it to make a new identity`,
+    );
+  }
+}
+
+/** A grant record holding a node's private key. */
+function recordOf(identity: NodeIdentity): CredentialRecord {
+  return { kind: "grant", payload: { ed25519: exportIdentity(identity) } };
+}
+
+/** The pod's persistence on a DSH host: the password and the node key in `ctx.credentials`. */
 export class HostPodStores implements PodStores {
-  readonly restartsOnWrite = true;
+  constructor(private readonly ctx: Pick<Context, "credentials">) {}
 
-  constructor(private readonly ctx: Pick<Context, "credentials" | "configEditor" | "fiber">) {}
-
-  async readSecret(ref: CredentialRef): Promise<string | undefined> {
-    return (await this.ctx.credentials.resolve(ref))?.value;
+  async readPassword(): Promise<string | undefined> {
+    return (await this.ctx.credentials.resolve(PASSWORD_REF))?.value;
   }
 
-  writeSecret(ref: CredentialRef, value: string): Promise<void> {
-    return this.ctx.credentials.set(ref, value);
+  async passwordConfigured(): Promise<boolean> {
+    return (await this.ctx.credentials.describe(PASSWORD_REF)).configured;
   }
 
-  clearSecret(ref: CredentialRef): Promise<void> {
-    return this.ctx.credentials.unset(ref);
+  writePassword(value: string): Promise<void> {
+    return this.ctx.credentials.set(PASSWORD_REF, value);
   }
 
-  async writeConfig(change: (raw: RawConfig) => RawConfig): Promise<RawConfig | null> {
-    const entry: Entry | undefined = this.ctx.fiber.entry;
-    if (entry === undefined)
-      throw new Error("orca-pod was not loaded from a profile entry; its config cannot be saved");
-    const current = structuredClone((entry.options.config ?? {}) as RawConfig);
-    const next = change(structuredClone(current));
-    if (isDeepStrictEqual(next, current)) return null;
-    await this.ctx.configEditor.edit(entry, (raw) => change(raw));
-    return next;
+  clearPassword(): Promise<void> {
+    return this.ctx.credentials.unset(PASSWORD_REF);
+  }
+
+  async readIdentity(): Promise<NodeIdentity | undefined> {
+    const record = await this.ctx.credentials.readRecord(NODE_KEY);
+    return record === undefined ? undefined : identityOf(record);
+  }
+
+  async identity(): Promise<NodeIdentity> {
+    const record = await this.ctx.credentials.modifyRecord(NODE_KEY, async (current) =>
+      current === undefined ? recordOf(generateNodeIdentity()) : undefined,
+    );
+    if (record === undefined) throw new Error("the credential store did not keep the node key");
+    return identityOf(record);
+  }
+
+  deleteIdentity(): Promise<void> {
+    return this.ctx.credentials.deleteRecord(NODE_KEY);
   }
 }
 
-/**
- * Stores for a pod without a DSH host (tests, smoke runs): the raw config and
- * the secrets live in memory. Nothing restarts the plugin after a write, so the
- * pod applies the config itself.
- */
+/** Stores for a pod without a DSH host (tests): everything lives in memory. */
 export class MemoryPodStores implements PodStores {
-  readonly restartsOnWrite = false;
-  readonly secrets = new Map<string, string>();
-  private current: RawConfig;
+  password: string | undefined;
+  private node: NodeIdentity | undefined;
 
-  constructor(raw: RawConfig = {}) {
-    this.current = structuredClone(raw);
+  constructor(options: { password?: string; identity?: NodeIdentity } = {}) {
+    this.password = options.password;
+    this.node = options.identity;
   }
 
-  /** The config as stored now. */
-  raw(): RawConfig {
-    return structuredClone(this.current);
+  async readPassword(): Promise<string | undefined> {
+    return this.password === undefined || this.password.length === 0 ? undefined : this.password;
   }
 
-  async readSecret(ref: CredentialRef): Promise<string | undefined> {
-    const value = this.secrets.get(ref);
-    return value === undefined || value.length === 0 ? undefined : value;
+  async passwordConfigured(): Promise<boolean> {
+    return (await this.readPassword()) !== undefined;
   }
 
-  async writeSecret(ref: CredentialRef, value: string): Promise<void> {
+  async writePassword(value: string): Promise<void> {
     if (value.length === 0) throw new Error("an empty credential cannot be stored; remove it instead");
-    this.secrets.set(ref, value);
+    this.password = value;
   }
 
-  async clearSecret(ref: CredentialRef): Promise<void> {
-    this.secrets.delete(ref);
+  async clearPassword(): Promise<void> {
+    this.password = undefined;
   }
 
-  async writeConfig(change: (raw: RawConfig) => RawConfig): Promise<RawConfig | null> {
-    const next = change(structuredClone(this.current));
-    if (isDeepStrictEqual(next, this.current)) return null;
-    // A config the settings parser refuses is not stored.
-    parseSettings(next);
-    this.current = next;
-    return structuredClone(next);
+  async readIdentity(): Promise<NodeIdentity | undefined> {
+    return this.node;
+  }
+
+  async identity(): Promise<NodeIdentity> {
+    this.node ??= generateNodeIdentity();
+    return this.node;
+  }
+
+  async deleteIdentity(): Promise<void> {
+    this.node = undefined;
   }
 }

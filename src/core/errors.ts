@@ -16,15 +16,13 @@ export const POD_ERROR_STATUS = {
   stale_request: 401,
   bad_proof: 401,
   // Authorization.
-  not_a_member: 403,
-  local_only: 403,
   not_task_origin: 403,
   // Malformed or unsupported requests.
   bad_request: 400,
   bad_echo_script: 400,
   unsupported: 400,
   workgroup_mismatch: 400,
-  /** A join whose declared endpoints are all forbidden by the screening policy (§7.7). */
+  /** A hello whose declared endpoints are all forbidden by the screening policy (§7.7). */
   endpoint_refused: 400,
   // Unknown resources.
   task_not_found: 404,
@@ -40,9 +38,12 @@ export const POD_ERROR_STATUS = {
   blob_file_missing: 410,
   // Limits.
   body_too_large: 413,
+  blob_too_large: 413,
   orca_node_busy: 429,
   quota_exceeded: 507,
   internal: 500,
+  /** A task's input file could not be fetched before it started (§3.8). */
+  input_unavailable: 502,
   // Outbound calls (see mesh/peer-client.ts): raised on this node, never sent over the wire.
   unknown_peer: 404,
   peer_not_online: 503,

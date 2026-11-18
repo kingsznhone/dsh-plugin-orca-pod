@@ -2,34 +2,26 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { BlobIdSchema, type OpenedBlob } from "../core/blobs.ts";
-import { OrcaNodeIdSchema } from "../core/wire/peer.ts";
-import type { BlobFetcher } from "../mesh/blob-fetcher.ts";
+import type { Mesh } from "../mesh/mesh.ts";
 import { parseInput } from "./input.ts";
 
 const BlobParams = z.object({ blob_id: BlobIdSchema });
-const FetchQuery = z.object({ node: OrcaNodeIdSchema, blob: BlobIdSchema });
 
 /**
  * Files move by name, never by URL (§5.6): a file is the sha256 a member
- * published, and whoever needs it asks its own node, which finds that member's
- * address the way its heartbeat does. The gateway never accepts bytes pushed by
- * a peer (there is no upload route); a local caller's request makes this node
- * fetch the file from its publisher on demand and forward it.
+ * published, and whoever needs it asks the node that published it, which its own
+ * node finds the way its heartbeat does. The gateway never accepts bytes pushed by
+ * a peer: there is no upload route.
  */
 export class BlobRoutes {
-  constructor(private readonly files: BlobFetcher) {}
+  constructor(private readonly mesh: Mesh) {}
 
   register(app: FastifyInstance): void {
-    // A file this node published, for a member's signed request.
-    app.get("/blobs/:blob_id", { config: { access: "member" } }, async (request, reply) => {
+    // A file this node published, for a member's signed request. The reply is a
+    // stream, so its signature covers its status and the file's name (`blobReply`).
+    app.get("/blobs/:blob_id", { config: { access: "member", blobReply: true } }, async (request, reply) => {
       const { blob_id: blobId } = parseInput(BlobParams, request.params, "params");
-      return BlobRoutes.send(reply, this.files.open(blobId));
-    });
-
-    // Local control for the CLI: any member's file, fetched by this node (§5.6).
-    app.get("/cluster/blob", { config: { access: "local" } }, async (request, reply) => {
-      const { node, blob } = parseInput(FetchQuery, request.query, "querystring");
-      return BlobRoutes.send(reply, await this.files.fetch(node, blob));
+      return BlobRoutes.send(reply, await this.mesh.self.fetchBlob(blobId));
     });
   }
 

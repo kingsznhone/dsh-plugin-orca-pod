@@ -1,22 +1,22 @@
 import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { nodeParts } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
-import { OrcaNode } from "../src/node/orca-node.ts";
+import { Orca } from "../src/node/orca.ts";
 import type { OrcaNodeConfig } from "../src/node/config.ts";
-import { generateNodeIdentity } from "../src/core/identity.ts";
-import type { MembershipTimings } from "../src/mesh/membership.ts";
+import type { MeshTimings } from "../src/mesh/timings.ts";
 import type { TaskView } from "../src/task/wire.ts";
+import { pickFreePort } from "../src/core/net.ts";
 import { wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/wire/peer.ts";
+import { peersOf } from "./support/node.ts";
 
-const FAST: Partial<MembershipTimings> = {
+const FAST: Partial<MeshTimings> = {
   intervalMs: 50,
   suspectAfterMs: 150,
   offlineAfterMs: 300,
@@ -38,7 +38,7 @@ function newWorkgroupId(): WorkgroupId {
  * otherwise be derived as interval / 2 = 125ms and turn one slow response
  * during setup into a failed test. The test asserts convergence, not latency.
  */
-const TEN_NODE_TIMINGS: Partial<MembershipTimings> = {
+const TEN_NODE_TIMINGS: Partial<MeshTimings> = {
   intervalMs: 250,
   heartbeatTimeoutMs: 2000,
   suspectAfterMs: 3000,
@@ -56,16 +56,18 @@ function tempRoot(): string {
 async function makeNode(
   workgroupId: WorkgroupId,
   password: string,
-  options: Partial<Pick<OrcaNodeConfig, "data_root" | "display_name">> & { timings?: Partial<MembershipTimings> } = {},
-): Promise<OrcaNode> {
-  const config = await createOrcaNodeConfig({
+  options: Partial<Pick<OrcaNodeConfig, "data_root" | "display_name" | "port">> & {
+    timings?: Partial<MeshTimings>;
+  } = {},
+): Promise<Orca> {
+  const config = nodeParts({
     workgroup_id: workgroupId,
     workgroup_password: password,
     data_root: options.data_root ?? tempRoot(),
     display_name: options.display_name,
-    port: 0,
+    port: options.port ?? 0,
   });
-  return new OrcaNode(config, { timings: options.timings ?? FAST });
+  return new Orca(...config, { timings: options.timings ?? FAST });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
@@ -77,10 +79,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
   throw new Error("condition was not met before the timeout");
 }
 
-async function waitForTask(client: OrcaNode, peerUrl: string, taskId: string): Promise<TaskView> {
+async function waitForTask(client: Orca, peerUrl: string, taskId: string): Promise<TaskView> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const task = await client.delegation.getTask(peerUrl, taskId);
+    const task = await client.mesh.resolve(peerUrl).getTask(taskId);
     if (task.status.state === "completed") return task;
     if (task.status.state === "failed" || task.status.state === "canceled") {
       throw new Error(`task ended as ${task.status.state}`);
@@ -106,13 +108,11 @@ describe("mesh formation", () => {
       if (!bootstrap) throw new Error("bootstrap did not start");
 
       // 五个 orca node 同时 join 同一个 bootstrap：后到者与先到者互相补齐。
-      await Promise.all(orcaNodes.slice(1).map((orcaNode) => orcaNode.mesh.join(bootstrap)));
+      await Promise.all(orcaNodes.slice(1).map((orcaNode) => orcaNode.mesh.probe(bootstrap)));
 
       await waitFor(() =>
         orcaNodes.every(
-          (orcaNode) =>
-            orcaNode.membership.list().length === 4 &&
-            orcaNode.membership.list().every((peer) => peer.state === "online"),
+          (orcaNode) => peersOf(orcaNode).length === 4 && peersOf(orcaNode).every((peer) => peer.state === "online"),
         ),
       );
       const digests = new Set(orcaNodes.map((orcaNode) => orcaNode.mesh.digest()));
@@ -132,15 +132,15 @@ describe("mesh formation", () => {
       const [aUrl, bUrl] = await Promise.all([a.start(), b.start()]).then(([ra, rb]) => [ra.url, rb.url]);
       if (!aUrl || !bUrl) throw new Error("orca nodes did not start");
 
-      await Promise.all([a.mesh.join(bUrl), b.mesh.join(aUrl)]);
-      await waitFor(() => a.membership.list().length === 1 && b.membership.list().length === 1);
+      await Promise.all([a.mesh.probe(bUrl), b.mesh.probe(aUrl)]);
+      await waitFor(() => peersOf(a).length === 1 && peersOf(b).length === 1);
       expect(a.mesh.digest()).toBe(b.mesh.digest());
 
       // 重复 join 不得产生第二条记录，也不得让 digest 抖动。
       const before = a.mesh.digest();
-      await a.mesh.join(bUrl);
-      await a.mesh.join(bUrl);
-      expect(a.membership.list()).toHaveLength(1);
+      await a.mesh.probe(bUrl);
+      await a.mesh.probe(bUrl);
+      expect(peersOf(a)).toHaveLength(1);
       expect(a.mesh.digest()).toBe(before);
     } finally {
       await Promise.all([a.stop(), b.stop()]);
@@ -159,26 +159,22 @@ describe("mesh formation", () => {
       if (!aUrl) throw new Error("a did not start");
       const bUrl = (await b.start()).url;
       if (!bUrl) throw new Error("b did not start");
-      await b.mesh.join(aUrl);
-      await waitFor(() =>
-        a.membership.list().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"),
-      );
+      await b.mesh.probe(aUrl);
+      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"));
 
       // b 掉线：a 的目录里还留着它的死 endpoint。
       await b.stop();
 
       const cUrl = (await c.start()).url;
       if (!cUrl) throw new Error("c did not start");
-      const directory = await c.mesh.join(aUrl);
-      const { failed } = await c.mesh.joinAll(directory.members);
+      await c.mesh.probe(aUrl);
 
-      expect(failed).toContain(b.orcaNodeId);
-      await waitFor(() =>
-        c.membership.list().some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
-      );
+      // a's directory still names b, so c knows it as a candidate that never answers.
+      expect(c.mesh.get(b.orcaNodeId)?.state).not.toBe("online");
+      await waitFor(() => peersOf(c).some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"));
 
       // 一个死条目不影响新 orca node 加入，也不影响它对存活 orca node 派任务。
-      const task = await c.delegation.sendTask(aUrl, {
+      const task = await c.mesh.resolve(aUrl).sendTask({
         message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
         metadata: { echo: { final: { state: "completed", text: "ok" } } },
       });
@@ -200,15 +196,13 @@ describe("mesh formation", () => {
       if (!aUrl) throw new Error("a did not start");
       const bUrl = (await b.start()).url;
       if (!bUrl) throw new Error("b did not start");
-      await b.mesh.join(aUrl);
-      await waitFor(() =>
-        a.membership.list().some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"),
-      );
+      await b.mesh.probe(aUrl);
+      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"));
 
       const firstConfig = b.config;
       await b.stop();
       await waitFor(() =>
-        a.membership.list().some((peer) => peer.orca_node_id === firstConfig.orca_node_id && peer.state !== "online"),
+        peersOf(a).some((peer) => peer.orca_node_id === firstConfig.orca_node_id && peer.state !== "online"),
       );
 
       // 同 orca_node_id、同 data_root、新端口：等价于“进程重启”。
@@ -219,19 +213,17 @@ describe("mesh formation", () => {
       try {
         const restartedUrl = (await restarted.start()).url;
         if (!restartedUrl) throw new Error("restarted orca node did not start");
-        await restarted.mesh.join(aUrl);
+        await restarted.mesh.probe(aUrl);
 
         await waitFor(() =>
-          a.membership
-            .list()
-            .some(
-              (peer) =>
-                peer.orca_node_id === restarted.orcaNodeId &&
-                peer.state === "online" &&
-                peer.endpoints.includes(restarted.profile.endpoints[0]!),
-            ),
+          peersOf(a).some(
+            (peer) =>
+              peer.orca_node_id === restarted.orcaNodeId &&
+              peer.state === "online" &&
+              peer.endpoints.includes(restarted.mesh.self.endpoints[0]!),
+          ),
         );
-        expect(a.membership.list().filter((peer) => peer.orca_node_id === restarted.orcaNodeId)).toHaveLength(1);
+        expect(peersOf(a).filter((peer) => peer.orca_node_id === restarted.orcaNodeId)).toHaveLength(1);
       } finally {
         await restarted.stop();
       }
@@ -253,76 +245,67 @@ describe("mesh formation", () => {
       await waitFor(
         () =>
           mesh.orcaNodes.every((orcaNode) => {
-            const members = orcaNode.membership.list();
+            const members = peersOf(orcaNode);
             return members.length === 9 && members.every((peer) => peer.state === "online");
           }),
         25_000,
       );
       const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.mesh.digest()));
       expect(digests.size).toBe(1);
-      expect(
-        mesh.orcaNodes.every((orcaNode) => orcaNode.membership.list().every((peer) => peer.state === "online")),
-      ).toBe(true);
+      expect(mesh.orcaNodes.every((orcaNode) => peersOf(orcaNode).every((peer) => peer.state === "online"))).toBe(true);
     } finally {
       await mesh.stop();
     }
   }, 40_000);
 
-  it("rejoins at most once when a peer answers 404", async () => {
-    const counts = { heartbeat: 0, join: 0 };
-    const fakeId = generateNodeIdentity().orcaNodeId;
-    let fakeUrl = "";
-    const server = createServer((request, response) => {
-      response.setHeader("content-type", "application/json");
-      if (request.url?.endsWith("/cluster/heartbeat")) counts.heartbeat += 1;
-      else if (request.url?.endsWith("/cluster/join")) {
-        counts.join += 1;
-        // Only the first join is admitted, so the peer is a known member afterwards.
-        if (counts.join === 1) {
-          const self = {
-            orca_node_id: fakeId,
-            display_name: "fake",
-            endpoints: [fakeUrl],
-            runtime: null,
-            runtime_digest: "none",
-            state: "online",
-            busy: null,
-            last_recv_at: null,
-            workgroup_id: "unused",
-          };
-          response.end(JSON.stringify({ self, members: [], members_digest: "none" }));
-          return;
-        }
-      }
-      response.writeHead(404);
-      response.end(JSON.stringify({ code: "unknown_orca_node" }));
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("fake peer did not bind a port");
-    fakeUrl = `http://127.0.0.1:${address.port}`;
-
+  it("is registered again by its next hello when a peer forgot it: there is no rejoin to do", async () => {
     const workgroupId = newWorkgroupId();
-    const orcaNode = await makeNode(workgroupId, "formation-test", {
-      display_name: "prober",
-      // Keep the background loop out of the counts: only the explicit calls talk to the fake peer.
-      timings: { intervalMs: 60_000 },
-    });
-
+    const a = await makeNode(workgroupId, "formation-test", { display_name: "a", timings: { intervalMs: 60_000 } });
+    const b = await makeNode(workgroupId, "formation-test", { display_name: "b", timings: { intervalMs: 60_000 } });
     try {
-      await orcaNode.start();
-      await orcaNode.mesh.join(fakeUrl);
-      expect(counts).toEqual({ heartbeat: 0, join: 1 });
+      const bUrl = (await b.start()).url;
+      await a.start();
+      await a.mesh.probe(bUrl);
+      expect(b.mesh.get(a.orcaNodeId)?.state).toBe("online");
 
-      await expect(orcaNode.mesh.heartbeat(fakeUrl)).rejects.toBeDefined();
-      expect(counts).toEqual({ heartbeat: 1, join: 2 });
+      // b prunes a (its record expired, or it was restarted and lost its table).
+      b.mesh.remove(a.orcaNodeId);
+      expect(b.mesh.get(a.orcaNodeId)).toBeUndefined();
 
-      // 第二次仍然是一次心跳 + 一次重 join：没有指数重试。
-      await expect(orcaNode.mesh.heartbeat(fakeUrl)).rejects.toBeDefined();
-      expect(counts).toEqual({ heartbeat: 2, join: 3 });
+      // Nothing was rejected, so there is nothing to retry: one more hello is all it takes, and
+      // a request of a member that b forgot is still answered, because both proofs hold.
+      const hello = await a.mesh.probe(bUrl);
+      expect(hello.id).toBe(b.orcaNodeId);
+      expect(b.mesh.get(a.orcaNodeId)?.state).toBe("online");
+      expect(peersOf(b).filter((peer) => peer.orca_node_id === a.orcaNodeId)).toHaveLength(1);
     } finally {
-      await orcaNode.stop();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await Promise.all([a.stop(), b.stop()]);
+    }
+  });
+
+  it("keeps trying a seed that did not answer at start, until it does", async () => {
+    const workgroupId = newWorkgroupId();
+    const port = await pickFreePort();
+    const late = await makeNode(workgroupId, "formation-test", { display_name: "late", timings: FAST, port });
+    const seeded = await makeNode(workgroupId, "formation-test", { display_name: "seeded", timings: FAST });
+    try {
+      // The late node's address is known (a fixed port), but nothing listens there yet.
+      const lateUrl = `http://127.0.0.1:${port}`;
+      await seeded.start();
+      const { reached, pending } = await seeded.mesh.seed([lateUrl]);
+      expect(reached).toEqual([]);
+      expect(pending).toEqual([lateUrl]);
+      expect(peersOf(seeded)).toHaveLength(0);
+
+      // It comes up: the seed's backoff finds it without anyone connecting again.
+      await late.start();
+      await waitFor(() =>
+        peersOf(seeded).some((peer) => peer.orca_node_id === late.orcaNodeId && peer.state === "online"),
+      );
+      // The node that came up was greeted as itself, so it knows the seeded node too.
+      expect(late.mesh.get(seeded.orcaNodeId)?.state).toBe("online");
+    } finally {
+      await Promise.all([late.stop(), seeded.stop()]);
     }
   });
 });

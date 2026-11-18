@@ -28,9 +28,12 @@ export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | n
 
 /** One permission request waiting for the human. */
 export interface PodApproval {
-  /** `peer|task_id`: stable across polls. */
+  /** `node|task_id`: stable across polls. */
   id: string;
+  /** What the panel posts back to approve or deny: the id of the node the task runs on. */
   peer: string;
+  /** The node the task runs on. */
+  node: string;
   task_id: string;
   tool: string;
   /** Short preview of the requested arguments. */
@@ -47,8 +50,10 @@ export interface PodApproval {
 /** One row of the task tables: a task this node runs, or one it dispatched. */
 export interface PodTaskRow {
   id: string;
-  /** Where details and cancel are addressed: this node's URL for local tasks, the target for dispatched ones. */
+  /** What details and cancel address: this node's id for local tasks, the target's for dispatched ones (an old log entry keeps the address it recorded). */
   peer: string;
+  /** The node the task runs on; null for an old log entry that only knew an address. */
+  node: string | null;
   state: TaskState | "unknown";
   /** Origin of a local task, target of a dispatched one, as a display label. */
   who: string;

@@ -7,7 +7,7 @@
 
 import type { PromptResponse, RequestPermissionResponse, StopReason } from "@agentclientprotocol/sdk";
 
-import { CLI_PATH, IN_TASK_ENV } from "../../core/entry.ts";
+import { IN_TASK_ENV } from "../../core/entry.ts";
 import { abortError } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
 import type { ModelCatalog } from "../../core/model-catalog.ts";
@@ -205,7 +205,6 @@ export class AcpExecutor implements LocalExecutor {
 
   constructor(
     config: AcpExecutorConfig,
-    dataRoot: string,
     /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (§6.15). */
     private readonly models: ModelCatalog,
     logger: NodeLogger,
@@ -214,14 +213,8 @@ export class AcpExecutor implements LocalExecutor {
       {
         command: config.command ?? "dsh",
         args: [...(config.extra_args ?? []), "--profile", config.profile ?? "acp"],
-        // Sessions spawned by this executor get the CLI path for publish/fetch, and
-        // the in-task marker that makes the CLI and the plugin refuse to send (§7.9).
-        env: {
-          ...process.env,
-          [IN_TASK_ENV]: "1",
-          ORCA_POD_CLI: CLI_PATH,
-          ORCA_POD_DATA_ROOT: dataRoot,
-        },
+        // Sessions spawned by this executor carry the in-task marker that makes the plugin refuse to send (§7.9).
+        env: { ...process.env, [IN_TASK_ENV]: "1" },
       },
       config.mcp_servers ?? [],
       logger,

@@ -10,15 +10,17 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { OrcaNode } from "../node/orca-node.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
+import type { OrcaNodeId } from "../core/wire/peer.ts";
+import type { OrcaNode } from "../mesh/orca-node.ts";
 import type { TaskView } from "../task/wire.ts";
 import type { Pod } from "./pod.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
 export interface ApprovalPrompt {
   id: string;
-  peer: string;
+  /** The node the task runs on. */
+  node: OrcaNodeId;
   task_id: string;
   request_id: string;
   tool: string;
@@ -35,8 +37,8 @@ interface Parked {
   view: TaskView;
 }
 
-/** The key a task is known by on this side: where it runs and its id there. Stable across polls. */
-export const taskKey = (peer: string, taskId: string): string => `${peer}|${taskId}`;
+/** The key a task is known by on this side: the node it runs on and its id there. Stable across polls. */
+export const taskKey = (node: OrcaNodeId, taskId: string): string => `${node}|${taskId}`;
 
 export class ApprovalBroker {
   private readonly parked = new Map<string, Parked>();
@@ -49,21 +51,21 @@ export class ApprovalBroker {
    * suspended, so the same request id keeps its prompt (stable id and created_at).
    */
   park({
-    peer,
+    node,
     view,
     request,
     agentId,
   }: {
-    peer: string;
+    node: OrcaNodeId;
     view: TaskView;
     request: PermissionRequest;
     agentId: string;
   }): void {
-    const key = taskKey(peer, view.id);
+    const key = taskKey(node, view.id);
     if (this.parked.get(key)?.prompt.request_id === request.request_id) return;
     const prompt: ApprovalPrompt = {
       id: randomUUID(),
-      peer,
+      node,
       task_id: view.id,
       request_id: request.request_id,
       tool: request.tool,
@@ -80,19 +82,19 @@ export class ApprovalBroker {
     return [...this.parked.values()].map((entry) => entry.prompt);
   }
 
-  /** Grant the parked request once; resolves with the resumed task. */
-  approve(peer: string, taskId: string): Promise<TaskView> {
-    return this.decide(peer, taskId, (node, view) => node.delegation.approveTask(peer, view));
+  /** Grant the parked request once; resolves with the resumed task. `ref` names the node: its id, display name or address. */
+  approve(ref: string, taskId: string): Promise<TaskView> {
+    return this.decide(ref, taskId, (node, view) => node.approve(view));
   }
 
   /** Fail the parked request on the remote task. */
-  deny(peer: string, taskId: string, reason = "denied from the UI"): Promise<TaskView> {
-    return this.decide(peer, taskId, (node, view) => node.delegation.denyTask(peer, view, reason));
+  deny(ref: string, taskId: string, reason = "denied from the UI"): Promise<TaskView> {
+    return this.decide(ref, taskId, (node, view) => node.deny(view, reason));
   }
 
   /** Drop the prompt of a task that settled or was answered elsewhere. */
-  withdraw(peer: string, taskId: string): void {
-    this.parked.delete(taskKey(peer, taskId));
+  withdraw(node: OrcaNodeId, taskId: string): void {
+    this.parked.delete(taskKey(node, taskId));
   }
 
   /** Drop every prompt (plugin unload). */
@@ -102,13 +104,13 @@ export class ApprovalBroker {
 
   /** Run one decision against the remote task, then drop the prompt it answered. */
   private async decide(
-    peer: string,
+    ref: string,
     taskId: string,
     act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
   ): Promise<TaskView> {
     await this.pod.settled();
-    const { node } = this.pod.requireRun();
-    const key = taskKey(peer, taskId);
+    const node = this.pod.requireRun().orca.mesh.resolve(ref);
+    const key = taskKey(node.id, taskId);
     const entry = this.parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");
     const resumed = await act(node, entry.view);

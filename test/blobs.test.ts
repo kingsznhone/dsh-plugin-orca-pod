@@ -2,15 +2,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { Readable } from "node:stream";
-import { buildAuthHeader, bodySha256 } from "../src/core/signing.ts";
+import { bodySha256 } from "../src/core/signing.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore, SqliteFileBlobStore } from "../src/core/blobs.ts";
 import type { FileBlobRegistry } from "../src/core/blobs.ts";
 import { PodError } from "../src/core/errors.ts";
+import { SqliteDb } from "../src/core/sqlite.ts";
 import type { BusyState } from "../src/core/wire/peer.ts";
 import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
-import { fakeNodeId } from "./fixtures/ids.ts";
 import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 
@@ -56,46 +55,6 @@ describe("blob route", () => {
     });
     expect(response.statusCode).toBe(410);
     expect(response.json()).toMatchObject({ code: "blob_file_missing" });
-  });
-
-  it("relays a member's file the node fetched to its own CLI", async () => {
-    const asked: string[] = [];
-    const node = fakeNodeId("publisher");
-    const blobId = "b".repeat(64);
-    const harness = createHarness();
-    vi.spyOn(harness.files, "fetch").mockImplementation(async (from, blob) => {
-      asked.push(`${from}/${blob}`);
-      return { stream: Readable.from([Buffer.from("fetched bytes")]), size: 13 };
-    });
-    const url = `/cluster/blob?node=${node}&blob=${blobId}`;
-    const response = await harness.app.inject({
-      method: "GET",
-      url,
-      headers: { authorization: harness.sign("GET", url) },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toBe("fetched bytes");
-    expect(asked).toEqual([`${node}/${blobId}`]);
-  });
-
-  it("keeps the CLI route to this node itself", async () => {
-    const harness = createHarness();
-    const stranger = generateNodeIdentity();
-    const url = `/cluster/blob?node=${fakeNodeId("publisher")}&blob=${"b".repeat(64)}`;
-    const response = await harness.app.inject({
-      method: "GET",
-      url,
-      headers: {
-        authorization: buildAuthHeader({
-          identity: stranger,
-          method: "GET",
-          url,
-          targetOrcaNodeId: harness.orcaNodeId,
-        }),
-      },
-    });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ code: "local_only" });
   });
 
   it("rejects an oversized JSON body before the route handler runs", async () => {
@@ -144,13 +103,17 @@ describe("file blobs registered by the local CLI", () => {
     await writeFile(filePath, Buffer.from([1, 2, 3, 4]));
     const dbPath = join(dir, "tasks.db");
 
-    const writer = new SqliteFileBlobStore(dbPath);
-    const blob = await new DiskBlobRegistry(writer).register(filePath, 60);
-    writer.close();
+    const writerDb = new SqliteDb(dbPath);
 
-    const reader = new SqliteFileBlobStore(dbPath);
-    const seen = new DiskBlobRegistry(reader).get(blob.blob_id);
-    reader.close();
+    writerDb.open();
+    const blob = await new DiskBlobRegistry(new SqliteFileBlobStore(writerDb)).register(filePath, 60);
+    writerDb.close();
+
+    const readerDb = new SqliteDb(dbPath);
+
+    readerDb.open();
+    const seen = new DiskBlobRegistry(new SqliteFileBlobStore(readerDb)).get(blob.blob_id);
+    readerDb.close();
     expect(seen?.path).toBe(filePath);
     expect(seen?.size).toBe(4);
     expect(seen?.expires_at).not.toBeNull();
@@ -174,8 +137,8 @@ describe("a2a busy response", () => {
       throw new PodError("orca_node_busy", "node is busy");
     });
     const harness = createHarness(tasks);
-    // The node keeps its profile in step with the runner; the gateway reports the profile.
-    harness.profile.setBusy(holder);
+    // The node keeps its own row of the table in step with the runner; the gateway reports it.
+    harness.mesh.self.setBusy(holder);
     const payload = JSON.stringify({
       jsonrpc: "2.0",
       id: "req-1",

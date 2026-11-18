@@ -1,17 +1,6 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { configPath, createOrcaNodeConfig, loadConfig, saveConfig } from "../src/node/config.ts";
 import { ConfigValidationError, PanelPatchSchema, nodeSettings, parseSettings } from "../src/node/settings.ts";
-import { wg } from "./fixtures/ids.ts";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
-});
 
 describe("settings parser", () => {
   it("treats null like absent so a patch can clear a field", () => {
@@ -78,28 +67,5 @@ describe("settings parser", () => {
     expect(node).not.toHaveProperty("peers");
     expect(node).not.toHaveProperty("skill_injection");
     expect(node.workgroup_id).toBe("wg-a");
-  });
-});
-
-describe("persisted config", () => {
-  it("round-trips through the same parser and is written owner-only", async () => {
-    const root = await mkdtemp(join(tmpdir(), "orca-settings-"));
-    roots.push(root);
-    const config = await createOrcaNodeConfig({
-      workgroup_id: wg("wg-a"),
-      workgroup_password: "pw",
-      data_root: root,
-      port: 0,
-      permission_mode: "read-only",
-    });
-    expect(config).not.toHaveProperty("workgroup_password");
-    await saveConfig(configPath(root), config);
-    expect(await loadConfig(configPath(root))).toEqual(config);
-    if (process.platform !== "win32") expect((await stat(configPath(root))).mode & 0o777).toBe(0o600);
-  });
-
-  it("refuses to create a config without a workgroup or password", async () => {
-    await expect(createOrcaNodeConfig({ workgroup_id: wg("wg-a") })).rejects.toThrow(/required/);
-    await expect(createOrcaNodeConfig({ workgroup_password: "pw" })).rejects.toThrow(/required/);
   });
 });

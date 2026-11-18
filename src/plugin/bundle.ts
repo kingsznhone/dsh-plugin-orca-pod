@@ -15,6 +15,7 @@ import type { Context, Inject, Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-app-boot";
+import { DSH_HOME_ENV } from "@deepseek-ai/dsh-home-paths";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
 // `ctx.settings` is this plugin's own injection; the service package owns the type.
 import type {} from "@deepseek-ai/dsh-settings";
@@ -25,21 +26,21 @@ import { ModelCatalogFeed } from "./catalog.ts";
 import { Pod } from "./pod.ts";
 import { OptionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
-import { HostPodStores } from "./stores.ts";
+import type { Config } from "./config.ts";
+import { HostPodStores, NODE_KEY, PASSWORD_REF } from "./stores.ts";
 import { PodTool } from "./tools.ts";
 import { Tracker } from "./tracker.ts";
 import { PanelRoutes } from "./panel-routes.ts";
-import { DATA_ROOT_ENV, defaultDataRoot } from "../node/config.ts";
-import type { Settings } from "../node/settings.ts";
+import { defaultDataRoot } from "../node/config.ts";
 
 export { Config } from "./config.ts";
 
 /**
- * Hard dependencies: the tool registry, the credential store that holds the
- * workgroup password, and the config editor the panel saves through. All three
- * are part of the DSH base composition.
+ * Hard dependencies: the tool registry, and the credential store that holds the
+ * workgroup password and the node's private key. Both are part of the DSH base
+ * composition.
  */
-export const inject: Inject<Context> = ["tools", "credentials", "configEditor"];
+export const inject: Inject<Context> = ["tools", "credentials"];
 
 /**
  * Compose the plugin in three steps: build what the pod is made of, hook it
@@ -49,7 +50,7 @@ export const inject: Inject<Context> = ["tools", "credentials", "configEditor"];
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  */
-export function apply(ctx: Context, config: Settings): void {
+export function apply(ctx: Context, config: Config): void {
   const bundle = new PodBundle(ctx, config);
   bundle.attach(ctx);
   bundle.start();
@@ -67,17 +68,15 @@ class PodBundle {
   private readonly panel: PanelModel;
   private readonly injectsSkill: boolean;
 
-  constructor(ctx: Context, config: Settings) {
-    // Read the environment the way DSH tells host plugins to (the launcher's
-    // snapshot, `.env` layers included) and take the DSH home the host resolved.
-    // The host does not export DSH_PROFILE_DIR to its own plugins, so the loader
-    // baseUrl is the profile hint that keeps two profiles apart.
+  constructor(ctx: Context, config: Config) {
+    // One node per machine (§3.9): its data lives under the DSH home the host
+    // resolved, read the way DSH tells host plugins to (the launcher's snapshot,
+    // `.env` layers included), whichever profile this plugin was loaded from.
     this.logger = ctx.logger("orca-pod");
     const launch = launchEnvironmentOf(ctx);
-    const env = Object.fromEntries(DATA_ROOT_ENV.map((name) => [name, launch.get(name)?.value]));
-    const defaultRoot = defaultDataRoot(env, ctx.baseUrl, ctx.dshHomePath?.());
+    const dataRoot = defaultDataRoot(ctx.dshHomePath?.(), { [DSH_HOME_ENV]: launch.get(DSH_HOME_ENV)?.value });
     this.feed = new ModelCatalogFeed(ctx, this.logger);
-    this.pod = new Pod(config, this.logger, new HostPodStores(ctx), this.feed, defaultRoot);
+    this.pod = new Pod(this.logger, new HostPodStores(ctx), this.feed, dataRoot);
     this.broker = new ApprovalBroker(this.pod);
     this.tracker = new Tracker(this.pod, this.broker, this.logger);
     this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
@@ -108,6 +107,14 @@ class PodBundle {
     ctx.on("agent/inbox/claimed", ({ agent, message }) => {
       this.onInboxClaimed(agent, message);
     });
+    // Another DSH process, the settings page or an edit of the credential file may change the
+    // password or the node key: the pod restarts once to use it.
+    ctx.on("credentials/reference-updated", (ref) => {
+      if (ref === PASSWORD_REF) this.pod.credentialsChanged();
+    });
+    ctx.on("credentials/record-updated", (key) => {
+      if (key === NODE_KEY) this.pod.credentialsChanged();
+    });
 
     // The tool is only visible once the workgroup credentials exist: before that
     // every call would fail with "not configured" and clutter the tool list.
@@ -117,7 +124,7 @@ class PodBundle {
 
     // The skill ships inside the package and is registered in memory; no copy is
     // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
-    // this host's registry; it learns publish/fetch from the task preamble instead.
+    // this host's registry; it finds its files in the inbox/outbox the task preamble names.
     if (this.injectsSkill) {
       ctx.inject(["skills"], (scope) => {
         scope.effect(() => scope.skills.register(skillRegistration()), "orca-pod.skill");
@@ -149,7 +156,7 @@ class PodBundle {
   private restore(resolveAgent: (id: SessionId) => Agent | undefined): void {
     const run = this.pod.run;
     if (run === null) return;
-    this.tracker.restore(run.node.delegation.log.list(), resolveAgent);
+    this.tracker.restore(run.orca.dispatches.list(), resolveAgent);
   }
 
   private restoreRunningSessions(): void {

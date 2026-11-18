@@ -1,50 +1,60 @@
-import { randomBytes } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildAuthHeader } from "../src/core/signing.ts";
-import { admissionProof } from "../src/mesh/admission.ts";
-import type { BusyState, PeerView } from "../src/core/wire/peer.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
+import { deriveWorkgroupKey, parseAuthHeader, verifyReplyHeader, bodySha256 } from "../src/core/signing.ts";
 import { wg } from "./fixtures/ids.ts";
 import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
 
 const WORKGROUP = wg("orca-dev");
 
-function peerView(identity: NodeIdentity, endpoint: string): PeerView {
-  return {
-    orca_node_id: identity.orcaNodeId,
-    display_name: "stranger",
-    endpoints: [endpoint],
-    runtime: null,
-    runtime_digest: "",
-    state: "online",
-    busy: null as BusyState | null,
-    last_recv_at: null,
-    max_task_ttl_s: 600,
-  };
-}
-
-/** Publish `content` on the harness node, as `orca-node publish` would; returns the blob id. */
+/** Publish `content` on the harness node; returns the blob id. */
 async function publish(harness: GatewayHarness, content: Buffer): Promise<string> {
   const path = join(await mkdtemp(join(tmpdir(), "orca-auth-blob-")), "file.bin");
   await writeFile(path, content);
   return (await harness.blobs.register(path, 60)).blob_id;
 }
 
-function strangerSign(
-  harness: GatewayHarness,
-  stranger: NodeIdentity,
-  method: string,
-  path: string,
-  body?: Uint8Array | string,
-): string {
-  return buildAuthHeader({ identity: stranger, method, url: path, targetOrcaNodeId: harness.orcaNodeId, body });
+/** What a node says in a `hello`. */
+function helloBody(endpoints: string[], extra: Record<string, unknown> = {}) {
+  return {
+    self: {
+      display_name: "stranger",
+      endpoints,
+      runtime: null,
+      max_task_ttl_s: 600,
+      default_model: null,
+      default_reasoning_effort: null,
+    },
+    busy: null,
+    digest: "",
+    ...extra,
+  };
 }
 
-describe("workgroup membership gate (C1)", () => {
-  it("lets a member read the roster and a published file", async () => {
+/** Send a `hello` as `caller`: no receiver id to sign to yet, the way a first contact is. */
+function hello(
+  harness: GatewayHarness,
+  caller: NodeIdentity,
+  body: unknown,
+  options: { remoteAddress?: string; key?: Buffer } = {},
+) {
+  const payload = JSON.stringify(body);
+  return harness.app.inject({
+    method: "POST",
+    url: "/cluster/hello",
+    payload,
+    remoteAddress: options.remoteAddress,
+    headers: {
+      "content-type": "application/json",
+      authorization: harness.signAs(caller, "POST", "/cluster/hello", { body: payload, target: "", key: options.key }),
+    },
+  });
+}
+
+describe("workgroup proof gate (C1)", () => {
+  it("lets a node with both proofs read the roster and a published file", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const members = await harness.app.inject({
       method: "GET",
@@ -62,39 +72,35 @@ describe("workgroup membership gate (C1)", () => {
     expect(read.statusCode).toBe(200);
   });
 
-  it("rejects every signed route from a valid but unknown key", async () => {
+  it("rejects every signed route from a node that has a key pair but not the password", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
+    const wrongKey = deriveWorkgroupKey(WORKGROUP, "not the workgroup password");
     const blobId = await publish(harness, Buffer.from("not for strangers"));
+    const a2aBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "message/send",
+      params: { message: { role: "user", parts: [] } },
+    });
 
     const calls = [
       {
         method: "GET",
         url: "/cluster/members",
-        authorization: strangerSign(harness, stranger, "GET", "/cluster/members"),
+        authorization: harness.signAs(stranger, "GET", "/cluster/members", { key: wrongKey }),
       },
       {
         method: "POST",
         url: "/a2a",
-        payload: { jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", parts: [] } } },
+        payload: a2aBody,
         contentType: "application/json",
-        authorization: strangerSign(
-          harness,
-          stranger,
-          "POST",
-          "/a2a",
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "message/send",
-            params: { message: { role: "user", parts: [] } },
-          }),
-        ),
+        authorization: harness.signAs(stranger, "POST", "/a2a", { body: a2aBody, key: wrongKey }),
       },
       {
         method: "GET",
         url: `/blobs/${blobId}`,
-        authorization: strangerSign(harness, stranger, "GET", `/blobs/${blobId}`),
+        authorization: harness.signAs(stranger, "GET", `/blobs/${blobId}`, { key: wrongKey }),
       },
     ];
 
@@ -108,128 +114,118 @@ describe("workgroup membership gate (C1)", () => {
           ...(call.contentType === undefined ? {} : { "content-type": call.contentType }),
         },
       });
-      expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
+      expect(response.statusCode, `${call.method} ${call.url}`).toBe(401);
       // /a2a answers with a JSON-RPC envelope; its error carries the same code.
       const body = response.json<{ code?: string; error?: { message: string } }>();
-      expect(body.code ?? body.error?.message).toBe("not_a_member");
+      expect(body.code ?? body.error?.message).toBe("bad_proof");
     }
   });
 
-  it("admits the same key once the node is in the roster, and rejects it after removal", async () => {
+  it("refuses a node whose password changed on its very next request, without waiting for a heartbeat", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const stranger = generateNodeIdentity();
-    const strangerEndpoint = "http://stranger.test";
-    const authorization = strangerSign(harness, stranger, "GET", "/cluster/members");
+    const node = generateNodeIdentity();
+    const before = await hello(harness, node, helloBody(["http://node.test"]));
+    expect(before.statusCode).toBe(200);
+    expect(harness.mesh.get(node.orcaNodeId)?.state).toBe("online");
 
-    harness.membership.upsert(peerView(stranger, strangerEndpoint));
-    const admitted = await harness.app.inject({
+    const changed = deriveWorkgroupKey(WORKGROUP, "a new password");
+    const after = await harness.app.inject({
       method: "GET",
       url: "/cluster/members",
-      headers: { authorization },
+      headers: { authorization: harness.signAs(node, "GET", "/cluster/members", { key: changed }) },
     });
-    expect(admitted.statusCode).toBe(200);
-
-    harness.membership.remove(stranger.orcaNodeId);
-    const rejected = await harness.app.inject({
-      method: "GET",
-      url: "/cluster/members",
-      headers: { authorization: strangerSign(harness, stranger, "GET", "/cluster/members") },
-    });
-    expect(rejected.statusCode).toBe(403);
-    expect(rejected.json()).toMatchObject({ code: "not_a_member" });
+    expect(after.statusCode).toBe(401);
+    expect(after.json()).toMatchObject({ code: "bad_proof" });
   });
 
-  it("keeps /cluster/join open for the first admission", async () => {
+  it("does not gate on the member table: both proofs are what admit, in the table or not", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const stranger = generateNodeIdentity();
-    const ts = Date.now();
-    const nonce = randomBytes(16).toString("base64url");
-    const proof = admissionProof("join", harness.key, {
-      workgroupId: WORKGROUP,
-      orcaNodeId: stranger.orcaNodeId,
-      ts,
-      nonce,
-    });
-    const body = {
-      workgroup_id: WORKGROUP,
-      orca_node_id: stranger.orcaNodeId,
-      display_name: "stranger",
-      endpoints: ["http://stranger.test"],
-      runtime: null,
-      max_task_ttl_s: 600,
-      default_model: null,
-      default_reasoning_effort: null,
-      ts,
-      nonce,
-      proof,
-    };
-    const joined = await harness.app.inject({
-      method: "POST",
-      url: "/cluster/join",
-      payload: body,
+    const node = generateNodeIdentity();
+    const members = (): Promise<{ statusCode: number }> =>
+      harness.app.inject({
+        method: "GET",
+        url: "/cluster/members",
+        headers: { authorization: harness.signAs(node, "GET", "/cluster/members") },
+      });
+
+    // Never greeted: not in the table, and served all the same.
+    expect(harness.mesh.get(node.orcaNodeId)).toBeUndefined();
+    expect((await members()).statusCode).toBe(200);
+
+    await hello(harness, node, helloBody(["http://node.test"]));
+    harness.mesh.remove(node.orcaNodeId);
+    expect(harness.mesh.get(node.orcaNodeId)).toBeUndefined();
+    expect((await members()).statusCode).toBe(200);
+  });
+
+  it("refuses a request for another workgroup", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const response = await harness.app.inject({
+      method: "GET",
+      url: "/cluster/members",
       headers: {
-        "content-type": "application/json",
-        authorization: strangerSign(harness, stranger, "POST", "/cluster/join", JSON.stringify(body)),
+        authorization: harness.signAs(generateNodeIdentity(), "GET", "/cluster/members", {
+          workgroup: wg("orca-other"),
+        }),
       },
     });
-    expect(joined.statusCode).toBe(200);
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "workgroup_mismatch" });
   });
 
-  it("screens the endpoints a joining node declares", async () => {
+  it("keeps /cluster/hello open for a first contact, which cannot name the receiver", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const join = async (endpoints: string[], remoteAddress: string) => {
+    const stranger = generateNodeIdentity();
+    const joined = await hello(harness, stranger, helloBody(["http://stranger.test"]));
+    expect(joined.statusCode).toBe(200);
+    expect(joined.json()).toMatchObject({ self: { orca_node_id: harness.orcaNodeId, workgroup_id: WORKGROUP } });
+    expect(harness.mesh.get(stranger.orcaNodeId)?.state).toBe("online");
+    // Every other route insists on being addressed to this node.
+    const members = await harness.app.inject({
+      method: "GET",
+      url: "/cluster/members",
+      headers: { authorization: harness.signAs(stranger, "GET", "/cluster/members", { target: "" }) },
+    });
+    expect(members.statusCode).toBe(401);
+    expect(members.json()).toMatchObject({ code: "wrong_target" });
+  });
+
+  it("answers with the directory only when the sender's digest differs", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const stranger = generateNodeIdentity();
+    const first = await hello(harness, stranger, helloBody(["http://stranger.test"]));
+    const { members_digest: digest, members } = first.json<{ members_digest: string; members: unknown[] | null }>();
+    expect(members).not.toBeNull();
+
+    const again = await hello(harness, stranger, helloBody(["http://stranger.test"], { digest }));
+    expect(again.json()).toMatchObject({ members_digest: digest, members: null });
+  });
+
+  it("screens the endpoints a greeting node declares", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const greet = async (endpoints: string[], remoteAddress: string) => {
       const stranger = generateNodeIdentity();
-      const ts = Date.now();
-      const nonce = randomBytes(16).toString("base64url");
-      const proof = admissionProof("join", harness.key, {
-        workgroupId: WORKGROUP,
-        orcaNodeId: stranger.orcaNodeId,
-        ts,
-        nonce,
-      });
-      const body = {
-        workgroup_id: WORKGROUP,
-        orca_node_id: stranger.orcaNodeId,
-        display_name: "stranger",
-        endpoints,
-        runtime: null,
-        max_task_ttl_s: 600,
-        default_model: null,
-        default_reasoning_effort: null,
-        ts,
-        nonce,
-        proof,
-      };
-      const response = await harness.app.inject({
-        method: "POST",
-        url: "/cluster/join",
-        payload: body,
-        remoteAddress,
-        headers: {
-          "content-type": "application/json",
-          authorization: strangerSign(harness, stranger, "POST", "/cluster/join", JSON.stringify(body)),
-        },
-      });
-      return { response, record: harness.membership.get(stranger.orcaNodeId) };
+      const response = await hello(harness, stranger, helloBody(endpoints), { remoteAddress });
+      return { response, record: harness.mesh.get(stranger.orcaNodeId)?.view() };
     };
 
     // Cloud metadata and other link-local targets are never accepted.
-    const metadata = await join(["http://169.254.169.254:80"], "10.0.0.5");
+    const metadata = await greet(["http://169.254.169.254:80"], "10.0.0.5");
     expect(metadata.response.statusCode).toBe(400);
     expect(metadata.response.json()).toMatchObject({ code: "endpoint_refused" });
     expect(metadata.record).toBeUndefined();
 
     // A remote machine cannot be reached at our loopback address.
-    const remoteLoopback = await join(["http://127.0.0.1:22"], "10.0.0.5");
+    const remoteLoopback = await greet(["http://127.0.0.1:22"], "10.0.0.5");
     expect(remoteLoopback.response.statusCode).toBe(400);
 
-    // A same-host node joining over loopback may advertise loopback.
-    const local = await join(["http://127.0.0.1:11811"], "127.0.0.1");
+    // A same-host node greeting over loopback may advertise loopback.
+    const local = await greet(["http://127.0.0.1:11811"], "127.0.0.1");
     expect(local.response.statusCode).toBe(200);
     expect(local.record?.endpoints).toEqual(["http://127.0.0.1:11811"]);
 
-    // Mixed lists keep only what may be dialed; public addresses are fine for a joiner.
-    const mixed = await join(
+    // Mixed lists keep only what may be dialed; public addresses are fine for a node that proved the password.
+    const mixed = await greet(
       ["http://169.254.169.254:80", "http://10.0.0.5:11811", "http://8.8.8.8:11811"],
       "10.0.0.5",
     );
@@ -242,93 +238,106 @@ describe("workgroup membership gate (C1)", () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it("rejects a bad join signature with 401 and a malformed join body with 400", async () => {
+  it("rejects an unsigned hello with 401 and a malformed hello body with 400", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const stranger = generateNodeIdentity();
     const unsigned = await harness.app.inject({
       method: "POST",
-      url: "/cluster/join",
+      url: "/cluster/hello",
       payload: {},
       headers: { "content-type": "application/json" },
     });
     expect(unsigned.statusCode).toBe(401);
-    const body = JSON.stringify({ workgroup_id: WORKGROUP });
-    const malformed = await harness.app.inject({
-      method: "POST",
-      url: "/cluster/join",
-      payload: body,
-      headers: {
-        "content-type": "application/json",
-        authorization: strangerSign(harness, stranger, "POST", "/cluster/join", body),
-      },
-    });
+    const malformed = await hello(harness, generateNodeIdentity(), { workgroup_id: WORKGROUP });
     expect(malformed.statusCode).toBe(400);
     expect(malformed.json()).toMatchObject({ code: "bad_request" });
   });
 
-  it("rejects a heartbeat whose busy field is not a busy holder", async () => {
+  it("rejects a hello whose busy field is not a busy holder", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const body = JSON.stringify({
-      workgroup_id: WORKGROUP,
-      orca_node_id: harness.orcaNodeId,
-      ts: Date.now(),
-      nonce: "n",
-      proof: "p",
-      busy: "yes",
-    });
-    const response = await harness.app.inject({
-      method: "POST",
-      url: "/cluster/heartbeat",
-      payload: body,
-      headers: { "content-type": "application/json", authorization: harness.sign("POST", "/cluster/heartbeat", body) },
-    });
+    const response = await hello(harness, generateNodeIdentity(), helloBody(["http://node.test"], { busy: "yes" }));
     expect(response.statusCode).toBe(400);
-  });
-
-  it("limits local controls to this node over loopback without proxy headers", async () => {
-    const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const stranger = generateNodeIdentity();
-    harness.membership.upsert(peerView(stranger, "http://stranger.test"));
-    // A malformed fetch: past the access check it fails validation, so it never dials anyone.
-    const url = "/cluster/blob?node=x&blob=y";
-    const call = (options: { remoteAddress?: string; headers?: Record<string, string>; as?: NodeIdentity }) =>
-      harness.app.inject({
-        method: "GET",
-        url,
-        remoteAddress: options.remoteAddress ?? "127.0.0.1",
-        headers: {
-          authorization: strangerSign(harness, options.as ?? harness.identity, "GET", url),
-          ...options.headers,
-        },
-      });
-
-    expect((await call({})).statusCode).toBe(400);
-    for (const rejected of [
-      await call({ remoteAddress: "10.0.0.5" }),
-      await call({ headers: { "x-forwarded-for": "10.0.0.5" } }),
-      await call({ as: stranger }),
-    ]) {
-      expect(rejected.statusCode).toBe(403);
-      expect(rejected.json()).toMatchObject({ code: "local_only" });
-    }
   });
 
   it("returns 404 for an unknown task instead of leaking it to members", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/get", params: { id: "missing-task" } });
     const response = await harness.app.inject({
       method: "POST",
       url: "/a2a",
-      payload: { jsonrpc: "2.0", id: 1, method: "tasks/get", params: { id: "missing-task" } },
-      headers: {
-        "content-type": "application/json",
-        authorization: harness.sign(
-          "POST",
-          "/a2a",
-          JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/get", params: { id: "missing-task" } }),
-        ),
-      },
+      payload: body,
+      headers: { "content-type": "application/json", authorization: harness.sign("POST", "/a2a", body) },
     });
     expect(response.statusCode).toBe(404);
     expect(JSON.stringify(response.json())).toContain("task_not_found");
+  });
+});
+
+describe("signed replies (§7.1)", () => {
+  /** The nonce a request carried, which its reply is bound to. */
+  const nonceOf = (authorization: string): string => parseAuthHeader(authorization)?.nonce ?? "";
+
+  it("signs the answer to a request: its nonce, its status and its body", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const authorization = harness.sign("GET", "/cluster/members");
+    const response = await harness.app.inject({ method: "GET", url: "/cluster/members", headers: { authorization } });
+
+    const signer = verifyReplyHeader(response.headers["pod-reply"] as string, {
+      nonce: nonceOf(authorization),
+      status: response.statusCode,
+      subject: bodySha256(response.rawPayload),
+    });
+    expect(signer).toBe(harness.orcaNodeId);
+  });
+
+  it("cannot be moved to answer another request, nor reused for another body", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const authorization = harness.sign("GET", "/cluster/members");
+    const response = await harness.app.inject({ method: "GET", url: "/cluster/members", headers: { authorization } });
+    const reply = response.headers["pod-reply"] as string;
+
+    expect(
+      verifyReplyHeader(reply, { nonce: "another-nonce", status: 200, subject: bodySha256(response.rawPayload) }),
+    ).toBeNull();
+    expect(
+      verifyReplyHeader(reply, { nonce: nonceOf(authorization), status: 200, subject: bodySha256("{}") }),
+    ).toBeNull();
+  });
+
+  it("signs errors too, whatever stopped the request", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const stranger = generateNodeIdentity();
+    const authorization = harness.signAs(stranger, "GET", "/cluster/members", {
+      key: deriveWorkgroupKey(WORKGROUP, "wrong"),
+    });
+    const response = await harness.app.inject({ method: "GET", url: "/cluster/members", headers: { authorization } });
+    expect(response.statusCode).toBe(401);
+    expect(
+      verifyReplyHeader(response.headers["pod-reply"] as string, {
+        nonce: nonceOf(authorization),
+        status: 401,
+        subject: bodySha256(response.rawPayload),
+      }),
+    ).toBe(harness.orcaNodeId);
+  });
+
+  it("signs a streamed file by its status and name, not by bytes it has not read yet", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const blobId = await publish(harness, Buffer.from("some bytes"));
+    const authorization = harness.sign("GET", `/blobs/${blobId}`);
+    const response = await harness.app.inject({ method: "GET", url: `/blobs/${blobId}`, headers: { authorization } });
+    expect(
+      verifyReplyHeader(response.headers["pod-reply"] as string, {
+        nonce: nonceOf(authorization),
+        status: 200,
+        subject: `blob:${blobId}`,
+      }),
+    ).toBe(harness.orcaNodeId);
+  });
+
+  it("does not sign a public route, which has no request to answer", async () => {
+    const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const response = await harness.app.inject({ method: "GET", url: "/health" });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["pod-reply"]).toBeUndefined();
   });
 });

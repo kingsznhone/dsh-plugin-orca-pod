@@ -8,19 +8,19 @@ import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
 import { AcpExecutor } from "../src/executor/acp/executor.ts";
 import { ModelCatalog } from "../src/core/model-catalog.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
-import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { nodeParts } from "./support/node.ts";
 import { parsePodMetadata } from "../src/task/meta.ts";
 import { parseSchema } from "../src/core/schema.ts";
-import { permissionRequestOf, TaskMetadataSchema } from "../src/task/wire.ts";
+import { permissionRequestOf, TaskMetadataSchema, type TaskView } from "../src/task/wire.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
-import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { Orca } from "../src/node/orca.ts";
 import { narrowPermissionMode } from "../src/core/wire/permission.ts";
 import { escalationFor, modeAllows } from "../src/executor/acp/permissions.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
-const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, tmpdir(), new ModelCatalog(), { warn() {} });
+const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 
@@ -60,7 +60,7 @@ function input(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInpu
   };
 }
 
-function taskText(view: Awaited<ReturnType<OrcaNode["delegation"]["getTask"]>>): string {
+function taskText(view: TaskView): string {
   return (view.status.message?.parts ?? []).map((part) => (part.kind === "text" ? part.text : "")).join("");
 }
 
@@ -157,7 +157,7 @@ describe("permission mode execution", () => {
 
   it("runs a task that names no mode read-only, so a write asks for an upgrade", async () => {
     const root = await tempDir();
-    const config = await createOrcaNodeConfig({
+    const config = nodeParts({
       workgroup_id: wg("orca-mode"),
       workgroup_password: "correct horse",
       data_root: root,
@@ -165,15 +165,15 @@ describe("permission mode execution", () => {
       executor: "acp",
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
     });
-    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
+    const node = new Orca(...config, { persistent: true });
     await node.start();
     try {
-      const view = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+      const view = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
         message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
       });
       let current = view;
       for (let i = 0; i < 100; i += 1) {
-        current = await node.delegation.getTask(node.profile.endpoints[0]!, view.id);
+        current = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(view.id);
         if (current.status.state === "input-required" || current.status.state === "failed") break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -182,7 +182,7 @@ describe("permission mode execution", () => {
         current_mode: "read-only",
         requested_mode: "workspace-write",
       });
-      await node.delegation.cancelTask(node.profile.endpoints[0]!, view.id);
+      await node.mesh.resolve(node.mesh.self.endpoints[0]!).cancelTask(view.id);
     } finally {
       await node.stop();
     }
@@ -190,7 +190,7 @@ describe("permission mode execution", () => {
 
   it("narrows the origin mode by the local ceiling end to end", async () => {
     const root = await tempDir();
-    const config = await createOrcaNodeConfig({
+    const config = nodeParts({
       workgroup_id: wg("orca-mode"),
       workgroup_password: "correct horse",
       data_root: root,
@@ -199,16 +199,16 @@ describe("permission mode execution", () => {
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
       permission_mode: "read-only",
     });
-    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
+    const node = new Orca(...config, { persistent: true });
     await node.start();
     try {
-      const view = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+      const view = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
         message: { role: "user", parts: [{ kind: "text", text: "do it" }] },
         metadata: { pod: { permission_mode: "danger-full-access" } },
       });
       let current = view;
       for (let i = 0; i < 100; i += 1) {
-        current = await node.delegation.getTask(node.profile.endpoints[0]!, view.id);
+        current = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(view.id);
         if (current.status.state === "completed" || current.status.state === "failed") break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }

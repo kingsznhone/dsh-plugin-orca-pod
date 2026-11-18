@@ -1,16 +1,16 @@
 /**
  * DSH skill bundled with the package.
  *
- * The skill teaches any session on this machine how to drive the `orca-node`
- * CLI. It is a standard Agent Skill bundle in `skills/orca-node/` (`SKILL.md`
+ * The skill teaches any session on this machine how to drive the `orca_pod`
+ * tool. It is a standard Agent Skill bundle in `skills/orca-node/` (`SKILL.md`
  * plus `references/`) that ships with the npm package and is registered in
  * memory through `ctx.skills.register`; the host-level registry makes it
  * visible to every session this host runs. Nothing is copied into a user skill
  * root, so there is no second copy to keep in sync.
  *
  * The skill is for sessions that may dispatch (this host's own). Sessions the
- * ACP executor spawns run a task: they cannot see this host's registry, learn
- * the CLI (publish/fetch only) from the task preamble, and carry
+ * ACP executor spawns run a task: they cannot see this host's registry, find
+ * their files in the inbox/outbox directories the task preamble names, and carry
  * `ORCA_POD_IN_TASK=1`, which makes `send` refuse (§7.9).
  */
 

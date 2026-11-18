@@ -1,40 +1,35 @@
 /**
- * Configuration for the `orca-pod` DSH bundle.
+ * Configuration of the `orca-pod` DSH plugin: only what does not belong to the
+ * node. The node's settings are one file for the whole machine, written by the
+ * panel (`settings-file.ts`), because a profile's plugin config cannot be shared
+ * by every profile (§3.9); the password is a DSH credential (§3.6).
  *
- * The plugin `Config` is the node `Settings`, and its Standard Schema (v1)
- * validator is the shared settings parser: Cordis only requires
- * `Config['~standard'].validate`, so the settings schema does not have to be a
- * Schemastery object.
- *
- * One rule is added on top: the plugin config never carries the workgroup
- * password. It lives in the DSH credential store under `workgroup_password_ref`
- * (§7.3), so the profile patch stays safe to sync, render and log; a plaintext
- * `workgroup_password` in the config is a validation error.
+ * Its Standard Schema (v1) validator is all Cordis requires of a `Config`. Keys
+ * it does not know are ignored, so an older profile patch that still carries
+ * node settings loads; the panel asks for them again.
  */
-
-import { safeParseSettings } from "../node/settings.ts";
-import type { Settings } from "../node/settings.ts";
-import { isRecord } from "../core/schema.ts";
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 
-/** Parse a plugin config: the shared settings parser, minus the plaintext password. */
-function validatePluginConfig(input: unknown): StandardSchemaV1.Result<Settings> {
-  if (isRecord(input) && typeof input.workgroup_password === "string" && input.workgroup_password.length > 0) {
-    return {
-      issues: [
-        {
-          message:
-            "is not accepted in the plugin config; the password is kept in the DSH credential store (set it from the panel, or name an existing credential with workgroup_password_ref)",
-          path: ["workgroup_password"],
-        },
-      ],
-    };
+import { isRecord } from "../core/schema.ts";
+
+export type Config = {
+  /** Register the bundled `orca-node` skill with the host's skills service. */
+  skill_injection: boolean;
+};
+
+function validatePluginConfig(input: unknown): StandardSchemaV1.Result<Config> {
+  if (input !== undefined && input !== null && !isRecord(input)) {
+    return { issues: [{ message: "expected an object", path: [] }] };
   }
-  return safeParseSettings(input);
+  const skill = isRecord(input) ? (input.skill_injection ?? undefined) : undefined;
+  if (skill !== undefined && typeof skill !== "boolean") {
+    return { issues: [{ message: "must be true or false", path: ["skill_injection"] }] };
+  }
+  return { value: { skill_injection: skill ?? false } };
 }
 
-/** Standard Schema config consumed by Cordis before `apply` runs: the node `Settings`, without the password. */
-export const Config: StandardSchemaV1<unknown, Settings> = {
+/** Standard Schema config consumed by Cordis before `apply` runs. */
+export const Config: StandardSchemaV1<unknown, Config> = {
   "~standard": { version: 1, vendor: "orca-pod", validate: validatePluginConfig },
 };

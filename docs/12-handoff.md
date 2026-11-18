@@ -24,24 +24,31 @@ Hard constraints that must not be undone:
 - Topology is full mesh only. There is no ring, no gossip, no coordinator.
 - There is no epoch, no incarnation, no global membership table.
   An orca node's table contains only peers it directly heard from or explicitly
-  joined; roster entries carried by heartbeat responses are candidate endpoints,
+  greeted; roster entries carried by hello answers are candidate endpoints,
   never liveness claims, and never rewrite an existing record.
 - Listener is plain HTTP/1.1 with keep-alive. TLS is terminated by Caddy/nginx.
 - orca_node_id is the node's Ed25519 public key (43-char base64url) generated at
-  first start into <data_root>/identity.json (0600). It IS the security principal.
-- Auth = Ed25519 per-request signature verified with the peer's public key, then a
-  membership gate (403 not_a_member). The workgroup password only proves admission
-  at /cluster/join and on every heartbeat. No session token, no TTL, no empty
-  password. Every route declares config.access; one hook authenticates and
-  authorizes; one error handler answers. The peer client never joins implicitly:
-  an unknown URL is unknown_peer, only an explicit join admits a peer.
+  first start into the DSH credential store (record orca-pod/node, base58 seed).
+  It IS the security principal. One node per machine, shared by every DSH profile.
+- Auth = every node-to-node request carries two proofs in its Authorization
+  header, over the same input: an Ed25519 signature (who sent it, unchanged) and
+  an HMAC with the key derived from the workgroup password (in the group NOW).
+  The member table gates nothing. Replies are signed by the answering node over
+  the request nonce, status and body. No session token, no TTL, no empty
+  password. Every route declares config.access (public/hello/member); one hook
+  authenticates; one error handler answers. A node is an OrcaNode object in
+  Mesh's table (this node included); callers resolve it (id, unique name or URL)
+  and call its methods. Only seed addresses (settings, remembered peers, the
+  connect tool, the panel) may reach a stranger; an unknown ref is unknown_peer.
 - There are no version numbers: no protocol versions, no key-derivation markers, no migrations, no
   compatibility branches. Domain separators are plain tags ("orca-pod/request").
 - Agent Card is public but carries only name, url and max_task_ttl_s; runtime,
   busy state and the model catalog sit behind signed endpoints only.
 - Files are named `<orca node id>/<sha256>`, never by URL. Task conclusions come
   back inline as text; large outputs are published by the child and fetched
-  explicitly (`orca-node fetch`), the fetching node dialing the publisher itself.
+  explicitly (the orca_pod fetch method), the fetching node dialing the publisher
+  itself. Inside a task the executor moves files: inputs into inbox/<task_id>/
+  before the agent starts, outbox/<task_id>/ published as artifacts when it ends.
 - Approval happens on the ORIGIN orca node. A task inherits the dispatching
   session's permission mode (none inherited => read-only); the local
   permission_mode only narrows it. The target auto-answers ACP permission
@@ -59,8 +66,8 @@ Hard constraints that must not be undone:
   paths; the task text refers to shared files by their
   `<orca node id>/<sha256>` name.
 - Tasks are single-hop: a task is never forwarded, and the agent running it
-  cannot dispatch another one (the executor sets ORCA_POD_IN_TASK=1; the CLI's
-  and the plugin's send refuse). A task it cannot finish ends with a BLOCKED:
+  cannot dispatch another one (the executor sets ORCA_POD_IN_TASK=1; the
+  plugin's send refuses and the plugin starts no node there). A task it cannot finish ends with a BLOCKED:
   report. This is a non-adversarial guard, not key isolation. Nodes never wake
   each other except by an origin-issued request.
 - Polling lives in the Host plugin, not in the agent's shell: orca_pod's send
@@ -82,7 +89,7 @@ Hard constraints that must not be undone:
 - Handoff uses the shared group workspace: a later task reads the workgroup root
   (the agent's cwd) and `notes/` left by earlier ones. There is no protocol-level
   continuation flag; whether to continue, and from where, is the agent's call.
-- Password rotation rebuilds the whole group. There is no per-orca-node revocation
+- Password rotation rebuilds the whole group: a node whose password changed is refused on its very next request. There is no per-orca-node revocation
   and no transition window with two passwords.
 - Task storage is single-orca-node SQLite (WAL). A restart fails every non-terminal
   task as failed(node_restart); do not re-dispatch and do not invent a resume.
@@ -90,7 +97,7 @@ Hard constraints that must not be undone:
   as failed.
 - Quotas are settings (max_workspace_bytes, max_workspace_files); over quota
   is 507 quota_exceeded.
-- Files move by name only: a node publishes its own files (`orca-node publish`)
+- Files move by name only: a node publishes its own files (orca_pod send, task outbox)
   and whoever needs one has its own node pull it; there is no upload route and
   no unsigned download link.
 - `npm run check` (biome + tsc + vitest) is the single acceptance command.

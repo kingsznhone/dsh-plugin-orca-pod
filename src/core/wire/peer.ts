@@ -40,7 +40,7 @@ export function isWorkgroupId(value: unknown): value is WorkgroupId {
 export const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
 export type PeerState = z.infer<typeof PeerStateSchema>;
 
-/** Host facts a node advertises at join (§3.3); `runtime_digest` covers them. */
+/** Host facts a node advertises in its hello (§3.3); `runtime_digest` covers them. */
 export const RuntimeInfoSchema = z.object({
   os: z.object({ family: z.string(), name: z.string(), version: z.string() }),
   arch: z.string(),
@@ -83,21 +83,18 @@ export type PeerView = z.infer<typeof PeerViewSchema>;
 export const SelfRecordSchema = PeerViewSchema.extend({ workgroup_id: WorkgroupIdSchema });
 export type SelfRecord = z.infer<typeof SelfRecordSchema>;
 
-export const JoinResponseSchema = z.object({
+/**
+ * The answer to a `hello` (§3.3): the answering node's own record and the digest
+ * of the directory it vouches for. `members` is that directory, sent only when
+ * the caller's digest differs; they are candidates for the caller, never a claim
+ * that anyone is online.
+ */
+export const HelloResponseSchema = z.object({
   self: SelfRecordSchema,
-  members: z.array(PeerViewSchema),
   members_digest: z.string(),
-});
-export type JoinResponse = z.infer<typeof JoinResponseSchema>;
-
-export const HeartbeatResponseSchema = z.object({
-  from: OrcaNodeIdSchema,
-  busy: BusyStateSchema.nullable(),
-  members_digest: z.string(),
-  /** 仅当请求摘要与本地不一致时返回；只是候选端点，不声明在线。 */
   members: z.array(PeerViewSchema).nullable(),
 });
-export type HeartbeatResponse = z.infer<typeof HeartbeatResponseSchema>;
+export type HelloResponse = z.infer<typeof HelloResponseSchema>;
 
 export const MembersResponseSchema = z.object({ members_digest: z.string(), members: z.array(PeerViewSchema) });
 export type MembersResponse = z.infer<typeof MembersResponseSchema>;

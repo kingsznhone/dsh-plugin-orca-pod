@@ -1,17 +1,15 @@
-import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Context, Logger } from "@deepseek-ai/cordis";
-import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import type { ToolActivationContext, ToolDefinition, ToolRegistrationOptions } from "@deepseek-ai/dsh-tools";
 import type { Tracker } from "../src/plugin/tracker.ts";
-import { parseSettings, type Settings } from "../src/node/settings.ts";
-import { wg } from "./fixtures/ids.ts";
+import type { Config } from "../src/plugin/config.ts";
+import { importIdentity } from "../src/core/identity.ts";
 
 const trackers: Tracker[] = [];
 
@@ -28,7 +26,7 @@ vi.mock("../src/plugin/tracker.ts", async (importOriginal) => {
 });
 
 const { apply } = await import("../src/plugin/bundle.ts");
-const { HostPodStores } = await import("../src/plugin/stores.ts");
+const { HostPodStores, NODE_KEY, PASSWORD_REF } = await import("../src/plugin/stores.ts");
 
 const roots: string[] = [];
 
@@ -80,33 +78,40 @@ interface FakeCtx {
   tools: FakeServices["tools"];
   credentials: {
     resolve(ref: string): Promise<{ value: string; source: string } | undefined>;
+    describe(ref: string): Promise<{ configured: boolean; writable: boolean }>;
     set(ref: string, value: string): Promise<void>;
     unset(ref: string): Promise<void>;
+    readRecord(key: string): Promise<FakeRecord | undefined>;
+    modifyRecord(
+      key: string,
+      mutate: (current: FakeRecord | undefined) => Promise<FakeRecord | undefined>,
+    ): Promise<FakeRecord | undefined>;
+    deleteRecord(key: string): Promise<void>;
   };
-  configEditor: {
-    edit(
-      target: Entry,
-      change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>,
-    ): Promise<void>;
-  };
+  /** The DSH home the host resolved; the plugin keeps its data under it. */
+  dshHomePath(): string;
   logger: LoggerService;
-  fiber: { effect(execute: () => Cleanup): unknown; entry: Entry };
+  fiber: { effect(execute: () => Cleanup): unknown };
   effect(execute: () => Cleanup): Cleanup | undefined;
   on(event: string, listener: (payload: never) => void): undefined;
   inject(dependencies: readonly string[], callback: (scope: FakeCtx) => void): undefined;
 }
+
+/** A stored credential record: the plugin only keeps a grant with its payload in it. */
+type FakeRecord = { kind: "grant"; payload: unknown };
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
 /** `ctx.logger` is itself callable; the scope logger it returns carries the level methods. */
 type LoggerService = Logger & ((name?: string) => Logger);
 
-function fakeHost() {
+function fakeHost(dshHome: string) {
   const tools: RegisteredTool[] = [];
   const routes: WebRoute[] = [];
   const disposers: Cleanup[] = [];
   const claims: Array<(payload: FakeClaim) => void> = [];
   const created: Array<(payload: FakeCreated) => void> = [];
+  const credentialListeners: Array<{ event: string; listener: (subject: string) => void }> = [];
   const skills: string[] = [];
   const configured: Array<{ auto?: boolean }> = [];
 
@@ -150,8 +155,8 @@ function fakeHost() {
   const scopes: Scope[] = [];
 
   const secrets = new Map<string, string>();
-  const entry = { id: "orca-pod", options: { id: "orca-pod", config: {} as Record<string, unknown> } };
-  const edits: Array<Record<string, unknown>> = [];
+  const records = new Map<string, FakeRecord>();
+  let recordLock: Promise<void> = Promise.resolve();
 
   const ctx: FakeCtx = {
     get: () => undefined,
@@ -164,26 +169,39 @@ function fakeHost() {
       set: async (ref, value) => {
         secrets.set(ref, value);
       },
+      describe: async (ref) => ({ configured: secrets.has(ref), writable: true }),
       unset: async (ref) => {
         secrets.delete(ref);
       },
-    },
-    configEditor: {
-      async edit(target, change) {
-        const next = change(structuredClone((target.options.config ?? {}) as Record<string, unknown>), {});
-        edits.push(next);
-        entry.options.config = next;
+      readRecord: async (key) => records.get(key),
+      // Like the real store, the write is exclusive: `mutate` sees the record as it stands.
+      modifyRecord: (key, mutate) => {
+        const done = recordLock.then(async () => {
+          const next = await mutate(records.get(key));
+          if (next !== undefined) records.set(key, next);
+          return records.get(key);
+        });
+        recordLock = done.then(
+          () => undefined,
+          () => undefined,
+        );
+        return done;
+      },
+      deleteRecord: async (key) => {
+        records.delete(key);
       },
     },
+    dshHomePath: () => dshHome,
     logger: Object.assign(() => noopLogger, noopLogger) as unknown as LoggerService,
-    fiber: { effect: () => undefined, entry: entry as unknown as Entry },
+    fiber: { effect: () => undefined },
     effect(execute) {
       disposers.push(execute());
       return undefined;
     },
     on(event, listener) {
       if (event === "agent/created") created.push(listener as unknown as (payload: FakeCreated) => void);
-      else claims.push(listener as unknown as (payload: FakeClaim) => void);
+      else if (event === "agent/inbox/claimed") claims.push(listener as unknown as (payload: FakeClaim) => void);
+      else credentialListeners.push({ event, listener: listener as unknown as (subject: string) => void });
       return undefined;
     },
     inject(dependencies, callback) {
@@ -221,17 +239,32 @@ function fakeHost() {
     scopes,
     replace,
     secrets,
-    entry,
-    edits,
+    records,
+    /** Tell the plugin the credential store changed, the way the host does. */
+    emitCredentialEvent: (event: string, subject: string): void => {
+      for (const entry of credentialListeners) if (entry.event === event) entry.listener(subject);
+    },
+    credentialEvents: () => credentialListeners.map(({ event }) => event),
   };
 }
 
-async function applied(overrides: Partial<Settings> = {}, prepare?: (host: ReturnType<typeof fakeHost>) => void) {
-  const root = await mkdtemp(join(tmpdir(), "orca-apply-"));
-  roots.push(root);
-  const host = fakeHost();
-  prepare?.(host);
-  apply(host.ctx as unknown as Context, parseSettings({ data_root: root, ...overrides }));
+/**
+ * Apply the plugin on a fake host whose DSH home is a fresh directory. `settings`
+ * are what the machine's settings file holds; `password` what the credential
+ * store holds.
+ */
+async function applied(
+  options: { config?: Partial<Config>; settings?: Record<string, unknown>; password?: string } = {},
+) {
+  const home = await mkdtemp(join(tmpdir(), "orca-apply-"));
+  roots.push(home);
+  const host = fakeHost(home);
+  if (options.password !== undefined) host.secrets.set(PASSWORD_REF, options.password);
+  if (options.settings !== undefined) {
+    await mkdir(join(home, "orca-pod"), { recursive: true });
+    await writeFile(join(home, "orca-pod", "settings.json"), JSON.stringify(options.settings));
+  }
+  apply(host.ctx as unknown as Context, { skill_injection: false, ...options.config });
   return host;
 }
 
@@ -253,9 +286,7 @@ describe("plugin apply", () => {
 
   it("resumes tracking for the sessions the host already runs once the node is up", async () => {
     // The workgroup password is stored, so the pod really starts a node.
-    const host = await applied({ workgroup_id: wg("wg-resume"), port: 0 }, (fake) =>
-      fake.secrets.set("ORCA_POD_PASSWORD_WG_RESUME", "pw"),
-    );
+    const host = await applied({ settings: { workgroup_id: "wg-resume", port: 0 }, password: "pw" });
     const agent = { id: "live-session", status: "idle" as const, inject: () => {}, followup: () => {} };
     host.services.agents.get = (id) => (id === "live-session" ? agent : undefined);
     const restore = vi.spyOn(trackers[0]!, "restore");
@@ -317,7 +348,7 @@ describe("plugin apply", () => {
   });
 
   it("registers the bundled skill through ctx.skills when requested", async () => {
-    const host = await applied({ skill_injection: true });
+    const host = await applied({ config: { skill_injection: true } });
     expect(host.skills).toEqual(["orca-node"]);
     for (const dispose of host.disposers) await dispose();
   });
@@ -330,7 +361,7 @@ describe("plugin apply", () => {
 
   it("ties scoped registrations to their inject scope, so a re-run does not stack them", async () => {
     const live = new Set<string>();
-    const host = await applied({ skill_injection: true });
+    const host = await applied({ config: { skill_injection: true } });
     host.services.skills.register = (skill) => {
       live.add(skill.name);
       return () => {
@@ -362,19 +393,72 @@ describe("plugin apply", () => {
     for (const dispose of host.disposers) await dispose();
   });
 
-  it("keeps the password in the credential store and settings in the profile entry", async () => {
-    const host = fakeHost();
-    const stores = new HostPodStores(host.ctx as unknown as ConstructorParameters<typeof HostPodStores>[0]);
-    const ref = credentialRef("ORCA_POD_PASSWORD_WG_A");
-    await stores.writeSecret(ref, "secret");
-    expect(await stores.readSecret(ref)).toBe("secret");
-    await stores.clearSecret(ref);
-    expect(await stores.readSecret(ref)).toBeUndefined();
+  it("listens for changes to the password and the node key, and for nothing else of the credential store", async () => {
+    const host = await applied();
+    expect(host.credentialEvents().sort()).toEqual(["credentials/record-updated", "credentials/reference-updated"]);
+    // Unrelated credentials are ignored; the pod is not started, so nothing observable happens either way.
+    host.emitCredentialEvent("credentials/reference-updated", "DEEPSEEK_API_KEY");
+    host.emitCredentialEvent("credentials/record-updated", "llm-pi-ai/deepseek");
+    for (const dispose of host.disposers) await dispose();
+  });
+});
 
-    expect(await stores.writeConfig((raw) => ({ ...raw, workgroup_id: wg("wg-a") }))).toEqual({ workgroup_id: "wg-a" });
-    expect(host.entry.options.config).toEqual({ workgroup_id: "wg-a" });
-    // An unchanged config is not written, so the Loader does not restart the plugin.
-    expect(await stores.writeConfig((raw) => raw)).toBeNull();
-    expect(host.edits).toHaveLength(1);
+describe("pod stores on the DSH credential store", () => {
+  const storesOf = (host: ReturnType<typeof fakeHost>) =>
+    new HostPodStores(host.ctx as unknown as ConstructorParameters<typeof HostPodStores>[0]);
+
+  it("keeps the password under one machine-wide reference", async () => {
+    const host = fakeHost("/dsh-home");
+    const stores = storesOf(host);
+    expect(await stores.passwordConfigured()).toBe(false);
+
+    await stores.writePassword("secret");
+    expect(host.secrets.get("ORCA_POD_PASSWORD")).toBe("secret");
+    expect(await stores.readPassword()).toBe("secret");
+    expect(await stores.passwordConfigured()).toBe(true);
+
+    await stores.clearPassword();
+    expect(await stores.readPassword()).toBeUndefined();
+    expect(await stores.passwordConfigured()).toBe(false);
+  });
+
+  it("makes the node key once, as a base58 Ed25519 seed in a grant record, and returns the same node afterwards", async () => {
+    const host = fakeHost("/dsh-home");
+    const stores = storesOf(host);
+    expect(await stores.readIdentity()).toBeUndefined();
+
+    const made = await stores.identity();
+    const record = host.records.get(NODE_KEY);
+    expect(record).toMatchObject({ kind: "grant", payload: { ed25519: expect.any(String) } });
+    const stored = record?.payload as { ed25519: string };
+    expect(importIdentity(stored.ed25519).orcaNodeId).toBe(made.orcaNodeId);
+
+    expect((await stores.identity()).orcaNodeId).toBe(made.orcaNodeId);
+    expect((await stores.readIdentity())?.orcaNodeId).toBe(made.orcaNodeId);
+  });
+
+  it("gives processes that ask together the same node key", async () => {
+    const host = fakeHost("/dsh-home");
+    // The fake serializes `modifyRecord` the way the real store's lock does.
+    const ids = await Promise.all(Array.from({ length: 5 }, async () => (await storesOf(host).identity()).orcaNodeId));
+    expect(new Set(ids).size).toBe(1);
+  });
+
+  it("refuses a damaged node key instead of silently making another node", async () => {
+    const host = fakeHost("/dsh-home");
+    host.records.set(NODE_KEY, { kind: "grant", payload: { ed25519: "not*base58" } });
+    await expect(storesOf(host).identity()).rejects.toThrow(/damaged/);
+    host.records.set(NODE_KEY, { kind: "grant", payload: { other: 1 } });
+    await expect(storesOf(host).identity()).rejects.toThrow(/not an Ed25519 key/);
+    // Nothing overwrote it: the owner can still restore or delete it.
+    expect(host.records.get(NODE_KEY)?.payload).toEqual({ other: 1 });
+  });
+
+  it("deletes the node key", async () => {
+    const host = fakeHost("/dsh-home");
+    const stores = storesOf(host);
+    await stores.identity();
+    await stores.deleteIdentity();
+    expect(await stores.readIdentity()).toBeUndefined();
   });
 });

@@ -2,10 +2,11 @@
  * Architecture guard: the import graph of `src/` stays acyclic and only points
  * downwards through the feature contexts (D41).
  *
- *   core ← { mesh, executor } ← task ← api ← node ← { cli, plugin }
+ *   core ← executor ← task ← mesh ← api ← node ← plugin
  *
- * - Runtime imports must point strictly down: two contexts on the same layer
- *   (`mesh` / `executor`, `cli` / `plugin`) never import each other.
+ * - Runtime imports must point strictly down. Handing a task to a node is
+ *   something done to a node, so `mesh` sits above `task`: `task` is the local
+ *   execution (runner, record, store, grants, workspace) and the wire shapes.
  * - A type-only import (`import type`, `export type`) is erased and may point
  *   anywhere, but it still counts for cycles: files must not depend on each
  *   other in a loop even if only a type closes it.
@@ -25,19 +26,18 @@ const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 /** Layer of each context; a lower layer never imports a higher or an equal one. */
 const LAYERS: Record<string, number> = {
   core: 0,
-  mesh: 1,
   executor: 1,
   task: 2,
-  api: 3,
-  node: 4,
-  cli: 5,
-  plugin: 5,
+  mesh: 3,
+  api: 4,
+  node: 5,
+  plugin: 6,
   /** `src/index.ts`, the package entry. */
-  root: 6,
+  root: 7,
 };
 
 /** Where `Sqlite*` stores may be constructed. */
-const ASSEMBLY = new Set(["node", "plugin", "cli", "root"]);
+const ASSEMBLY = new Set(["node", "plugin", "root"]);
 
 /**
  * Known violations, as `from -> to` paths relative to `src/`. Only removals are
@@ -177,6 +177,6 @@ describe("architecture", () => {
       .filter((file) => !ASSEMBLY.has(contextOf(toKey(file))))
       .filter((file) => construction.test(readFileSync(file, "utf8")))
       .map(toKey);
-    expect(offenders, "SQLite stores constructed outside node/, plugin/ and cli/").toEqual([]);
+    expect(offenders, "SQLite stores constructed outside node/ and plugin/").toEqual([]);
   });
 });

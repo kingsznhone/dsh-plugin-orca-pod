@@ -70,6 +70,16 @@ export class Workspace {
     }
   }
 
+  /** Where the files the origin attached to a task are placed before the agent starts (§3.8); inside the cwd, so the agent can read them. */
+  inbox(taskId: string): string {
+    return join(this.root, "inbox", taskId);
+  }
+
+  /** Where the agent leaves the files to hand back; this node publishes them when the task ends (§3.8). */
+  outbox(taskId: string): string {
+    return join(this.root, "outbox", taskId);
+  }
+
   /** Where the `index`-th (from 1) artifact of a task is kept: under the node's own state, outside the agent's reach. */
   artifactPath(taskId: string, index: number): string {
     return join(this.state, "artifacts", taskId, String(index));

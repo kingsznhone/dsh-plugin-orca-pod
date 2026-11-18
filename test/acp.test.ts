@@ -6,28 +6,31 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import { createOrcaNodeConfig, type OrcaNodeConfig } from "../src/node/config.ts";
+import type { OrcaNodeConfig } from "../src/node/config.ts";
+import { nodeParts } from "./support/node.ts";
 import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
 import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
 import { AcpExecutor } from "../src/executor/acp/executor.ts";
 import { ModelCatalog } from "../src/core/model-catalog.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
-import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { Orca } from "../src/node/orca.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
-const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, tmpdir(), new ModelCatalog(), { warn() {} });
+const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const LIVE: OrcaNode[] = [];
+const LIVE: Orca[] = [];
 
 afterEach(async () => {
   for (const node of LIVE.splice(0)) await node.stop();
 });
 
-async function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): Promise<OrcaNodeConfig> {
-  const config = await createOrcaNodeConfig({
+type NodeParts = ReturnType<typeof nodeParts>;
+
+async function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): Promise<NodeParts> {
+  const [config, identity, key] = nodeParts({
     workgroup_id: wg("acp-test"),
     workgroup_password: "correct horse",
     data_root: root,
@@ -42,49 +45,44 @@ async function configFor(root: string, mode: string, overrides: Partial<OrcaNode
       ],
     },
   });
-  return { ...config, ...overrides };
+  return [{ ...config, ...overrides }, identity, key];
 }
 
-async function startNode(config: OrcaNodeConfig): Promise<OrcaNode> {
-  const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
+async function startNode(parts: NodeParts): Promise<Orca> {
+  const node = new Orca(...parts, { persistent: true });
   await node.start();
   LIVE.push(node);
   return node;
 }
 
-async function send(
-  node: OrcaNode,
-  text: string,
-  contextId = "ctx-1",
-  permissionMode?: SandboxMode,
-): Promise<TaskView> {
-  return node.delegation.sendTask(node.profile.endpoints[0]!, {
+async function send(node: Orca, text: string, contextId = "ctx-1", permissionMode?: SandboxMode): Promise<TaskView> {
+  return node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
     message: { role: "user", parts: [{ kind: "text", text }], contextId },
     ...(permissionMode === undefined ? {} : { metadata: { pod: { permission_mode: permissionMode } } }),
   });
 }
 
 async function waitForState(
-  node: OrcaNode,
+  node: Orca,
   taskId: string,
   wanted: readonly string[],
   timeoutMs = 10_000,
 ): Promise<TaskView> {
-  return waitForRemoteState(node, node.profile.endpoints[0]!, taskId, wanted, timeoutMs);
+  return waitForRemoteState(node, node.mesh.self.endpoints[0]!, taskId, wanted, timeoutMs);
 }
 
 async function waitForRemoteState(
-  reader: OrcaNode,
+  reader: Orca,
   peerUrl: string,
   taskId: string,
   wanted: readonly string[],
   timeoutMs = 10_000,
 ): Promise<TaskView> {
   const deadline = Date.now() + timeoutMs;
-  let view = await reader.delegation.getTask(peerUrl, taskId);
+  let view = await reader.mesh.resolve(peerUrl).getTask(taskId);
   while (!wanted.includes(view.status.state) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
-    view = await reader.delegation.getTask(peerUrl, taskId);
+    view = await reader.mesh.resolve(peerUrl).getTask(taskId);
   }
   expect(wanted).toContain(view.status.state);
   return view;
@@ -143,13 +141,11 @@ describe("AcpExecutor", () => {
     ]);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");
-    // The preamble tells the ACP agent how to reach the CLI for files, and that it cannot delegate.
-    expect(promptText).toContain("ORCA_POD_CLI");
+    // The preamble tells the ACP agent where its files are handed over, and that it cannot delegate.
+    expect(promptText).toContain("outbox/");
     expect(promptText).toContain("single-hop");
-    expect(promptText).not.toContain("--local-task");
-    expect(promptText).toContain("--data-root");
-    // A required peer going offline must end the task with a blocker report.
-    expect(promptText).toContain("offline");
+    expect(promptText).not.toContain("ORCA_POD_CLI");
+    // A task that cannot finish alone ends with a blocker report.
     expect(promptText).toContain("BLOCKED");
   }, 15_000);
 
@@ -162,7 +158,7 @@ describe("AcpExecutor", () => {
     expect(request?.tool).toBe("write file");
     expect(request?.requested_by).toBe(node.orcaNodeId);
 
-    await node.delegation.approveTask(node.profile.endpoints[0]!, suspended);
+    await node.mesh.resolve(node.mesh.self.endpoints[0]!).approve(suspended);
     const done = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(done)).toContain("allowed");
   }, 15_000);
@@ -173,7 +169,7 @@ describe("AcpExecutor", () => {
     const submitted = await send(node, "write a file", "ctx-1", "workspace-write");
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
 
-    const denied = await node.delegation.denyTask(node.profile.endpoints[0]!, suspended);
+    const denied = await node.mesh.resolve(node.mesh.self.endpoints[0]!).deny(suspended);
     expect(denied.status.state).toBe("failed");
     expect(denied.status.reason).toBe("permission_denied");
 
@@ -189,7 +185,7 @@ describe("AcpExecutor", () => {
     const node = await startNode(await configFor(root, "hang"));
     const submitted = await send(node, "never finish");
     await waitForState(node, submitted.id, ["working"]);
-    await node.delegation.cancelTask(node.profile.endpoints[0]!, submitted.id);
+    await node.mesh.resolve(node.mesh.self.endpoints[0]!).cancelTask(submitted.id);
     const view = await waitForState(node, submitted.id, ["canceled"]);
     expect(view.status.state).toBe("canceled");
     const cancelled = await waitForLog(join(root, "acp.log"), (entry) => entry.method === "session/cancel");
@@ -261,7 +257,7 @@ describe("AcpExecutor", () => {
   it("selects the requested model on the ACP session before prompting", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const node = await startNode(await configFor(root, "ok"));
-    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "use the requested model" }], contextId: "ctx-model" },
       metadata: { pod: { model: { provider: "deepseek", model: "deepseek-v4-pro" } } },
     });
@@ -294,7 +290,7 @@ describe("AcpExecutor", () => {
   it("lets the task override the node default reasoning effort", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const node = await startNode(await configFor(root, "ok", { default_reasoning_effort: ReasoningEffortId("high") }));
-    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "use the requested effort" }], contextId: "ctx-effort" },
       metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
     });
@@ -320,7 +316,7 @@ describe("AcpExecutor", () => {
   it("fails the task when the target rejects the requested model", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
     const node = await startNode(await configFor(root, "model-reject"));
-    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "unknown model" }], contextId: "ctx-model-fail" },
       metadata: { pod: { model: { provider: "deepseek", model: "nope" } } },
     });

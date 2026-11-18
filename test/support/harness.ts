@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { createOrcaNodeConfig } from "../../src/node/config.ts";
+import { nodeParts } from "./node.ts";
 import { WorkgroupIdSchema } from "../../src/core/wire/peer.ts";
-import type { MembershipTimings } from "../../src/mesh/membership.ts";
-import { OrcaNode } from "../../src/node/orca-node.ts";
+import type { MeshTimings } from "../../src/mesh/timings.ts";
+import { Orca } from "../../src/node/orca.ts";
 
 type MeshOptions = {
   orcaNodes?: number;
@@ -16,7 +16,7 @@ type MeshOptions = {
   basePort?: number;
   displayNamePrefix?: string;
   dataRoot?: string;
-  timings?: Partial<MembershipTimings>;
+  timings?: Partial<MeshTimings>;
   /** Per-orca-node approval timeout; unset means parked requests wait forever (§7.12). */
   approvalTimeoutS?: number;
   /** Per-orca-node outbound HTTP override, used to simulate jitter and partitions. */
@@ -24,7 +24,7 @@ type MeshOptions = {
 };
 
 export type Mesh = {
-  orcaNodes: OrcaNode[];
+  orcaNodes: Orca[];
   urls: string[];
   /** Root holding every orca node's data. Removed by the caller, never by `stop()`. */
   dataRoot: string;
@@ -48,13 +48,13 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
   const password = options.password ?? randomBytes(8).toString("hex");
   const ownsDataRoot = options.dataRoot === undefined;
   const dataRoot = options.dataRoot ?? join(tmpdir(), `orca-pod-mesh-${randomBytes(8).toString("hex")}`);
-  const orcaNodes: OrcaNode[] = [];
+  const orcaNodes: Orca[] = [];
   const urls: string[] = [];
   let stopped = false;
 
   try {
     for (let index = 0; index < count; index += 1) {
-      const config = await createOrcaNodeConfig({
+      const config = nodeParts({
         workgroup_id: workgroupId,
         workgroup_password: password,
         data_root: join(dataRoot, `orca-node-${index}`),
@@ -62,7 +62,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         display_name: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
         approval_timeout_s: options.approvalTimeoutS,
       });
-      orcaNodes.push(new OrcaNode(config, { timings: options.timings, fetch: options.fetch?.(index) }));
+      orcaNodes.push(new Orca(...config, { timings: options.timings, fetch: options.fetch?.(index) }));
     }
 
     for (const orcaNode of orcaNodes) {
@@ -70,17 +70,7 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
       urls.push(url);
     }
 
-    const bootstrapUrl = urls[0];
-    if (!bootstrapUrl) throw new Error("createMesh needs at least one orca node");
-
-    for (const orcaNode of orcaNodes.slice(1)) {
-      const response = await orcaNode.mesh.join(bootstrapUrl);
-      await orcaNode.mesh.joinAll(response.members);
-    }
-
-    for (const orcaNode of orcaNodes) {
-      await orcaNode.mesh.heartbeat(bootstrapUrl);
-    }
+    await connectAll(orcaNodes);
 
     return {
       orcaNodes,
@@ -99,13 +89,13 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
   }
 }
 
-/** Admit every node at every other node: peer calls only reach members, so tests that wire nodes by hand join first. */
-export async function connectAll(orcaNodes: readonly OrcaNode[]): Promise<void> {
+/** Make every node known to every other: each node greets each later one, and the greeted node records its greeter. */
+export async function connectAll(orcaNodes: readonly Orca[]): Promise<void> {
   for (const [index, orcaNode] of orcaNodes.entries()) {
     for (const other of orcaNodes.slice(index + 1)) {
-      const [endpoint] = other.profile.endpoints;
+      const [endpoint] = other.mesh.self.endpoints;
       if (endpoint === undefined) throw new Error("orca node has no endpoint; start it first");
-      await orcaNode.mesh.join(endpoint);
+      await orcaNode.mesh.probe(endpoint);
     }
   }
 }

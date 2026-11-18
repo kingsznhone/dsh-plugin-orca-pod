@@ -1,42 +1,42 @@
 /**
- * The pod of the Orca DSH bundle: its settings, password, peers and orca node.
+ * The pod of the Orca DSH bundle: this machine's settings, password, peers and orca node.
  *
  * The DSH host must not block on an orca node: `start()` returns at once and
- * performs config resolution, `orcaNode.start()` and the initial `join`s on a
+ * performs settings loading, `orcaNode.start()` and the initial `join`s on a
  * promise that never rejects. Failures become the `failed` status and are
  * logged, so `apply` always returns quickly.
  *
- * Where things live (§7.3, §9.2):
- * - **settings** are the plugin config. The panel persists them through
- *   `PodStores.writeConfig` — `ctx.configEditor` in DSH, which writes the profile
- *   patch and has the Loader restart the plugin with the new config;
- * - **the workgroup password** is a DSH credential (`ctx.credentials`) under
- *   `passwordRefFor(config)`; the plugin config never holds it;
+ * A machine has one node however many DSH profiles it runs (§3.9), so
+ * everything the pod keeps is machine-wide:
+ * - **settings** are `<data_root>/settings.json` (`SettingsFile`); the panel
+ *   writes it and the pod restarts its node in place;
+ * - **the workgroup password and the node's private key** are DSH credentials
+ *   (`PodStores`, §3.6); nothing secret is written to a file, and the workgroup
+ *   key derived from the password lives in memory only;
  * - **state** — peers joined at runtime — is a file under `<data_root>`, because
- *   remembering a peer must not restart the plugin.
+ *   remembering a peer must not restart the node.
+ *
+ * Two DSH processes on one machine share all of this, and the listen port is the
+ * lock: the one that cannot bind reports that a node is already running.
  */
-
-import { rm } from "node:fs/promises";
 
 import type { Logger } from "@deepseek-ai/cordis";
 
 import { errorMessage } from "../core/errors.ts";
-import { identityPath } from "../core/identity.ts";
-import { isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
+import { isLoopbackEndpoint } from "../core/net.ts";
 import { SerialQueue } from "../core/serial-queue.ts";
-import { configPath, createOrcaNodeConfig, defaultDataRoot, saveConfig } from "../node/config.ts";
-import { OrcaNode, createPersistentStorage } from "../node/orca-node.ts";
-import { parseSettings, passwordRefFor } from "../node/settings.ts";
+import { deriveWorkgroupKey } from "../core/signing.ts";
+import { createOrcaNodeConfig } from "../node/config.ts";
+import { Orca } from "../node/orca.ts";
+import { parseSettings } from "../node/settings.ts";
 import type { ConfigFields, PanelPatch, Settings } from "../node/settings.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
 import { RememberedPeers } from "./peers-file.ts";
-import type { PodStores, RawConfig } from "./stores.ts";
-
-/** Settings with the data directory resolved: the pod fixes it once, at start (DX13). */
-export type RootedSettings = Settings & { data_root: string };
+import { SettingsFile, type RawSettings } from "./settings-file.ts";
+import type { PodStores } from "./stores.ts";
 
 /** One started node; replaced as a whole on every restart, never mutated. */
-export type PodRun = { readonly node: OrcaNode; readonly port: number };
+export type PodRun = { readonly orca: Orca; readonly port: number };
 
 /** What the pod is doing, as one value. */
 export type PodStatus =
@@ -59,11 +59,11 @@ export type PodStatus =
  * `run` (display, background work) or `settled()` and `requireRun()` (actions).
  */
 export class Pod {
-  private readonly dataRoot: string;
   private readonly queue = new SerialQueue();
   private readonly peers: RememberedPeers;
-  /** The plugin config as the host stored it; it never holds the password, which is resolved apart. */
-  private saved: RootedSettings;
+  private readonly file: SettingsFile;
+  /** The settings as the last start read them; the panel's edits are applied to the file and read back by the next start. */
+  private saved: Settings = parseSettings({});
   /** The stored workgroup password as the last start read it; in memory only. */
   private password: string | undefined;
   /** Where the last finished (re)start left the pod; only the queue writes it. */
@@ -74,22 +74,18 @@ export class Pod {
   private booting: Promise<void> = Promise.resolve();
 
   constructor(
-    config: Settings,
     private readonly logger: Logger,
     private readonly stores: PodStores,
     private readonly catalog: ModelCatalogFeed,
-    defaultRoot?: string,
+    /** The data directory of this machine's node (§3.9). */
+    readonly dataRoot: string,
   ) {
-    // Resolve the data directory once: an explicit `data_root` wins, else the
-    // host-provided default (the DSH profile directory), else the process default.
-    // Every later read (peer state, node config, panel) then sees the same path.
-    this.dataRoot = config.data_root ?? defaultRoot ?? defaultDataRoot();
-    this.peers = new RememberedPeers(this.dataRoot, logger);
-    this.saved = this.rooted(config);
+    this.peers = new RememberedPeers(dataRoot, logger);
+    this.file = new SettingsFile(dataRoot);
     // The host's model catalog changes while the pod lives: install it on whichever node runs.
     catalog.changes.subscribe(() => {
       const run = this.run;
-      if (run !== null) this.advertise(run.node);
+      if (run !== null) this.advertise(run.orca);
     });
   }
 
@@ -114,19 +110,19 @@ export class Pod {
     return Pod.runOf(this.status);
   }
 
-  /** The stored plugin config with `data_root` fixed; it never holds the password. */
-  get settings(): RootedSettings {
+  /** The settings as the last start read them; they never hold the password. */
+  get settings(): Settings {
     return this.saved;
   }
 
-  /** True once a workgroup and its password exist, i.e. the first-run setup is done. */
+  /** True once a workgroup and its password exist, i.e. the first-run setup is done (as the last start read them). */
   get configured(): boolean {
-    return Boolean(this.saved.workgroup_id) && this.passwordSet;
+    return Boolean(this.saved.workgroup_id) && this.password !== undefined;
   }
 
-  /** True while a workgroup password is stored (as the last start read it). */
-  get passwordSet(): boolean {
-    return this.password !== undefined;
+  /** Whether a password is stored right now: asks the credential store, not what the last start read. */
+  passwordConfigured(): Promise<boolean> {
+    return this.stores.passwordConfigured();
   }
 
   /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
@@ -154,8 +150,8 @@ export class Pod {
   }
 
   /**
-   * Apply a panel patch: store a new password in the credential store, persist the
-   * panel fields into the plugin config (`null` clears a field to its default),
+   * Apply a panel patch: store a new password in the credential store, write the
+   * panel fields into the settings file (`null` clears a field to its default),
    * and restart the node with the result.
    */
   async reconfigure(patch: PanelPatch): Promise<void> {
@@ -165,18 +161,13 @@ export class Pod {
       throw new Error("a workgroup password is required; a passwordless mesh is not supported");
     }
     // Validate the whole result first, so a bad patch changes nothing.
-    const preview = parseSettings(Pod.applyPanelFields(this.saved, fields));
-    const ref = passwordRefFor(preview);
-    if (ref === undefined) throw new Error("a workgroup id is required");
-    // Switching workgroups keeps the current password unless a new one is
-    // given: the password is a local secret, not a claim tied to one group.
-    const carried = ref !== passwordRefFor(this.saved) ? this.password : undefined;
-    const secret = typeof password === "string" ? password : carried;
-    // The secret is stored before the config is committed, so whatever runs on
-    // the committed config (a restarted plugin included) already finds it.
-    if (secret !== undefined) await this.stores.writeSecret(ref, secret);
-    else if ((await this.stores.readSecret(ref)) === undefined) {
-      throw new Error(`a workgroup password is required for ${preview.workgroup_id ?? "this workgroup"}`);
+    const preview = parseSettings(Pod.applyPanelFields(await this.file.read(), fields));
+    if (preview.workgroup_id === undefined) throw new Error("a workgroup id is required");
+    // The password is machine-wide, so it stays when the workgroup changes. It is stored
+    // before the settings are, so whatever starts on them already finds it.
+    if (typeof password === "string") await this.stores.writePassword(password);
+    else if (!(await this.stores.passwordConfigured())) {
+      throw new Error(`a workgroup password is required for ${preview.workgroup_id}`);
     }
     await this.commit((raw) => Pod.applyPanelFields(raw, fields));
   }
@@ -184,7 +175,7 @@ export class Pod {
   /** `join` one peer now and remember it in the peer state file. */
   addPeer(peer: string): Promise<void> {
     return this.queue.run(async () => {
-      await Pod.runOf(this.outcome).node.mesh.join(peer);
+      await Pod.runOf(this.outcome).orca.mesh.probe(peer);
       await this.peers.add(peer);
     });
   }
@@ -194,50 +185,58 @@ export class Pod {
     await this.queue.run(async () => {
       if (this.outcome.kind === "running") {
         try {
-          await this.outcome.run.node.mesh.leave();
+          await this.outcome.run.orca.mesh.leave();
         } catch (error) {
           this.logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
         }
       }
       await this.peers.clear();
     });
-    // Startup peers named in the plugin config are forgotten too.
+    // Startup peers named in the settings are forgotten too.
     if (this.saved.peers.length > 0) await this.commit((raw) => Pod.applyPanelFields(raw, { peers: null }));
   }
 
-  /** Back to the first-run wizard: drop the workgroup, its stored password and the node identity. */
+  /**
+   * Back to the first-run wizard: delete everything this machine's node has, with
+   * no exceptions (§3.9): the node, its password, its private key, its settings
+   * and its remembered peers.
+   */
   async reset(): Promise<void> {
-    const ref = passwordRefFor(this.saved);
     await this.queue.run(async () => {
       await this.stopNode();
-      for (const path of [configPath(this.dataRoot), identityPath(this.dataRoot)]) {
-        await this.removeQuietly(path);
-      }
+      await this.stores.clearPassword();
+      await this.stores.deleteIdentity();
+      await this.file.remove();
       await this.peers.remove();
       this.password = undefined;
+      this.saved = parseSettings({});
     });
-    if (ref !== undefined) await this.stores.clearSecret(ref);
-    // Back to the first-run wizard: without a stored password nothing starts,
-    // even when an inherited config layer still names a workgroup.
-    await this.commit((raw) =>
-      Pod.applyPanelFields(raw, { workgroup_id: null, workgroup_password_ref: null, peers: null }),
-    );
-  }
-
-  private rooted(config: Settings): RootedSettings {
-    return { ...config, data_root: config.data_root ?? this.dataRoot, workgroup_password: "" };
+    // Without a stored password nothing starts.
+    await this.restart();
   }
 
   /**
-   * Make a panel action durable, then run the pod on the result. When the host
-   * restarts the plugin on a config write, this instance is about to be disposed
-   * and does nothing more; otherwise it restarts in place on what was stored.
+   * The credential store changed a name this pod keeps (the password, the node
+   * key): another DSH process, the settings page or an edit of the file did it.
+   * Restart once to use the new value; a change this run already uses (the pod's
+   * own write) restarts nothing.
    */
-  private async commit(change: (raw: RawConfig) => RawConfig): Promise<void> {
-    // The write is not queued: a host restart waits for the queue to drain.
-    const written = await this.stores.writeConfig(change);
-    if (written !== null && this.stores.restartsOnWrite) return;
-    if (written !== null) this.saved = this.rooted(parseSettings(written));
+  credentialsChanged(): void {
+    const done = this.queue.run(async () => {
+      if (this.outcome.kind === "stopped" || !(await this.credentialsDiffer())) return;
+      this.restarting += 1;
+      await this.boot();
+    });
+    this.booting = done.catch(() => {});
+  }
+
+  /** Make a panel action durable, then run the pod on the result: the settings file is written and the node restarts in place. */
+  private async commit(change: (raw: RawSettings) => RawSettings): Promise<void> {
+    // The write is not queued: it must not wait for the restart that follows it.
+    const next = change(await this.file.read());
+    // A result the parser refuses is not stored.
+    parseSettings(next);
+    await this.file.write(next);
     await this.restart();
   }
 
@@ -252,27 +251,32 @@ export class Pod {
     return done;
   }
 
-  /** (Re)start from the saved settings: bring the node up, then rejoin the peers. Queue only. */
+  /** (Re)start from the stored settings: bring the node up, then seed it with the peers. Queue only. */
   private async boot(): Promise<void> {
-    const rejoin = await this.bringUp();
-    if (rejoin !== null) await this.joinPeers(rejoin.node, rejoin.peers, rejoin.self);
+    const seeds = await this.bringUp();
+    if (seeds !== null) await this.seed(seeds.orca, seeds.peers);
   }
 
   /**
-   * Stop the old node, resolve the password and run a new node if setup is
-   * complete. Settles the restart's `starting` status, so the new run is visible
-   * while its peers are still being joined. Queue only.
+   * Stop the old node, read the settings and the password and run a new node if
+   * setup is complete. Settles the restart's `starting` status, so the new run is
+   * visible while its peers are still being joined. Queue only.
    */
-  private async bringUp(): Promise<{ node: OrcaNode; peers: Set<string>; self: string } | null> {
+  private async bringUp(): Promise<{ orca: Orca; peers: Set<string> } | null> {
     try {
       if (this.outcome.kind === "stopped") return null;
       await this.stopNode();
+      try {
+        this.saved = parseSettings(await this.file.read());
+      } catch (error) {
+        return this.fail(error);
+      }
       // An empty password counts as none.
-      const password = (await this.readPassword(this.saved)) || undefined;
+      const password = (await this.readPassword()) || undefined;
       this.password = password;
-      // A panel-configured orca node needs both a workgroup and a password. Empty
-      // values mean "not configured yet" and keep the node idle instead of opening
-      // a passwordless mesh; the first-run wizard fills them in.
+      // A node needs both a workgroup and a password. Empty values mean "not
+      // configured yet" and keep the node idle instead of opening a passwordless
+      // mesh; the first-run wizard fills them in.
       if (password === undefined || this.saved.workgroup_id === undefined) {
         // The panel shows its first-run wizard and calls `reconfigure` once the
         // user has picked a workgroup, password and listen address.
@@ -284,49 +288,65 @@ export class Pod {
         this.outcome = { kind: "running", run };
         // The host's providers may have finished loading since the last read.
         void this.catalog.refresh();
-        // Startup peers from the config, then the ones joined at runtime.
-        return {
-          node: run.node,
-          peers: new Set([...this.saved.peers, ...this.peers.list()]),
-          self: normalizePeerUrl(run.node.profile.endpoints[0] ?? ""),
-        };
+        // Startup peers from the settings, then the ones joined at runtime.
+        return { orca: run.orca, peers: new Set([...this.saved.peers, ...this.peers.list()]) };
       } catch (error) {
-        const failure = Pod.toError(error);
-        this.outcome = { kind: "failed", error: failure };
-        this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
-        return null;
+        return this.fail(error);
       }
     } finally {
       this.restarting -= 1;
     }
   }
 
+  /** The restart ended in `failed`; nothing is running. */
+  private fail(error: unknown): null {
+    const failure = Pod.toError(error);
+    this.outcome = { kind: "failed", error: failure };
+    this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
+    return null;
+  }
+
   /** The stored workgroup password, or undefined when there is none or the store cannot be read. */
-  private async readPassword(config: Settings): Promise<string | undefined> {
-    const ref = passwordRefFor(config);
-    if (ref === undefined) return undefined;
+  private async readPassword(): Promise<string | undefined> {
     try {
-      return await this.stores.readSecret(ref);
+      return await this.stores.readPassword();
     } catch (error) {
-      this.logger.warn(`orca-pod: could not read the workgroup password (${ref}): ${errorMessage(error)}`);
+      this.logger.warn(`orca-pod: could not read the workgroup password: ${errorMessage(error)}`);
       return undefined;
+    }
+  }
+
+  /** Whether the credential store now holds a password or a node key other than the ones the current run started with. */
+  private async credentialsDiffer(): Promise<boolean> {
+    const password = (await this.readPassword()) || undefined;
+    if (password !== this.password) return true;
+    const { outcome } = this;
+    if (outcome.kind !== "running") return false;
+    try {
+      return (await this.stores.readIdentity())?.orcaNodeId !== outcome.run.orca.orcaNodeId;
+    } catch {
+      // A damaged key record is for the next start to report.
+      return true;
     }
   }
 
   /** Create, start and equip a node. One that cannot listen is stopped and dropped, and the failure thrown. */
   private async startNode(password: string): Promise<PodRun> {
-    const config = { ...this.saved, workgroup_password: password };
-    const dataRoot = config.data_root;
+    const identity = await this.stores.identity();
     // The plugin runs real DSH sessions by default. A loopback-only advertise list
     // is useless across machines, so it means "derive from the listen address".
-    const nodeConfig = await createOrcaNodeConfig({
-      ...config,
-      data_root: dataRoot,
-      executor: config.executor ?? "acp",
-      endpoints: config.endpoints.every(isLoopbackEndpoint) ? [] : config.endpoints,
-    });
-    await saveConfig(configPath(dataRoot), nodeConfig);
-    const node = new OrcaNode(nodeConfig, { storage: createPersistentStorage(nodeConfig), logger: this.logger });
+    const config = createOrcaNodeConfig(
+      parseSettings({
+        ...this.saved,
+        executor: this.saved.executor ?? "acp",
+        endpoints: this.saved.endpoints.every(isLoopbackEndpoint) ? [] : this.saved.endpoints,
+      }),
+      identity,
+      this.dataRoot,
+    );
+    // One scrypt derivation per start; the key stays in memory (§7.1).
+    const key = deriveWorkgroupKey(config.workgroup_id, password);
+    const node = new Orca(config, identity, key, { persistent: true, logger: this.logger });
 
     let info: { url: string; port: number };
     try {
@@ -337,20 +357,24 @@ export class Pod {
       } catch {
         // The node never finished starting; nothing useful to report here.
       }
-      throw error;
+      throw Pod.isAddressInUse(error)
+        ? new Error(
+            `an orca node is already running on this machine, in another DSH process (port ${config.port} is in use)`,
+          )
+        : error;
     }
     this.logger.info(
-      `orca-pod: orca node ${nodeConfig.orca_node_id} listening on ${info.url} (workgroup ${nodeConfig.workgroup_id})`,
+      `orca-pod: orca node ${config.orca_node_id} listening on ${info.url} (workgroup ${config.workgroup_id})`,
     );
 
     // The node carries the catalog from its first join on, so the self record
     // peers receive and every heartbeat advertise it (§6.15).
     this.advertise(node);
-    return { node, port: info.port };
+    return { orca: node, port: info.port };
   }
 
   /** Install the host's current model catalog on a node; the one place it is installed. */
-  private advertise(node: OrcaNode): void {
+  private advertise(node: Orca): void {
     const { models, defaultModel } = this.catalog.current();
     try {
       node.models.update(models, defaultModel);
@@ -359,16 +383,16 @@ export class Pod {
     }
   }
 
-  /** Join each peer but this node itself; a peer that is down at boot must not take the local orca node down. */
-  private async joinPeers(node: OrcaNode, peers: Iterable<string>, self: string): Promise<void> {
-    for (const peer of peers) {
-      if (peer === self) continue;
-      try {
-        const response = await node.mesh.join(peer);
-        this.logger.info(`orca-pod: joined ${peer} (${response.members.length} members in directory)`);
-      } catch (error) {
-        this.logger.warn(`orca-pod: join ${peer} failed: ${errorMessage(error)}`);
-      }
+  /**
+   * Seed the node's mesh with the peers it is configured with or remembers. A peer
+   * that is down at boot must not take the local orca node down, and is not given
+   * up: the mesh tries it again on a backoff until it answers.
+   */
+  private async seed(orca: Orca, peers: Iterable<string>): Promise<void> {
+    const { reached, pending } = await orca.mesh.seed(peers);
+    for (const node of reached) this.logger.info(`orca-pod: reached ${node.displayName} (${node.id})`);
+    if (pending.length > 0) {
+      this.logger.warn(`orca-pod: no answer yet from ${pending.join(", ")}; trying again in the background`);
     }
   }
 
@@ -378,19 +402,10 @@ export class Pod {
     if (outcome.kind !== "stopped") this.outcome = { kind: "unconfigured" };
     if (outcome.kind !== "running") return;
     try {
-      await outcome.run.node.stop();
+      await outcome.run.orca.stop();
       this.logger.info("orca-pod: orca node stopped");
     } catch (error) {
       this.logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
-    }
-  }
-
-  /** Remove a file; one that cannot be removed is reported, not fatal. */
-  private async removeQuietly(path: string): Promise<void> {
-    try {
-      await rm(path, { force: true });
-    } catch (error) {
-      this.logger.warn(`orca-pod: could not remove ${path}: ${errorMessage(error)}`);
     }
   }
 
@@ -415,14 +430,19 @@ export class Pod {
     return error instanceof Error ? error : new Error(String(error));
   }
 
-  /** Apply settings to a raw plugin config: a value sets the key, `null` removes it; other keys stay. */
-  private static applyPanelFields(raw: RawConfig, fields: ConfigFields): RawConfig {
+  /** Whether a failed bind is another process holding the port. */
+  private static isAddressInUse(error: unknown): boolean {
+    return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "EADDRINUSE";
+  }
+
+  /** Apply settings to a raw settings object: a value sets the key, `null` removes it; other keys stay. */
+  private static applyPanelFields(raw: RawSettings, fields: ConfigFields): RawSettings {
     const next: Record<string, unknown> = { ...raw };
     for (const [key, value] of Object.entries(fields)) {
       if (value === null) delete next[key];
       else if (value !== undefined) next[key] = value;
     }
-    // Every key written came from `fields`, so `next` still has the `RawConfig` shape.
-    return next as RawConfig;
+    // Every key written came from `fields`, so `next` still has the `RawSettings` shape.
+    return next as RawSettings;
   }
 }

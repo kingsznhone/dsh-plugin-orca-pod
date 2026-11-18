@@ -52,7 +52,9 @@ export function runnerSetup(overrides: Partial<RunnerSetup> = {}): RunnerSetup {
     logger: { warn() {} },
     selfOrcaNodeId: SELF,
     workgroupId: wg("runner-test"),
-    dataRoot,
+    fetchBlob: async () => {
+      throw new Error("this runner has no mesh to fetch a file from");
+    },
     taskTimeoutS: DEFAULT_TASK_TIMEOUT_S,
     maxWorkspaceBytes: 1024 ** 3,
     maxWorkspaceFiles: 100_000,

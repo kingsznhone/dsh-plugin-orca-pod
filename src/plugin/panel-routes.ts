@@ -123,7 +123,7 @@ export class PanelRoutes {
     const { panel } = this;
     switch (url.pathname.slice(POD_API_PREFIX.length)) {
       case "/state":
-        return answer("state", panel.state());
+        return answer("state", await panel.state());
       case "/task": {
         const peer = url.searchParams.get("peer");
         const taskId = url.searchParams.get("task");

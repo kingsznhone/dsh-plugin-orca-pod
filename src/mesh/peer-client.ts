@@ -3,12 +3,12 @@ import type { z } from "zod";
 import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 
 import { readAll } from "../core/stream.ts";
-import { buildAuthHeader } from "../core/signing.ts";
+import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER_NAME, verifyReplyHeader } from "../core/signing.ts";
 import { describeIssue, parseOrThrow } from "../core/schema.ts";
 import { isPodErrorCode, PodError } from "../core/errors.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import { ErrorReplySchema, type ErrorReply } from "../core/wire/reply.ts";
-import type { OrcaNodeId, PeerView } from "../core/wire/peer.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
@@ -16,16 +16,16 @@ export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
 export type HttpMethod = "GET" | "POST";
 
 export type CallOptions = {
+  /**
+   * The node the request is addressed to; the signature is bound to it and the
+   * reply must come from it (§7.1). `""` is a first contact, where the reply's
+   * signer is taken as the node's identity.
+   */
+  target: string;
   /** Aborts the call; the deadline still applies. */
   signal?: AbortSignal;
   /** Replaces the client's default deadline (heartbeats are shorter). */
   timeoutMs?: number;
-  /**
-   * Receiver id the signature is bound to (§7.1). Left out, it is the member
-   * behind the URL and an unknown URL fails; naming it is for callers that
-   * already know which node they are dialing (`""` for a first join).
-   */
-  target?: string;
 };
 
 /** A signed JSON request and the schema its 2xx reply must satisfy. */
@@ -38,14 +38,11 @@ export type JsonRequest<S extends z.ZodType> = {
   label?: string;
 };
 
+/** What an answer to a call is: its parsed body, and the node that signed it. */
+export type Answer<T> = { body: T; from: OrcaNodeId };
+
 /** A file a peer is sending: its bytes as they arrive, and their count when the peer said it. */
 export type Download = { body: ReadableStream<Uint8Array>; size: number | undefined };
-
-/** What the client needs to know about this node: the URLs that reach it. */
-export type SelfEndpoints = { readonly endpoints: readonly string[] };
-
-/** What the client needs to know about the mesh: the members and the URLs they advertise. */
-export type Roster = { list(): readonly PeerView[] };
 
 /** Knobs of the client that are not collaborators. */
 export type PeerClientOptions = {
@@ -59,17 +56,7 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 /** The code DSH's `deadline` stamps on an outbound call that ran out of time. */
 const PEER_TIMEOUT = "PEER_TIMEOUT";
 
-/** What one signed request is made of; `body` is JSON text. */
-type SignedRequest = {
-  /** Names the call in error messages. */
-  label: string;
-  endpoint: string;
-  path: string;
-  method: HttpMethod;
-  body: string | undefined;
-};
-
-type Reply = { status: number; ok: boolean; contentType: string; text: string };
+type Reply = { status: number; ok: boolean; contentType: string; bytes: Buffer; from: OrcaNodeId };
 
 /** One error for both wire shapes: a peer's code if we know it, else `peer_error`. */
 export function remoteError(label: string, status: number, body: ErrorReply | undefined): PodError {
@@ -81,106 +68,37 @@ export function remoteError(label: string, status: number, body: ErrorReply | un
 }
 
 /**
- * The outbound client (§4.7): every request is signed with this node's key,
- * bound to the node it is addressed to, and runs under a deadline. Callers name
- * the reply schema they expect, and a body that does not fit it is a `peer_error`.
+ * The outbound client (§4.7): every request carries this node's signature and the
+ * workgroup proof, is bound to the node it is addressed to, and runs under a
+ * deadline; every reply must be signed by that node, over its status and body and
+ * the nonce of the request. Callers name the reply schema they expect, and a body
+ * that does not fit it is a `peer_error`. It knows nothing of which nodes exist:
+ * who to call, and at which address, is the node object's business.
  */
 export class HttpPeerClient {
-  /** URLs this node dialed, which a peer need not advertise (`localhost` vs its LAN address). */
-  private readonly dialed = new Map<string, OrcaNodeId>();
-
   constructor(
     private readonly identity: NodeIdentity,
-    /** URLs that reach this node itself; a probe of one of them is signed to its own id. */
-    private readonly self: SelfEndpoints,
-    /** Members and the URLs they advertise: where an unknown URL is looked up. */
-    private readonly roster: Roster,
+    /** The workgroup key behind the proof of every request (§7.1). */
+    private readonly key: Buffer,
+    private readonly workgroupId: WorkgroupId,
     private readonly options: PeerClientOptions,
   ) {}
 
-  /** Node id behind a URL: this node, a URL it dialed, or a member that advertises it. */
-  idOf(endpoint: string): OrcaNodeId | undefined {
-    const key = HttpPeerClient.trimSlash(endpoint);
-    if (this.self.endpoints.some((own) => HttpPeerClient.trimSlash(own) === key)) return this.identity.orcaNodeId;
-    return (
-      this.dialed.get(key) ??
-      this.roster.list().find((peer) => peer.endpoints.some((url) => HttpPeerClient.trimSlash(url) === key))
-        ?.orca_node_id
-    );
-  }
-
-  /** `idOf`, or an `unknown_peer` error: only an explicit join may reach a stranger. */
-  known(endpoint: string): OrcaNodeId {
-    const id = this.idOf(endpoint);
-    if (id === undefined) {
-      throw new PodError("unknown_peer", `${endpoint} is not a known member; connect to it first`);
-    }
-    return id;
-  }
-
-  /** Remember that `endpoint` was answered by `nodeId` (a URL it does not advertise). */
-  learn(endpoint: string, nodeId: OrcaNodeId): void {
-    this.dialed.set(HttpPeerClient.trimSlash(endpoint), nodeId);
-  }
-
-  forget(nodeId: OrcaNodeId): void {
-    for (const [endpoint, id] of this.dialed) if (id === nodeId) this.dialed.delete(endpoint);
-  }
-
-  /** Signed JSON request; resolves with the 2xx body, parsed by `request.reply`. */
+  /** Signed JSON request; resolves with the 2xx body, parsed by `request.reply`, and who signed it. */
   async call<S extends z.ZodType>(
     endpoint: string,
     { method, path, payload, reply: schema, label = path }: JsonRequest<S>,
-    options: CallOptions = {},
-  ): Promise<z.output<S>> {
+    options: CallOptions,
+  ): Promise<Answer<z.output<S>>> {
     const body = payload === undefined ? undefined : JSON.stringify(payload);
-    const reply = await this.send({ label, endpoint, path, method, body }, options);
-    if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply);
-    // A peer cannot hand us a shape we did not ask for.
-    return parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (issue) => {
-      return new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(issue)}`, 502);
-    });
-  }
-
-  /**
-   * Signed `GET` of a file, streamed: no response cap, and the deadline covers
-   * the answer only, not the transfer. A failed reply is the same typed error
-   * as for `call`. A file is signed like any call, but neither buffered nor capped.
-   */
-  async download(endpoint: string, path: string, call: CallOptions = {}): Promise<Download> {
-    const target = call.target ?? this.known(endpoint);
     const url = new URL(path, endpoint);
-    // The deadline covers the answer, not the transfer: a large file may stream for long.
-    return this.withDeadline(path, call, async (signal) => {
-      const response = await this.options.fetch(url, {
-        method: "GET",
-        headers: { authorization: this.authorization("GET", url, target) },
-        redirect: "manual",
-        signal,
-      });
-      if (!response.ok || response.body === null) {
-        const reply: Reply = {
-          status: response.status,
-          ok: false,
-          contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
-          text: await HttpPeerClient.readCapped(path, response),
-        };
-        throw HttpPeerClient.unwrapError(path, reply);
-      }
-      const length = response.headers.get("content-length");
-      return { body: response.body, size: length === null ? undefined : Number(length) };
-    });
-  }
-
-  /** Sign, send within the deadline, and read the capped body; interpreting it is the caller's job. */
-  private async send(request: SignedRequest, call: CallOptions): Promise<Reply> {
-    const { label, endpoint, path, method, body } = request;
-    const target = call.target ?? this.known(endpoint);
-    const url = new URL(path, endpoint);
-    const headers: Record<string, string> = { authorization: this.authorization(method, url, target, body) };
+    const nonce = newNonce();
+    const headers: Record<string, string> = {
+      authorization: this.authorization(method, url, options.target, nonce, body),
+    };
     if (body !== undefined) headers["content-type"] = "application/json";
     // The deadline covers the whole answer, body included.
-    return this.withDeadline(label, call, async (signal) => {
+    const reply = await this.withDeadline(label, options, async (signal) => {
       const init: RequestInit & { duplex: "half" } = {
         method,
         headers,
@@ -191,13 +109,87 @@ export class HttpPeerClient {
         signal,
       };
       const response = await this.options.fetch(url, init);
+      const bytes = await HttpPeerClient.readCapped(label, response);
+      const from = this.signedBy(label, response, options.target, {
+        nonce,
+        status: response.status,
+        subject: bodySha256(bytes),
+      });
       return {
         status: response.status,
         ok: response.ok,
         contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
-        text: await HttpPeerClient.readCapped(label, response),
+        bytes,
+        from,
       };
     });
+    if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply);
+    // A peer cannot hand us a shape we did not ask for.
+    const parsed = parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (issue) => {
+      return new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(issue)}`, 502);
+    });
+    return { body: parsed, from: reply.from };
+  }
+
+  /**
+   * Signed `GET` of a file a member published, streamed: no response cap, and the
+   * deadline covers the answer only, not the transfer. The reply's signature
+   * covers its status and the file's name, not its bytes, which are not known
+   * before the first one arrives; the caller checks them against the sha256 the
+   * file is named by. A failed reply is the same typed error as for `call`.
+   */
+  async download(endpoint: string, blobId: string, call: CallOptions): Promise<Download> {
+    const path = `/blobs/${blobId}`;
+    const url = new URL(path, endpoint);
+    const nonce = newNonce();
+    // The deadline covers the answer, not the transfer: a large file may stream for long.
+    return this.withDeadline(path, call, async (signal) => {
+      const response = await this.options.fetch(url, {
+        method: "GET",
+        headers: { authorization: this.authorization("GET", url, call.target, nonce) },
+        redirect: "manual",
+        signal,
+      });
+      const subject = response.ok ? `blob:${blobId}` : undefined;
+      if (!response.ok || response.body === null) {
+        const bytes = await HttpPeerClient.readCapped(path, response);
+        const from = this.signedBy(path, response, call.target, {
+          nonce,
+          status: response.status,
+          subject: subject ?? bodySha256(bytes),
+        });
+        throw HttpPeerClient.unwrapError(path, {
+          status: response.status,
+          ok: false,
+          contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
+          bytes,
+          from,
+        });
+      }
+      this.signedBy(path, response, call.target, { nonce, status: response.status, subject: `blob:${blobId}` });
+      const length = response.headers.get("content-length");
+      return { body: response.body, size: length === null ? undefined : Number(length) };
+    });
+  }
+
+  /**
+   * Check that a reply was signed by the node it must come from: a known node's
+   * answer must be its own, and a first contact takes the signer as the identity.
+   */
+  private signedBy(
+    label: string,
+    response: Response,
+    target: string,
+    fields: { nonce: string; status: number; subject: string },
+  ): OrcaNodeId {
+    const signer = verifyReplyHeader(response.headers.get(REPLY_HEADER_NAME), fields);
+    if (signer === null) {
+      throw new PodError("peer_error", `${label} ${response.status}: the reply is not signed by its sender`, 502);
+    }
+    if (target !== "" && signer !== target) {
+      throw new PodError("peer_error", `${label}: the reply was signed by ${signer}, but ${target} was addressed`, 502);
+    }
+    return signer;
   }
 
   /**
@@ -222,26 +214,26 @@ export class HttpPeerClient {
       limit[Symbol.dispose]();
     }
   }
-  /** The signature of one request: bound to the node it is addressed to, and to the body when there is one. */
-  private authorization(method: HttpMethod, url: URL, target: string, body?: string): string {
+
+  /** The two proofs of one request: bound to the node it is addressed to, the workgroup, and the body when there is one. */
+  private authorization(method: HttpMethod, url: URL, target: string, nonce: string, body?: string): string {
     return buildAuthHeader({
       identity: this.identity,
+      key: this.key,
+      workgroupId: this.workgroupId,
       method,
       url: `${url.pathname}${url.search}`,
       targetOrcaNodeId: target,
+      nonce,
       body,
     });
-  }
-
-  private static trimSlash(url: string): string {
-    return url.replace(/\/+$/, "");
   }
 
   /**
    * Read at most `MAX_RESPONSE_BYTES`: the stream is cancelled as soon as the cap
    * is crossed, so a peer cannot make us buffer what `response.text()` would.
    */
-  private static async readCapped(label: string, response: Response): Promise<string> {
+  private static async readCapped(label: string, response: Response): Promise<Buffer> {
     const tooLarge = (): PodError =>
       new PodError("peer_error", `${label} ${response.status}: response body is too large`, 502);
     if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
@@ -250,7 +242,7 @@ export class HttpPeerClient {
     }
     const bytes = await readAll(response.body ?? [], MAX_RESPONSE_BYTES);
     if (bytes === null) throw tooLarge();
-    return bytes.toString("utf8");
+    return bytes;
   }
 
   /** A 2xx body parsed as JSON. */
@@ -263,7 +255,7 @@ export class HttpPeerClient {
       );
     }
     try {
-      return JSON.parse(reply.text) as unknown;
+      return JSON.parse(reply.bytes.toString("utf8")) as unknown;
     } catch {
       throw new PodError("peer_error", `${label} ${reply.status}: response is not valid JSON`, 502);
     }
@@ -273,7 +265,7 @@ export class HttpPeerClient {
   private static unwrapError(label: string, reply: Reply): PodError {
     let body: ErrorReply | undefined;
     try {
-      const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.text));
+      const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.bytes.toString("utf8")));
       body = parsed.success ? parsed.data : undefined;
     } catch {
       // A non-JSON error page keeps the generic code.

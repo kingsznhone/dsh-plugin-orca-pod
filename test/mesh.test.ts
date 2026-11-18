@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createMesh } from "./support/harness.ts";
+import { peersOf } from "./support/node.ts";
 
 describe("createMesh", () => {
   it("joins three orca nodes into one converged mesh", async () => {
@@ -10,7 +11,7 @@ describe("createMesh", () => {
       expect(mesh.urls).toHaveLength(3);
 
       for (const orcaNode of mesh.orcaNodes) {
-        expect(orcaNode.membership.list()).toHaveLength(2);
+        expect(peersOf(orcaNode)).toHaveLength(2);
       }
 
       const digests = new Set(mesh.orcaNodes.map((orcaNode) => orcaNode.mesh.digest()));

@@ -19,20 +19,20 @@ Origin
 **控制面（cluster）**
 
 ```text
-join（凭 workgroup_id + 密码）→ 双方登记 → 拿到 target 自述 + 目录
-  → 目录里的其他成员是候选端点，按心跳节奏拨号：被拒（不是成员）就先 join 再重试
+hello（请求头带两样证明：Ed25519 签名 + workgroup 密码派生的 HMAC）→ 双方登记 → 拿到 target 自述 + 目录
+  → 目录里的其他成员是候选端点，按心跳节奏拨号（同一个 hello，不存在“被拒再补 join”）
   → 双向心跳 + 本地看门狗
   → 在线集变化 → 任务路由候选集变化
   → 漏掉的成员靠 members_digest 变化拉全量，≤2 个心跳周期收敛
 ```
 
-任务面不负责成员发现；控制面不负责执行任务。两者共用一个 HTTP server、同一套 Ed25519 请求签名；权限与状态严格分开。密码只出现在 join 与心跳的准入证明里（[§7.1](07-security.md#71-workgroup-与密码)）。
+任务面不负责成员发现；控制面不负责执行任务。两者共用一个 HTTP server、同一套请求证明（Ed25519 签名 + workgroup HMAC，答复也由应答方签名）；权限与状态严格分开。密码只出现在每个请求头里的 workgroup 证明中（[§7.1](07-security.md#71-workgroup-与密码)）。
 
 ### 2.2 每个 orca node 的职责
 
 - 对外：A2A server（接收任务）、A2A client（发起任务）、控制面端点。
 - 对内：成员观测、任务存储、LocalExecutor、工作区管理、DSH 生命周期。
-- 安全：准入证明校验、请求签名校验、成员闸门、grant 校验。
+- 安全：请求的两样证明校验、答复签名、grant 校验。
 - 可观测：任务记录、origin 派发日志、peer 状态、审批面板（[§8.7](08-reliability.md#87-可观测性)）。
 
 ### 2.3 部署形态
@@ -43,22 +43,22 @@ join（凭 workgroup_id + 密码）→ 双方登记 → 拿到 target 自述 + �
 | 局域网直连  | `0.0.0.0` / `::` 或私网 IP | 无（明文）    | 家庭/办公室可信网络、VPN | 密码必须够强；跨网段建议走代理               |
 | 反代 + 域名 | `127.0.0.1:11811`         | Caddy / nginx | 公网、跨网段、多网卡     | 证书与 HSTS 归代理；把公网 URL 配进 endpoints |
 
-默认监听：核心库与 DSH 插件都绑 `127.0.0.1`；`orca-pod install` 装的 systemd 服务默认绑 `::`。默认端口 `11811`。
+默认监听：核心库与 DSH 插件都绑 `127.0.0.1`。默认端口 `11811`。节点只以 DSH 插件的形态运行，一台机器一个节点，不论有几个 DSH profile（[§9.2](09-implementation.md#92-dsh-插件)）。
 
 ### 2.4 orca node 身份（Ed25519 公钥）
 
-- **生成时机**：首次启动时由 `core/identity.ts` 在 `<data_root>/identity.json` 生成 Ed25519 密钥对（私钥 PKCS8 PEM，文件权限 0600）；`orca_node_id` = 原始 32 字节公钥的 base64url。检查与写入在 DSH 的文件锁（`withFileLock`）下进行、写入是原子的，所以两个进程同时首启也只会得到同一个身份。
-- **文件损坏**：`identity.json` 存在但读不出或解析不出合法私钥时直接报错，**不会**悄悄生成新身份（那会让节点换一个 id）；要换身份就自己删掉它。
+- **生成时机**：首次启动时由插件在 DSH 凭据库生成 Ed25519 密钥对，私钥的 32 字节种子以 base58 存在记录 `credentialKey('orca-pod', 'node')`（`{ kind: 'grant', payload: { ed25519 } }`）里（[§7.1](07-security.md#71-workgroup-与密码)）；`orca_node_id` = 原始 32 字节公钥的 base64url。`core/identity.ts` 只剩纯函数：私钥 ↔ base58、签名、验签。检查与写入在 DSH 的文件锁（`withFileLock`）下进行、写入是原子的，所以两个进程同时首启也只会得到同一个身份。
+- **记录损坏**：凭据记录存在但解析不出合法私钥时直接报错，**不会**悄悄生成新身份（那会让节点换一个 id）；要换身份就自己删掉这条记录。
 - **格式**：43 字符、字符集 `[A-Za-z0-9_-]`；可验证、不可伪造。UI/日志显示缩略（前 6 + `…` + 后 4）。
-- **换身份**：删除 `<data_root>/identity.json` 并重启会生成新密钥对（面板的“完全重置”同时删除 `config.json`、`peers.json`，并删掉凭据库里该 workgroup 的密码）；新身份需重新入组。
-- **持久化**：`identity.json` 存 `{orca_node_id, private_key_pem, created_at}`（公钥由私钥推导，不单独存）；`config.json` 记录 `orca_node_id`，启动时与身份文件校验，不一致则拒绝启动。
-- **是安全主体**：签名证明“谁在调用”，伪造需要私钥；密码只用于组网准入。
+- **换身份**：删除凭据记录并重启会生成新密钥对（面板的“完全重置”是整台机器的节点回到初始状态、没有分支：删密码、私钥记录、设置文件、`peers.json`）；新身份需重新入组。**不迁移**：旧版本按 profile 存的身份和任务库都不读，节点用新身份重新入组。
+- **持久化**：只存私钥种子（公钥由私钥推导，不单独存）；节点的运行配置（`OrcaNodeConfig`）只在内存里由插件按设置 + 节点 id 组装，不写文件。
+- **是安全主体**：签名证明“谁在调用”，伪造需要私钥；密码只补上“此刻在组内”。
 - **改名语义**：`display_name` 可随时改（只影响显示，缺省显示缩略 id）；`orca_node_id` 不可改，改就是换身份。
-- **冲突**：id 由公钥决定，天然全局唯一；同一身份重复 join 幂等。
+- **冲突**：id 由公钥决定，天然全局唯一；同一身份重复 `hello` 幂等。
 
 ### 2.5 orca node 自述记录（SelfRecord）
 
-`GET /cluster/members` 的元素，也是 join 响应里 `self` 的内容（`self` 多一个 `workgroup_id`）：
+`GET /cluster/members` 的元素，也是 `hello` 答复里 `self` 的内容（`self` 多一个 `workgroup_id`）：
 
 ```json
 {
@@ -87,12 +87,12 @@ join（凭 workgroup_id + 密码）→ 双方登记 → 拿到 target 自述 + �
 
 字段规则：
 
-- `runtime` 与整个记录只出现在需要签名的接口里（`/cluster/members`、join 响应、心跳响应），公网匿名不可读。
+- `runtime` 与整个记录只出现在需要签名的接口里（`/cluster/members`、`hello` 答复），公网匿名不可读。
 - `state`、`last_recv_at` 是**接收方的本地观测**，不是对端的声明；自己的记录里恒为 `online`。
 - `busy` 为 `null` 或 `{ "task_id", "origin_orca_node", "since" }`，由本人写、随心跳刷新；origin 的 UI 据此显示“B 正在跑 X”。
 - `max_task_ttl_s` 是本机单任务硬预算（`task_timeout_s`，默认 3600），随 self record 与 Agent Card 公布；origin 据此拆解任务，超时的任务会被目标机直接终止（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
 - `models` 与 `default_model` 是本机可执行模型的目录与默认选择：`models` 是 `[{provider, id, name, description?}]`（`name` 必填；去重、上限 128），`default_model` 是 DSH 的 `ModelSelection`（`{provider, model, reasoningEffort?}`）或 `null`；`default_reasoning_effort` 是默认 effort（`null` 表示由 provider 决定）。它们只出现在同组成员可见的记录里（**不进公开 Agent Card**）；调用方用 `metadata.pod.model` / `metadata.pod.reasoning_effort` 选择（[§6.15](06-execution.md#615-按任务选择模型)）。
-- `endpoints` 是有序列表（1–8 个 http(s) URL，去重去尾斜杠），第一个是 primary：Agent Card 的 `url`、CLI 展示都用它。顺序即拨号优先级，覆盖 IPv6/IPv4 双栈与“局域网直连 + 公网反代”矩阵；对端逐地址尝试，一个地址不可达不等于 orca node 离线，上次成功的地址会排到最前（[§4.3](04-transport.md#43-反向代理注意事项)）。列表只影响“别人怎么拨我”，监听地址由 `bind_host` 决定。
+- `endpoints` 是有序列表（1–8 个 http(s) URL，去重去尾斜杠），第一个是 primary：Agent Card 的 `url`、面板展示都用它。顺序即拨号优先级，覆盖 IPv6/IPv4 双栈与“局域网直连 + 公网反代”矩阵；对端逐地址尝试，一个地址不可达不等于 orca node 离线，上次成功的地址会排到最前（[§4.3](04-transport.md#43-反向代理注意事项)）。列表只影响“别人怎么拨我”，监听地址由 `bind_host` 决定。
 - 配置里 `endpoints` 为空时按监听地址推导：绑 `0.0.0.0`/`::` 时枚举本机非 internal 的 IPv4/IPv6 地址（IPv4 在前，跳过 `fe80:` 前缀的链路本地 IPv6），识别不到才回退 loopback；绑具体地址就用该地址。
 - 记录里**没有**工作区用量、GPU、DSH 版本、能力标签；需要这些信息就问对方的 agent。
 
@@ -106,7 +106,7 @@ runtime 的用途只有一个：让 origin 在派任务前判断“那台机器�
 
 ### 2.7 刷新与一致性
 
-- 心跳带准入证明、`busy`、成员摘要与完整的 `self` 自述（字段即 join 请求体里的自述部分；收到 `self` 会重建对端记录），回复只在摘要不一致时回整张目录作候选（[§3.3](03-membership.md#33-心跳与双向看门狗)）。
+- 心跳就是 `hello`：带 `busy`、成员摘要与完整的 `self` 自述（收到 `self` 会重建对端记录），答复只在摘要不一致时回整张目录作候选（[§3.3](03-membership.md#33-心跳与双向看门狗)）。
 - `members_digest` = sha256(排序后的 `id|endpoints|runtime_digest` 行，含自己)；只覆盖这三项，不覆盖 busy、模型目录和在线状态。
 - 收到的 digest 与本地不一致 → 对端在响应里回整张目录，只作候选端点。
 - 目录里每条记录的“新鲜度”由本地的 `last_recv_at` 体现，不由记录内的字段体现。

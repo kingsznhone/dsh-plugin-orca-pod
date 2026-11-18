@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { createMesh } from "./support/harness.ts";
-import type { MembershipTimings } from "../src/mesh/membership.ts";
-import type { OrcaNode } from "../src/node/orca-node.ts";
+import type { MeshTimings } from "../src/mesh/timings.ts";
+import type { Orca } from "../src/node/orca.ts";
+import { peersOf } from "./support/node.ts";
 
-const FAST: Partial<MembershipTimings> = {
+const FAST: Partial<MeshTimings> = {
   intervalMs: 20,
   suspectAfterMs: 60,
   offlineAfterMs: 120,
@@ -27,15 +28,13 @@ describe("heartbeat loop and watchdog", () => {
   it("converges a three-orca-node mesh, marks a stopped orca node offline, then prunes it", async () => {
     const mesh = await createMesh({ orcaNodes: 3, timings: FAST });
     const victim = mesh.orcaNodes[2];
-    const survivors = mesh.orcaNodes.slice(0, 2) as OrcaNode[];
+    const survivors = mesh.orcaNodes.slice(0, 2) as Orca[];
     if (!victim) throw new Error("mesh did not create three orca nodes");
 
     try {
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) =>
-            orcaNode.membership.list().length === 2 &&
-            orcaNode.membership.list().every((peer) => peer.state === "online"),
+          (orcaNode) => peersOf(orcaNode).length === 2 && peersOf(orcaNode).every((peer) => peer.state === "online"),
         ),
       );
 
@@ -43,22 +42,18 @@ describe("heartbeat loop and watchdog", () => {
 
       await waitFor(() =>
         survivors.every((orcaNode) =>
-          orcaNode.membership
-            .list()
-            .some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
+          peersOf(orcaNode).some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
         ),
       );
 
       await expect(
-        survivors[0]!.delegation.sendTask(victim.profile.endpoints[0]!, {
+        survivors[0]!.mesh.resolve(victim.mesh.self.endpoints[0]!).sendTask({
           message: { role: "user", parts: [{ kind: "text", text: "hello?" }] },
         }),
       ).rejects.toMatchObject({ code: "peer_not_online" });
 
       await waitFor(() =>
-        survivors.every((orcaNode) =>
-          orcaNode.membership.list().every((peer) => peer.orca_node_id !== victim.orcaNodeId),
-        ),
+        survivors.every((orcaNode) => peersOf(orcaNode).every((peer) => peer.orca_node_id !== victim.orcaNodeId)),
       );
     } finally {
       await Promise.allSettled(survivors.map((orcaNode) => orcaNode.stop()));
@@ -70,14 +65,12 @@ describe("heartbeat loop and watchdog", () => {
     try {
       await waitFor(() =>
         mesh.orcaNodes.every(
-          (orcaNode) =>
-            orcaNode.membership.list().length === 1 &&
-            orcaNode.membership.list().every((peer) => peer.state === "online"),
+          (orcaNode) => peersOf(orcaNode).length === 1 && peersOf(orcaNode).every((peer) => peer.state === "online"),
         ),
       );
       await new Promise((resolve) => setTimeout(resolve, 150));
       for (const orcaNode of mesh.orcaNodes) {
-        expect(orcaNode.membership.list().every((peer) => peer.state === "online")).toBe(true);
+        expect(peersOf(orcaNode).every((peer) => peer.state === "online")).toBe(true);
       }
     } finally {
       await mesh.stop();

@@ -1,18 +1,21 @@
 import { randomBytes } from "node:crypto";
 
-import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
 import { DiskBlobRegistry, MemoryFileBlobStore, type FileBlobRegistry } from "../../src/core/blobs.ts";
+import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
+import { EventBus } from "../../src/core/events.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
-import { ModelCatalog } from "../../src/core/model-catalog.ts";
 import { buildAuthHeader } from "../../src/core/signing.ts";
 import type { RuntimeInfo, WorkgroupId } from "../../src/core/wire/peer.ts";
 import { Gateway } from "../../src/api/gateway.ts";
-import { BlobFetcher } from "../../src/mesh/blob-fetcher.ts";
-import { Membership } from "../../src/mesh/membership.ts";
+import { MeshContext } from "../../src/mesh/context.ts";
+import { Mesh } from "../../src/mesh/mesh.ts";
 import { HttpPeerClient } from "../../src/mesh/peer-client.ts";
-import { SelfProfile } from "../../src/mesh/self-profile.ts";
-import { Workgroup } from "../../src/mesh/workgroup.ts";
+import { EndpointScreen } from "../../src/mesh/screening.ts";
+import { resolveClock } from "../../src/mesh/timings.ts";
+import { DispatchLog } from "../../src/task/dispatch-log.ts";
+import { MemoryDispatchStore } from "../../src/task/dispatch-store.ts";
 import type { SingleSlotTaskRunner } from "../../src/task/runner.ts";
+import type { DispatchEvent } from "../../src/task/wire.ts";
 import { wg } from "./ids.ts";
 import { createTestRunner } from "./runner.ts";
 
@@ -33,14 +36,19 @@ export type GatewayHarness = {
   key: Buffer;
   identity: NodeIdentity;
   orcaNodeId: string;
-  membership: Membership;
-  profile: SelfProfile;
+  workgroup: WorkgroupId;
+  mesh: Mesh;
   tasks: SingleSlotTaskRunner;
   blobs: FileBlobRegistry;
-  /** Reaches members; a test that wants a file from one spies on `files.fetch`. */
-  files: BlobFetcher;
-  /** The header a caller holding `identity` signs a request to this gateway with. */
+  /** The header a caller holding `identity` and the workgroup key signs a request to this gateway with. */
   sign(method: string, path: string, body?: Uint8Array | string): string;
+  /** The same for any other caller: its own key pair, and a workgroup key and id the test may get wrong on purpose. */
+  signAs(
+    caller: NodeIdentity,
+    method: string,
+    path: string,
+    options?: { body?: Uint8Array | string; key?: Buffer; workgroup?: WorkgroupId; target?: string },
+  ): string;
 };
 
 export type GatewayHarnessOptions = {
@@ -50,45 +58,57 @@ export type GatewayHarnessOptions = {
   displayName?: string;
 };
 
-/** A gateway built from real parts, on its own identity and an empty roster. No outbound call succeeds. */
+/** A gateway built from real parts, on its own identity and a table with only itself in it. No outbound call succeeds. */
 export function createGatewayHarness(options: GatewayHarnessOptions = {}): GatewayHarness {
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
-  const profile = new SelfProfile(
-    {
-      orca_node_id: identity.orcaNodeId,
-      workgroup_id: options.workgroup ?? wg("orca-dev"),
-      display_name: options.displayName ?? "gateway-test",
-    },
-    RUNTIME,
-    new ModelCatalog(),
-    DEFAULT_TASK_TIMEOUT_S,
-  );
-  profile.setEndpoints([GATEWAY_ENDPOINT]);
-  const membership = new Membership(identity.orcaNodeId);
-  const client = new HttpPeerClient(identity, profile, membership, {
-    fetch: async () => {
-      throw new Error("no outbound calls in a gateway test");
-    },
-    timeoutMs: 1000,
-  });
-  const mesh = new Workgroup(key, membership, client, profile, { logger: { warn() {} }, dial: {} });
+  const workgroup = options.workgroup ?? wg("orca-dev");
   const blobs = options.blobs ?? new DiskBlobRegistry(new MemoryFileBlobStore());
-  const files = new BlobFetcher(blobs, mesh, client, identity.orcaNodeId);
+  const context = new MeshContext(
+    identity,
+    workgroup,
+    key,
+    new HttpPeerClient(identity, key, workgroup, {
+      fetch: async () => {
+        throw new Error("no outbound calls in a gateway test");
+      },
+      timeoutMs: 1000,
+    }),
+    new DispatchLog(new MemoryDispatchStore(), new EventBus<DispatchEvent>()),
+    blobs,
+    new EndpointScreen({}),
+    resolveClock(),
+    { warn() {} },
+  );
+  const mesh = new Mesh(context, {
+    display_name: options.displayName ?? "gateway-test",
+    endpoints: [GATEWAY_ENDPOINT],
+    runtime: RUNTIME,
+    max_task_ttl_s: DEFAULT_TASK_TIMEOUT_S,
+  });
   const tasks = options.tasks ?? createTestRunner();
-  const gateway = new Gateway(profile, membership, tasks, files, key);
+  const gateway = new Gateway(mesh, tasks, key, identity);
+  const signAs: GatewayHarness["signAs"] = (caller, method, path, extra = {}) =>
+    buildAuthHeader({
+      identity: caller,
+      key: extra.key ?? key,
+      workgroupId: extra.workgroup ?? workgroup,
+      method,
+      url: path,
+      targetOrcaNodeId: extra.target ?? identity.orcaNodeId,
+      body: extra.body,
+    });
   return {
     gateway,
     app: gateway.app,
     key,
     identity,
     orcaNodeId: identity.orcaNodeId,
-    membership,
-    profile,
+    workgroup,
+    mesh,
     tasks,
     blobs,
-    files,
-    sign: (method, url, body) =>
-      buildAuthHeader({ identity, method, url, targetOrcaNodeId: identity.orcaNodeId, body }),
+    sign: (method, path, body) => signAs(identity, method, path, { body }),
+    signAs,
   };
 }

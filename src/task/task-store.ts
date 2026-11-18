@@ -1,6 +1,6 @@
 /** Durable and in-memory task stores (§5.5). */
 
-import { JsonTable, SqliteDb } from "../core/sqlite.ts";
+import { JsonTable, type SqliteDb } from "../core/sqlite.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import type { TaskView } from "./wire.ts";
 
@@ -23,8 +23,6 @@ export interface TaskStore {
   save(task: PersistedTask): void;
   load(taskId: string): PersistedTask | undefined;
   list(): PersistedTask[];
-  /** Durable stores release their handle; memory stores have nothing to close. */
-  close(): void;
 }
 
 /** Protocol tests and harness orca nodes use this; the CLI/plugin wire SQLite. */
@@ -49,19 +47,15 @@ export class MemoryTaskStore implements TaskStore {
       .map((task) => structuredClone(task))
       .sort((left, right) => left.updated_at.localeCompare(right.updated_at));
   }
-
-  close(): void {}
 }
 
 /** Durable task store (§5.5). */
 export class SqliteTaskStore implements TaskStore {
-  private readonly handle: SqliteDb;
   private readonly table: JsonTable<PersistedTask>;
 
-  constructor(path: string) {
-    this.handle = new SqliteDb(path);
+  constructor(handle: SqliteDb) {
     this.table = new JsonTable<PersistedTask>(
-      this.handle,
+      handle,
       "tasks",
       (task) => task.view.id,
       (task) => task.updated_at,
@@ -78,9 +72,5 @@ export class SqliteTaskStore implements TaskStore {
 
   list(): PersistedTask[] {
     return this.table.list();
-  }
-
-  close(): void {
-    this.handle.close();
   }
 }

@@ -1,6 +1,7 @@
 import type { SessionId } from "@deepseek-ai/dsh-session";
 
 import type { EventBus } from "../core/events.ts";
+import type { OrcaNodeId } from "../core/wire/peer.ts";
 import type { DispatchStore } from "./dispatch-store.ts";
 import { isTerminal, type DispatchEntry, type DispatchEvent, type TaskView } from "./wire.ts";
 
@@ -23,9 +24,9 @@ export class DispatchLog {
     private readonly events: EventBus<DispatchEvent>,
   ) {}
 
-  /** Entries, oldest first. */
+  /** Entries, oldest first. An entry an older version wrote names an address, not a node: it has no node. */
   list(): DispatchEntry[] {
-    return this.store.list();
+    return this.store.list().map((entry) => ({ ...entry, node: entry.node ?? null }));
   }
 
   /**
@@ -33,13 +34,13 @@ export class DispatchLog {
    * entries. `agentId` is the DSH session that dispatched it, remembered so the
    * host can resume background tracking after a restart.
    */
-  recordSend(peerUrl: string, view: TaskView, agentId?: SessionId): void {
+  recordSend(node: OrcaNodeId, view: TaskView, agentId?: SessionId): void {
     const previous = this.store.get(view.id);
     const now = new Date().toISOString();
     this.save({
       ...previous,
       task_id: view.id,
-      peer: peerUrl,
+      node,
       ...(agentId === undefined ? {} : { agent_id: agentId }),
       context_id: view.contextId,
       state: view.status.state,

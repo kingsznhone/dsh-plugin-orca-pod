@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { Membership } from "../src/mesh/membership.ts";
 import { screenEndpoint } from "../src/mesh/screening.ts";
 import {
   bindUrl,
@@ -9,21 +8,8 @@ import {
   isLoopbackEndpoint,
   pickFreePort,
 } from "../src/core/net.ts";
-import type { PeerView, OrcaNodeId } from "../src/core/wire/peer.ts";
 import { labelId } from "./fixtures/ids.ts";
-
-function peer(orcaNodeId: OrcaNodeId, endpoint: string): PeerView {
-  return {
-    orca_node_id: orcaNodeId,
-    display_name: orcaNodeId,
-    endpoints: [endpoint],
-    runtime: null,
-    runtime_digest: "",
-    state: "unknown",
-    busy: null,
-    last_recv_at: null,
-  };
-}
+import { listed, testMesh } from "./support/mesh.ts";
 
 describe("candidate endpoint filtering (§7.7)", () => {
   it("allows private ranges", async () => {
@@ -100,14 +86,30 @@ describe("candidate endpoint filtering (§7.7)", () => {
 });
 
 describe("peer origin (§7.7)", () => {
-  it("marks joined peers explicit and roster-only peers candidate", () => {
-    const membership = new Membership(labelId("AAAAAA"));
-    membership.upsert(peer(labelId("BBBBBB"), "http://127.0.0.1:1"));
-    expect(membership.originOf(labelId("BBBBBB"))).toBe("explicit");
-    membership.mergeRemote([peer(labelId("CCCCCC"), "http://127.0.0.1:2")]);
-    expect(membership.originOf(labelId("CCCCCC"))).toBe("candidate");
-    membership.upsert(peer(labelId("CCCCCC"), "http://127.0.0.1:2"));
-    expect(membership.originOf(labelId("CCCCCC"))).toBe("explicit");
+  it("marks greeting peers explicit and roster-only peers candidate", () => {
+    const table = testMesh();
+    const { mesh } = table;
+    table.greeted(labelId("BBBBBB"), ["http://127.0.0.1:1"]);
+    expect(mesh.require(labelId("BBBBBB")).isCandidate).toBe(false);
+    mesh.mergeRemote([listed(labelId("CCCCCC"), "http://127.0.0.1:2")]);
+    expect(mesh.require(labelId("CCCCCC")).isCandidate).toBe(true);
+    table.greeted(labelId("CCCCCC"), ["http://127.0.0.1:2"]);
+    expect(mesh.require(labelId("CCCCCC")).isCandidate).toBe(false);
+  });
+
+  it("screens a candidate's addresses before they are dialed, and reuses a verdict for a while", async () => {
+    const table = testMesh();
+    const { mesh } = table;
+    mesh.mergeRemote([
+      listed(labelId("BBBBBB"), "http://169.254.169.254:80", {
+        endpoints: ["http://169.254.169.254:80", "http://10.0.0.5:1"],
+      }),
+    ]);
+    // The metadata address is dropped from the dial order; the private one stays.
+    expect(await mesh.require(labelId("BBBBBB")).dialOrder()).toEqual(["http://10.0.0.5:1"]);
+    // A node that greeted for itself is dialed at what it declared.
+    table.greeted(labelId("CCCCCC"), ["http://8.8.8.8:1"]);
+    expect(await mesh.require(labelId("CCCCCC")).dialOrder()).toEqual(["http://8.8.8.8:1"]);
   });
 });
 

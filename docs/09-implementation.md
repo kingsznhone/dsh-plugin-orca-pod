@@ -15,58 +15,59 @@ orca-pod/
   client/             DSH 客户端（面板）的 TSX 源码；构建到 lib/client.js
   biome.json          lint + format（一个工具）
   src/                见下表
-  scripts/            cross.ts、build-client.ts、harness_run.ts、e2e-acp.mjs
+  scripts/            cross.ts、build-client.ts、harness_run.ts（进程内两个节点走真实回环网络）、e2e-acp.ts
   skills/orca-node/   标准 skill bundle（SKILL.md + references/add-machine.md）
   test/               vitest，按模块一份 *.test.ts；test/fixtures/fake-acp.mjs 是假 ACP server
 ```
 
-`src/` 按功能分成 8 个目录（D41），目录内没有聚合导出文件（不设 `index.ts`）：谁用到什么，就直接 import 定义它的文件，所以目录内部移动代码时，调用方跟着改。
+`src/` 按功能分成 7 个目录（D41、D44），目录内没有聚合导出文件（不设 `index.ts`）：谁用到什么，就直接 import 定义它的文件，所以目录内部移动代码时，调用方跟着改。
 
 | 上下文        | 文件                                                                                                     | 职责                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `core/`       | `errors` / `schema` / `entry` / `events` / `serial-queue` / `constants` / `net` / `identity` / `signing` / `sqlite` / `blobs` / `model-catalog` / `wire/`（`peer` / `model` / `permission` / `grant` / `reply`） | 公共底座：`PodError` 与错误码 → HTTP 状态表（唯一一张）；`isRecord` 与 `parseSchema`（不可信输入的唯一入口）；包内入口路径（按当前模块扩展名解析 `cli/main.ts`/`cli/main.js`）；进程内通知 `EventBus`、`ChangeSignal` 与 `NodeLogger`；串行队列 `SerialQueue`；默认端口；地址归一化、回环判定、端口；Ed25519 身份；请求签名与验签、`NonceCache`、scrypt 派生；`SqliteDb` 与 `JsonTable`；发布文件（名字 `<orca_node_id>/<sha256>`、`FileBlobStore` 与 `DiskBlobRegistry`）；模型目录 `ModelCatalog`；跨模块共用的线上词汇（成员目录与 digest、orca node id 格式、模型路由、权限模式、grant、错误体与 ack） |
-| `mesh/`       | `membership` / `self-profile` / `dialer` / `workgroup` / `heartbeat` / `peer-client` / `blob-fetcher` / `admission` / `screening` / `wire` | 组网：成员表与看门狗（`Membership`）；自述（`SelfProfile`，`busy` 由节点推送，mesh 不认识任务）；拨号顺序与端点筛查缓存（`EndpointDialer`）；join、心跳、leave、`joinAll`（`Workgroup`）；心跳循环（`HeartbeatLoop`）；**唯一的出站客户端**（`HttpPeerClient`：签名、超时、响应上限；陌生 URL 抛 `unknown_peer`，不隐式 join）；取成员发布的文件（`BlobFetcher`）；准入证明；端点筛查（候选拨号前、入站 join 登记前）与地址分类；join / 心跳请求体与 `members` 事件 |
+| `mesh/`       | `mesh` / `orca-node` / `context` / `peer-client` / `screening` / `timings` / `wire` | 组网（D44）：节点表 `Mesh`（`Map<节点 id, OrcaNode>`，**本机自己也在表里**；目录与摘要、墓碑、合并他人目录、`probe` / `seed` / `answer` / `leave`、心跳循环）；表里的一行 `OrcaNode`（自述、状态机证据、可拨地址与上次成功的地址、别名 URL，以及 `hello` / `sendTask` / `getTask` / `cancelTask` / `approve` / `deny` / `fetchBlob`）；一个 orca 实例里所有节点共用的 `MeshContext`；出站客户端 `HttpPeerClient`（只负责签名、截止时间、读取上限、验答复签名，不知道有哪些节点）；`EndpointScreen`（候选与自报端点的筛查结论缓存）与纯策略 `screenEndpoint`；时序常量与时钟 `timings`；`hello` 的线上形状 `wire` |
 | `executor/`   | `executor` / `kinds` / `echo` / `acp/`                                                       | 执行器契约（含 echo 脚本 schema）；执行器种类枚举（`kinds`：acp/echo）；Echo；ACP（`config` 配置类型、`connection` 按 sessionId 路由，并负责子进程的派生与杀进程树、`session` 一个 ACP 会话（`AcpSession`，选模型 / 发 prompt / 挂接路由）与绑定、`sessions.json`（`AcpSessionPool`）、`permissions` 自动应答、`executor`（`AcpExecutor` 与一次运行 `AcpRun`）） |
-| `task/`       | `wire` / `runner` / `record` / `quota` / `workspace` / `grants` / `meta` / `prompt` / `task-store` / `dispatch-store` / `dispatch-log` / `delegation` | 任务线上形状（任务视图与元数据、A2A 方法参数与 JSON-RPC 外壳、派发日志条目、`task` / `dispatch` 事件）；单槽运行器（`SingleSlotTaskRunner`：槽位、存储、事件、账本）与一个任务的状态机、执行循环与计时器（`TaskRecord`，不认识 runner，经 `changes` 通知）；工作区配额（`WorkspaceQuota`）；工作区路径、目录创建、用量测量与 notes 列表（`Workspace`）；grant 签名、校验与已消费账本（`GrantLedger.accept` 验证通过即记账）；元数据一次性解析；任务书（可信前言在前、远端文本在最后的不可信块）；任务与派发日志的内存 / sqlite 存储；发起侧：`Delegation`（`sendTask`/`getTask`/`cancelTask`/审批签 grant）与 `DispatchLog`（`markInFlightUnknown`，重启后在途条目记为 `unknown`） |
+| `task/`       | `wire` / `runner` / `record` / `files` / `quota` / `workspace` / `grants` / `meta` / `prompt` / `task-store` / `dispatch-store` / `dispatch-log` | 本机执行：任务线上形状（任务视图与元数据、`pod.files`、A2A 方法参数与 JSON-RPC 外壳、派发日志条目）；单槽运行器与每个任务一个的 `TaskRecord`；`TaskFiles`（inbox 取文件、outbox 发布，D44）；grant 账本；工作区与配额；任务书；任务与派发日志的存储。派发是“对一个节点做的事”，所以在 `mesh/`，不在这里 |
 | `api/`        | `gateway` / `access` / `cluster-routes` / `a2a-routes` / `blob-routes` / `input`                          | 入站 HTTP：`Gateway`（装配、body 解析、`listen` 与 `close`、唯一的错误出口）、`AccessPolicy`（`access` 声明与唯一的 preValidation 钩子）、`ClusterRoutes`、`A2aRoutes`、`BlobRoutes`、`parseInput` |
-| `node/`       | `orca-node` / `config` / `settings` / `events`                                                           | **组合根**：一个进程 = 一个 orca node，只装配，子系统以只读字段公开；**唯一的设置字段表与解析器**（`config.json`、插件 `Config`、面板覆盖、install、CLI 都走它）；`config.json` 读写（身份 + 派生密钥，0600）；节点事件联合类型；测试夹具在 `test/support/harness.ts`（§9.4） |
-| `cli/`        | `main` + 每个子命令一个文件（`serve`/`send`/`status`/`wait`/`publish`/`fetch`/`log`/`members`）、`shared`；`orca-pod` / `install` | `orca-node` CLI（`main` 只做参数分派）；`orca-pod install`；install 计划与 systemd unit 渲染 |
+| `node/`       | `orca` / `config` / `settings` / `events`                                                                | **组合根**：一个进程里的这一个 orca 实例 `Orca`，只装配，子系统以只读字段公开（`mesh`、`tasks`、`dispatches`、`models`、`workspace`）；**唯一的设置字段表与解析器**；`OrcaNodeConfig` 只在内存里由插件组装 |
 | `plugin/`     | 见 §9.5                                                                                                  | DSH bundle                                                                                   |
 
 模块依赖单向向下，由 `test/architecture.test.ts` 固化（解析 `src/` 的 import）：
 
 ```text
-core ← { mesh, executor } ← task ← api ← node ← { cli, plugin }
+core ← executor ← task ← mesh ← api ← node ← plugin
 ```
 
 - 运行期 import 图无环，**仅类型的 import 也不许成环**（目录内的两个文件互相 `import type` 也算）；
-- 运行期 import 只允许指向严格更低的一层；同层（`mesh` / `executor`、`cli` / `plugin`）一律互不引用；
-- SQLite 存储（`Sqlite*`）只在装配点（`node/`、`plugin/`、`cli/`）构造，业务层通过构造参数拿到存储，参数类型是接口。
+- 运行期 import 只允许指向严格更低的一层；mesh 在 task 之上（D44）：派发任务是对一个节点做的事；
+- SQLite 存储（`Sqlite*`）只在装配点（`node/`、`plugin/`）构造，业务层通过构造参数拿到存储，参数类型是接口。
 
-没有依赖注入：没有容器、没有 `XDeps` 类型、没有专为解耦设的端口接口。私有协作者由拥有者自己 `new`（`Workgroup` 创建 `EndpointDialer`，`SingleSlotTaskRunner` 创建 `TaskSlot`、`WorkspaceQuota` 与 `GrantLedger`，`Gateway` 创建 `NonceCache`、`AccessPolicy` 与三个路由对象……），共享对象由创建者传入（`OrcaNode`、`PodBundle`），子系统之间的通知用各自持有的 `events`（`EventBus` / `ChangeSignal`），由订阅方决定怎么响应。接口只在存在多个实现时才写（`TaskStore`、`DispatchStore`、`FileBlobStore`、`FileBlobRegistry`、`LocalExecutor`、`PodStores`）。`node/orca-node.ts` 是装配 orca node 的库根，与 Node.js 运行时无关；命名里带 orca 就是为了让 import 和 grep 一眼分清。没有聚合导出，引入一个文件只会加载它自己依赖的部分（例如 `node/settings.ts` 只用 `core/net.ts`，不会连带加载 gateway）。
+没有依赖注入：没有容器、没有 `XDeps` 类型、没有专为解耦设的端口接口。私有协作者由拥有者自己 `new`（`Mesh` 创建本机这一行 `OrcaNode`，`SingleSlotTaskRunner` 创建 `TaskSlot`、`WorkspaceQuota` 与 `GrantLedger`，`Gateway` 创建 `NonceCache`、`AccessPolicy` 与三个路由对象……），共享对象由创建者传入（`Orca` 把同一个 `MeshContext` 交给表里的每个 `OrcaNode`；一个资源一份、按 orca 实例划作用域，**不用模块级全局变量**，D44），子系统之间的通知用各自持有的 `events`（`EventBus` / `ChangeSignal`），由订阅方决定怎么响应。接口只在存在多个实现时才写（`TaskStore`、`DispatchStore`、`FileBlobStore`、`FileBlobRegistry`、`LocalExecutor`、`PodStores`）。`node/orca.ts` 是装配 orca node 的库根，与 Node.js 运行时无关；命名里带 orca 就是为了让 import 和 grep 一眼分清。没有聚合导出，引入一个文件只会加载它自己依赖的部分（例如 `node/settings.ts` 只用 `core/net.ts`，不会连带加载 gateway）。
 
 HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理都用它现成的，不手写 http server。路由不向 Fastify 注册 schema：处理器先用 `api/input.ts` 的 `parseInput` 按 zod schema 解析自己的输入（失败即 `400 bad_request`，信息带出错路径，如 `body.models.0.provider`），解析结果才是处理器用的值。**每条路由必须声明 `config.access`**（`public|join|member|local`），缺了启动即失败；验签与授权只在一个钩子里做；错误只从一个错误处理器出去。
 
 ### 9.2 面板
 
-面板需要的每个数字都从 Host 侧同步取到，而不是先让模型调一次工具再转述。`OrcaNode` 把子系统作为只读字段公开，面板读的四个入口都在它们上面，插件再把它们打包成 `PanelModel`：
+面板需要的每个数字都从 Host 侧同步取到，而不是先让模型调一次工具再转述。`Orca` 把子系统作为只读字段公开，面板读的四个入口都在它们上面，插件再把它们打包成 `PanelModel`：
 
 | 入口                              | 位置                         | 内容                                                                                 |
 | --------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
-| `node.tasks.list(limit?)`         | `task/runner.ts`             | 本机任务（inbound），内存记录在前，持久 store 回填历史                               |
-| `node.events.subscribe(listener)` | `node/orca-node.ts` → `node/events.ts` | `task`（每次状态/权限变化）、`members`（名单、state、busy、endpoints、模型目录变化，按签名去重）、`dispatch`（origin 侧派发落库）；由节点汇总 `tasks.events` / `mesh.events` / `delegation.events` |
-| `node.blobs.fetch(node, blobId)`  | `mesh/blob-fetcher.ts`       | 取任一成员发布的文件（自己的读盘，别人的按拨号顺序拉取），面板经 `/orca-api/blob` 下载产物 |
-| `node.workspace`                  | `node/orca-node.ts`          | workgroup 根、`notes/`、`state/` 路径                                                |
+| `orca.tasks.list(limit?)`         | `task/runner.ts`             | 本机任务（inbound），内存记录在前，持久 store 回填历史                               |
+| `orca.events.subscribe(listener)` | `node/orca.ts` → `node/events.ts` | `task`（每次状态/权限变化）、`members`（名单、state、busy、endpoints、模型目录变化，按签名去重）、`dispatch`（origin 侧派发落库）；由节点把子系统的通知合并转发 |
+| `orca.mesh.require(node).fetchBlob(blobId)` | `mesh/orca-node.ts` | 取任一成员发布的文件（自己的读盘，别人的按拨号顺序拉取），面板经 `/orca-api/blob` 下载产物 |
+| `orca.workspace`                  | `node/orca.ts`               | workgroup 根、`notes/`、`state/` 路径                                                |
 
 `new PanelModel(pod, broker, catalog)` 组合出面板 API（`catalog` 给出宿主模型目录的 reasoning effort 列表，宿主没有 `llm` 时为空；响应形状全在 `plugin/panel-api.ts`）：`self()`、`members()`（不含 offline）、`recent(limit)`（本机任务与派发到 peer 的任务合并）、`approvals()`（只读 broker：待审批只有这一个登记处，答复后卡片立即消失）、`task(peer, id)`、`approve/deny/cancel`、`workspace()`（路径 + notes 文件名）、`blob(node, blobId)`、`config()`（去敏视图，**永不返回密码**，只给 `password_set`）、`state()`（面板一次轮询要渲染的全部）、`saveConfig(patch)`、`connect(peer)`、`disconnect()`、`reset()`。面板靠轮询 `/orca-api/state`，没有变化推送入口。面板读取当前运行只有两种方式：展示（`self`、`members`、`recent`、`workspace`、`approvals` 的标签）读 `pod.run`，没有节点就是空；动作（`task`、`cancel`、`blob`、批准与拒绝）先等 `pod.settled()` 再 `pod.requireRun()`，所以保存设置后立即点“取消任务”会等重启结束，而不是报“没在运行”。审批只有一个 `ApprovalBroker`（`plugin/broker.ts`）：tracker 把看到的权限请求 park 进去，UI 三个落点读它、答复它，答复直接调 `node.delegation.approveTask/denyTask`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
 **UI 改配置与连接 peer**（`plugin/pod.ts` 的 `Pod`，存放见 `plugin/stores.ts`，运行期 peer 见 `plugin/peers-file.ts`）：
 
-- **三处各管一样**：设置就是插件配置，面板经 `ctx.configEditor.edit` 写回本 profile 的条目（文件 0600），由 Loader 用新配置重启插件；密码是 DSH 凭据（`ctx.credentials`，引用名见 [§7.1](07-security.md#71-workgroup-与密码)）；运行期 `connect` 记住的 peer 是 `<data_root>/peers.json` 里的状态（`RememberedPeers`）。设置与密码经 `PodStores` 接口访问（`HostPodStores` / `MemoryPodStores`；`Pod` 的 `commit()` 是改配置的唯一出口：先写，宿主会在写配置后自行重启插件的（`restartsOnWrite` 为 true）这个实例就不再动，否则用写下的配置原地重启），测试与无宿主运行用内存实现。没有任何“覆盖层”文件。
-- **启动门禁**：`workgroup_id` 为空，或凭据库里取不到密码时，节点保持空闲（不启动、不监听、不报错），首屏是向导；向导填好后 `saveConfig` → `reconfigure` 才启动。换 `workgroup_id` 时省略密码会把当前密码写到新 workgroup 的引用名下；显式传空串被拒绝。
-- `reconfigure`：只取面板可改的字段（`null` 表示删除该键、回到默认），先用合并结果整体复验；有新密码先写凭据库（插件重启后要能读到），再写插件配置。配置有变化时由宿主重启插件；只改了密码时就地重启节点。写配置不进 pod 的串行队列：宿主重启插件时要等这条队列排空，放进去会互相等待。节点身份（`identity.json`）不变。
-- `connect(peer)`：地址先归一化（裸 host/IP 补 `http://` 与默认端口 `11811`；`host:port`；完整 URL；裸 IPv6 加方括号；拒绝带路径/查询串），立即 `join` 一次，成功才记进 `peers.json`（不改配置、不重启）；失败只回错误、不落盘。`orca_pod` 工具的 `connect` 方法走同一条路径。启动时 join 插件配置里的 `peers` 与 `peers.json` 的并集。
-- `disconnect()`：`OrcaNode.leave()` 通知已知 peer，清空 `peers.json`；插件配置里写了 `peers` 时一并删掉。`reset()`：删除 `config.json`、`identity.json`、`peers.json`，从凭据库删掉该 workgroup 的密码（同一 DSH home 下同一 workgroup 的其他 profile 也会失去它），并从插件配置删掉 `workgroup_id`，节点回到首启向导（不动 `state/`、blob、工作区）。
+- **一台机器一个节点，所有 profile 共用**（D44）：`data_root` 固定为 `$DSH_HOME/orca-pod`，身份、密码、设置、任务库、工作区整台机器只有一份；profile 只切换这台机器的能力组合。四样东西各有一处：**设置**是 `<data_root>/settings.json`（不含机密、原子写入，面板写它，`Pod` 原地重启——DSH 的 `configEditor` 只能写当前 profile 的 patch，没法让所有 profile 共用，所以不再经它，这推翻了 D43 K2“设置就是插件配置”）；**密码**是凭据 `ORCA_POD_PASSWORD`；**节点私钥**是凭据记录 `orca-pod/node`（[§7.1](07-security.md#71-workgroup-与密码)）；**运行期 peers** 是 `peers.json`。插件配置（profile 的 `cordis.patch.yml`）只剩 `skill_injection`，profile 里残留的旧节点字段被忽略。
+- **同时只有一个进程跑节点**：两个 DSH 进程同时开着时，后启动的在监听时遇到 `EADDRINUSE`，`Pod` 把它映射成 `failed`，提示“本机的 orca 节点已在另一个 DSH 进程中运行”，它的工具不可用。端口本身就是锁，所以**绑定端口是 `Orca.start()` 的第一步**：绑定成功后才打开 SQLite、恢复任务与派发记录，后启动的进程不会改动正在运行的那个进程的任务。
+- **启动门禁**：`workgroup_id` 为空，或凭据库里取不到密码时，节点保持空闲（不启动、不监听、不报错），首屏是向导；向导填好后 `saveConfig` → `reconfigure` 才启动。换 `workgroup_id` 时密码保持（它是整台机器的，不是某个 group 的）；没有存过密码时拒绝。
+- `reconfigure`：只取面板可改的字段（`null` 表示删除该键、回到默认），先用合并结果整体复验；有新密码先写凭据库，再写设置文件，然后原地重启。设置文件读不出或不是 JSON 时启动失败并点名该文件，**不会**当成空设置覆盖它。
+- **外部改了凭据**：订阅 `credentials/reference-updated`（密码）与 `credentials/record-updated`（私钥）；涉及这两个名字且与本次运行所用的值不同时，经 `Pod` 的串行队列重启一次（`Pod.credentialsChanged`）；`Pod` 自己的写入不会引起重启。面板的 `password_set` 向凭据库 `describe` 问，不读缓存。
+- `connect(peer)`：地址先归一化（裸 host/IP 补 `http://` 与默认端口 `11811`；`host:port`；完整 URL；裸 IPv6 加方括号；拒绝带路径/查询串），立即 `mesh.probe`，成功才记进 `peers.json`（不改设置、不重启）；启动时设置里的 `peers` 与 `peers.json` 合起来作为**种子**交给 `mesh.seed`，没应答的由心跳循环按 `recover_probe` 退避继续重试，直到连上。
+- `disconnect()`：`mesh.leave()` 通知已知 peer，清空种子与 `peers.json`；设置里写了 `peers` 时一并删掉。`reset()`：**整台机器的节点回到初始状态，没有分支**：删密码、私钥记录、`settings.json`、`peers.json`，回首启向导。
 - 设置视图的“高级设置”：任务超时、审批等待超时、结果简报上限、工作区配额、公网/回环候选端点、本机权限上限、默认 reasoning effort、执行器。
 
 #### 9.2.1 同源桥（`plugin/panel-routes.ts`）
@@ -76,14 +77,14 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | 路由                                    | 方法       | 内容                                                                                                                  |
 | --------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
 | `/orca-api/state`                       | GET        | 一次轮询拿全量：`self`、`config`、`members`、`mesh`、`approvals`、`approval_count`、`recent`（最近 5 条）、`workspace` |
-| `/orca-api/task?peer=&task=`            | GET        | 单任务详情（任务视图、origin 标签、派发日志条目、产物及其发布节点）                                                   |
+| `/orca-api/task?peer=&task=`            | GET        | 单任务详情（任务视图、origin 标签、派发日志条目、产物及其发布节点）；`peer` 是节点 id、唯一的显示名或 URL            |
 | `/orca-api/tasks?limit=`                | GET        | `{recent}`：全部任务视图（`limit` 默认 500、钳 1–1000）                                                               |
 | `/orca-api/blob?node=&blob=`            | GET        | 本节点取来的文件，流式返回；面板用带 `X-Orca-Pod` 头的 `fetch` 读出再交给浏览器保存                                   |
-| `/orca-api/config`                      | POST       | `saveConfig`：密码进凭据库、设置写回插件配置，插件随之重启                                                            |
+| `/orca-api/config`                      | POST       | `saveConfig`：密码进凭据库、设置写进 `settings.json`，节点原地重启                                                      |
 | `/orca-api/connect` / `disconnect` / `reset` | POST  | `{peer}` / `{}` / `{}`                                                                                                |
 | `/orca-api/approve` / `deny` / `cancel` | POST       | `{peer, task_id, reason?}`，直接调 `PanelModel`，不经模型                                                               |
 
-注册走 `ctx.inject(['webServer'], …)`；没有 web 服务的宿主（ACP/CLI）直接跳过，不影响启动。路由闸门依次是：**回环**（`socket.remoteAddress` 是回环且没有 `x-forwarded-for`/`forwarded`/`x-real-ip`，否则 403 `local_only`）；**同源**（CSRF / DNS rebinding：`Host` 只接受 `localhost` 与 DSH `isLoopbackHost` 认定的回环地址（127/8、`::1` 及其映射形式），带 `Origin` 时必须与 `Host` 同源，带 `Sec-Fetch-Site` 时必须 `same-origin`，每个请求必须带 `X-Orca-Pod: 1` 自定义头，否则 403 `cross_origin`）；写请求必须 `Content-Type: application/json`（否则 403 `json_required`）。因此面板不会因为反向代理或多网卡把审批面暴露出去，也不能被别的网页跨站驱动。
+注册走 `ctx.inject(['webServer'], …)`；没有 web 服务的宿主（ACP）直接跳过，不影响启动。路由闸门依次是：**回环**（`socket.remoteAddress` 是回环且没有 `x-forwarded-for`/`forwarded`/`x-real-ip`，否则 403 `local_only`）；**同源**（CSRF / DNS rebinding：`Host` 只接受 `localhost` 与 DSH `isLoopbackHost` 认定的回环地址（127/8、`::1` 及其映射形式），带 `Origin` 时必须与 `Host` 同源，带 `Sec-Fetch-Site` 时必须 `same-origin`，每个请求必须带 `X-Orca-Pod: 1` 自定义头，否则 403 `cross_origin`）；写请求必须 `Content-Type: application/json`（否则 403 `json_required`）。因此面板不会因为反向代理或多网卡把审批面暴露出去，也不能被别的网页跨站驱动。
 
 #### 9.2.2 客户端 bundle（`client/` → `lib/client.js`）
 
@@ -108,46 +109,46 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | 模块                              | 夹具                                                              | 断言                                                                                   |
 | --------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `core/wire/` / `node/settings.ts` | 固定 JSON 样本                                                    | schema 通过/拒绝、错误信息指向具体字段                                                 |
-| `core/signing.ts`                 | 冻结的签名样本                                                    | 换密钥/时间/body/查询串/接收方 id 任一字节即变；重启前签发的请求被 `stale_request` 拒绝 |
+| `core/signing.ts`                 | 冻结的签名样本                                                    | 换密钥/时间/body/查询串/接收方 id/workgroup 任一字节即变；密码不对 `bad_proof`、签名不对 `bad_signature`（两样缺一不可）；重启前签发的请求被 `stale_request` 拒绝；答复签名绑定请求 nonce、status 与 body |
 | `core/` 的类（`EventBus`、`ChangeSignal`、`SerialQueue`、`ModelCatalog`） | 纯对象                                    | 订阅与退订、抛异常的监听器不影响其他、失败不堵后续操作、钉选值胜过宿主上报                  |
-| `task/grants.ts` / `task/delegation.ts` | 纯函数 + 多 orca node 真实 HTTP                             | grant 校验/过期/重放/工具不符；执行器会话内 `send` 被拒（D39 单跳）                       |
+| `task/grants.ts` / `mesh/orca-node.ts` | 纯函数 + 多 orca node 真实 HTTP                             | grant 校验/过期/重放/工具不符；节点对象的 `sendTask` / `approve` / `fetchBlob`；执行器会话内 `send` 被拒（D39 单跳） |
 | `task/` 的存储与派发日志          | 内存与 sqlite 实现                                                 | 实现行为一致；登记过期；关闭重开仍在；`DispatchLog` 只在发送时建条目                       |
 | `task/workspace.ts` / `task/quota.ts` | 临时目录                                                      | 路径只命名不创建、目录可重复创建、用量测量（`Workspace.measure`，不阻塞事件循环）、超额拒绝 |
 | `api/`                            | 进程内真实 HTTP，真实 `SingleSlotTaskRunner`（需要时 `vi.spyOn`）、注入时钟 | 路由、401/403/429/507、签名与成员闸门                                                  |
 | `executor/` 契约与 echo           | echo 脚本样本                                                     | 状态时序、`input-required`、resume                                                     |
 | `executor/acp/`                   | 假 ACP server（`test/fixtures/fake-acp.mjs`）                     | 完成文本、cwd、权限挂起→grant→继续、`session/cancel`、session 复用与 resume、崩溃后重建连接 |
-| `task/runner.ts`                  | `EchoExecutor` 或自定义 executor + 内存存储                       | 单槽、TTL、取消、重启恢复                                                              |
+| `task/runner.ts` / `task/files.ts` | `EchoExecutor` 或自定义 executor + 内存存储                      | 单槽、TTL、取消、重启恢复；inbox 取文件（哈希不符、取不到 → `input_unavailable`）、outbox 发布与上限 |
+| `mesh/mesh.ts` / `mesh/orca-node.ts` | `test/support/mesh.ts` 的手动时钟节点表（无网络）；多 orca node 真实 HTTP | 状态从静默推出、目录只转发亲耳听到的、墓碑；`resolve` 的 id/名字/URL；种子重试；改密码即被拒、答复被改即拒 |
 | `test/support/harness.ts`（测试专用） | 多 orca node mesh + 可注入时钟/传输                            | 成员收敛、故障、任务往返                                                               |
-| `cli/install.ts`                  | 临时目录 + 注入 `CommandRunner`                                   | systemd plan 与引号、`dsh --version` 检查、配置只生成一次且 0600、`--dry-run` 不执行   |
 | `plugin/`                         | 假 DSH host；真实、未启动的 `Pod`（需要节点时 `vi.spyOn` 它的 `status`） | 工具注册、tracker 投递与退避、broker、面板路由闸门、配置存放（`PodStores`）与生命周期     |
 
 ### 9.4 进程内多 orca node
 
-`node/orca-node.ts` 的 `new OrcaNode(config, options)` 构造一个节点：构造器很轻，只读 `identity.json`，不写盘、不联网；`start()` 才创建工作区目录、监听端口、开始心跳。子系统以只读字段公开，调用方直接用它们：`node.mesh`（`join`/`heartbeat`/`joinAll`/`leave`/`digest`）、`node.membership`、`node.profile`（`endpoints`）、`node.client`（`idOf`）、`node.tasks`（`list`/`get`）、`node.delegation`（`sendTask`/`getTask`/`cancelTask`/`approveTask`/`denyTask`，`log.list`/`log.annotate`）、`node.models`（`update`）、`node.events`（`subscribe`）、`node.workspace`（`Workspace` class）、`node.blobs`（`fetch`/`open`）；节点自己只保留 `orcaNodeId`/`config`、`start()`/`stop()`。本节点的成员记录读 `node.profile.record()`。
+`node/orca.ts` 的 `new Orca(config, identity, key, options)` 构造一个 orca 实例：身份和 workgroup key 由调用者给（测试用 `test/support/node.ts` 的 `nodeParts` / `newNode` 造内存身份），构造器很轻，不写盘、不联网；`start()` 才创建工作区目录、监听端口、开始心跳。子系统以只读字段公开，调用方直接用它们：`node.mesh`（`join`/`heartbeat`/`joinAll`/`leave`/`digest`）、`node.membership`、`node.profile`（`endpoints`）、`node.client`（`idOf`）、`node.tasks`（`list`/`get`）、`node.delegation`（`sendTask`/`getTask`/`cancelTask`/`approveTask`/`denyTask`，`log.list`/`log.annotate`）、`node.models`（`update`）、`node.events`（`subscribe`）、`node.workspace`（`Workspace` class）、`node.blobs`（`fetch`/`open`）；节点自己只保留 `orcaNodeId`/`config`、`start()`/`stop()`。本节点的成员记录读 `node.profile.record()`。
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
 - harness 的 `createMesh({ orcaNodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, approvalTimeoutS, fetch })` 返回 `{ orcaNodes, urls, dataRoot, ownsDataRoot, stop() }`：启动后让每个 orca node join 第一个、用 `mesh.joinAll` 按返回目录补 join，再对 bootstrap 发一轮心跳。它住在 `test/support/harness.ts`（不进 `lib/`、不是包导出），只是对本文件上面那些生产 API 的组装，不复制实现。手工拼节点的测试用 `connectAll` 互相 join（出站调用只到成员，陌生 URL 是 `unknown_peer`）。
-- 可注入时钟（`new OrcaNode(config, { clock })`）、可注入 transport（`new OrcaNode(config, { fetch })`，模拟丢包、延迟、单向阻断）、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。抖动场景的窗口按心跳间隔的倍数给，不按绝对毫秒。
-- 跨进程：`npm run harness`（先 `npm run build`，再由 `scripts/harness_run.ts` 起两个真实 `orca-node serve` 子进程，跑的是 `lib/cli/main.js`；第二个用 `serve --peer <url1>` 在启动时 join），用 CLI 观察 members 收敛、派一个 Echo 任务并等到终态，最后清理临时数据根；退出码即结果。
+- 可注入时钟（`new Orca(…, { clock })`）、可注入 transport（`new Orca(…, { fetch })`，模拟丢包、延迟、单向阻断）、真实 HTTP（gateway / A2A / blob 测试直接 listen + fetch，不 mock）。抖动场景的窗口按心跳间隔的倍数给，不按绝对毫秒。
+- 真实网络冒烟：`npm run harness`（`scripts/harness_run.ts`）在一个进程里起两个 `Orca`，走真实的 loopback 端口与签名 HTTP、echo 执行器，探测互见、派一个 echo 任务、等终态；独立运行与 CLI 已删除，没有子进程。
 - `waitFor(probe, done, { timeoutMs, intervalMs, label })` 与 `createMesh` 同在 `test/support/harness.ts`，进程内与真实进程 smoke 共用；场景用 vitest 的普通 async 函数写，不引入第二套场景描述语言。
 
 ```ts
 const mesh = await createMesh({ orcaNodes: 3, password: "test" });
 const [origin] = mesh.orcaNodes;
-const task = await origin.delegation.sendTask(mesh.urls[1], {
+const task = await origin.mesh.resolve(mesh.urls[1]).sendTask({
   message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
   metadata: { echo: { final: { state: "completed", text: "hi" } } },
 });
-// 轮询 delegation.getTask 直到终态；真实断言见 test/a2a.test.ts
+// 轮询 node.getTask 直到终态；真实断言见 test/a2a.test.ts
 ```
 
-### 9.5 组合入口：库根在 `node/orca-node.ts`，安装根是整个包
+### 9.5 组合入口：库根在 `node/orca.ts`，安装根是整个包
 
 “组合根”有两层，别混：
 
 | 层     | 文件                                          | 谁调用它                           | 职责                                                                                                  |
 | ------ | --------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 库根   | `src/node/orca-node.ts` → `new OrcaNode(config, options)` | harness、plugin、`orca-node serve` | 装配一个 orca node：存储 → 模型目录 → 成员表 → 自述 → 出站客户端 → 执行器 → 任务运行器 → workgroup → 心跳 → delegation → gateway，再注册事件订阅。不读 argv、不读 DSH |
+| 库根   | `src/node/orca.ts` → `new Orca(config, identity, key, options)` | harness、plugin | 装配一个 orca 实例：存储（一个 data_root 一个 `SqliteDb`，在 `start()` 里绑定端口之后才打开）→ 模型目录 → `MeshContext`（身份、key、出站客户端、派发日志、本机文件、端点筛查、时钟）→ 节点表 `Mesh`（本机一行）→ 任务运行器 → 网关；子系统通知汇到 `events` |
 | 安装根 | 仓库根目录本身（bundle 名 `orca-pod`）        | DSH 的 Loader                      | `apply(ctx, config)` 里创建 orca node、注册工具/面板路由，cleanup 里 `stop()`                         |
 
 DSH 加载一个 bundle 靠包清单里的 `dsh.bundle.patch` 行，不是 `main`：
@@ -155,37 +156,38 @@ DSH 加载一个 bundle 靠包清单里的 `dsh.bundle.patch` 行，不是 `main
 ```text
 package.json       "exports": { ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" }, "./client": "./lib/client.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg", … }
                    "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "immediately": true } }
-cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod', config: { port: 11811, peers: [] } }
-src/index.ts       export { Config, apply, inject } from './plugin/bundle.ts' + 库导出（`OrcaNode` 等）；构建产物是 lib/index.js + .d.ts
-src/plugin/        bundle / pod / peers-file / stores / catalog / services / broker / tracker / tools / panel / panel-routes / panel-api / skill / config
+cordis.patch.yml   - insert: { id: orca-pod, name: 'orca-pod' }
+src/index.ts       export { Config, apply, inject } from './plugin/bundle.ts' + 构建产物是 lib/index.js + .d.ts（只有 DSH 插件这一个入口，没有库导出，也没有 bin）
+src/plugin/        bundle / pod / settings-file / peers-file / stores / catalog / services / broker / tracker / tools / panel / panel-routes / panel-api / skill / config
 ```
 
 `src/plugin/` 各文件：`bundle.ts` 是 `apply` 与导出（`apply` 是三行：`new PodBundle(ctx, config)` 创建下面这些对象、`attach(ctx)` 把它们挂到宿主上、`start()` 后台启动 pod）；`pod.ts` 的 `Pod` 就是“这个 pod”——设置、密码、peers 与当前一次运行（`start()`/`stop()`、`reconfigure`/`addPeer`/`disconnect`/`reset`；状态只经只读成员读：`status`、`run`、`settled()`、`requireRun()`、`settings`、`configured`、`passwordSet`、`rememberedPeers`，所有重启与状态写入过一条 `SerialQueue`）；`peers-file.ts` 是运行期记住的 peer（`RememberedPeers`、`peers.json`）；`stores.ts` 是设置与密码的存放（`PodStores` 接口及其宿主与内存实现）；`catalog.ts` 的 `ModelCatalogFeed` 只管从 Host 读模型目录并在变化时发 `changes`，往节点上装只有 `Pod.advertise` 一条路径；`broker.ts` 是审批注册表（`ApprovalBroker`）；`tracker.ts` 是后台跟踪与投递（`Tracker`，内部是 `PollLoop` 与 `NoticeDelivery`）；`tools.ts` 是唯一的 `orca_pod` 工具（`PodTool`）；`services.ts` 跟踪宿主可选服务（`OptionalService`，构造时 `ctx.inject`，这是 Cordis 的惯用法；与 `ModelCatalogFeed` 同为构造器碰外部的写明例外）；`panel.ts` 是面板的数据与动作（`PanelModel`），`panel-routes.ts` 是 `/orca-api` 的同源路由（`PanelRoutes`），`panel-api.ts` 是这条通道的整份契约——请求体 schema 与全部响应类型（客户端只做类型导入）；`skill.ts` 把随包的 skill bundle 解析成 `ctx.skills.register` 的注册对象；`config.ts` 是 Standard Schema 外壳（校验就是 `node/settings.ts` 的解析器）。
 
-**`Pod` 的状态与读取它的四种策略（D43）**：插件 fiber 级的 pod 长命，`OrcaNode` 一次运行一个，每次改配置、reset 都整个换掉。`PodStatus` 是判别联合——`unconfigured`（缺 workgroup 或密码，面板显示向导）/ `starting`（有重启排队或在跑，到节点开始监听为止）/ `running`（带 `PodRun = { node, port }`）/ `failed`（带错误）/ `stopped`（插件 fiber 已卸载）。`restart()` 一调用就同步进入 `starting`，所以排队中的旧节点不会再被交给任何人。`Pod` 之外读取当前运行只有四种写法：
+**`Pod` 的状态与读取它的四种策略（D43）**：插件 fiber 级的 pod 长命，`Orca` 一次运行一个，每次改设置、reset 都整个换掉。`PodStatus` 是判别联合——`unconfigured`（缺 workgroup 或密码，面板显示向导）/ `starting`（有重启排队或在跑，到节点开始监听为止）/ `running`（带 `PodRun = { orca, port }`）/ `failed`（带错误）/ `stopped`（插件 fiber 已卸载）。`restart()` 一调用就同步进入 `starting`，所以排队中的旧节点不会再被交给任何人。`Pod` 之外读取当前运行只有四种写法：
 
 | 策略 | 写法 | 用在 |
 | --- | --- | --- |
-| 展示：没有就是空 | `pod.run?.node` | `PanelModel` 的 `self` / `members` / `recent` / `workspace` / `approvals` 的标签 |
+| 展示：没有就是空 | `pod.run?.orca` | `PanelModel` 的 `self` / `members` / `recent` / `workspace` / `approvals` 的标签 |
 | 动作：等重启结束，失败要说出原因 | `await pod.settled()` → `pod.requireRun()` | `PodTool`（可被 abort）、`ApprovalBroker.decide`、`PanelModel` 的 `task` / `cancel` / `blob` |
 | 后台：没有就跳过这一轮 | `const run = pod.run; if (run === null) return;` | `Tracker.poll`、`PodBundle` 恢复追踪、`Pod` 内部安装模型目录 |
-| 写副作用 | 不依赖“碰巧有节点” | 派发时就把会话写进派发日志（`Delegation.sendTask(…, { agentId })`），不再事后补写 |
+| 写副作用 | 不依赖“碰巧有节点” | 派发时就把会话写进派发日志（`OrcaNode.sendTask(…, { agentId })`），不再事后补写 |
 
-`settled()` 等的是“没有重启排队或在跑”，包括重启后重新 join peers；`requireRun()` 的报错按状态区分（未设置 / 启动失败：原因 / 已停止 / 仍在启动）。
+`settled()` 等的是“没有重启排队或在跑”，包括重启后的种子接触；`requireRun()` 的报错按状态区分（未设置 / 启动失败：原因 / 已停止 / 仍在启动）。
 
 **术语**（代码注释照用）：
 
 | 词 | 指的是 | 不要用来指 |
 | --- | --- | --- |
-| pod | 一个 DSH profile 里的这个插件：`Pod` 加上它的 tracker、broker、工具、面板，跨节点重启存在 | 节点 |
-| node / orca node | 一个 `OrcaNode` 实例，即一次运行（`PodRun.node`） | 插件、机器 |
+| pod | 一个 DSH 进程里的这个插件：`Pod` 加上它的 tracker、broker、工具、面板，跨节点重启存在 | 节点 |
+| orca node（节点） | **表里的一行**：`OrcaNode`，包括本机自己；一台机器一个，所有 profile 共用 | 插件、进程 |
+| `Orca` | 本进程里的这个实例：装配出 `Mesh`、任务运行器、网关，一次运行一个（`PodRun.orca`） | 表里的一行 |
 | run | 一次成功启动：节点加上实际监听端口 | |
-| member | 本节点成员表里的一条记录（`Membership`） | 地址 |
-| peer | 一次调用所指向的对方，按 URL 称呼（`peer` 参数） | 成员记录 |
+| member | 节点表里的一行（`mesh.list()`，含自己；`mesh.peers()` 不含） | 地址 |
+| peer | 一次调用所指向的对方，用 `mesh.resolve(ref)` 找到（`peer` 参数是节点 id、唯一的显示名或 URL） | 地址 |
 | host | 宿主 DSH 进程及其服务（`ctx.*`） | 远端节点 |
-| settings / raw config / panel patch / node config | 解析后的插件配置 / profile 里存的原样配置 / 面板发来的增量 / 节点自己的 `config.json` | 互相混用 |
+| settings / raw settings / panel patch / node config / plugin config | 解析后的节点设置 / `settings.json` 里的原样内容 / 面板发来的增量 / 内存里组装的 `OrcaNodeConfig` / profile 里的插件配置（只有 `skill_injection`） | 互相混用 |
 
-宿主类型全部来自真实包，没有任何本地镜像：`Context` 及 `ctx.tools`/`credentials`/`configEditor`/`webServer`/`agents`/`skills`/`settings`/`llm`/`agentDefaultModel`/`sandboxPolicy` 的增补由 `@deepseek-ai/cordis` 与各 `@deepseek-ai/dsh-*` 服务包自己声明，`import type` 它们即进入类型图；`ctx.settings`、`ctx.configEditor` 这类本插件自己 inject 的服务，在调用点补一行 `import type {} from "<服务包>"` 即可。依赖按 `package.json` 分两类（D40）：`dependencies` 里有 11 个 `@deepseek-ai/dsh-*` 基建包（`agent`、`atomic-write`、`brand`、`credentials`、`error`、`home-paths`、`llm`、`sandbox-policy`、`timeout`、`tools`、`util-values`，版本 `^0.2.2-rc.3`）与 `cross-spawn`（其余运行时依赖见 §9.7）——错误基类 `HarnessError`、工具 schema DSL、原子写、`deadline`/`timeoutOf`、凭据引用、模型与 sandbox 枚举、品牌类型等被值导入（`dsh-agent` 只做类型导入），所以 `lib/` 产物会真实 `import` 它们；其余宿主包（`cordis`、`dsh-client-ui-primitives`、`dsh-config-editor`、`dsh-host-webserver`、`dsh-sandbox`、`dsh-settings`、`dsh-skill`、`dsh-agent-default-model` 等）仍是 devDependency，只做类型导入。客户端 bundle 对 `dsh-client-ui-primitives` 的 `require` 是宿主平台模块，由壳提供。
+宿主类型全部来自真实包，没有任何本地镜像：`Context` 及 `ctx.tools`/`credentials`/`webServer`/`agents`/`skills`/`settings`/`llm`/`agentDefaultModel`/`sandboxPolicy` 的增补由 `@deepseek-ai/cordis` 与各 `@deepseek-ai/dsh-*` 服务包自己声明，`import type` 它们即进入类型图；`ctx.settings`、`ctx.configEditor` 这类本插件自己 inject 的服务，在调用点补一行 `import type {} from "<服务包>"` 即可。依赖按 `package.json` 分两类（D40）：`dependencies` 里有 11 个 `@deepseek-ai/dsh-*` 基建包（`agent`、`atomic-write`、`brand`、`credentials`、`error`、`home-paths`、`llm`、`sandbox-policy`、`timeout`、`tools`、`util-values`，版本 `^0.2.2-rc.3`）与 `cross-spawn`（其余运行时依赖见 §9.7）——错误基类 `HarnessError`、工具 schema DSL、原子写、`deadline`/`timeoutOf`、凭据引用、模型与 sandbox 枚举、品牌类型等被值导入（`dsh-agent` 只做类型导入），所以 `lib/` 产物会真实 `import` 它们；其余宿主包（`cordis`、`dsh-client-ui-primitives`、`dsh-config-editor`、`dsh-host-webserver`、`dsh-sandbox`、`dsh-settings`、`dsh-skill`、`dsh-agent-default-model` 等）仍是 devDependency，只做类型导入。客户端 bundle 对 `dsh-client-ui-primitives` 的 `require` 是宿主平台模块，由壳提供。
 
 `apply` 只有三行，读起来是一个故事：先建对象，再挂到宿主上，最后启动：
 
@@ -198,11 +200,11 @@ export function apply(ctx, config) {
 
 class PodBundle {
   constructor(ctx, config) {
-    // 数据目录在入口一次解析：data_root > ORCA_POD_HOME > DSH_PROFILE_DIR / loader baseUrl > DSH home；
-    // 环境变量从 DSH 的启动环境快照读（launchEnvironmentOf，含 .env 层），DSH home 取宿主解析的 ctx.dshHomePath()
+    // 数据目录固定为 $DSH_HOME/orca-pod：整台机器一个节点，不看 profile（D44）；
+    // DSH home 取宿主解析的 ctx.dshHomePath()，环境变量从 DSH 的启动环境快照读（launchEnvironmentOf，含 .env 层）
     const logger = ctx.logger("orca-pod");
     const feed = new ModelCatalogFeed(ctx, logger); // llm 与 agentDefaultModel 各自一道 ctx.inject 围栏：只提供其一也能读到目录
-    const pod = new Pod(config, logger, new HostPodStores(ctx), feed, defaultRoot); // 订阅 feed.changes；每次启动都装目录
+    const pod = new Pod(logger, new HostPodStores(ctx), feed, dataRoot); // 订阅 feed.changes；每次启动都装目录
     const broker = new ApprovalBroker(pod);
     const tracker = new Tracker(pod, broker, logger);
     // agents 服务出现：按派发日志恢复宿主里已有会话的追踪（tracker.restore；已在追踪、本进程已放弃的任务都跳过）
@@ -213,6 +215,7 @@ class PodBundle {
     ctx.effect(() => () => this.dispose(), "orca-pod.orca-node"); // broker.clear()、tracker.stop()、pod.stop()
     // agent/created：agent.ctx.effect 挂 tracker.forget(agent.id)，并只恢复该会话自己的派发
     // 用户发新消息（agent/inbox/claimed, source.kind === "user"）→ tracker.resetWakes(agent.id)
+    // credentials/reference-updated（ORCA_POD_PASSWORD）、credentials/record-updated（orca-pod/node）→ pod.credentialsChanged()
     // 工具在 workgroup 配置完成前不出现（{ when: () => pod.configured }）；exec.signal 透传到出站请求
     ctx.tools.register(tool.definition(), { when: () => pod.configured });
     new PanelRoutes(panel).register(ctx); // 内部 inject(["webServer"])
@@ -228,12 +231,10 @@ class PodBundle {
 
 - `apply` 必须快速返回：`start()` 异步，端口占用等问题写日志与状态页，不能让 DSH 启动卡在网络监听上；工具在调用时才 `await pod.settled()`，再 `pod.requireRun()`。
 - 进程内嵌、不开子进程（ACP 子进程由执行器管）；DSH 退出 → cleanup → listener 关闭、ACP 子进程退出。
-- 唯一的工具 `orca_pod`（`method` 分派 `send`/`status`/`cancel`/`members`/`connect`，没有 approve）；工具注册用 `inject: ['tools']`。
-- 硬依赖 `inject: ['tools', 'credentials', 'configEditor']`（都在 DSH base 组合里）：密码只在凭据库，插件配置拒绝明文 `workgroup_password`（[§7.1](07-security.md#71-workgroup-与密码)）。
+- 唯一的工具 `orca_pod`（`method` 分派 `send`/`fetch`/`status`/`cancel`/`members`/`connect`，没有 approve；`peer` 是节点 id、唯一的显示名或 URL；`send` 的 `files` 与 `fetch` 见 [§5.6](05-tasks.md#56-文件交换blob-通道)）；工具注册用 `inject: ['tools']`。
+- 硬依赖 `inject: ['tools', 'credentials']`（都在 DSH base 组合里）：密码与节点私钥只在凭据库（[§7.1](07-security.md#71-workgroup-与密码)）；插件配置只有 `skill_injection`。
 
-CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个文件）有 `serve` 与客户端子命令 `send`/`status`/`wait`/`publish`/`fetch`/`log`/`members`——`serve` 加载配置 → `new OrcaNode(config, …)` → `start()`（`--peer` 启动即 join，`--bind`/`--port` 一次性覆盖）；客户端子命令读同一份 `config.json`（`--config` 或 `--data-root`），用本 orca node 身份签 `Pod` 头，经 `mesh/peer-client.ts` 的 `HttpPeerClient`（与 `task/delegation.ts` 的 `rpc()`）打本机或成员的 `/a2a`；`--text -` 从 stdin 读任务文本，`--json` 输出结构化结果，`wait` 的退出码 0/1/2/3 分别表示终态成功/失败/仍在跑/需权限；环境里有 `ORCA_POD_IN_TASK=1`（执行器会话）时 `send` 拒绝（[§7.9](07-security.md#79-权限跟随发起-orca-node)）。`orca-pod install` 见 §9.6。`scripts/cross.ts` 提供 serve/join/task 跨进程、跨机联调命令，复用同一个 `OrcaNode`，不依赖 DSH。个人开发环境专用的快速脚本放在仓库根的 `tmp/`（不进版本库）。
-
-一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是构造 `PodBundle`（它创建 `Pod`，后者再按配置构造 `OrcaNode`）。**
+一句话：**装进 DSH desktop 的东西 = `orca-pod` 这一个包；它被 Loader 激活后执行 `apply()`，`apply()` 里唯一的重活是构造 `PodBundle`（它创建 `Pod`，后者再按设置构造 `Orca`）。**
 
 ### 9.6 工程约定
 
@@ -244,19 +245,18 @@ CLI 入口：包内 bin `orca-node`（`src/cli/main.ts`，每个子命令一个�
 - 服务用 class，不做依赖注入（D41）：没有容器（awilix、inversify 等）、没有 `XDeps` 依赖类型、没有专为解耦设的端口接口和 Provider。协作者用构造器参数属性（`private readonly x: X`），参数写具体的 class；私有协作者由拥有者自己 `new`，共享对象由创建者传入；子系统对外的通知用自己持有的 `readonly events`，不往构造器里塞回调。构造器不写盘、不联网、不启计时器（读 `identity.json` 这类同步只读除外；SQLite 存储与 `OptionalService` 是两个例外：前者就是它的连接，后者的构造就是向 Cordis 订阅），创建目录、监听端口、首次测量放到 `start()`。私有成员用 TS 的 `private`，不用 `#`。不传未绑定的方法（`foo(obj.method)` 会丢 `this`），要么传对象本身，要么写箭头函数。无状态的纯计算（签名验签、schema 解析、地址筛查、任务书拼装）、线上形状与 DTO、一次性过程（CLI 子命令的 `run()`）保持函数或纯数据。
 - 模块级函数的去留（D42）：参数里带着某个 class 的状态或协作者的函数，就是那个 class 的方法；只在一个 class 里用的函数是它的 `private` 方法，不读 `this` 的写成 `private static`；只有被多个模块用的无状态纯计算、导出后有独立单元测试的纯契约、CLI 子命令的一次性过程才保持为函数。只为测试存在的公开面（公开方法与字段、选项字段、`Pick` / 结构参数类型、依赖袋）不留，测试经真实入口走；一个默认值、一个检查、一个派生值只在拥有者那里算一次；不用 `ReturnType` 给已有类型换写法。可调参数和协议常量留在模块顶层，不改 `static readonly`，不允许模块级可变状态。
 - 插件侧的状态与归属（D43）：总是一起赋值、一起清空的字段合成一个值，用几个布尔或可空字段划分出的状态写成判别联合（`PodStatus`）；跨重启的对象（pod）与一次运行的对象（`PodRun`）在类型上分开，读取当前运行只用 §9.2 表里的四种写法；同一份数据只有一个登记处、把 A 装到 B 只有一条路径、所有者之间的引用单向；必须先做 X 再做 Y 的地方由一个方法按顺序做完，而不是靠调用方读注释；class 名是领域名词；构造器只组装，启动与注册钩子是显式的方法调用。
-- 存储：task store 用 `node:sqlite`（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM）；成员表是内存；文件只登记映射、不复制字节；工作区路径、目录创建与用量测量在 `task/workspace.ts`（`new Workspace(dataRoot, workgroupId)` 只命名，`ensure()` 在 `start()` 创建）。内存实现只给单测与 harness 用（[§5.5](05-tasks.md#55-任务存储)）。
+- 存储：任务、文件映射与派发日志共用一个 SQLite 文件（`<data_root>/tasks.db`，WAL，单进程写；不引 ORM）：一个 data_root 一个 `SqliteDb`，由 `Orca` 在绑定端口之后打开、`stop()` 时关一次，三个 store 共用这一个连接；节点表是内存；文件只登记映射、不复制字节（outbox 里的文件除外）。
 - 本地联调命令：
 
   ```bash
   npm run check
+  npm run harness                    # 进程内两个节点、真实回环网络、一个 echo 任务
   node --import tsx scripts/cross.ts serve --workgroup orca-dev --password change-me
   node --import tsx scripts/cross.ts join --peer http://127.0.0.1:11811 --workgroup orca-dev --password change-me
-  node --import tsx scripts/cross.ts task --config <config.json> --peer http://127.0.0.1:11811 --text hello
+  node --import tsx scripts/cross.ts task --peer http://127.0.0.1:11811 --workgroup orca-dev --password change-me --text hello
   ```
 
-  `task` 支持 `--echo '<json>'` 传入自定义 Echo 脚本；`--auto-resume` 是布尔开关，`input-required` 后自动补发恢复消息。跨机时把可达地址写进 config 的 `endpoints`（有序列表，可再加公网 URL）；`serve` 不会覆盖显式配置。
-
-- `orca-pod install`：检查 `dsh --version`，生成 `<data_root>/config.json`（0600、`executor: "acp"`），写 systemd unit 并 `daemon-reload` + `enable --now`；unit 常驻 `orca-node serve`。裸 `install` 或只带 `--dry-run` 是交互式向导（workgroup id、密码隐藏输入、监听地址、端口）；**带任何其他参数即进入参数分支、完全不提问**（缺 workgroup/密码直接报错退出，适合 agent 通过 SSH 调用；密码用 `-p`/`--password`，程序不读 stdin）。`--peer`/`--endpoint`/`--env-file`/`--env` 可重复，`--system` 装系统级、默认用户级，`--skip-dsh-check` 跳过检查，`--force` 重写，`--no-start` 只写不启动。命令不提供 web 模式——要面板的用户自己装 dsh 再从 Web UI 装插件。
+  `cross.ts`（跨机器手测）在进程内构造 `Orca`，每次运行用新的内存身份，密码由命令行给；`task` 支持 `--echo '<json>'` 传入自定义 Echo 脚本。它们是开发脚本，不随包发布。
 
 ### 9.7 依赖选型：基础能力不自己写
 

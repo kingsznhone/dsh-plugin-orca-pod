@@ -6,13 +6,14 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { OrcaNode } from "../src/node/orca-node.ts";
-import type { MembershipTimings } from "../src/mesh/membership.ts";
+import { nodeParts } from "./support/node.ts";
+import { Orca } from "../src/node/orca.ts";
+import type { MeshTimings } from "../src/mesh/timings.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/core/wire/peer.ts";
+import type { PeerView, WorkgroupId } from "../src/core/wire/peer.ts";
+import { peersOf } from "./support/node.ts";
 
-const TIMINGS: Partial<MembershipTimings> = {
+const TIMINGS: Partial<MeshTimings> = {
   intervalMs: 100,
   suspectAfterMs: 300,
   offlineAfterMs: 600,
@@ -57,14 +58,14 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
     const dead = `http://127.0.0.1:${deadPort}`;
     const live = `http://127.0.0.1:${listenPort}`;
 
-    const bConfig = await createOrcaNodeConfig({
+    const bConfig = nodeParts({
       workgroup_id: workgroupId,
       workgroup_password: password,
       port: listenPort,
       data_root: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
       endpoints: [dead, live],
     });
-    const b: OrcaNode = new OrcaNode(bConfig, { timings: TIMINGS });
+    const b: Orca = new Orca(...bConfig, { timings: TIMINGS });
     await b.start();
 
     let deadAttempts = 0;
@@ -72,21 +73,20 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       if (String(url).includes(`:${deadPort}/`)) deadAttempts += 1;
       return fetch(url, init);
     };
-    const aConfig = await createOrcaNodeConfig({
+    const aConfig = nodeParts({
       workgroup_id: workgroupId,
       workgroup_password: password,
       port: 0,
       data_root: mkdtempSync(join(tmpdir(), "orca-multi-endpoint-")),
     });
-    const a: OrcaNode = new OrcaNode(aConfig, { timings: TIMINGS, fetch: counting });
+    const a: Orca = new Orca(...aConfig, { timings: TIMINGS, fetch: counting });
     await a.start();
 
     try {
-      const joined = await a.mesh.join(live);
-      expect(joined.self.endpoints).toEqual([dead, live]);
+      const joined = await a.mesh.probe(live);
+      expect(joined.endpoints).toEqual([dead, live]);
 
-      const peer = (): ReturnType<OrcaNode["membership"]["list"]>[number] | undefined =>
-        a.membership.list().find((view) => view.orca_node_id === b.orcaNodeId);
+      const peer = (): PeerView | undefined => peersOf(a).find((view) => view.orca_node_id === b.orcaNodeId);
       await waitFor(() => peer() !== undefined);
       expect(peer()?.endpoints).toEqual([dead, live]);
 
@@ -102,13 +102,13 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
   });
 
   it("rejects an empty endpoint list during config creation", async () => {
-    await expect(
-      createOrcaNodeConfig({
+    expect(() =>
+      nodeParts({
         workgroup_id: newWorkgroupId(),
         workgroup_password: "correct horse",
         port: 0,
         endpoints: ["ftp://example.com"],
       }),
-    ).rejects.toThrow();
+    ).toThrow();
   });
 });

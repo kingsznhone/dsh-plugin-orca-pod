@@ -10,7 +10,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, labelId } from "./fixtures/ids.ts";
 import { catalogFeed, idlePod, podRunning, logger } from "./fixtures/pod.ts";
 
-const PEER = "http://127.0.0.1:11812";
+const PEER = fakeNodeId("NODE02");
 
 function waitFor(check: () => boolean, timeoutMs = 1000): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -67,33 +67,37 @@ function fakeNode(): {
     denied: [] as Array<{ view: TaskView; reason?: string }>,
     failNext: false,
     // What the panel model reads to label the nodes in an approval.
-    profile: { record: () => ({ orca_node_id: labelId("SELF00"), display_name: "self", endpoints: [] as string[] }) },
-    membership: { list: () => [] as unknown[] },
-    client: { idOf: () => undefined },
-    delegation: {
-      // The task stays suspended in what the tracker reads: it has not polled again since the decision.
-      async getTask() {
-        return suspended({ ...REQUEST, requested_by: fakeNodeId("NODE02") });
-      },
-      async approveTask(_peer: string, view: TaskView) {
-        if (node.failNext) {
-          node.failNext = false;
-          throw new Error("peer unreachable");
-        }
-        node.approved.push(view);
-        return resumed();
-      },
-      async denyTask(_peer: string, view: TaskView, reason?: string) {
-        node.denied.push({ view, reason });
-        return resumed();
-      },
+    mesh: {
+      list: () => [] as unknown[],
+      // The broker names the node by what the panel sends back; this one node answers to every reference.
+      get: () => row,
+      resolve: () => row,
+    },
+  };
+  const row = {
+    id: PEER,
+    // The task stays suspended in what the tracker reads: it has not polled again since the decision.
+    async getTask() {
+      return suspended({ ...REQUEST, requested_by: fakeNodeId("NODE02") });
+    },
+    async approve(view: TaskView) {
+      if (node.failNext) {
+        node.failNext = false;
+        throw new Error("peer unreachable");
+      }
+      node.approved.push(view);
+      return resumed();
+    },
+    async deny(view: TaskView, reason?: string) {
+      node.denied.push({ view, reason });
+      return resumed();
     },
   };
   return node as unknown as ReturnType<typeof fakeNode>;
 }
 
 const park = (broker: ApprovalBroker, request = REQUEST) =>
-  broker.park({ peer: PEER, view: suspended(request), request, agentId: "session-1" });
+  broker.park({ node: PEER, view: suspended(request), request, agentId: "session-1" });
 
 describe("approval broker", () => {
   it("keeps one prompt per request id and replaces it when the request changes", () => {
@@ -101,7 +105,7 @@ describe("approval broker", () => {
     park(broker);
     const first = broker.list()[0]!;
     expect(first).toMatchObject({
-      peer: PEER,
+      node: PEER,
       task_id: TASK,
       request_id: "req-1",
       agent_id: "session-1",
@@ -182,6 +186,7 @@ describe("approval broker", () => {
       {
         id: `${PEER}|${TASK}`,
         peer: PEER,
+        node: PEER,
         task_id: TASK,
         tool: "write_file",
         requested: '{"path":"report.md"}',

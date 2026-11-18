@@ -1,22 +1,23 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Context, Logger } from "@deepseek-ai/cordis";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
+import { nodeParts } from "./support/node.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
 import { parseSchema } from "../src/core/schema.ts";
-import { parseSettings, type Settings } from "../src/node/settings.ts";
+import type { Settings } from "../src/node/settings.ts";
 import { ModelCatalogFeed, type HostModelCatalog } from "../src/plugin/catalog.ts";
 import { Pod } from "../src/plugin/pod.ts";
 import { MemoryPodStores } from "../src/plugin/stores.ts";
-import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
+import { peersOf } from "./support/node.ts";
 
-const LIVE: OrcaNode[] = [];
+const LIVE: Orca[] = [];
 const ROOTS: string[] = [];
 
 afterEach(async () => {
@@ -24,17 +25,17 @@ afterEach(async () => {
   for (const root of ROOTS.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function startNode(options: Partial<Settings>): Promise<OrcaNode> {
+async function startNode(options: Partial<Settings>): Promise<Orca> {
   const root = await mkdtemp(join(tmpdir(), "orca-model-"));
   ROOTS.push(root);
-  const config = await createOrcaNodeConfig({
+  const config = nodeParts({
     workgroup_id: wg("model-test"),
     workgroup_password: "correct horse",
     data_root: root,
     port: 0,
     ...options,
   });
-  const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
+  const node = new Orca(...config, { persistent: true });
   await node.start();
   LIVE.push(node);
   return node;
@@ -93,21 +94,21 @@ describe("model catalog", () => {
     expect(offers([{ provider: "p", id: "m", name: "M", extra: 1 }])).toEqual([{ provider: "p", id: "m", name: "M" }]);
     expect(selection("p/m")).toBeNull();
     expect(selection(null)).toBeNull();
-    const configured = await createOrcaNodeConfig({
+    const [configured] = nodeParts({
       workgroup_id: wg("wg"),
       workgroup_password: "pw",
       data_root: join(tmpdir(), "orca-model-config"),
       default_reasoning_effort: ReasoningEffortId("max"),
     });
     expect(configured.default_reasoning_effort).toBe("max");
-    await expect(
-      createOrcaNodeConfig({
+    expect(() =>
+      nodeParts({
         workgroup_id: wg("wg"),
         workgroup_password: "pw",
         data_root: join(tmpdir(), "orca-model-config"),
         default_reasoning_effort: ReasoningEffortId(""),
       }),
-    ).rejects.toThrow();
+    ).toThrow();
   });
 
   it("advertises the catalog on join and in the peer directory", async () => {
@@ -121,31 +122,29 @@ describe("model catalog", () => {
       default_model: { provider: "deepseek", model: "deepseek-flash" },
       default_reasoning_effort: ReasoningEffortId("max"),
     });
-    await b.mesh.join(a.profile.endpoints[0]!);
-    const peer = await until(() => a.membership.list().find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
+    await b.mesh.probe(a.mesh.self.endpoints[0]!);
+    const peer = await until(() => peersOf(a).find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
     expect(peer.models).toHaveLength(1);
     expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", id: "deepseek-flash" });
     expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash" });
     expect(peer.default_reasoning_effort).toBe("max");
     // The join response carries the directory, so b sees a's catalog too.
-    const seenByB = await until(
-      () => b.membership.list().find((member) => member.orca_node_id === a.orcaNodeId) ?? null,
-    );
+    const seenByB = await until(() => peersOf(b).find((member) => member.orca_node_id === a.orcaNodeId) ?? null);
     expect(seenByB.models).toHaveLength(2);
     expect(seenByB.default_reasoning_effort).toBeNull();
   });
 
   it("fails a task that asks for a model when the executor cannot select one", async () => {
     const node = await startNode({});
-    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "select a model" }] },
       metadata: { pod: { model: { provider: "deepseek", model: "deepseek-flash" } } },
     });
     const deadline = Date.now() + 5_000;
-    let task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
+    let task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
     while (task.status.state !== "failed" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
+      task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
     }
     expect(task.status.state).toBe("failed");
     expect(task.status.reason).toBe("model_unsupported");
@@ -153,15 +152,15 @@ describe("model catalog", () => {
 
   it("fails a task that asks for a reasoning effort when the executor cannot select one", async () => {
     const node = await startNode({});
-    const submitted = await node.delegation.sendTask(node.profile.endpoints[0]!, {
+    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "select an effort" }] },
       metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
     });
     const deadline = Date.now() + 5_000;
-    let task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
+    let task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
     while (task.status.state !== "failed" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      task = await node.delegation.getTask(node.profile.endpoints[0]!, submitted.id);
+      task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
     }
     expect(task.status.state).toBe("failed");
     expect(task.status.reason).toBe("model_unsupported");
@@ -235,20 +234,21 @@ describe("model catalog", () => {
       },
     } as unknown as Pick<Context, "inject">;
     const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
-    const stores = new MemoryPodStores({ workgroup_id: wg("wg-catalog"), data_root: root, port: 0 });
-    stores.secrets.set("ORCA_POD_PASSWORD_WG_CATALOG", "pw");
+    const stores = new MemoryPodStores({ password: "pw" });
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "settings.json"), JSON.stringify({ workgroup_id: wg("wg-catalog"), port: 0 }));
     const feed = new ModelCatalogFeed(ctx, logger);
     await feed.refresh();
-    const pod = new Pod(parseSettings(stores.raw()), logger, stores, feed);
+    const pod = new Pod(logger, stores, feed, root);
     pod.start();
     try {
       await pod.settled();
-      const first = pod.requireRun().node;
+      const first = pod.requireRun().orca;
       expect(first.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash"]);
 
       // An in-place restart makes a new node, which gets the catalog as well.
       await pod.reconfigure({ workgroup_password: "rotated" });
-      const second = pod.requireRun().node;
+      const second = pod.requireRun().orca;
       expect(second).not.toBe(first);
       expect(second.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash"]);
 

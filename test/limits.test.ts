@@ -9,11 +9,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { createOrcaNodeConfig } from "../src/node/config.ts";
-import { OrcaNode, createPersistentStorage } from "../src/node/orca-node.ts";
+import { nodeParts } from "./support/node.ts";
+import { Orca } from "../src/node/orca.ts";
 import { isTerminal, type TaskView } from "../src/task/wire.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { wg } from "./fixtures/ids.ts";
+import { peersOf } from "./support/node.ts";
 
 const WORKGROUP = wg("orca-limits");
 
@@ -112,7 +113,6 @@ describe("storage failures", () => {
         },
         load: () => undefined,
         list: () => [],
-        close() {},
       },
       logger: { warn: (text) => warnings.push(text) },
     });
@@ -132,33 +132,33 @@ describe("storage failures", () => {
 describe("budget advertisement", () => {
   it("publishes max_task_ttl_s in the agent card and peer records", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-limits-"));
-    const config = await createOrcaNodeConfig({
+    const config = nodeParts({
       workgroup_id: WORKGROUP,
       workgroup_password: "pw",
       data_root: root,
       port: 0,
       task_timeout_s: 900,
     });
-    const node = new OrcaNode(config, { storage: createPersistentStorage(config) });
+    const node = new Orca(...config, { persistent: true });
     await node.start();
     try {
-      const card = (await (await fetch(`${node.profile.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
+      const card = (await (await fetch(`${node.mesh.self.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
         max_task_ttl_s?: number;
       };
       expect(card.max_task_ttl_s).toBe(900);
 
       const otherRoot = await mkdtemp(join(tmpdir(), "orca-limits-peer-"));
-      const otherConfig = await createOrcaNodeConfig({
+      const otherConfig = nodeParts({
         workgroup_id: WORKGROUP,
         workgroup_password: "pw",
         data_root: otherRoot,
         port: 0,
       });
-      const other = new OrcaNode(otherConfig, { storage: createPersistentStorage(otherConfig) });
+      const other = new Orca(...otherConfig, { persistent: true });
       await other.start();
       try {
-        await other.mesh.join(node.profile.endpoints[0]!);
-        const peer = node.membership.list().find((candidate) => candidate.orca_node_id === other.orcaNodeId);
+        await other.mesh.probe(node.mesh.self.endpoints[0]!);
+        const peer = peersOf(node).find((candidate) => candidate.orca_node_id === other.orcaNodeId);
         expect(peer?.max_task_ttl_s).toBe(3600);
       } finally {
         await other.stop();

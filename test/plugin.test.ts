@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseSettings } from "../src/node/settings.ts";
 import type { DispatchEntry, TaskView } from "../src/task/wire.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
-import type { OrcaNode } from "../src/node/orca-node.ts";
+import type { Orca } from "../src/node/orca.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Pod } from "../src/plugin/pod.ts";
@@ -12,12 +12,13 @@ import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import type { OptionalService } from "../src/plugin/services.ts";
 import { PodTool } from "../src/plugin/tools.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
 import { idlePod, podRunning, logger } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
 /** A real tracker whose pod answers with a node that can only read tasks. */
 function createTracker(
-  getNode: () => { getTask(peer: string, taskId: string): Promise<TaskView> } | null,
+  getNode: () => { getTask(taskId: string): Promise<TaskView> } | null,
   options: { intervalMs?: number; coalesceMs?: number },
 ) {
   const pod = idlePod();
@@ -28,10 +29,9 @@ function createTracker(
       : {
           kind: "running",
           run: {
-            node: {
-              delegation: { getTask: node.getTask },
-              client: { idOf: () => undefined },
-            } as unknown as OrcaNode,
+            orca: {
+              mesh: { get: () => ({ displayName: "node-a", getTask: node.getTask }) },
+            } as unknown as Orca,
             port: 0,
           },
         };
@@ -59,7 +59,7 @@ function run(tools: ReturnType<typeof createPodTools>, args: unknown, exec: Reco
   return execute(args, { signal: new AbortController().signal, ...exec } as unknown as ToolRunContext);
 }
 
-describe("plugin config", () => {
+describe("settings", () => {
   it("applies defaults and keeps optional fields absent", () => {
     const config = parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" });
     expect(config).toEqual({
@@ -68,7 +68,6 @@ describe("plugin config", () => {
       bind_host: "127.0.0.1",
       port: 11811,
       endpoints: [],
-      skill_injection: false,
       peers: [],
       max_workspace_bytes: 5 * 1024 ** 3,
       max_workspace_files: 50_000,
@@ -82,13 +81,11 @@ describe("plugin config", () => {
       display_name: "pod-a",
       port: 0,
       endpoints: ["http://127.0.0.1:9000"],
-      data_root: "/tmp/orca",
       peers: ["http://127.0.0.1:11811"],
     });
     expect(config.port).toBe(0);
     expect(config.display_name).toBe("pod-a");
     expect(config.endpoints).toEqual(["http://127.0.0.1:9000"]);
-    expect(config.data_root).toBe("/tmp/orca");
     expect(config.peers).toEqual(["http://127.0.0.1:11811"]);
   });
 
@@ -98,7 +95,6 @@ describe("plugin config", () => {
       bind_host: "127.0.0.1",
       port: 11811,
       endpoints: [],
-      skill_injection: false,
       peers: [],
       max_workspace_bytes: 5 * 1024 ** 3,
       max_workspace_files: 50_000,
@@ -118,24 +114,28 @@ describe("plugin config", () => {
       }),
     ).toThrow(/peers/);
   });
+});
 
-  it("exposes the config as a Standard Schema", () => {
-    const schema = plugin.Config["~standard"];
-    expect(schema.version).toBe(1);
-    const ok = schema.validate({ workgroup_id: "wg-a", workgroup_password_ref: "MY_ORCA_PASSWORD" });
-    expect("value" in ok).toBe(true);
-    const bad = schema.validate({ workgroup_id: "Bad ID" });
-    expect("issues" in bad && (bad.issues?.length ?? 0) > 0).toBe(true);
+describe("plugin config", () => {
+  const validate = (input: unknown) => plugin.Config["~standard"].validate(input);
+
+  it("is the skill switch and nothing else, off by default", () => {
+    expect(validate({})).toEqual({ value: { skill_injection: false } });
+    expect(validate(undefined)).toEqual({ value: { skill_injection: false } });
+    expect(validate({ skill_injection: true })).toEqual({ value: { skill_injection: true } });
+    expect(validate({ skill_injection: "yes" })).toMatchObject({ issues: [{ path: ["skill_injection"] }] });
   });
 
-  it("declares the tool registry, credential store and config editor as hard dependencies", () => {
-    expect(plugin.inject).toEqual(["tools", "credentials", "configEditor"]);
+  it("ignores node settings an older profile patch still carries", () => {
+    expect(
+      validate({ workgroup_id: "wg-a", workgroup_password_ref: "MY_PASSWORD", port: 1, skill_injection: true }),
+    ).toEqual({
+      value: { skill_injection: true },
+    });
   });
 
-  it("refuses a plaintext workgroup password in the plugin config", () => {
-    const result = plugin.Config["~standard"].validate({ workgroup_id: "wg-a", workgroup_password: "secret" });
-    expect(result).toMatchObject({ issues: [{ path: ["workgroup_password"] }] });
-    expect(plugin.Config["~standard"].validate({ workgroup_id: "wg-a" })).toHaveProperty("value");
+  it("declares the tool registry and credential store as hard dependencies, and no config editor", () => {
+    expect(plugin.inject).toEqual(["tools", "credentials"]);
   });
 });
 
@@ -209,13 +209,17 @@ describe("orca_pod tool", () => {
   it("inherits the dispatching session's permission mode when send omits one", async () => {
     const sent: unknown[] = [];
     const fakeNode = {
-      delegation: {
-        sendTask: async (_peer: string, input: unknown) => {
-          sent.push(input);
-          return { id: "task-1", status: { state: "submitted" } };
-        },
+      mesh: {
+        resolve: () => ({
+          id: fakeNodeId("target"),
+          displayName: "target",
+          sendTask: async (input: unknown) => {
+            sent.push(input);
+            return { id: "task-1", status: { state: "submitted" } };
+          },
+        }),
       },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
     const session = {};
     const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxPolicyService;
@@ -260,13 +264,17 @@ describe("orca_pod tool", () => {
   it("hands the dispatching session to the dispatch, so the log has it from the start", async () => {
     const options: unknown[] = [];
     const fakeNode = {
-      delegation: {
-        sendTask: async (_peer: string, _input: unknown, given: unknown) => {
-          options.push(given);
-          return { id: "task-1", status: { state: "submitted" } };
-        },
+      mesh: {
+        resolve: () => ({
+          id: fakeNodeId("target"),
+          displayName: "target",
+          sendTask: async (_input: unknown, given: unknown) => {
+            options.push(given);
+            return { id: "task-1", status: { state: "submitted" } };
+          },
+        }),
       },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca.ts").Orca;
     const watched: Array<[unknown, string]> = [];
     const recorder = { track: (agent: unknown, _peer: string, taskId: string) => watched.push([agent, taskId]) > 0 };
     const sendTools = createPodTools(podRunning(fakeNode), recorder as unknown as typeof tracker);
@@ -287,19 +295,23 @@ describe("orca_pod tool", () => {
     const signals: Array<AbortSignal | undefined> = [];
     const cancelled: string[] = [];
     const fakeNode = {
-      delegation: {
-        sendTask: async (_peer: string, _input: unknown, options?: { signal?: AbortSignal }) => {
-          signals.push(options?.signal);
-          // The remote accepts, but the user cancels the turn before the reply lands.
-          controller.abort();
-          return { id: "task-late", status: { state: "submitted" } };
-        },
-        cancelTask: async (_peer: string, taskId: string) => {
-          cancelled.push(taskId);
-          return { id: taskId, status: { state: "canceled" } };
-        },
+      mesh: {
+        resolve: () => ({
+          id: fakeNodeId("target"),
+          displayName: "target",
+          sendTask: async (_input: unknown, options?: { signal?: AbortSignal }) => {
+            signals.push(options?.signal);
+            // The remote accepts, but the user cancels the turn before the reply lands.
+            controller.abort();
+            return { id: "task-late", status: { state: "submitted" } };
+          },
+          cancelTask: async (taskId: string) => {
+            cancelled.push(taskId);
+            return { id: taskId, status: { state: "canceled" } };
+          },
+        }),
       },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
     const watched: string[] = [];
     const recorder = { track: (_agent: unknown, _peer: string, taskId: string) => watched.push(taskId) > 0 };
@@ -323,20 +335,24 @@ describe("orca_pod tool", () => {
     let finishSend: (() => void) | undefined;
     let sendSettled = false;
     const fakeNode = {
-      delegation: {
-        sendTask: (_peer: string, _input: unknown, { signal }: { signal: AbortSignal }) =>
-          new Promise((resolve) => {
-            // The outbound request notices the abort but takes a moment to wind down.
-            signal.addEventListener("abort", () => {
-              finishSend = () => {
-                sendSettled = true;
-                resolve({ id: "task-slow", status: { state: "submitted" } });
-              };
-            });
-          }),
-        cancelTask: async (_peer: string, taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
+      mesh: {
+        resolve: () => ({
+          id: fakeNodeId("target"),
+          displayName: "target",
+          sendTask: (_input: unknown, { signal }: { signal: AbortSignal }) =>
+            new Promise((resolve) => {
+              // The outbound request notices the abort but takes a moment to wind down.
+              signal.addEventListener("abort", () => {
+                finishSend = () => {
+                  sendSettled = true;
+                  resolve({ id: "task-slow", status: { state: "submitted" } });
+                };
+              });
+            }),
+          cancelTask: async (taskId: string) => ({ id: taskId, status: { state: "canceled" } }),
+        }),
       },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
     const sendTools = createPodTools(handleForSend, tracker);
     let settled = false;
@@ -361,13 +377,17 @@ describe("orca_pod tool", () => {
   it("does not dispatch at all when the turn is already cancelled", async () => {
     let sent = 0;
     const fakeNode = {
-      delegation: {
-        sendTask: async () => {
-          sent += 1;
-          return { id: "never", status: { state: "submitted" } };
-        },
+      mesh: {
+        resolve: () => ({
+          id: fakeNodeId("target"),
+          displayName: "target",
+          sendTask: async () => {
+            sent += 1;
+            return { id: "never", status: { state: "submitted" } };
+          },
+        }),
       },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
     const sendTools = createPodTools(handleForSend, tracker);
     await expect(
@@ -379,13 +399,17 @@ describe("orca_pod tool", () => {
   it("starts a task read-only when the session or its sandbox policy cannot be read", async () => {
     const sent: unknown[] = [];
     const fakeNode = {
-      delegation: {
-        sendTask: async (_peer: string, input: unknown) => {
-          sent.push(input);
-          return { id: "task-1", status: { state: "submitted" } };
-        },
+      mesh: {
+        resolve: () => ({
+          id: fakeNodeId("target"),
+          displayName: "target",
+          sendTask: async (input: unknown) => {
+            sent.push(input);
+            return { id: "task-1", status: { state: "submitted" } };
+          },
+        }),
       },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+    } as unknown as import("../src/node/orca.ts").Orca;
     /** The policy service the host exposes as `ctx.sandboxPolicy`. */
     const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxPolicyService;
     const sendTools = createPodTools(podRunning(fakeNode), tracker, () => policy);
@@ -406,9 +430,8 @@ describe("orca_pod tool", () => {
   it("joins a peer and returns the refreshed members", async () => {
     const seen: string[] = [];
     const fakeNode = {
-      membership: { list: () => [] },
-      mesh: { digest: () => "digest" },
-    } as unknown as import("../src/node/orca-node.ts").OrcaNode;
+      mesh: { peers: () => [], digest: () => "digest" },
+    } as unknown as import("../src/node/orca.ts").Orca;
     const handleForConnect = podRunning(fakeNode);
     vi.spyOn(handleForConnect, "addPeer").mockImplementation(async (peer: string) => {
       seen.push(peer);
@@ -429,7 +452,7 @@ describe("tracker recovery (8.3)", () => {
     const now = new Date().toISOString();
     return {
       task_id: taskId,
-      peer: "http://127.0.0.1:9",
+      node: fakeNodeId("dispatch-target"),
       state,
       created_at: now,
       updated_at: now,
@@ -456,7 +479,7 @@ describe("tracker recovery (8.3)", () => {
     const polled = new Set<string>();
     const tracker = createTracker(
       () => ({
-        async getTask(_peer: string, taskId: string): Promise<TaskView> {
+        async getTask(taskId: string): Promise<TaskView> {
           polled.add(taskId);
           return view(taskId);
         },
@@ -479,6 +502,26 @@ describe("tracker recovery (8.3)", () => {
       // The ones that are over, unattributed or without a live session are never read.
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(polled).toEqual(new Set(["running", "parked"]));
+    } finally {
+      tracker.stop();
+    }
+  });
+
+  it("does not follow an entry an older version wrote, which names an address and no node", () => {
+    const agent = {
+      id: SessionId("live-session"),
+      status: "idle" as const,
+      inject() {},
+      followup() {},
+    } as unknown as Agent;
+    const tracker = createTracker(() => null, { intervalMs: 1000, coalesceMs: 1000 });
+    try {
+      const old = {
+        ...dispatch("legacy", "working", SessionId("live-session")),
+        node: null,
+        peer: "http://127.0.0.1:9",
+      };
+      expect(tracker.restore([old], () => agent)).toBe(0);
     } finally {
       tracker.stop();
     }
