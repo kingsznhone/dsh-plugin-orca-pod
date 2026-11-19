@@ -2,8 +2,8 @@ import { EventBus } from "../core/events.ts";
 import { PodError } from "../core/errors.ts";
 import { normalizePeerUrl } from "../core/net.ts";
 import {
-  isOrcaNodeId,
   membersDigest,
+  OrcaNodeIdSchema,
   type HelloResponse,
   type OrcaNodeId,
   type PeerView,
@@ -100,7 +100,8 @@ export class Mesh {
    */
   resolve(ref: string): OrcaNode {
     const text = ref.trim();
-    const byId = isOrcaNodeId(text) ? this.nodes.get(text) : undefined;
+    const id = OrcaNodeIdSchema.safeParse(text);
+    const byId = id.success ? this.nodes.get(id.data) : undefined;
     if (byId !== undefined) return byId;
     const named = this.list().filter((node) => node.displayName === text);
     if (named.length === 1 && named[0] !== undefined) return named[0];

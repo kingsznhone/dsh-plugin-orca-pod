@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { BLOB_ID_PATTERN, type OpenedBlob } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
-import { describeIssue, parseOrThrow } from "../core/schema.ts";
+import { parseOrThrow } from "../core/schema.ts";
 import type { Grant, ResumeControl } from "../core/wire/grant.ts";
 import {
   HelloResponseSchema,
@@ -25,8 +25,7 @@ import {
   RpcResultSchema,
   controlMessage,
   permissionRequestOf,
-  type A2AMethod,
-  type A2AParams,
+  type A2ARequest,
   type SubmitTaskInput,
   type TaskView,
 } from "../task/wire.ts";
@@ -369,17 +368,17 @@ export class OrcaNode {
   ): Promise<TaskView> {
     const { state } = this;
     if (state !== "online") throw new PodError("peer_not_online", `peer ${this.id} is ${state}`);
-    const view = await this.rpc("message/send", input, options.signal);
+    const view = await this.rpc({ method: "message/send", params: input }, options.signal);
     this.ctx.dispatches.recordSend(this.id, view, options.agentId);
     return view;
   }
 
   getTask(taskId: string, signal?: AbortSignal): Promise<TaskView> {
-    return this.rpc("tasks/get", { id: taskId }, signal);
+    return this.rpc({ method: "tasks/get", params: { id: taskId } }, signal);
   }
 
   cancelTask(taskId: string, signal?: AbortSignal): Promise<TaskView> {
-    return this.rpc("tasks/cancel", { id: taskId }, signal);
+    return this.rpc({ method: "tasks/cancel", params: { id: taskId } }, signal);
   }
 
   /** This node is the origin: sign a grant for the request the task is parked on and resume it (§7.11). */
@@ -436,7 +435,7 @@ export class OrcaNode {
 
   /** Answer a suspended task with a grant or a denial. */
   private resume(view: TaskView, control: ResumeControl): Promise<TaskView> {
-    return this.rpc("message/send", { message: controlMessage(view.id, control, randomUUID()) });
+    return this.rpc({ method: "message/send", params: { message: controlMessage(view.id, control, randomUUID()) } });
   }
 
   /**
@@ -444,7 +443,8 @@ export class OrcaNode {
    * task view. A node may also answer 200 with an error envelope, which is an
    * error too. Its addresses are tried in order until one answers.
    */
-  private async rpc<M extends A2AMethod>(method: M, params: A2AParams<M>, signal?: AbortSignal): Promise<TaskView> {
+  private async rpc(request: A2ARequest, signal?: AbortSignal): Promise<TaskView> {
+    const { method } = request;
     let unreachable: unknown;
     for (const endpoint of await this.dialOrder()) {
       let json: unknown;
@@ -455,7 +455,7 @@ export class OrcaNode {
             method: "POST",
             path: "/a2a",
             label: method,
-            payload: { jsonrpc: "2.0", id: randomUUID(), method, params },
+            payload: { jsonrpc: "2.0", id: randomUUID(), ...request },
             reply: z.unknown(),
           },
           { target: this.id, signal },
@@ -469,9 +469,11 @@ export class OrcaNode {
       this.preferred = endpoint;
       const envelope = ErrorReplySchema.safeParse(json);
       if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, 200, envelope.data);
-      return parseOrThrow(RpcResultSchema, json, (issue) => {
-        return new PodError("peer_error", `${method} 200: unexpected reply: ${describeIssue(issue)}`, 502);
-      }).result;
+      return parseOrThrow(
+        RpcResultSchema,
+        json,
+        (problem) => new PodError("peer_error", `${method} 200: unexpected reply: ${problem}`, 502),
+      ).result;
     }
     if (unreachable !== undefined) throw unreachable;
     throw new PodError("peer_not_online", `${this.id} has no address to dial`);

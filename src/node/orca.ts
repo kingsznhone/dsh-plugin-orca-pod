@@ -8,11 +8,11 @@ import { FileBlobRegistry } from "../core/blobs.ts";
 import { DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_RESULT_MAX_BYTES, DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
 import { NODE_TOKEN_ENV, NODE_URL_ENV } from "../core/entry.ts";
 import { EventBus, type NodeLogger } from "../core/events.ts";
-import type { NodeIdentity } from "../core/identity.ts";
+import { shortenNodeId, type NodeIdentity } from "../core/identity.ts";
 import { ModelCatalog } from "../core/model-catalog.ts";
 import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
 import { SqliteDb, storeDbPath } from "../core/sqlite.ts";
-import type { OrcaNodeId, RuntimeInfo } from "../core/wire/peer.ts";
+import type { OrcaNodeId, RuntimeInfo, WorkgroupId } from "../core/wire/peer.ts";
 import { AcpExecutor } from "../executor/acp/executor.ts";
 import { EchoExecutor } from "../executor/echo.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
@@ -26,7 +26,7 @@ import { DispatchLog } from "../task/dispatch-log.ts";
 import { SingleSlotTaskRunner } from "../task/runner.ts";
 import type { DispatchEvent, TaskEvent } from "../task/wire.ts";
 import { Workspace } from "../task/workspace.ts";
-import type { OrcaNodeConfig } from "./config.ts";
+import type { Settings } from "./settings.ts";
 
 /** What an orca node tells an in-process listener (the UI panel) it may want to re-render (§9.2). */
 export type PodEventInput = TaskEvent | MembersEvent | DispatchEvent;
@@ -37,7 +37,7 @@ type OrcaNodeOptions = {
   clock?: Partial<MeshClock>;
   /** Outbound HTTP for peer calls; tests inject packet loss / delay / partitions. */
   fetch?: FetchLike;
-  /** Executor override; defaults to config.executor (echo when unset). */
+  /** Executor override; defaults to `settings.executor` (echo when unset). */
   executor?: LocalExecutor;
   /** The DSH profile the ACP executor runs tasks in: the host's own (D46). Unset passes none. */
   profile?: string;
@@ -85,50 +85,56 @@ export class Orca {
   private readonly db: SqliteDb;
   private readonly gateway: Gateway;
   private readonly runtime: RuntimeInfo;
+  private readonly workgroupId: WorkgroupId;
 
   constructor(
-    readonly config: OrcaNodeConfig,
+    /** What the node runs with; the settings must name a workgroup. */
+    readonly settings: Settings,
     /** Who this node is: its private key signs every request (§7.1). */
     readonly identity: NodeIdentity,
     /** The workgroup key, derived from the password; it lives in memory only (§7.1). */
     key: Buffer,
+    /** Where the node keeps its database, workspaces and published files (§3.9). */
+    dataRoot: string,
     options: OrcaNodeOptions = {},
   ) {
+    if (settings.workgroup_id === undefined) throw new Error("workgroup_id is required");
+    this.workgroupId = settings.workgroup_id;
     const logger = options.logger ?? SILENT;
     this.events = new EventBus(logger);
-    this.db = new SqliteDb(storeDbPath(config.data_root));
-    this.blobs = new FileBlobRegistry(this.db, join(config.data_root, "blobs"));
-    this.workspace = new Workspace(config.data_root, config.workgroup_id);
+    this.db = new SqliteDb(storeDbPath(dataRoot));
+    this.blobs = new FileBlobRegistry(this.db, join(dataRoot, "blobs"));
+    this.workspace = new Workspace(dataRoot, this.workgroupId);
     this.runtime = options.runtime ?? Orca.collectRuntime();
-    this.taskTimeoutS = config.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
+    this.taskTimeoutS = settings.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
 
-    this.models = new ModelCatalog(config, logger);
+    this.models = new ModelCatalog(settings, logger);
     this.dispatches = new DispatchLog(this.db, logger);
     const context = new MeshContext(
       identity,
-      config.workgroup_id,
-      new HttpPeerClient(identity, key, config.workgroup_id, {
+      this.workgroupId,
+      new HttpPeerClient(identity, key, this.workgroupId, {
         fetch: options.fetch ?? ((url, init) => fetch(url, init)),
         // Every outbound call needs a deadline (§4.7): a peer that accepts the
         // connection and then stalls would otherwise hang a tool call or the tracker.
-        timeoutMs: config.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS,
+        timeoutMs: settings.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS,
       }),
       this.dispatches,
       this.blobs,
       new EndpointScreen({
-        allowPublicPeers: config.allow_public_peers,
-        allowLoopbackPeers: config.allow_loopback_peers,
+        allowPublicPeers: settings.allow_public_peers,
+        allowLoopbackPeers: settings.allow_loopback_peers,
       }),
       resolveClock(options.clock),
       logger,
     );
-    this.mesh = new Mesh(context, this.describeSelf(Orca.endpointsFrom(config, config.port)), {
+    this.mesh = new Mesh(context, this.describeSelf(Orca.endpointsFrom(settings, settings.port)), {
       timings: options.timings,
     });
     this.executor =
       options.executor ??
-      (config.executor === "acp"
-        ? new AcpExecutor(config.acp ?? {}, this.models, logger, {
+      (settings.executor === "acp"
+        ? new AcpExecutor(settings.acp ?? {}, this.models, logger, {
             profile: options.profile,
             // The task's plugin reaches this node through its local routes (§5.6).
             env: (): Record<string, string> =>
@@ -137,13 +143,13 @@ export class Orca {
         : new EchoExecutor());
     this.tasks = new SingleSlotTaskRunner(this.executor, this.db, this.workspace, {
       logger,
-      selfOrcaNodeId: config.orca_node_id,
-      workgroupId: config.workgroup_id,
-      permissionCeiling: config.permission_mode,
-      permissionTtlS: config.approval_timeout_s,
-      resultMaxBytes: config.result_max_bytes ?? DEFAULT_RESULT_MAX_BYTES,
-      maxWorkspaceBytes: config.max_workspace_bytes,
-      maxWorkspaceFiles: config.max_workspace_files,
+      selfOrcaNodeId: identity.orcaNodeId,
+      workgroupId: this.workgroupId,
+      permissionCeiling: settings.permission_mode,
+      permissionTtlS: settings.approval_timeout_s,
+      resultMaxBytes: settings.result_max_bytes ?? DEFAULT_RESULT_MAX_BYTES,
+      maxWorkspaceBytes: settings.max_workspace_bytes,
+      maxWorkspaceFiles: settings.max_workspace_files,
       taskTimeoutS: this.taskTimeoutS,
     });
     this.gateway = new Gateway(this.mesh, this.tasks, key, identity, { token: this.localToken, blobs: this.blobs });
@@ -165,7 +171,7 @@ export class Orca {
   }
 
   get orcaNodeId(): OrcaNodeId {
-    return this.config.orca_node_id;
+    return this.identity.orcaNodeId;
   }
 
   /**
@@ -179,15 +185,15 @@ export class Orca {
    * request can reach a store that is not open.
    */
   async start(): Promise<{ url: string; port: number }> {
-    const address = await this.gateway.listen(this.config.bind_host, this.config.port);
+    const address = await this.gateway.listen(this.settings.bind_host, this.settings.port);
     this.db.open();
     this.blobs.start();
     this.workspace.ensure();
     this.tasks.start();
     this.dispatches.markInFlightUnknown();
     const port = Number(new URL(address).port);
-    this.localUrl = Orca.localUrlOf(this.config.bind_host, port);
-    const urls = Orca.endpointsFrom(this.config, port);
+    this.localUrl = Orca.localUrlOf(this.settings.bind_host, port);
+    const urls = Orca.endpointsFrom(this.settings, port);
     this.mesh.self.describe(this.describeSelf(urls));
     this.mesh.start();
     return { url: urls[0], port };
@@ -210,10 +216,9 @@ export class Orca {
   private describeSelf(endpoints: readonly string[]): SelfDescription {
     const offers = this.models.offers();
     const defaults = this.models.defaults();
-    const { config } = this;
     return {
-      // A fresh node with no display name shows its generated id (§9.2 wizard default).
-      display_name: config.display_name.length > 0 ? config.display_name : config.orca_node_id,
+      // A fresh node with no display name shows its shortened id (§9.2 wizard default).
+      display_name: this.settings.display_name ?? shortenNodeId(this.identity.orcaNodeId),
       endpoints: [...endpoints],
       runtime: this.runtime,
       max_task_ttl_s: this.taskTimeoutS,
@@ -245,11 +250,11 @@ export class Orca {
   }
 
   /** Addresses a remote orca node should dial: explicit list, else derived from bind. */
-  private static endpointsFrom(config: OrcaNodeConfig, port: number): [string, ...string[]] {
-    const [first, ...rest] = config.endpoints;
+  private static endpointsFrom(settings: Settings, port: number): [string, ...string[]] {
+    const [first, ...rest] = settings.endpoints;
     if (first !== undefined) return [first, ...rest];
-    if (!isWildcardHost(config.bind_host)) {
-      const url = bindUrl(config.bind_host, port);
+    if (!isWildcardHost(settings.bind_host)) {
+      const url = bindUrl(settings.bind_host, port);
       if (url !== undefined) return [url];
     }
     const [firstDetected, ...restDetected] = detectLocalEndpoints(port);

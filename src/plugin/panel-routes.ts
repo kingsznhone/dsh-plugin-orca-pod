@@ -24,7 +24,7 @@ import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads } 
 import { PanelPatchSchema } from "../node/settings.ts";
 import { readAll } from "../core/stream.ts";
 import { isDirectLoopbackRequest } from "../core/net.ts";
-import { describeIssue, isRecord, parseOrThrow } from "../core/schema.ts";
+import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
 import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
 
@@ -146,11 +146,7 @@ export class PanelRoutes {
     const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
     if (action === undefined) return NOT_FOUND;
     if (action.body === null) return ok(await action.run(this.panel, undefined));
-    const body = parseOrThrow(
-      action.body,
-      await PanelRoutes.readJsonBody(request),
-      (issue) => new Error(describeIssue(issue)),
-    );
+    const body = parseOrThrow(action.body, await PanelRoutes.readJsonBody(request), (problem) => new Error(problem));
     return ok(await action.run(this.panel, body));
   }
 

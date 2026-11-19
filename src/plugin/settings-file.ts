@@ -12,13 +12,6 @@ import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
 
 import { errorMessage, isMissingFile } from "../core/errors.ts";
 import { isRecord } from "../core/schema.ts";
-import type { ConfigFields } from "../node/settings.ts";
-
-/**
- * What the file holds, not yet canonical: that is `parseSettings`' job, and keys
- * this version does not know are kept as they are so a write never drops them.
- */
-export type RawSettings = ConfigFields & { [key: string]: unknown };
 
 export class SettingsFile {
   readonly path: string;
@@ -27,8 +20,13 @@ export class SettingsFile {
     this.path = join(dataRoot, "settings.json");
   }
 
-  /** The stored settings; none yet is `{}`, an unreadable file is an error that names it (never silently reset). */
-  async read(): Promise<RawSettings> {
+  /**
+   * The stored settings as the file holds them, not yet canonical: that is
+   * `parseSettings`' job, and keys this version does not know are kept so a write
+   * never drops them. None yet is `{}`; an unreadable file is an error that names
+   * it (never silently reset).
+   */
+  async read(): Promise<Record<string, unknown>> {
     let text: string;
     try {
       text = await readFile(this.path, "utf8");
@@ -46,7 +44,7 @@ export class SettingsFile {
     return parsed;
   }
 
-  async write(settings: RawSettings): Promise<void> {
+  async write(settings: Record<string, unknown>): Promise<void> {
     await writeFileAtomic(this.path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 });
   }
 

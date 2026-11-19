@@ -34,7 +34,6 @@ describe("settings", () => {
     const config = parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw" });
     expect(config).toEqual({
       workgroup_id: "wg-a",
-      workgroup_password: "pw",
       bind_host: "127.0.0.1",
       port: 11811,
       endpoints: [],
@@ -61,7 +60,6 @@ describe("settings", () => {
 
   it("allows starting without a workgroup so the panel can run its wizard", () => {
     expect(parseSettings({})).toEqual({
-      workgroup_password: "",
       bind_host: "127.0.0.1",
       port: 11811,
       endpoints: [],

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PanelPatchSchema, nodeSettings, parseSettings } from "../src/node/settings.ts";
+import { PanelPatchSchema, parseSettings } from "../src/node/settings.ts";
 
 /** What `parseSettings` throws: every problem, each with the path of its value. */
 type SettingsError = Error & { issues: { path: string[]; message: string }[] };
@@ -64,11 +64,10 @@ describe("settings parser", () => {
     expect(PanelPatchSchema.safeParse({ port: "11812" }).success).toBe(false);
   });
 
-  it("drops the plugin-only settings from the persisted shape", () => {
-    const node = nodeSettings(parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw", peers: ["10.0.0.2"] }));
-    expect(node).not.toHaveProperty("workgroup_password");
-    expect(node).not.toHaveProperty("peers");
-    expect(node).not.toHaveProperty("skill_injection");
-    expect(node.workgroup_id).toBe("wg-a");
+  it("never holds the workgroup password: it is a panel input for the credential store", () => {
+    const settings = parseSettings({ workgroup_id: "wg-a", workgroup_password: "pw", skill_injection: true });
+    expect(settings).not.toHaveProperty("workgroup_password");
+    expect(settings).not.toHaveProperty("skill_injection");
+    expect(PanelPatchSchema.parse({ workgroup_password: "pw" })).toEqual({ workgroup_password: "pw" });
   });
 });

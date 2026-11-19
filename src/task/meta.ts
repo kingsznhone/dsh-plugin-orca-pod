@@ -12,7 +12,7 @@ import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import type { SignedGrant } from "../core/wire/grant.ts";
 import { PodError } from "../core/errors.ts";
-import { describeIssue, parseOrThrow } from "../core/schema.ts";
+import { parseOrThrow } from "../core/schema.ts";
 import { SignedGrantSchema } from "../core/wire/grant.ts";
 
 export type TaskMeta = {
@@ -55,11 +55,7 @@ export function parseResume(message: A2AMessage): ParsedResume | null {
       // A grant crosses the trust boundary here; its signature is checked later, by `GrantLedger.accept`.
       return {
         kind: "grant",
-        grant: parseOrThrow(
-          SignedGrantSchema,
-          grant,
-          (issue) => new PodError("bad_request", `grant ${describeIssue(issue)}`),
-        ),
+        grant: parseOrThrow(SignedGrantSchema, grant, (problem) => new PodError("bad_request", problem), "grant"),
       };
     }
   }

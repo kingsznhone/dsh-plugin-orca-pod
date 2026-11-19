@@ -12,7 +12,7 @@ import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "
  * valid id is self-certifying: whoever signs with the matching private key owns
  * the id, and no shared workgroup secret can stand in for it. 43 characters
  * always decode to exactly 32 bytes. A checked id is only made by
- * `OrcaNodeIdSchema` (or `isOrcaNodeId`) from a plain string.
+ * `OrcaNodeIdSchema` from a plain string.
  */
 export type OrcaNodeId = Branded<"OrcaNodeId">;
 
@@ -21,21 +21,13 @@ export const OrcaNodeIdSchema = z
   .regex(/^[A-Za-z0-9_-]{43}$/, "must be an Ed25519 public key (43 base64url chars)")
   .transform((id) => brandString<OrcaNodeId>(id));
 
-export function isOrcaNodeId(value: unknown): value is OrcaNodeId {
-  return OrcaNodeIdSchema.safeParse(value).success;
-}
-
-/** A checked workgroup id; only `WorkgroupIdSchema` (or `isWorkgroupId`) makes one from a plain string. */
+/** A checked workgroup id; only `WorkgroupIdSchema` makes one from a plain string. */
 export type WorkgroupId = Branded<"WorkgroupId">;
 
 export const WorkgroupIdSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9-]{1,31}$/, "must match [a-z0-9][a-z0-9-]{1,31}")
   .transform((id) => brandString<WorkgroupId>(id));
-
-export function isWorkgroupId(value: unknown): value is WorkgroupId {
-  return WorkgroupIdSchema.safeParse(value).success;
-}
 
 const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
 export type PeerState = z.infer<typeof PeerStateSchema>;

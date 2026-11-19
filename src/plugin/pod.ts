@@ -26,13 +26,13 @@ import { errorMessage } from "../core/errors.ts";
 import { isLoopbackEndpoint } from "../core/net.ts";
 import { SerialQueue } from "../core/serial-queue.ts";
 import { deriveWorkgroupKey } from "../core/signing.ts";
-import { createOrcaNodeConfig } from "../node/config.ts";
+import type { WorkgroupId } from "../core/wire/peer.ts";
 import { Orca } from "../node/orca.ts";
 import { parseSettings } from "../node/settings.ts";
-import type { ConfigFields, PanelPatch, Settings } from "../node/settings.ts";
+import type { PanelPatch, Settings } from "../node/settings.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
 import { RememberedPeers } from "./peers-file.ts";
-import { SettingsFile, type RawSettings } from "./settings-file.ts";
+import { SettingsFile } from "./settings-file.ts";
 import type { PodStores } from "./stores.ts";
 
 /** One started node; replaced as a whole on every restart, never mutated. */
@@ -232,7 +232,7 @@ export class Pod {
   }
 
   /** Make a panel action durable, then run the pod on the result: the settings file is written and the node restarts in place. */
-  private async commit(change: (raw: RawSettings) => RawSettings): Promise<void> {
+  private async commit(change: (raw: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
     // The write is not queued: it must not wait for the restart that follows it.
     const next = change(await this.file.read());
     // A result the parser refuses is not stored.
@@ -284,7 +284,7 @@ export class Pod {
         return null;
       }
       try {
-        const run = await this.startNode(password);
+        const run = await this.startNode(this.saved.workgroup_id, password);
         this.outcome = { kind: "running", run };
         // The host's providers may have finished loading since the last read.
         void this.catalog.refresh();
@@ -331,22 +331,18 @@ export class Pod {
   }
 
   /** Create, start and equip a node. One that cannot listen is stopped and dropped, and the failure thrown. */
-  private async startNode(password: string): Promise<PodRun> {
+  private async startNode(workgroupId: WorkgroupId, password: string): Promise<PodRun> {
     const identity = await this.stores.identity();
     // The plugin runs real DSH sessions by default. A loopback-only advertise list
     // is useless across machines, so it means "derive from the listen address".
-    const config = createOrcaNodeConfig(
-      parseSettings({
-        ...this.saved,
-        executor: this.saved.executor ?? "acp",
-        endpoints: this.saved.endpoints.every(isLoopbackEndpoint) ? [] : this.saved.endpoints,
-      }),
-      identity,
-      this.dataRoot,
-    );
+    const settings: Settings = {
+      ...this.saved,
+      executor: this.saved.executor ?? "acp",
+      endpoints: this.saved.endpoints.every(isLoopbackEndpoint) ? [] : this.saved.endpoints,
+    };
     // One scrypt derivation per start; the key stays in memory (§7.1).
-    const key = deriveWorkgroupKey(config.workgroup_id, password);
-    const node = new Orca(config, identity, key, { logger: this.logger, profile: this.profile });
+    const key = deriveWorkgroupKey(workgroupId, password);
+    const node = new Orca(settings, identity, key, this.dataRoot, { logger: this.logger, profile: this.profile });
 
     let info: { url: string; port: number };
     try {
@@ -360,13 +356,11 @@ export class Pod {
       // Another process holding the port is another DSH running this machine's node (§3.9).
       throw (error as { code?: unknown } | null)?.code === "EADDRINUSE"
         ? new Error(
-            `an orca node is already running on this machine, in another DSH process (port ${config.port} is in use)`,
+            `an orca node is already running on this machine, in another DSH process (port ${settings.port} is in use)`,
           )
         : error;
     }
-    this.logger.info(
-      `orca-pod: orca node ${config.orca_node_id} listening on ${info.url} (workgroup ${config.workgroup_id})`,
-    );
+    this.logger.info(`orca-pod: orca node ${node.orcaNodeId} listening on ${info.url} (workgroup ${workgroupId})`);
 
     // The node carries the catalog from its first join on, so the self record
     // peers receive and every heartbeat advertise it (§6.15).
@@ -426,15 +420,13 @@ export class Pod {
     }
   }
 
-  /** Anything thrown, as an `Error`. */
-  /** Apply settings to a raw settings object: a value sets the key, `null` removes it; other keys stay. */
-  private static applyPanelFields(raw: RawSettings, fields: ConfigFields): RawSettings {
-    const next: Record<string, unknown> = { ...raw };
+  /** Apply panel fields to the settings as the file holds them: a value sets the key, `null` removes it; other keys stay. */
+  private static applyPanelFields(raw: Record<string, unknown>, fields: PanelPatch): Record<string, unknown> {
+    const next = { ...raw };
     for (const [key, value] of Object.entries(fields)) {
       if (value === null) delete next[key];
       else if (value !== undefined) next[key] = value;
     }
-    // Every key written came from `fields`, so `next` still has the `RawSettings` shape.
-    return next as RawSettings;
+    return next;
   }
 }

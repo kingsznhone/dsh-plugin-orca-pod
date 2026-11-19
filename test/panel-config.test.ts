@@ -110,9 +110,9 @@ describe("panel configuration of the pod", () => {
       expect(handle.status.kind).not.toBe("failed");
       expect(credentials.secrets.get(PASSWORD_REF)).toBe(PASSWORD);
       expect(await readJson(settingsPath(root))).toMatchObject({ display_name: "renamed node" });
-      // Neither the settings file nor the node config carries the password.
+      // Neither the settings file nor the node's settings carry the password.
       expect(await readFile(settingsPath(root), "utf8")).not.toContain(PASSWORD);
-      expect(JSON.stringify(handle.run!.orca.config)).not.toContain(PASSWORD);
+      expect(JSON.stringify(handle.run!.orca.settings)).not.toContain(PASSWORD);
 
       const firstId = handle.run!.orca.orcaNodeId;
       await handle.reconfigure({ display_name: "renamed again" });
@@ -266,7 +266,7 @@ describe("panel configuration of the pod", () => {
       await handle.reconfigure({ task_timeout_s: null });
       expect(handle.settings.task_timeout_s).toBeUndefined();
       expect(await readJson(settingsPath(root))).not.toHaveProperty("task_timeout_s");
-      expect(handle.run!.orca.config.task_timeout_s).toBeUndefined();
+      expect(handle.run!.orca.settings.task_timeout_s).toBeUndefined();
     } finally {
       await handle.stop();
     }
@@ -289,12 +289,12 @@ describe("panel configuration of the pod", () => {
   it("listens on loopback until the panel picks an interface", async () => {
     const { handle, root } = await started(bundle());
     try {
-      expect(handle.run!.orca.config.bind_host).toBe("127.0.0.1");
+      expect(handle.run!.orca.settings.bind_host).toBe("127.0.0.1");
 
       const view = await panelFor(handle).saveConfig({ bind_host: "0.0.0.0" });
       expect(view.bind_host).toBe("0.0.0.0");
       expect((await readJson(settingsPath(root))).bind_host).toBe("0.0.0.0");
-      expect(handle.run!.orca.config.bind_host).toBe("0.0.0.0");
+      expect(handle.run!.orca.settings.bind_host).toBe("0.0.0.0");
     } finally {
       await handle.stop();
     }
@@ -330,24 +330,24 @@ describe("panel configuration of the pod", () => {
       expect(handle.status.kind).not.toBe("failed");
 
       expect((await readJson(settingsPath(root))).task_timeout_s).toBe(120);
-      const nodeConfig = handle.run!.orca.config;
-      expect(nodeConfig.task_timeout_s).toBe(120);
-      expect(nodeConfig.result_max_bytes).toBe(4096);
-      expect(nodeConfig.permission_mode).toBe("workspace-write");
-      expect(nodeConfig.default_reasoning_effort).toBe("max");
-      expect(nodeConfig.executor).toBe("echo");
+      const nodeSettings = handle.run!.orca.settings;
+      expect(nodeSettings.task_timeout_s).toBe(120);
+      expect(nodeSettings.result_max_bytes).toBe(4096);
+      expect(nodeSettings.permission_mode).toBe("workspace-write");
+      expect(nodeSettings.default_reasoning_effort).toBe("max");
+      expect(nodeSettings.executor).toBe("echo");
 
-      // Clearing a field removes it from the settings file and the node config,
+      // Clearing a field removes it from the settings file and the node's settings,
       // so the local default applies again instead of a stale stored value.
       const cleared = await panel.saveConfig({ task_timeout_s: null, default_reasoning_effort: null, executor: null });
       expect(cleared.advanced.task_timeout_s).toBeNull();
       expect(cleared.advanced.default_reasoning_effort).toBeNull();
       expect(cleared.advanced.executor).toBeNull();
-      const clearedConfig = handle.run!.orca.config;
-      expect(clearedConfig.task_timeout_s).toBeUndefined();
-      expect(clearedConfig.default_reasoning_effort).toBeUndefined();
+      const clearedSettings = handle.run!.orca.settings;
+      expect(clearedSettings.task_timeout_s).toBeUndefined();
+      expect(clearedSettings.default_reasoning_effort).toBeUndefined();
       // Clearing the executor falls back to the plugin default (acp).
-      expect(clearedConfig.executor).toBe("acp");
+      expect(clearedSettings.executor).toBe("acp");
     } finally {
       await handle.stop();
     }
@@ -568,7 +568,7 @@ describe("panel model configuration", () => {
       expect(view.password_set).toBe(true);
       expect(credentials.secrets.get(PASSWORD_REF)).toBe(PASSWORD);
       expect(handle.run!.orca.orcaNodeId).toBe(firstId);
-      expect(handle.run!.orca.config.workgroup_id).toBe("wg-other");
+      expect(handle.run!.orca.settings.workgroup_id).toBe("wg-other");
     } finally {
       await handle.stop();
     }

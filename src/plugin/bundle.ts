@@ -31,7 +31,7 @@ import { PodTool } from "./tools.ts";
 import { runningInTask } from "../core/entry.ts";
 import { Tracker } from "./tracker.ts";
 import { PanelRoutes } from "./panel-routes.ts";
-import { defaultDataRoot } from "../node/config.ts";
+import { defaultDataRoot } from "./data-root.ts";
 
 export { Config } from "./config.ts";
 

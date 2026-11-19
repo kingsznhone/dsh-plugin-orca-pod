@@ -10,7 +10,6 @@ import { ModelCatalog } from "../src/core/model-catalog.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { nodeParts } from "./support/node.ts";
 import { parsePodMetadata } from "../src/task/meta.ts";
-import { parseSchema } from "../src/core/schema.ts";
 import { permissionRequestOf, TaskMetadataSchema, type TaskView } from "../src/task/wire.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { Orca } from "../src/node/orca.ts";
@@ -83,12 +82,12 @@ describe("permission modes", () => {
   });
 
   it("validates and normalizes pod.permission_mode", () => {
-    const metadata = parseSchema(TaskMetadataSchema, { pod: { permission_mode: "workspace-write" } });
-    expect(metadata.ok && parsePodMetadata(metadata.value)).toMatchObject({ permissionMode: "workspace-write" });
+    const metadata = TaskMetadataSchema.parse({ pod: { permission_mode: "workspace-write" } });
+    expect(parsePodMetadata(metadata)).toMatchObject({ permissionMode: "workspace-write" });
     expect(parsePodMetadata(undefined).permissionMode).toBe("read-only");
     // An unknown mode never reaches the runner: the wire schema refuses it.
-    const refused = parseSchema(TaskMetadataSchema, { pod: { permission_mode: "root" } });
-    expect(refused.ok ? "" : refused.issue.path.join(".")).toBe("pod.permission_mode");
+    const refused = TaskMetadataSchema.safeParse({ pod: { permission_mode: "root" } });
+    expect(refused.error?.issues[0]?.path.join(".")).toBe("pod.permission_mode");
   });
 });
 

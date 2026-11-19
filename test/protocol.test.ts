@@ -2,16 +2,19 @@ import { describe, expect, it } from "vitest";
 import { generateNodeIdentity, shortenNodeId } from "../src/core/identity.ts";
 import {
   isHttpEndpoint,
-  isOrcaNodeId,
-  isWorkgroupId,
   membersDigest,
   normalizeEndpoints,
+  OrcaNodeIdSchema,
+  WorkgroupIdSchema,
   runtimeDigest,
   type PeerView,
   type RuntimeInfo,
   type OrcaNodeId,
 } from "../src/core/wire/peer.ts";
 import { labelId } from "./fixtures/ids.ts";
+
+const acceptsNodeId = (value: unknown) => OrcaNodeIdSchema.safeParse(value).success;
+const acceptsWorkgroupId = (value: unknown) => WorkgroupIdSchema.safeParse(value).success;
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.
 const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -38,14 +41,14 @@ describe("generateNodeIdentity", () => {
     const identity = generateNodeIdentity();
     expect(identity.orcaNodeId).toHaveLength(43);
     expect(identity.orcaNodeId).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(isOrcaNodeId(identity.orcaNodeId)).toBe(true);
+    expect(acceptsNodeId(identity.orcaNodeId)).toBe(true);
   });
 
   it("produces 50 identities that are all distinct and valid", () => {
     const seen = new Set<string>();
     for (let index = 0; index < 50; index += 1) {
       const identity = generateNodeIdentity();
-      expect(isOrcaNodeId(identity.orcaNodeId)).toBe(true);
+      expect(acceptsNodeId(identity.orcaNodeId)).toBe(true);
       expect(seen.has(identity.orcaNodeId)).toBe(false);
       seen.add(identity.orcaNodeId);
     }
@@ -58,59 +61,60 @@ describe("generateNodeIdentity", () => {
   });
 });
 
-describe("isOrcaNodeId", () => {
+describe("OrcaNodeIdSchema", () => {
   it("accepts a 43-character base64url public key", () => {
-    expect(isOrcaNodeId(VALID_NODE_ID)).toBe(true);
-    expect(isOrcaNodeId(generateNodeIdentity().orcaNodeId)).toBe(true);
+    expect(acceptsNodeId(VALID_NODE_ID)).toBe(true);
+    expect(acceptsNodeId(generateNodeIdentity().orcaNodeId)).toBe(true);
   });
 
   it("rejects ids with the wrong length", () => {
-    expect(isOrcaNodeId("ABC12")).toBe(false);
-    expect(isOrcaNodeId("A".repeat(42))).toBe(false);
-    expect(isOrcaNodeId("A".repeat(44))).toBe(false);
-    expect(isOrcaNodeId("")).toBe(false);
+    expect(acceptsNodeId("ABC12")).toBe(false);
+    expect(acceptsNodeId("A".repeat(42))).toBe(false);
+    expect(acceptsNodeId("A".repeat(44))).toBe(false);
+    expect(acceptsNodeId("")).toBe(false);
   });
 
   it("rejects characters outside base64url", () => {
-    expect(isOrcaNodeId("!".repeat(43))).toBe(false);
-    expect(isOrcaNodeId(`${"A".repeat(42)}=`)).toBe(false);
+    expect(acceptsNodeId("!".repeat(43))).toBe(false);
+    expect(acceptsNodeId(`${"A".repeat(42)}=`)).toBe(false);
+    expect(acceptsNodeId(`${VALID_NODE_ID.slice(1)}+`)).toBe(false);
   });
 
   it("rejects non-strings", () => {
-    expect(isOrcaNodeId(42)).toBe(false);
-    expect(isOrcaNodeId(null)).toBe(false);
-    expect(isOrcaNodeId(undefined)).toBe(false);
+    expect(acceptsNodeId(42)).toBe(false);
+    expect(acceptsNodeId(null)).toBe(false);
+    expect(acceptsNodeId(undefined)).toBe(false);
   });
 });
 
-describe("isWorkgroupId", () => {
+describe("WorkgroupIdSchema", () => {
   it("accepts valid workgroup ids", () => {
-    expect(isWorkgroupId("orca-dev")).toBe(true);
-    expect(isWorkgroupId("a1")).toBe(true);
-    expect(isWorkgroupId("a".repeat(32))).toBe(true);
+    expect(acceptsWorkgroupId("orca-dev")).toBe(true);
+    expect(acceptsWorkgroupId("a1")).toBe(true);
+    expect(acceptsWorkgroupId("a".repeat(32))).toBe(true);
   });
 
   it("rejects uppercase workgroup ids", () => {
-    expect(isWorkgroupId("Orca")).toBe(false);
+    expect(acceptsWorkgroupId("Orca")).toBe(false);
   });
 
   it("rejects ids that start with a hyphen", () => {
-    expect(isWorkgroupId("-dev")).toBe(false);
+    expect(acceptsWorkgroupId("-dev")).toBe(false);
   });
 
   it("rejects ids that are too short", () => {
-    expect(isWorkgroupId("a")).toBe(false);
+    expect(acceptsWorkgroupId("a")).toBe(false);
   });
 
   it("rejects ids longer than 32 characters", () => {
-    expect(isWorkgroupId("a".repeat(33))).toBe(false);
+    expect(acceptsWorkgroupId("a".repeat(33))).toBe(false);
   });
 
   it("rejects non-strings", () => {
-    expect(isWorkgroupId(42)).toBe(false);
-    expect(isWorkgroupId(null)).toBe(false);
-    expect(isWorkgroupId(undefined)).toBe(false);
-    expect(isWorkgroupId({})).toBe(false);
+    expect(acceptsWorkgroupId(42)).toBe(false);
+    expect(acceptsWorkgroupId(null)).toBe(false);
+    expect(acceptsWorkgroupId(undefined)).toBe(false);
+    expect(acceptsWorkgroupId({})).toBe(false);
   });
 });
 
@@ -208,24 +212,5 @@ describe("normalizeEndpoints", () => {
     expect(normalizeEndpoints(["ftp://a:1"])).toBeNull();
     expect(normalizeEndpoints(["http://a:1", "nope"])).toBeNull();
     expect(normalizeEndpoints(Array.from({ length: 9 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
-  });
-});
-
-describe("id guards", () => {
-  it("accepts exactly 43 base64url characters as an orca node id", () => {
-    expect(isOrcaNodeId(VALID_NODE_ID)).toBe(true);
-    expect(isOrcaNodeId(generateNodeIdentity().orcaNodeId)).toBe(true);
-    expect(isOrcaNodeId(VALID_NODE_ID.slice(1))).toBe(false);
-    expect(isOrcaNodeId(`${VALID_NODE_ID}A`)).toBe(false);
-    expect(isOrcaNodeId(`${VALID_NODE_ID.slice(1)}+`)).toBe(false);
-    expect(isOrcaNodeId(42)).toBe(false);
-  });
-
-  it("checks workgroup ids against the documented pattern", () => {
-    expect(isWorkgroupId("wg-a")).toBe(true);
-    expect(isWorkgroupId("a")).toBe(false);
-    expect(isWorkgroupId("-wg")).toBe(false);
-    expect(isWorkgroupId("WG")).toBe(false);
-    expect(isWorkgroupId("a".repeat(33))).toBe(false);
   });
 });

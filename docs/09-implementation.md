@@ -29,7 +29,7 @@ orca-pod/
 | `executor/`   | `executor` / `kinds` / `echo` / `acp/`                                                       | 执行器契约（含 echo 脚本 schema）；执行器种类枚举（`kinds`：acp/echo）；Echo；ACP（`config` 配置类型、`connection` 按 sessionId 路由，并负责子进程的派生与杀进程树、`session` 一个 ACP 会话（`AcpSession`，选模型 / 发 prompt / 挂接路由）与绑定、`sessions.json`（`AcpSessionPool`）、`permissions` 自动应答、`executor`（`AcpExecutor` 与一次运行 `AcpRun`）） |
 | `task/`       | `wire` / `runner` / `record` / `quota` / `workspace` / `grants` / `meta` / `prompt` / `dispatch-log` | 本机执行：任务线上形状（任务视图与元数据、A2A 方法参数与 JSON-RPC 外壳、派发日志条目）；单槽运行器与每个任务一个的 `TaskRecord`；grant 账本；工作区与配额；任务书；派发日志。任务表归 runner、派发表归派发日志，各自直接用 `JsonTable`，没有单独的存储层。派发是“对一个节点做的事”，所以在 `mesh/`，不在这里 |
 | `api/`        | `gateway` / `access` / `cluster-routes` / `a2a-routes` / `blob-routes` / `local-routes` / `input`         | 入站 HTTP：`Gateway`（装配、body 解析、`listen` 与 `close`、唯一的错误出口）、`AccessPolicy`（`access` 声明与唯一的 preValidation 钩子）、`ClusterRoutes`、`A2aRoutes`、`BlobRoutes`、`parseInput` |
-| `node/`       | `orca` / `config` / `settings`                                                                           | **组合根**：一个进程里的这一个 orca 实例 `Orca`，只装配，子系统以只读字段公开（`mesh`、`tasks`、`dispatches`、`models`、`workspace`）；**唯一的设置字段表与解析器**；`OrcaNodeConfig` 只在内存里由插件组装 |
+| `node/`       | `orca` / `settings`                                                                                      | **组合根**：一个进程里的这一个 orca 实例 `Orca`，只装配，子系统以只读字段公开（`mesh`、`tasks`、`dispatches`、`models`、`workspace`）；**唯一的设置 schema 与解析器**；`Orca` 直接拿解析后的 `Settings`，节点 id 取自身份，`data_root` 单独传入 |
 | `plugin/`     | 见 §9.5                                                                                                  | DSH bundle                                                                                   |
 
 模块依赖单向向下，由 `test/architecture.test.ts` 固化（解析 `src/` 的 import）：
@@ -185,7 +185,7 @@ src/plugin/        bundle / pod / settings-file / peers-file / stores / catalog 
 | member | 节点表里的一行（`mesh.list()`，含自己；`mesh.peers()` 不含） | 地址 |
 | peer | 一次调用所指向的对方，用 `mesh.resolve(ref)` 找到（`peer` 参数是节点 id、唯一的显示名或 URL） | 地址 |
 | host | 宿主 DSH 进程及其服务（`ctx.*`） | 远端节点 |
-| settings / raw settings / panel patch / node config / plugin config | 解析后的节点设置 / `settings.json` 里的原样内容 / 面板发来的增量 / 内存里组装的 `OrcaNodeConfig` / profile 里的插件配置（只有 `skill_injection`） | 互相混用 |
+| settings / raw settings / panel patch / plugin config | 解析后的节点设置（`Settings`，节点就用它运行）/ `settings.json` 里的原样内容 / 面板发来的增量（`PanelPatch`，含要存进凭据库的密码）/ profile 里的插件配置（只有 `skill_injection`） | 互相混用 |
 
 宿主类型全部来自真实包，没有任何本地镜像：`Context` 及 `ctx.tools`/`credentials`/`webServer`/`agents`/`skills`/`settings`/`llm`/`agentDefaultModel`/`sandboxPolicy` 的增补由 `@deepseek-ai/cordis` 与各 `@deepseek-ai/dsh-*` 服务包自己声明，`import type` 它们即进入类型图；`ctx.settings`、`ctx.configEditor` 这类本插件自己 inject 的服务，在调用点补一行 `import type {} from "<服务包>"` 即可。依赖按 `package.json` 分两类（D40）：`dependencies` 里有 11 个 `@deepseek-ai/dsh-*` 基建包（`agent`、`atomic-write`、`brand`、`credentials`、`error`、`home-paths`、`llm`、`sandbox-policy`、`timeout`、`tools`、`util-values`，版本 `^0.2.2-rc.3`）与 `cross-spawn`（其余运行时依赖见 §9.7）——错误基类 `HarnessError`、工具 schema DSL、原子写、`deadline`/`timeoutOf`、凭据引用、模型与 sandbox 枚举、品牌类型等被值导入（`dsh-agent` 只做类型导入），所以 `lib/` 产物会真实 `import` 它们；其余宿主包（`cordis`、`dsh-client-ui-primitives`、`dsh-config-editor`、`dsh-host-webserver`、`dsh-sandbox`、`dsh-settings`、`dsh-skill`、`dsh-agent-default-model` 等）仍是 devDependency，只做类型导入。客户端 bundle 对 `dsh-client-ui-primitives` 的 `require` 是宿主平台模块，由壳提供。
 
@@ -267,7 +267,7 @@ class PodBundle {
 | `fastify`                             | 运行时 | 路由、body 解析与限额、错误处理；不手写 http server                                                   |
 | `ulid`                                | 运行时 | 任务 id（runner 里的 `ulid()`）：规范实现、零依赖，随机部分取自 `crypto.getRandomValues`                 |
 | `@agentclientprotocol/sdk`            | 运行时 | ACP v1 客户端：`executor/acp/connection.ts` 不再手写 JSON-RPC；类型化的请求、响应与处理器（`McpServer` 等形状由它约束）。子进程的派生与生命周期仍归本项目 |
-| `zod`                                 | 运行时 | 唯一的 schema 写法：协议线上形状、网关输入、设置字段表都用它声明，类型由 `z.infer` 推导，规范化（endpoints、peer 地址）写成 `.transform`。不可信输入经 `core/schema.ts` 的 `parseSchema`：`z.object` 丢弃未描述的键并返回新值，报第一处问题及其路径；只看外形的地方（A2A 的 message、metadata）用 `z.looseObject` 保留其余字段。`@agentclientprotocol/sdk` 也依赖它（必需 peer），所以它本来就在运行期里。不调用 `z.config()`：全局配置会波及 SDK |
+| `zod`                                 | 运行时 | 唯一的 schema 写法：协议线上形状、网关输入、设置都用它声明，类型由 `z.infer` 推导，规范化（endpoints、peer 地址）写成 `.transform`。不可信输入经 `core/schema.ts` 的 `parseOrThrow`（网关里是它的一行包装 `parseInput`）：`z.object` 丢弃未描述的键并返回新值，失败时把第一处问题写成“路径 + 原因”一句话交给调用方造错误；需要按值收窄类型的地方直接用 schema 的 `safeParse` 结果（如品牌 id），不另设 `isX` 守卫；A2A 请求是按 `method` 区分的一个联合 schema，路由 `switch` 时 `params` 即已定型；只看外形的地方（A2A 的 message、metadata）用 `z.looseObject` 保留其余字段。`@agentclientprotocol/sdk` 也依赖它（必需 peer），所以它本来就在运行期里。不调用 `z.config()`：全局配置会波及 SDK |
 | `@deepseek-ai/dsh-*`（`agent` / `atomic-write` / `brand` / `credentials` / `error` / `home-paths` / `llm` / `sandbox-policy` / `timeout` / `tools` / `util-values`） | 运行时 | 与宿主同一套基建（D40）：错误基类 `HarnessError`、工具 schema DSL、原子写、`deadline`/`timeoutOf`、凭据引用、模型与 sandbox 枚举、品牌类型；这些不再自写，随包发布 |
 | `cross-spawn` | 运行时 | ACP 子进程的跨平台派生：Windows `.cmd` shim 解析与命令行引号（`executor/acp/connection.ts`）；杀进程树同在该文件（`AcpConnection` 的私有方法） |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |

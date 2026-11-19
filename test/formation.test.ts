@@ -8,12 +8,12 @@ import { describe, expect, it } from "vitest";
 import { nodeParts } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
 import { Orca } from "../src/node/orca.ts";
-import type { OrcaNodeConfig } from "../src/node/config.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { pickFreePort } from "../src/core/net.ts";
 import { wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/wire/peer.ts";
+import type { NodeIdentity } from "../src/core/identity.ts";
 import { peersOf } from "./support/node.ts";
 
 const FAST: Partial<MeshTimings> = {
@@ -56,17 +56,24 @@ function tempRoot(): string {
 async function makeNode(
   workgroupId: WorkgroupId,
   password: string,
-  options: Partial<Pick<OrcaNodeConfig, "data_root" | "display_name" | "port">> & {
+  options: {
+    data_root?: string;
+    display_name?: string;
+    port?: number;
+    identity?: NodeIdentity;
     timings?: Partial<MeshTimings>;
   } = {},
 ): Promise<Orca> {
-  const config = nodeParts({
-    workgroup_id: workgroupId,
-    workgroup_password: password,
-    data_root: options.data_root ?? tempRoot(),
-    display_name: options.display_name,
-    port: options.port ?? 0,
-  });
+  const config = nodeParts(
+    {
+      workgroup_id: workgroupId,
+      workgroup_password: password,
+      data_root: options.data_root ?? tempRoot(),
+      display_name: options.display_name,
+      port: options.port ?? 0,
+    },
+    options.identity,
+  );
   return new Orca(...config, { timings: options.timings ?? FAST });
 }
 
@@ -126,7 +133,8 @@ describe("mesh formation", () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
     const a = await makeNode(workgroupId, password, { display_name: "a" });
-    const b = await makeNode(workgroupId, password, { display_name: "b" });
+    const bRoot = tempRoot();
+    const b = await makeNode(workgroupId, password, { display_name: "b", data_root: bRoot });
 
     try {
       const [aUrl, bUrl] = await Promise.all([a.start(), b.start()]).then(([ra, rb]) => [ra.url, rb.url]);
@@ -151,7 +159,8 @@ describe("mesh formation", () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
     const a = await makeNode(workgroupId, password, { display_name: "a" });
-    const b = await makeNode(workgroupId, password, { display_name: "b" });
+    const bRoot = tempRoot();
+    const b = await makeNode(workgroupId, password, { display_name: "b", data_root: bRoot });
     const c = await makeNode(workgroupId, password, { display_name: "c" });
 
     try {
@@ -189,7 +198,8 @@ describe("mesh formation", () => {
     const workgroupId = newWorkgroupId();
     const password = "formation-test";
     const a = await makeNode(workgroupId, password, { display_name: "a" });
-    const b = await makeNode(workgroupId, password, { display_name: "b" });
+    const bRoot = tempRoot();
+    const b = await makeNode(workgroupId, password, { display_name: "b", data_root: bRoot });
 
     try {
       const aUrl = (await a.start()).url;
@@ -199,16 +209,14 @@ describe("mesh formation", () => {
       await b.mesh.probe(aUrl);
       await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"));
 
-      const firstConfig = b.config;
       await b.stop();
-      await waitFor(() =>
-        peersOf(a).some((peer) => peer.orca_node_id === firstConfig.orca_node_id && peer.state !== "online"),
-      );
+      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state !== "online"));
 
       // 同 orca_node_id、同 data_root、新端口：等价于“进程重启”。
       const restarted = await makeNode(workgroupId, password, {
-        data_root: firstConfig.data_root,
-        display_name: firstConfig.display_name,
+        data_root: bRoot,
+        display_name: "b",
+        identity: b.identity,
       });
       try {
         const restartedUrl = (await restarted.start()).url;

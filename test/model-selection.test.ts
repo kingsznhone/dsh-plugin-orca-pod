@@ -8,7 +8,6 @@ import type { Context, Logger } from "@deepseek-ai/cordis";
 import { nodeParts } from "./support/node.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
-import { parseSchema } from "../src/core/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { ModelCatalogFeed } from "../src/plugin/catalog.ts";
 import { Pod } from "../src/plugin/pod.ts";
@@ -54,14 +53,16 @@ async function until<T>(check: () => T | null, timeoutMs = 5_000): Promise<T> {
 
 /** The checked value, or the "<path> <reason>" text of the first issue. */
 function offers(raw: unknown) {
-  const result = parseSchema(ModelOffersSchema, raw);
-  return result.ok ? result.value : `${result.issue.path.join(".")} ${result.issue.message}`;
+  const result = ModelOffersSchema.safeParse(raw);
+  if (result.success) return result.data;
+  const [issue] = result.error.issues;
+  return `${issue?.path.join(".")} ${issue?.message}`;
 }
 
 /** A checked selection, or null. */
 function selection(raw: unknown) {
-  const result = parseSchema(ModelSelectionSchema, raw);
-  return result.ok ? result.value : null;
+  const result = ModelSelectionSchema.safeParse(raw);
+  return result.success ? result.data : null;
 }
 
 describe("model catalog", () => {

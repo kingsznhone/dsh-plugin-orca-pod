@@ -4,7 +4,7 @@ import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 
 import { readAll } from "../core/stream.ts";
 import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER, verifyReplyHeader } from "../core/signing.ts";
-import { describeIssue, parseOrThrow } from "../core/schema.ts";
+import { parseOrThrow } from "../core/schema.ts";
 import { isPodErrorCode, PodError } from "../core/errors.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import { ErrorReplySchema, type ErrorReply } from "../core/wire/reply.ts";
@@ -125,8 +125,8 @@ export class HttpPeerClient {
     });
     if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply);
     // A peer cannot hand us a shape we did not ask for.
-    const parsed = parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (issue) => {
-      return new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${describeIssue(issue)}`, 502);
+    const parsed = parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (problem) => {
+      return new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${problem}`, 502);
     });
     return { body: parsed, from: reply.from };
   }

@@ -23,9 +23,7 @@ import {
  * out of order, or over a limit fails here — before a task is created (§6.3).
  */
 export function parseEchoScript(raw: unknown): EchoScript {
-  return parseOrThrow(EchoScriptSchema, raw ?? {}, (issue) => {
-    return new PodError("bad_echo_script", `${["echo", ...issue.path].join(".")} ${issue.message}`);
-  });
+  return parseOrThrow(EchoScriptSchema, raw ?? {}, (problem) => new PodError("bad_echo_script", problem), "echo");
 }
 
 /** Deterministic executor used for connectivity, protocol, and approval probes (§6.3). */

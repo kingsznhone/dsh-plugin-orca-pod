@@ -27,7 +27,7 @@ orca-pod/
 │   ├── task/             # 本机执行：wire、runner（单槽运行器）、record（任务状态机）、quota、workspace、grants、meta、prompt（任务书）、dispatch-log（派发日志，含它的表）
 │   ├── mesh/             # 节点表：mesh（`Mesh`：Map<节点 id, OrcaNode>，本机自己也在表里；hello / 种子 / 目录 / 墓碑 / 心跳循环）、orca-node（表里的一行：自述、状态机、拨号、sendTask / fetchBlob）、context（一个实例里所有节点共用的 `MeshContext`）、peer-client（唯一的出站客户端）、screening（端点筛查）、timings、wire
 │   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes、local-routes（本机进程发布与取文件）、input
-│   ├── node/             # orca（组合根 `Orca`：本进程里的这个实例）、config（内存里的 `OrcaNodeConfig`）、settings（字段表）、events
+│   ├── node/             # orca（组合根 `Orca`：本进程里的这个实例）、settings（设置 schema 与解析器）、events
 │   └── plugin/           # DSH bundle：broker / bundle / catalog / config / local-node（任务进程经本机节点收发文件）/ panel / panel-api / panel-routes / peers-file / pod / services / settings-file / skill / stores / tools / tracker
 └── test/                 # vitest 套件
 ```
@@ -52,7 +52,7 @@ dsh --profile desktop --dump-config
 
 ## 配置
 
-节点设置只在 `src/node/settings.ts` 的字段表里声明一次；面板与测试都走同一个解析器。**设置存在 `$DSH_HOME/orca-pod/settings.json`**（不含机密，面板写它，节点原地重启；DSH 的 `configEditor` 只能写当前 profile 的 patch，没法让所有 profile 共用）。profile 的插件配置只剩一个字段 `skill_injection`，旧的节点字段会被忽略（面板里重新填一次）。机密都在 DSH 凭据库：密码是引用 `ORCA_POD_PASSWORD`（固定名字、整台机器一份，也是无头宿主可导出的环境变量名），节点私钥是记录 `orca-pod/node`；workgroup 密钥由密码在启动时派生，只在内存里。运行期记住的 peer 在 `<data_root>/peers.json`，`data_root` 固定为 `$DSH_HOME/orca-pod`。常用字段：
+节点设置只在 `src/node/settings.ts` 的 `SettingsSchema` 里声明一次；面板与测试都走同一个解析器。**设置存在 `$DSH_HOME/orca-pod/settings.json`**（不含机密，面板写它，节点原地重启；DSH 的 `configEditor` 只能写当前 profile 的 patch，没法让所有 profile 共用）。profile 的插件配置只剩一个字段 `skill_injection`，旧的节点字段会被忽略（面板里重新填一次）。机密都在 DSH 凭据库：密码是引用 `ORCA_POD_PASSWORD`（固定名字、整台机器一份，也是无头宿主可导出的环境变量名），节点私钥是记录 `orca-pod/node`；workgroup 密钥由密码在启动时派生，只在内存里。运行期记住的 peer 在 `<data_root>/peers.json`，`data_root` 固定为 `$DSH_HOME/orca-pod`。常用字段：
 
 | 字段                   | 默认                                   | 含义                                                                                                  |
 | ---------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |

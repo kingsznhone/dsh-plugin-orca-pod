@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from
 
 import { PodError } from "./errors.ts";
 import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
-import { isOrcaNodeId, isWorkgroupId, type OrcaNodeId, type WorkgroupId } from "./wire/peer.ts";
+import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId, type WorkgroupId } from "./wire/peer.ts";
 
 const AUTH_SCHEME = "Pod";
 /**
@@ -212,10 +212,12 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (!options.header) throw new PodError("missing_auth", "missing Authorization header");
   const parsed = parseAuthHeader(options.header);
   if (!parsed) throw new PodError("malformed_auth", "malformed Authorization header");
-  if (!isOrcaNodeId(parsed.orcaNodeId)) {
+  const sender = OrcaNodeIdSchema.safeParse(parsed.orcaNodeId);
+  if (!sender.success) {
     throw new PodError("malformed_auth", "id in the Authorization header is not an Ed25519 public key");
   }
-  if (!isWorkgroupId(parsed.workgroupId)) {
+  const workgroup = WorkgroupIdSchema.safeParse(parsed.workgroupId);
+  if (!workgroup.success) {
     throw new PodError("malformed_auth", "wg in the Authorization header is not a workgroup id");
   }
   if (Math.abs(Date.now() - parsed.ts) > CLOCK_SKEW_MS) {
@@ -231,19 +233,19 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   } else if (parsed.target !== options.targetOrcaNodeId) {
     throw new PodError("wrong_target", "request is addressed to another orca node");
   }
-  if (parsed.workgroupId !== options.workgroupId) {
+  if (workgroup.data !== options.workgroupId) {
     throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
   }
   const input = signatureInput({
     method: options.method,
     url: options.url,
     targetOrcaNodeId: parsed.target,
-    workgroupId: parsed.workgroupId,
+    workgroupId: workgroup.data,
     bodySha256: bodySha256(options.body),
     ts: parsed.ts,
     nonce: parsed.nonce,
   });
-  if (!verifyWithNodeId(parsed.orcaNodeId, input, parsed.signature)) {
+  if (!verifyWithNodeId(sender.data, input, parsed.signature)) {
     throw new PodError("bad_signature", "signature does not match");
   }
   // After the signature, so only a node that exists can make a caller learn the workgroup was wrong.
@@ -252,10 +254,10 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (expected.length !== proof.length || !timingSafeEqual(expected, proof)) {
     throw new PodError("bad_proof", "workgroup proof does not verify");
   }
-  if (!options.nonceCache.remember(`${parsed.orcaNodeId}:${parsed.nonce}`)) {
+  if (!options.nonceCache.remember(`${sender.data}:${parsed.nonce}`)) {
     throw new PodError("nonce_replay", "nonce already used");
   }
-  return { orcaNodeId: parsed.orcaNodeId };
+  return { orcaNodeId: sender.data };
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +294,8 @@ export function verifyReplyHeader(header: string | null | undefined, fields: Rep
     if (separator <= 0) return null;
     values.set(part.slice(0, separator).trim().toLowerCase(), part.slice(separator + 1).trim());
   }
-  const id = values.get("id");
   const signature = values.get("sig");
-  if (!id || !signature || !isOrcaNodeId(id)) return null;
-  return verifyWithNodeId(id, replyInput(fields), signature) ? id : null;
+  const id = OrcaNodeIdSchema.safeParse(values.get("id"));
+  if (!id.success || !signature) return null;
+  return verifyWithNodeId(id.data, replyInput(fields), signature) ? id.data : null;
 }

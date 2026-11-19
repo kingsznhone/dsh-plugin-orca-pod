@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import type { OrcaNodeConfig } from "../src/node/config.ts";
 import { nodeParts } from "./support/node.ts";
 import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
 import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
@@ -15,6 +14,7 @@ import { ModelCatalog } from "../src/core/model-catalog.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { Orca } from "../src/node/orca.ts";
+import type { Settings } from "../src/node/settings.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
@@ -30,8 +30,8 @@ afterEach(async () => {
 
 type NodeParts = ReturnType<typeof nodeParts>;
 
-async function configFor(root: string, mode: string, overrides: Partial<OrcaNodeConfig> = {}): Promise<NodeParts> {
-  const [config, identity, key] = nodeParts({
+async function configFor(root: string, mode: string, overrides: Partial<Settings> = {}): Promise<NodeParts> {
+  const [settings, identity, key, dataRoot] = nodeParts({
     workgroup_id: wg("acp-test"),
     workgroup_password: "correct horse",
     data_root: root,
@@ -46,7 +46,7 @@ async function configFor(root: string, mode: string, overrides: Partial<OrcaNode
       ],
     },
   });
-  return [{ ...config, ...overrides }, identity, key];
+  return [{ ...settings, ...overrides }, identity, key, dataRoot];
 }
 
 async function startNode(parts: NodeParts, profile?: string): Promise<Orca> {

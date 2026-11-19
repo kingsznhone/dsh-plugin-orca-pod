@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultDataRoot } from "../src/node/config.ts";
+import { defaultDataRoot } from "../src/plugin/data-root.ts";
 
 describe("defaultDataRoot", () => {
   it("is orca-pod under the DSH home the host resolved", () => {

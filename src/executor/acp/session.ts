@@ -21,7 +21,7 @@ import {
 import { z } from "zod";
 
 import type { ExecuteInput } from "../executor.ts";
-import { describeIssue, parseOrThrow } from "../../core/schema.ts";
+import { parseOrThrow } from "../../core/schema.ts";
 import { errorMessage, isMissingFile } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
 import { describeModelRequest } from "../../core/wire/model.ts";
@@ -186,8 +186,10 @@ export class AcpSessionPool {
       if (isMissingFile(error)) return {};
       throw error;
     }
-    return parseOrThrow(SessionBindingsSchema, JSON.parse(text), (issue) => {
-      return new Error(`${path} is not a map of session ids: ${describeIssue(issue)}`);
-    });
+    return parseOrThrow(
+      SessionBindingsSchema,
+      JSON.parse(text),
+      (problem) => new Error(`${path} is not a map of session ids: ${problem}`),
+    );
   }
 }

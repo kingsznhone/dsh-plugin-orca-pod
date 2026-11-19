@@ -127,31 +127,25 @@ export type SubmitTaskInput = {
 
 // ---- JSON-RPC (§4.7) ----
 
+/** What every JSON-RPC request carries besides its method: the `id` the answer echoes. */
+const RpcEnvelope = z.object({ id: z.unknown().optional() });
 const TaskIdParams = z.looseObject({ id: z.string() });
 
 /**
- * Parameters per method. The caller builds them against `z.input` of these
- * schemas and the gateway parses with the same ones, so both sides name the
- * same shape. Every method answers with a task view.
+ * An A2A request, one variant per method. The caller builds it against `z.input`
+ * of this schema and the gateway parses it with the same one, so both sides name
+ * the same shape, and `params` is typed by `method`. Every method answers with a
+ * task view.
  */
-export const A2A_PARAMS = {
-  "message/send": z.looseObject({ message: A2AMessageSchema, metadata: TaskMetadataSchema.optional() }),
-  "tasks/get": TaskIdParams,
-  "tasks/cancel": TaskIdParams,
-};
-export type A2AMethod = keyof typeof A2A_PARAMS;
-export type A2AParams<M extends A2AMethod> = z.input<(typeof A2A_PARAMS)[M]>;
-
-export function isA2AMethod(method: string): method is A2AMethod {
-  return Object.hasOwn(A2A_PARAMS, method);
-}
-
-/** The JSON-RPC request envelope; `params` is checked per method. */
-export const RpcRequestSchema = z.object({
-  id: z.unknown().optional(),
-  method: z.string(),
-  params: z.unknown().optional(),
-});
+export const A2ARequestSchema = z.discriminatedUnion("method", [
+  RpcEnvelope.extend({
+    method: z.literal("message/send"),
+    params: z.looseObject({ message: A2AMessageSchema, metadata: TaskMetadataSchema.optional() }),
+  }),
+  RpcEnvelope.extend({ method: z.literal("tasks/get"), params: TaskIdParams }),
+  RpcEnvelope.extend({ method: z.literal("tasks/cancel"), params: TaskIdParams }),
+]);
+export type A2ARequest = z.input<typeof A2ARequestSchema>;
 
 /** The success envelope of an A2A call. */
 export const RpcResultSchema = z.object({ result: TaskViewSchema });
