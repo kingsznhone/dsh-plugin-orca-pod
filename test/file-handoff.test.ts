@@ -48,7 +48,7 @@ async function startNode(executor?: LocalExecutor): Promise<Orca> {
   return node;
 }
 
-const FILE_NAME = /[A-Za-z0-9_-]{43}\/[0-9a-f]{64}/;
+const FILE_NAME = /[1-9A-HJ-NP-Za-km-z]{32,44}\/[0-9a-f]{64}/;
 
 describe("file hand-off", () => {
   it("moves a file to a task and one back, by the names written in the texts", async () => {

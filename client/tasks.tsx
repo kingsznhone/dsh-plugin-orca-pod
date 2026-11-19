@@ -90,7 +90,12 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
       ) : (
         <Facts
           rows={[
-            [t("dtPeer"), dispatch.node],
+            [
+              t("dtPeer"),
+              <span key={"peer"} className={ui.mono} title={dispatch.node}>
+                {short(dispatch.node)}
+              </span>,
+            ],
             [t("colState"), <StateText key={"state"} state={dispatch.state} />],
             [t("dtCreated"), dispatch.created_at],
             [t("dtUpdated"), dispatch.updated_at],

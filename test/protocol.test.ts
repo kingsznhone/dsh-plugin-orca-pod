@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { shortenNodeId } from "../src/core/identity.ts";
 import { EndpointsSchema, membersDigest, runtimeDigest, type PeerView, type RuntimeInfo } from "../src/mesh/wire.ts";
-import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId } from "../src/core/ids.ts";
+import { OrcaNodeIdSchema, WorkgroupIdSchema, nodeIdOf, publicKeyOf, type OrcaNodeId } from "../src/core/ids.ts";
 import { labelId } from "./fixtures/ids.ts";
 import { generateNodeIdentity } from "../src/plugin/stores.ts";
 
 const acceptsNodeId = (value: unknown) => OrcaNodeIdSchema.safeParse(value).success;
 const acceptsWorkgroupId = (value: unknown) => WorkgroupIdSchema.safeParse(value).success;
 
-// 43 base64url characters decode to a 32-byte Ed25519 public key.
-const VALID_NODE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+// Base58 of a 32-byte Ed25519 public key: each leading zero byte is a "1", so the all-zero key is 32 of them.
+const VALID_NODE_ID = "1".repeat(32);
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 function makeRuntime(): RuntimeInfo {
   return {
@@ -38,8 +39,8 @@ function makePeer(orcaNodeId: OrcaNodeId, endpoints: string[], runtime: RuntimeI
 describe("generateNodeIdentity", () => {
   it("draws the orca node id from the Ed25519 public key", () => {
     const identity = generateNodeIdentity();
-    expect(identity.orcaNodeId).toHaveLength(43);
-    expect(identity.orcaNodeId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(identity.orcaNodeId).toMatch(BASE58);
+    expect(publicKeyOf(identity.orcaNodeId)).toHaveLength(32);
     expect(acceptsNodeId(identity.orcaNodeId)).toBe(true);
   });
 
@@ -61,22 +62,26 @@ describe("generateNodeIdentity", () => {
 });
 
 describe("OrcaNodeIdSchema", () => {
-  it("accepts a 43-character base64url public key", () => {
+  it("accepts a 32-byte public key in base58", () => {
     expect(acceptsNodeId(VALID_NODE_ID)).toBe(true);
     expect(acceptsNodeId(generateNodeIdentity().orcaNodeId)).toBe(true);
+    const key = new Uint8Array(32).fill(0xff);
+    expect(publicKeyOf(nodeIdOf(key))).toEqual(key);
   });
 
-  it("rejects ids with the wrong length", () => {
+  it("rejects ids that do not decode to 32 bytes", () => {
     expect(acceptsNodeId("ABC12")).toBe(false);
-    expect(acceptsNodeId("A".repeat(42))).toBe(false);
-    expect(acceptsNodeId("A".repeat(44))).toBe(false);
+    expect(acceptsNodeId("1".repeat(31))).toBe(false);
+    expect(acceptsNodeId("1".repeat(33))).toBe(false);
+    expect(acceptsNodeId(`${generateNodeIdentity().orcaNodeId}z`)).toBe(false);
     expect(acceptsNodeId("")).toBe(false);
   });
 
-  it("rejects characters outside base64url", () => {
-    expect(acceptsNodeId("!".repeat(43))).toBe(false);
-    expect(acceptsNodeId(`${"A".repeat(42)}=`)).toBe(false);
-    expect(acceptsNodeId(`${VALID_NODE_ID.slice(1)}+`)).toBe(false);
+  it("rejects characters outside the base58 alphabet, base64url ones included", () => {
+    const id = generateNodeIdentity().orcaNodeId;
+    for (const char of ["0", "O", "I", "l", "_", "-", "+", "/"]) {
+      expect(acceptsNodeId(`${char}${id.slice(1)}`)).toBe(false);
+    }
   });
 
   it("rejects non-strings", () => {

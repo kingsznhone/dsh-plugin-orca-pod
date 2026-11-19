@@ -54,7 +54,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - orca node 之间是 **full mesh**，10 台以内不做 ring、不做 gossip、不做中心调度器。
 - **任务只有一跳**：origin → target 是一次请求；target 上执行任务的 agent 不能再派任务（执行器会话里的 `orca_pod` 只有 `fetch`/`publish`，没有 `send`），做不完就以 `BLOCKED:` 结论交回。没有回调、没有广播。orca node 只被任务请求唤醒，忙时 429 而不是排队。
 - **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
-- orca node 身份 = 首次启动生成的 **Ed25519 公钥**（节点 id 就是公钥的 base64url，43 字符；私钥种子以 base58 存在 DSH 凭据库的 `orca-pod/node` 记录里；面板显示缩略，如 `psB9aQ…3Zlw`；一台机器一个节点）。节点用自己的私钥签每个请求，别人用公钥验签——id 可验证、不可伪造。
+- orca node 身份 = 首次启动生成的 **Ed25519 公钥**（节点 id 就是公钥的 base58，通常 43–44 字符；私钥种子也以 base58 存在 DSH 凭据库的 `orca-pod/node` 记录里；面板空间紧的地方显示缩略，如 `9xQe…3ZLw`；一台机器一个节点）。节点用自己的私钥签每个请求，别人用公钥验签——id 可验证、不可伪造。
 - 入组 = `workgroup_id` + **非空密码**：密码只派生每个节点间请求头里的 workgroup 证明（HMAC，与 Ed25519 签名同时带，答复也由应答方签名）；**没有 session token、没有 TTL**。换密码 = 重建组。
 - 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询；没有 SSE、没有 push。

@@ -40,7 +40,7 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 每个节点间请求在 `Authorization` 头里同时带 **Ed25519 签名**与 **workgroup HMAC 证明**，输入相同；服务端用 `id`（即公钥）现验签名，用派生密钥验证明：
 
 ```http
-Authorization: Pod id=<43-char base64url public key>; wg=<workgroup_id>; target=<receiver orca_node_id>; ts=1763100000000; nonce=<base64url>; sig=<base64url>; proof=<base64url>
+Authorization: Pod id=<base58 public key>; wg=<workgroup_id>; target=<receiver orca_node_id>; ts=1763100000000; nonce=<base64url>; sig=<base64url>; proof=<base64url>
 ```
 
 ```text

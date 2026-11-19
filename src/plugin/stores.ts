@@ -13,21 +13,19 @@ import bs58 from "bs58";
 
 import { errorMessage } from "../core/errors.ts";
 import type { NodeIdentity } from "../core/identity.ts";
-import { OrcaNodeIdSchema } from "../core/ids.ts";
+import { nodeIdOf } from "../core/ids.ts";
 import { z } from "zod";
 
 const RAW_KEY_BYTES = 32;
 /** PKCS#8 header of an Ed25519 private key (RFC 8410) up to the 32-byte seed. */
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 
-/** The node id of a public key: its raw 32 bytes in base64url (§7.1). */
+/** The identity of a private key: its node id is the raw public key in base58 (§7.1). */
 function identityOfKey(privateKey: KeyObject): NodeIdentity {
   return {
-    // The node id is the raw public key: the last bytes of its SPKI encoding.
-    orcaNodeId: OrcaNodeIdSchema.parse(
-      Buffer.from(createPublicKey(privateKey).export({ format: "der", type: "spki" }))
-        .subarray(-RAW_KEY_BYTES)
-        .toString("base64url"),
+    // The raw public key is the last bytes of its SPKI encoding.
+    orcaNodeId: nodeIdOf(
+      Buffer.from(createPublicKey(privateKey).export({ format: "der", type: "spki" })).subarray(-RAW_KEY_BYTES),
     ),
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
   };

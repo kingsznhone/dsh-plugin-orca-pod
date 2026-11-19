@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 
 import { brandString } from "@deepseek-ai/dsh-brand";
 
-import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId, WorkgroupIdSchema } from "../../src/core/ids.ts";
+import { nodeIdOf, type OrcaNodeId, type WorkgroupId, WorkgroupIdSchema } from "../../src/core/ids.ts";
 
-/** A well-formed orca node id (43 base64url characters) for a label, for tests that need ids but no keys. */
+/** A well-formed orca node id (32 bytes in base58) for a label, for tests that need ids but no keys. */
 export function fakeNodeId(label: string): OrcaNodeId {
-  return OrcaNodeIdSchema.parse(createHash("sha256").update(label).digest("base64url").slice(0, 43));
+  return nodeIdOf(createHash("sha256").update(label).digest());
 }
 
 /**

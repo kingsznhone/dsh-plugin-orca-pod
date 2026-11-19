@@ -1,6 +1,6 @@
 import { createPublicKey, sign as edSign, verify as edVerify } from "node:crypto";
 
-import type { OrcaNodeId } from "./ids.ts";
+import { publicKeyOf, type OrcaNodeId } from "./ids.ts";
 
 /**
  * Per-node identity (§7.1): an Ed25519 keypair created at first start. The
@@ -11,7 +11,7 @@ import type { OrcaNodeId } from "./ids.ts";
  * credential store, §3.6), is the plugin's business (`plugin/stores.ts`).
  */
 export type NodeIdentity = {
-  /** base64url of the raw 32-byte Ed25519 public key. */
+  /** base58 of the raw 32-byte Ed25519 public key. */
   orcaNodeId: OrcaNodeId;
   /** PKCS#8 PEM of the private half; it leaves the process only as the store's record. */
   privateKeyPem: string;
@@ -31,9 +31,11 @@ export function signWithIdentity(identity: NodeIdentity, message: string | Uint8
 }
 
 export function verifyWithNodeId(orcaNodeId: OrcaNodeId, message: string | Uint8Array, signature: string): boolean {
+  const raw = publicKeyOf(orcaNodeId);
+  if (raw === undefined) return false;
   try {
     const publicKey = createPublicKey({
-      key: Buffer.concat([SPKI_ED25519_PREFIX, Buffer.from(orcaNodeId, "base64url")]),
+      key: Buffer.concat([SPKI_ED25519_PREFIX, raw]),
       format: "der",
       type: "spki",
     });

@@ -27,7 +27,7 @@ Hard constraints that must not be undone:
   greeted; roster entries carried by hello answers are candidate endpoints,
   never liveness claims, and never rewrite an existing record.
 - Listener is plain HTTP/1.1 with keep-alive. TLS is terminated by Caddy/nginx.
-- orca_node_id is the node's Ed25519 public key (43-char base64url) generated at
+- orca_node_id is the node's Ed25519 public key (base58, 32 bytes) generated at
   first start into the DSH credential store (record orca-pod/node, base58 seed).
   It IS the security principal. One node per machine, shared by every DSH profile.
 - Auth = every node-to-node request carries two proofs in its Authorization
