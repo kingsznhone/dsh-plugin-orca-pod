@@ -1,5 +1,5 @@
 /**
- * Build the DSH client bundle: `client/index.tsx` → `lib/client.js`.
+ * Build the DSH client bundle: `src/client/index.tsx` → `lib/client.js`.
  *
  * The shell loads a client bundle as a classic script that registers a lazy
  * factory with `window.__ModuleLoader__`; the factory's `require` resolves the
@@ -8,7 +8,7 @@
  * the same shape DSH's own client plugins ship. `lib/` is a build output and
  * not committed.
  *
- * Styles are CSS modules (`client/*.module.css`), compiled the way DSH's own
+ * Styles are CSS modules (`src/client/*.module.css`), compiled the way DSH's own
  * plugins are: class names are scoped per file, and the sheet is injected as a
  * `<style data-plugin data-plugin-css>` when the module materializes, so the
  * shell's module system owns it and removes it when the plugin is disabled.
@@ -78,7 +78,7 @@ function cssModules(): Plugin {
 export async function buildClient(outfile = `${ROOT}lib/client.js`): Promise<void> {
   await build({
     absWorkingDir: ROOT,
-    entryPoints: ["client/index.tsx"],
+    entryPoints: ["src/client/index.tsx"],
     outfile,
     bundle: true,
     format: "cjs",

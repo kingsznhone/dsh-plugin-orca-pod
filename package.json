@@ -1,7 +1,6 @@
 {
   "name": "orca-pod",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Orca pod: full-mesh agent node for DeepSeek Harness, self-contained as one package.",
   "type": "module",
   "engines": {
@@ -50,9 +49,9 @@
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/build-client.ts",
     "prepare": "npm run build",
-    "check": "biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run",
+    "check": "biome check . && tsc --noEmit && tsc --noEmit -p src/client && vitest run",
     "format": "biome format --write .",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p client",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/client",
     "test": "vitest run",
     "harness": "node --no-warnings --import tsx scripts/harness_run.ts"
   },

@@ -25,12 +25,12 @@ export type {
   PodState,
   PodTaskDetail,
   PodTaskRow,
-} from "../src/plugin/panel-api.ts";
-export type { PanelPatch } from "../src/node/settings.ts";
+} from "../plugin/panel-api.ts";
+export type { PanelPatch } from "../node/settings.ts";
 export type { ModelSelection } from "@deepseek-ai/dsh-agent";
-export type { ModelOffer } from "../src/executor/model.ts";
-export type { PeerState, PeerView, RuntimeInfo } from "../src/mesh/wire.ts";
-export type { TaskState } from "../src/task/wire.ts";
+export type { ModelOffer } from "../executor/model.ts";
+export type { PeerState, PeerView, RuntimeInfo } from "../mesh/wire.ts";
+export type { TaskState } from "../task/wire.ts";
 
 /** One namespace's strings for one language. */
 type LocaleDict = Record<string, string>;

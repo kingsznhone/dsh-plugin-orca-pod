@@ -6,13 +6,13 @@
 
 本篇是一张导览图：插件被 DSH 加载后，关键的调用入口在哪里，host 和 client 怎么通信。设计理由在各章正文，本篇只给结构和入口（`文件:行号` 以当前代码为准，改动后以函数名为准）。
 
-术语：**host** 指 DSH Node 进程里的 bundle（`lib/index.js`，源码 `src/`）；**client** 指浏览器里的面板 bundle（`lib/client.js`，源码 `client/`）。
+术语：**host** 指 DSH Node 进程里的 bundle（`lib/index.js`，源码 `src/`）；**client** 指浏览器里的面板 bundle（`lib/client.js`，源码 `src/client/`）。
 
 ## 1. 全景：一个插件，四个进程/通道
 
 ```
 ┌──────────────────────────── 浏览器 (DSH Web UI) ───────────────────────────────┐
-│  lib/client.js  ← client/index.tsx  (esbuild 打成 __ModuleLoader__ 工厂)       │
+│  lib/client.js  ← src/client/index.tsx  (esbuild 打成 __ModuleLoader__ 工厂)   │
 │   apply(ctx) → 往 slots 注册: settings.section / sidebar / overlay / 审批 dock │
 │   store.ts: 一个共享 snapshot，轮询 GET /orca-api/state，POST /orca-api/<动作>  │
 └───────────────────────────────┬────────────────────────────────────────────────┘
@@ -89,8 +89,8 @@ apply(ctx, config)                                     bundle.ts:76
 client 不能 import host 的包，`host.call` 在 host 侧也没有文档化的契约，所以**走 DSH 自己的 web server**，用一个前缀路由 `/orca-api`：
 
 ```
-client/store.ts                               src/plugin/panel-routes.ts
-───────────────                               ──────────────────────────
+src/client/store.ts                           src/plugin/panel-routes.ts
+───────────────────                           ──────────────────────────
 subscribe() 第一个订阅者 → 开始轮询
   read("state")  ── GET <baseURI>orca-api/state ▶  handle()  panel-routes.ts
                                                rejection(): 必须同时满足
@@ -143,7 +143,7 @@ client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `ap
 1. `src/plugin/bundle.ts`：整个插件的组装图，最先看。
 2. `src/plugin/pod.ts`：状态机（`unconfigured / starting / running / failed / stopped`）和队列。
 3. `src/node/orca.ts`：节点内部各子系统是怎么接起来的（Gateway、Mesh、Runner、事件汇总）。
-4. `src/plugin/panel-api.ts` → `panel-routes.ts` → `client/store.ts`：host 和 client 之间的通信闭环。
+4. `src/plugin/panel-api.ts` → `panel-routes.ts` → `src/client/store.ts`：host 和 client 之间的通信闭环。
 5. `src/plugin/tools.ts` + `tracker.ts`：agent 侧的工作流。
 6. 跨机器部分：`src/mesh/mesh.ts`、`src/api/gateway.ts`、`src/api/access.ts`（签名和准入）。
 

@@ -9,7 +9,7 @@ import {
   StateDot,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import { DEFAULT_PORT } from "../src/core/constants.ts";
+import { DEFAULT_PORT } from "../core/constants.ts";
 import { DEFAULT_WORKGROUP, GIB } from "./constants.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";

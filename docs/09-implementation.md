@@ -12,7 +12,6 @@
 orca-pod/
   package.json        运行时依赖见 §9.7；dsh.bundle.patch -> cordis.patch.yml
   cordis.patch.yml    DSH 行：id orca-pod、name 'orca-pod'
-  client/             DSH 客户端（面板）的 TSX 源码；构建到 lib/client.js
   biome.json          lint + format（一个工具）
   src/                见下表
   scripts/            cross.ts、build-client.ts、harness_run.ts（进程内两个节点走真实回环网络）、e2e-acp.ts
@@ -20,7 +19,7 @@ orca-pod/
   test/               vitest，按模块一份 *.test.ts；test/fixtures/fake-acp.mjs 是假 ACP server
 ```
 
-`src/` 按功能分成 7 个目录（D41、D44），目录内没有聚合导出文件（不设 `index.ts`）：谁用到什么，就直接 import 定义它的文件，所以目录内部移动代码时，调用方跟着改。
+`src/` 里 host 按功能分成 7 个目录（D41、D44），另有 `client/` 是浏览器端面板（§9.2.2，构建到 `lib/client.js`，不由 tsc 输出）；目录内没有聚合导出文件（不设 `index.ts`）：谁用到什么，就直接 import 定义它的文件，所以目录内部移动代码时，调用方跟着改。
 
 | 上下文        | 文件                                                                                                     | 职责                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -31,15 +30,18 @@ orca-pod/
 | `api/`        | `gateway` / `access` / `cluster-routes` / `a2a-routes` / `blob-routes` / `input`         | 入站 HTTP：`Gateway`（装配、body 解析、`listen` 与 `close`、唯一的错误出口）、`AccessPolicy`（`access` 声明与唯一的 preValidation 钩子）、`ClusterRoutes`、`A2aRoutes`、`BlobRoutes`、`parseInput` |
 | `node/`       | `orca` / `settings`                                                                                      | **组合根**：一个进程里的这一个 orca 实例 `Orca`，只装配，子系统以只读字段公开（`mesh`、`tasks`、`dispatches`、`models`、`workspace`）；**唯一的设置 schema 与解析器**；`Orca` 直接拿解析后的 `Settings`，节点 id 取自身份，`data_root` 单独传入 |
 | `plugin/`     | 见 §9.5                                                                                                  | DSH bundle                                                                                   |
+| `client/`     | 见 §9.2.2                                                                                                | 浏览器端面板（TSX + CSS Modules，提示音 `sounds/*.mp3` 构建时内联）                          |
 
 模块依赖单向向下，由 `test/architecture.test.ts` 固化（解析 `src/` 的 import）：
 
 ```text
 core ← executor ← task ← mesh ← api ← node ← plugin
+core ← client
 ```
 
 - 运行期 import 图无环，**仅类型的 import 也不许成环**（目录内的两个文件互相 `import type` 也算）；
 - 运行期 import 只允许指向严格更低的一层；mesh 在 task 之上（D44）：派发任务是对一个节点做的事；
+- `client/` 在最上面：谁都不 import 它；它运行期只 import `core/`（打进浏览器 bundle），线上形状（`plugin/panel-api`、`mesh/wire`、`task/wire` 等）只用 `import type`，构建时擦除；
 - SQLite 存储（`SqliteDb`、`DispatchLog`、`FileBlobRegistry`）只在装配点（`node/`、`plugin/`）构造，业务层通过构造参数拿到具体对象，不另设存储接口。
 
 没有依赖注入：没有容器、没有 `XDeps` 类型、没有专为解耦设的端口接口。私有协作者由拥有者自己 `new`（`Mesh` 创建本机这一行 `OrcaNode`，`SingleSlotTaskRunner` 创建 `WorkspaceQuota` 与任务表 `JsonTable`，`Gateway` 创建 `NonceCache`、`AccessPolicy` 与三个路由对象……），共享对象由创建者传入（`Orca` 把同一个 `MeshContext` 交给表里的每个 `OrcaNode`；一个资源一份、按 orca 实例划作用域，**不用模块级全局变量**，D44），子系统之间的通知用各自持有的 `changes`（`ChangeSignal`，只说“变了，再读一次”），由订阅方决定怎么响应。接口只在存在多个实现时才写（现在只有 `LocalExecutor`）。`node/orca.ts` 是装配 orca node 的库根，与 Node.js 运行时无关；命名里带 orca 就是为了让 import 和 grep 一眼分清。没有聚合导出，引入一个文件只会加载它自己依赖的部分（例如 `node/settings.ts` 只用 `core/net.ts`，不会连带加载 gateway）。
@@ -84,9 +86,9 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 
 注册走 `ctx.inject(['webServer', 'connection'], …)`；没有 web 服务的宿主（ACP）直接跳过，不影响启动。路由闸门依次是：**DSH 准入**（`connection.admit(request)`，与 DSH 自己的 `/api` 同一套：`Host` 必须是回环、监听地址或 `trustedHosts` 里的主机，带 `Origin` 时必须同一 authority，`Sec-Fetch-Site: cross-site` 拒绝，这几项不过是 403 `forbidden`；之后验签名的浏览器会话 cookie，没有或无效是 401 `unauthorized`）；**owner**（准入得到的 Peer 的 `principal.kind` 必须是 `owner`，否则 403 `forbidden`）；**面板头**（每个请求必须带 `X-Orca-Pod: 1`，否则 403 `cross_origin`：DSH 只拒 `cross-site`，`SameSite=Strict` 的 cookie 在同站请求里照样带上，自定义头让同站的别的源也得先过 CORS 预检，而预检永远不放行）；写请求必须 `Content-Type: application/json`（否则 403 `json_required`）。因此谁能登录 DSH web，谁就能用面板，远程访问与本机一样；没登录的、别的网页都驱动不了它。客户端按 `document.baseURI` 解析 `orca-api/…`（DSH 解析自己 `/api` 的方式），DSH 挂在反向代理的子路径下也能用。
 
-#### 9.2.2 客户端 bundle（`client/` → `lib/client.js`）
+#### 9.2.2 客户端 bundle（`src/client/` → `lib/client.js`）
 
-源码在 `client/`，按职责分模块（`i18n`、`format`、`store`、`constants`、`types`、`primitives`、`approvals`、`tasks`、`members`、`settings`、`panel`，入口 `index.tsx`；样式在 `*.module.css`，`ui.module.css` 是共享样式、其余与模块同名），用 React 18 的 TSX 编写、`strict` 类型检查（`tsc -p client`）。面板读到的数据类型直接从宿主一半导入（`src/plugin/panel-api.ts`，仅类型、构建时擦除），路由返回什么与面板画什么不会走样。`npm run build` 用 esbuild（`scripts/build-client.ts`）把它打成 CommonJS，平台模块留作外部依赖，外面套上 `window.__ModuleLoader__.load({id:"orca-pod", factory: require => …})`——与 DSH 自带客户端插件的产物同一形状；工厂的 `require` 只解析壳的平台模块表（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`）。按钮、输入框、标签、状态点、对话框、提示与图标都用 DSH 共享的 `dsh-client-ui-primitives`，外观与 DSH 自带页面一致；这些 primitive 的类型由 devDependency `@deepseek-ai/dsh-client-ui-primitives` 提供（`client/types.ts` 只做类型导入）；`client/css-modules.d.ts` 只声明 `*.module.css`。布局写在 CSS Modules 里，构建时类名按文件加 `orca-pod-<文件>_` 前缀，样式表在模块实例化时以 `<style data-plugin="orca-pod" data-plugin-css="orca-pod/<文件>.module.css">` 注入——与 DSH 自带插件同一约定，壳的模块系统据此认领，停用插件时一并移除。导出 `{inject:["slots","locale"], apply}`；`apply` 注册五个 Slot：
+源码在 `src/client/`，按职责分模块（`i18n`、`format`、`store`、`constants`、`types`、`primitives`、`approvals`、`tasks`、`members`、`settings`、`panel`，入口 `index.tsx`；样式在 `*.module.css`，`ui.module.css` 是共享样式、其余与模块同名），用 React 18 的 TSX 编写、`strict` 类型检查（`tsc -p src/client`）。面板读到的数据类型直接从宿主一半导入（`src/plugin/panel-api.ts`，仅类型、构建时擦除），路由返回什么与面板画什么不会走样。`npm run build` 用 esbuild（`scripts/build-client.ts`）把它打成 CommonJS，平台模块留作外部依赖，外面套上 `window.__ModuleLoader__.load({id:"orca-pod", factory: require => …})`——与 DSH 自带客户端插件的产物同一形状；工厂的 `require` 只解析壳的平台模块表（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`）。按钮、输入框、标签、状态点、对话框、提示与图标都用 DSH 共享的 `dsh-client-ui-primitives`，外观与 DSH 自带页面一致；这些 primitive 的类型由 devDependency `@deepseek-ai/dsh-client-ui-primitives` 提供（`src/client/types.ts` 只做类型导入）；`src/client/css-modules.d.ts` 只声明 `*.module.css`。布局写在 CSS Modules 里，构建时类名按文件加 `orca-pod-<文件>_` 前缀，样式表在模块实例化时以 `<style data-plugin="orca-pod" data-plugin-css="orca-pod/<文件>.module.css">` 注入——与 DSH 自带插件同一约定，壳的模块系统据此认领，停用插件时一并移除。导出 `{inject:["slots","locale"], apply}`；`apply` 注册五个 Slot：
 
 | Slot                      | id                        | 作用                                                                                          |
 | ------------------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
@@ -102,7 +104,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 
 ### 9.3 每个模块怎么测
 
-约定：每个模块有自己的夹具测试，进程内测试不依赖网络和真实时钟；`npm run check`（`biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run`）是唯一的验收入口。`test/architecture.test.ts` 守住 §9.1 的依赖方向。
+约定：每个模块有自己的夹具测试，进程内测试不依赖网络和真实时钟；`npm run check`（`biome check . && tsc --noEmit && tsc --noEmit -p src/client && vitest run`）是唯一的验收入口。`test/architecture.test.ts` 守住 §9.1 的依赖方向。
 
 | 模块                              | 夹具                                                              | 断言                                                                                   |
 | --------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -224,7 +226,7 @@ export function apply(ctx, config) {
 - TypeScript、ESM、Node ≥ 24（用内置 `node:sqlite`；发布的是 `tsc -p tsconfig.build.json` 编译出的 `lib/`，相对 import 由 `rewriteRelativeImportExtensions` 改写；`npm run build` 先清空 `lib/`，搬过的文件不会留下旧产物）；npm（单包，`npm install` 在仓库根目录一次装齐）；vitest；biome（lint + format，`biome.json` 在根目录）；`tsc --noEmit`。
 - **`src/` 不再由裸 `node` 直接运行**：服务用 class 并用构造器参数属性，Node 的类型剥离不认这种写法（`erasableSyntaxOnly` 因此关闭，Node 26 也已移除 `--experimental-transform-types`）。开发时用 vitest（测试）或 `node --import tsx`（`scripts/cross.ts`、`scripts/harness_run.ts`）；`npm run harness` 就是直接这样跑 `scripts/harness_run.ts`，不先 build，也不 spawn 子进程。`enum` 与 `namespace` 仍然不用（Biome `noEnum` / `noNamespace`），`scripts/**` 仍只写可擦除语法（`noParameterProperties`）。
 - **发布形态是编译产物，不是 `.ts`**：`main`/`exports`/`types` 都指向 `lib/`（没有 `bin`），`files` 只含 `lib/`、`cordis.patch.yml`、`locale/`、`icon.svg`、`skills/` 与 `README.md`，不含 `src/`，`prepare` 即 `npm run build`。DSH 的插件加载器用原生 `import()` 加载入口，没有转译钩子，发行版（Electron 内置 Node 24）里也没有任何 TS 转译器，所以不需要也不能依赖 tsx。Node 的类型剥离对 `node_modules` 下的文件直接报 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，tarball 安装的包里放 `.ts` 必然加载失败。`dsh plugin add <本地路径>` 装的是 `link:`，链接前必须先 `npm run build`，加载的是 `lib/`。加载器会把说明符里的 `.ts` 改写成 `.js`，那只是对源码风格写法的兼容，不是编译。客户端 bundle（`dsh.client`、`platform: web`）另由 esbuild 产出，与此无关但同样必需。
-- **验收入口：`npm run check`** = `biome check . && tsc --noEmit && tsc --noEmit -p client && vitest run`。另有 `npm run format`、`npm run typecheck`、`npm test`、`npm run harness`。
+- **验收入口：`npm run check`** = `biome check . && tsc --noEmit && tsc --noEmit -p src/client && vitest run`。另有 `npm run format`、`npm run typecheck`、`npm test`、`npm run harness`。
 - 服务用 class，不做依赖注入（D41）：没有容器（awilix、inversify 等）、没有 `XDeps` 依赖类型、没有专为解耦设的端口接口和 Provider。协作者用构造器参数属性（`private readonly x: X`），参数写具体的 class；私有协作者由拥有者自己 `new`，共享对象由创建者传入；子系统对外的通知用自己持有的 `ChangeSignal`；只有一个固定接收方的（任务记录通知运行器）是构造时传入的回调。构造器不写盘、不联网、不启计时器（读 `settings.json` 这类同步只读除外；SQLite 存储与 `OptionalService` 是两个例外：前者就是它的连接，后者的构造就是向 Cordis 订阅），创建目录、监听端口、首次测量放到 `start()`。私有成员用 TS 的 `private`，不用 `#`。不传未绑定的方法（`foo(obj.method)` 会丢 `this`），要么传对象本身，要么写箭头函数。无状态的纯计算（签名验签、schema 解析、地址筛查、任务书拼装）、线上形状与 DTO 保持函数或纯数据。
 - 模块级函数的去留（D42）：参数里带着某个 class 的状态或协作者的函数，就是那个 class 的方法；只在一个 class 里用的函数是它的 `private` 方法，不读 `this` 的写成 `private static`；只有被多个模块用的无状态纯计算、导出后有独立单元测试的纯契约才保持为函数。只为测试存在的公开面（公开方法与字段、选项字段、`Pick` / 结构参数类型、依赖袋）不留，测试经真实入口走；一个默认值、一个检查、一个派生值只在拥有者那里算一次；不用 `ReturnType` 给已有类型换写法。可调参数和协议常量留在模块顶层，不改 `static readonly`，不允许模块级可变状态。
 - 插件侧的状态与归属（D43）：总是一起赋值、一起清空的字段合成一个值，用几个布尔或可空字段划分出的状态写成判别联合（`PodStatus`）；跨重启的对象（`Pod`）与一次运行的对象（`Orca`）在类型上分开，读取当前运行只用 §9.2 表里的四种写法；同一份数据只有一个登记处、把 A 装到 B 只有一条路径、所有者之间的引用单向；必须先做 X 再做 Y 的地方由一个方法按顺序做完，而不是靠调用方读注释；class 名是领域名词；构造器只组装，启动与注册钩子是显式的方法调用。
@@ -255,7 +257,7 @@ export function apply(ctx, config) {
 | `@deepseek-ai/dsh-*`（`agent` / `app-boot` / `atomic-write` / `brand` / `credentials` / `error` / `home-paths` / `host-webserver` / `launch-environment` / `llm` / `native-command` / `sandbox` / `sandbox-policy` / `session` / `skill` / `timeout` / `tools` / `util-values`） | 运行时 | 与宿主同一套基建（D40）：错误基类 `HarnessError`、工具 schema DSL、原子写、`deadline`/`timeoutOf`、凭据引用、模型与 sandbox 枚举、品牌类型、DSH home 与启动环境快照；版本跟宿主 `^0.2.2-rc.5`（`dsh-error` 仍 `^0.2.2-rc.2`），随包发布 |
 | `cross-spawn` | 运行时 | ACP 子进程的跨平台派生：Windows `.cmd` shim 解析与命令行引号（`executor/acp/connection.ts`）；杀进程树同在该文件（`AcpConnection` 的私有方法） |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |
-| `esbuild`                             | 开发 | 把 `client/` 的 TSX 打成 `lib/client.js`（`scripts/build-client.ts`）                               |
+| `esbuild`                             | 开发 | 把 `src/client/` 的 TSX 打成 `lib/client.js`（`scripts/build-client.ts`）                               |
 | `@types/react`                        | 开发 | 客户端 TSX 的类型；React 运行时由 DSH 壳提供，不随包发布                                           |
 | `vitest`                              | 开发 | 测试                                                                                                |
 | `@types/node`                         | 开发 | Node 类型                                                                                           |

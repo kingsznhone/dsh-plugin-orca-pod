@@ -8,9 +8,9 @@
  * silence, and the result cues arrive after the task has actually finished.
  */
 
-import approval from "../assets/sounds/approval.mp3";
-import failed from "../assets/sounds/failed.mp3";
-import success from "../assets/sounds/success.mp3";
+import approval from "./sounds/approval.mp3";
+import failed from "./sounds/failed.mp3";
+import success from "./sounds/success.mp3";
 
 /** One cue: a request appeared, a task completed, or a task failed. */
 export type PodSound = "approval" | "success" | "failed";

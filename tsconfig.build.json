@@ -10,5 +10,5 @@
     "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["test", "scripts", "lib", "node_modules"]
+  "exclude": ["test", "scripts", "lib", "node_modules", "src/client"]
 }

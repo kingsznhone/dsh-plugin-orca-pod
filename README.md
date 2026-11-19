@@ -13,14 +13,13 @@
 orca-pod/
 ├── package.json          # 单包清单：dsh.bundle.patch -> cordis.patch.yml；exports -> lib/
 ├── cordis.patch.yml      # DSH 行：id orca-pod、name 'orca-pod'
-├── client/               # DSH 客户端（面板：设置页、侧栏按钮、审批卡片）的 TSX 源码，构建到 lib/client.js
 ├── locale/               # Plugin Manager 显示元数据（en.json / zh.json）
 ├── icon.svg              # 插件图标（随包发布）
 ├── biome.json            # lint + format
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
 ├── scripts/              # cross.ts（跨机器手测）、harness_run.ts（进程内两个节点走真实回环网络的 smoke）、e2e-acp.ts（真实 dsh 冒烟）、build-client.ts（客户端 TSX 构建）；开发脚本，不随包发布
 ├── skills/orca-node/     # 标准 skill bundle，介绍 orca_pod 工具（随包发布）
-├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按功能分 7 个目录：core ← executor ← task ← mesh ← api ← node ← plugin
+├── src/                  # TypeScript 源码；host 按功能分 7 个目录（tsc 构建到 lib/）：core ← executor ← task ← mesh ← api ← node ← plugin，另有 client/
 │   ├── index.ts          # 公共入口：apply / Config / inject
 │   ├── core/             # 公共底座（只放多个上下文共用的）：errors、schema、events（ChangeSignal）、constants、ids（orca node id 与 workgroup id）、net（peer 地址归一化）、identity（Ed25519 签名与验签，orca_node_id=公钥）、signing（请求的签名 + workgroup 证明、答复签名）、sqlite、stream、blobs（发布文件）
 │   ├── executor/         # executor 契约、model（模型路由）与 model-catalog、permission（权限模式）、acp/（connection / session / permissions / executor，执行器的 `command` 设置也在 executor 里）
@@ -28,7 +27,8 @@ orca-pod/
 │   ├── mesh/             # 节点表：mesh（`Mesh`：Map<节点 id, OrcaNode>，本机自己也在表里；hello / 种子 / 目录 / 墓碑 / 心跳循环）、orca-node（表里的一行：自述、状态机、拨号、sendTask / fetchBlob）、context（一个实例里所有节点共用的 `MeshContext`）、peer-client（唯一的出站客户端）、screening（端点筛查）、timings、wire
 │   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes（含本机路由 /local/*；本机进程发布与取文件）、input
 │   ├── node/             # orca（组合根 `Orca`：本进程里的这个实例）、settings（设置 schema 与解析器）、events
-│   └── plugin/           # DSH bundle：bundle / catalog / panel / panel-api / panel-routes / pod / services / settings-file / skill / stores / tools / tracker
+│   ├── plugin/           # DSH bundle：bundle / catalog / panel / panel-api / panel-routes / pod / services / settings-file / skill / stores / tools / tracker
+│   └── client/           # DSH 客户端（面板：设置页、侧栏按钮、审批卡片）的 TSX 源码与提示音，esbuild 构建到 lib/client.js；运行期只 import core
 └── test/                 # vitest 套件
 ```
 

@@ -1,6 +1,6 @@
 /** The one shared snapshot of `/orca-api/state`, its poll timer and the action helper. */
 
-import { errorMessage } from "../src/core/errors.ts";
+import { errorMessage } from "../core/errors.ts";
 import React from "react";
 import { POLL_MS } from "./constants.ts";
 import type { LocaleService, PodActions, PodReads, PodState } from "./types.ts";

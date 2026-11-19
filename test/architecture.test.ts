@@ -13,6 +13,9 @@
  * - There are no barrel files: an importer names the file that defines what it
  *   uses, so moving code inside a context means updating its callers.
  * - SQLite stores (`Sqlite*`) are constructed only by the assembly points.
+ * - `client` is the browser bundle, above everything: nothing imports it, and
+ *   at runtime it imports only `core`, so no host code reaches the bundle. Its
+ *   type-only imports of the wire shapes are erased like any other.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -34,10 +37,18 @@ const LAYERS: Record<string, number> = {
   plugin: 6,
   /** `src/index.ts`, the package entry. */
   root: 7,
+  /** `src/client/`, the browser bundle built by `scripts/build-client.ts`. */
+  client: 8,
 };
+
+/** Contexts the client bundle may import at runtime. */
+const CLIENT_RUNTIME = new Set(["core"]);
 
 /** Where `Sqlite*` stores may be constructed. */
 const ASSEMBLY = new Set(["node", "plugin", "root"]);
+
+/** Non-code imports the client build loads (CSS modules, inlined sounds); not part of the graph. */
+const ASSET = /\.(css|mp3)$/;
 
 /**
  * Known violations, as `from -> to` paths relative to `src/`. Only removals are
@@ -52,7 +63,7 @@ function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) return sourceFiles(path);
-    return entry.name.endsWith(".ts") ? [path] : [];
+    return /\.tsx?$/.test(entry.name) ? [path] : [];
   });
 }
 
@@ -69,7 +80,7 @@ function importsOf(file: string, includeTypes: boolean): string[] {
   for (const match of text.matchAll(STATEMENT)) {
     if (match[2] !== undefined && !includeTypes) continue;
     const specifier = match[3] ?? match[4];
-    if (specifier === undefined || !specifier.startsWith(".")) continue;
+    if (specifier === undefined || !specifier.startsWith(".") || ASSET.test(specifier)) continue;
     targets.push(toKey(resolve(dirname(file), specifier)));
   }
   return targets;
@@ -127,6 +138,9 @@ function violation(from: string, to: string): string | null {
   if (targetLayer === undefined) return `${to} is outside every context`;
   if (targetLayer >= sourceLayer) {
     return `${source} (layer ${sourceLayer}) must not import ${target} (layer ${targetLayer})`;
+  }
+  if (source === "client" && !CLIENT_RUNTIME.has(target)) {
+    return `client may import only ${[...CLIENT_RUNTIME].join(", ")} at runtime, not ${target}`;
   }
   return null;
 }

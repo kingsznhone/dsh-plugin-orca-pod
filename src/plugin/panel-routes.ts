@@ -32,7 +32,7 @@ import { readAll } from "../core/stream.ts";
 import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
 
-/** Prefix the client polls; keep in sync with `client/store.ts`. */
+/** Prefix the client polls; keep in sync with `src/client/store.ts`. */
 const POD_API_PREFIX = "/orca-api";
 
 /** Rows of the panel's "all tasks" view. */
