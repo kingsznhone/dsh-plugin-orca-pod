@@ -15,11 +15,11 @@ type PromptParts = {
 };
 
 /**
- * Task preamble (§6.14, §6.15). The agent runs in the host's profile, so the
- * plugin gives it `orca_pod` with the file methods only (§5.6): it fetches what
- * the origin names and publishes what it hands back. A task is single-hop: the
- * agent cannot dispatch, so a task it cannot finish alone ends with a `BLOCKED:`
- * report for the origin.
+ * Task preamble (§6.14, §6.15). The agent runs in the `acp` profile, which loads
+ * this plugin too (D60), so the plugin gives it `orca_pod` with the file methods
+ * only (§5.6): it fetches what the origin names and publishes what it hands back.
+ * A task is single-hop: the agent cannot dispatch, so a task it cannot finish
+ * alone ends with a `BLOCKED:` report for the origin.
  */
 function preamble({ taskId, selfOrcaNodeId }: PromptParts): string {
   return [

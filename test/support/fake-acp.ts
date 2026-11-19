@@ -1,7 +1,7 @@
 /**
  * A command that starts the fake ACP server (`test/fixtures/fake-acp.mjs`). The
  * ACP executor's setting names only a program, so the mode and the log path
- * ride in a small launcher script; whatever the executor appends (`--profile …`)
+ * ride in a small launcher script; whatever the executor appends (`--profile acp`)
  * reaches the server after them.
  */
 

@@ -69,8 +69,6 @@ type OrcaNodeOptions = {
   fetch?: MeshContextOptions["fetch"];
   /** Executor override (tests run scripted ones); defaults to the ACP executor (§6.14). */
   executor?: LocalExecutor;
-  /** The DSH profile the ACP executor runs tasks in: the host's own (D46). Unset passes none. */
-  profile?: string;
   /** Where refusals and drops are reported; silent unless the entry point supplies one. */
   logger?: NodeLogger;
 };
@@ -138,7 +136,6 @@ export class Orca {
     this.executor =
       options.executor ??
       new AcpExecutor(settings.acp ?? {}, this.models, logger, {
-        profile: options.profile,
         // The task's plugin reaches this node through its local routes (§5.6).
         env: (): Record<string, string> =>
           this.localUrl === null ? {} : { [NODE_URL_ENV]: this.localUrl, [NODE_TOKEN_ENV]: this.localToken },

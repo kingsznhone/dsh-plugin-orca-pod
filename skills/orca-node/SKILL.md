@@ -49,6 +49,10 @@ Files are not part of a task. They are published on a node and named
 - A task that cannot continue ends as completed with a final report starting
   `BLOCKED: <reason>`, listing what it finished and what the origin should
   provide or rerun. Read it and decide the next step; do not resend blindly.
+- Every machine loads this plugin in **two** profiles: its host profile (the
+  running node) and `acp` (task children; `dsh --profile acp`). A machine
+  missing the `acp` copy still runs tasks, but its task agents cannot use
+  `orca_pod` to exchange files.
 - For an offline peer, retry at most once after a few seconds. Do not poll for minutes.
 
 ## Adding a machine

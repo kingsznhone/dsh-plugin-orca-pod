@@ -17,7 +17,7 @@ import { fakeAcpCommand } from "./support/fake-acp.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
 const acpExecutor = (config: AcpExecutorConfig) =>
-  new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { profile: undefined, env: () => ({}) });
+  new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { env: () => ({}) });
 
 const LIVE: Orca[] = [];
 
@@ -38,8 +38,8 @@ async function configFor(root: string, mode: string, overrides: Partial<Settings
   return [{ ...settings, ...overrides }, identity, key, dataRoot];
 }
 
-async function startNode(parts: NodeParts, profile?: string): Promise<Orca> {
-  const node = new Orca(...parts, { profile });
+async function startNode(parts: NodeParts): Promise<Orca> {
+  const node = new Orca(...parts);
   await node.start();
   LIVE.push(node);
   return node;
@@ -118,7 +118,7 @@ function taskText(view: TaskView): string {
 describe("AcpExecutor", () => {
   it("completes a task with the accumulated assistant text and runs in the workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(await configFor(root, "ok"), "desktop");
+    const node = await startNode(await configFor(root, "ok"));
     const submitted = await send(node, "say hi");
     const view = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(view)).toBe("acp done");
@@ -129,11 +129,11 @@ describe("AcpExecutor", () => {
     expect(initialize?.inTask).toBe("1");
     expect(initialize?.nodeUrl).toBe(`http://127.0.0.1:${new URL(node.mesh.self.endpoints[0]!).port}`);
     expect(initialize?.hasNodeToken).toBe(true);
-    // It runs in the host's own profile (D46).
-    expect(initialize?.extraArgs).toEqual(["--profile", "desktop"]);
+    // It runs in the acp profile, which loads this plugin too (D60).
+    expect(initialize?.extraArgs).toEqual(["--profile", "acp"]);
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);
-    // The session gets no MCP servers of the node's: its tools are the host profile's.
+    // The session gets no MCP servers of the node's: its tools are the acp profile's.
     expect(created?.mcpServers).toEqual([]);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");

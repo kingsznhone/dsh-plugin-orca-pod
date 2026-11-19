@@ -49,8 +49,9 @@ Hard constraints that must not be undone:
   back inline as text; large outputs are published by the child and fetched
   explicitly (the orca_pod fetch method), the fetching node dialing the publisher
   itself. Files are not part of a task: they are published and named
-  <node id>/<sha256> in the texts; tasks run in the host's profile, so the agent
-  there has orca_pod with fetch/publish only, through this machine's node.
+  <node id>/<sha256> in the texts; tasks run in the `acp` profile, so the agent
+  there has orca_pod with fetch/publish only, through this machine's node — which
+  is why every machine installs this plugin in both the host and `acp` profiles.
 - Approval happens on the ORIGIN orca node. A task inherits the dispatching
   session's permission mode (none inherited => read-only); the local
   permission_mode only narrows it. The target auto-answers ACP permission

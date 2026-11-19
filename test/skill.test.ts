@@ -16,7 +16,7 @@ describe("orca-node skill bundle", () => {
     expect(registration.resourceBase?.kind).toBe("directory");
     expect(resolve((registration.resourceBase as { path: string }).path)).toBe(dirname(path));
     expect(readFileSync(join(dirname(path), "references", "add-machine.md"), "utf8")).toContain(
-      "install DeepSeek Harness and this plugin",
+      "install this plugin in\n   **both** the profile that runs the machine's node",
     );
   });
 

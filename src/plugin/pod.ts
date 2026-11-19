@@ -139,8 +139,6 @@ export class Pod {
     private readonly catalog: ModelCatalogFeed,
     /** The data directory of this machine's node (§3.9). */
     readonly dataRoot: string,
-    /** The DSH profile this plugin was loaded from; the node runs tasks in it (D46). */
-    private readonly profile?: string,
   ) {
     this.stores = new PodStores(host);
     this.file = new SettingsFile(dataRoot);
@@ -373,7 +371,7 @@ export class Pod {
     };
     // One scrypt derivation per start; the key stays in memory (§7.1).
     const key = deriveWorkgroupKey(workgroupId, password);
-    const node = new Orca(settings, identity, key, this.dataRoot, { logger: this.logger, profile: this.profile });
+    const node = new Orca(settings, identity, key, this.dataRoot, { logger: this.logger });
 
     let info: { url: string; port: number };
     try {

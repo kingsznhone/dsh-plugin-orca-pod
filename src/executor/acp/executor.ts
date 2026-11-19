@@ -231,9 +231,9 @@ class AcpRun {
 }
 
 /**
- * ACP executor options (§6.14): the `dsh` stdio server to start. It runs in the
- * host's own profile, which the plugin passes in; there is no profile to
- * configure (D46). Part of the node's settings (`node/settings.ts`).
+ * ACP executor options (§6.14): the `dsh` stdio server to start. The child always
+ * runs the `acp` profile, which must load this plugin too so the task agent can
+ * exchange files (D60). Part of the node's settings (`node/settings.ts`).
  */
 export const AcpExecutorConfigSchema = z.object({ command: z.string().min(1).optional() });
 export type AcpExecutorConfig = z.infer<typeof AcpExecutorConfigSchema>;
@@ -252,14 +252,14 @@ export class AcpExecutor implements LocalExecutor {
     private readonly models: ModelCatalog,
     private readonly logger: NodeLogger,
     child: {
-      /** The host's own DSH profile, so the task has this plugin; unset passes no `--profile` (D46). */
-      profile: string | undefined;
       /** What the task's plugin needs to reach this machine's node, read when the child starts. */
       env: () => Record<string, string>;
     },
   ) {
     this.command = config.command ?? "dsh";
-    this.args = child.profile === undefined ? [] : ["--profile", child.profile];
+    // The acp profile is the only profile that speaks ACP on stdio. It must load
+    // this plugin too: the task agent gets `orca_pod`'s file methods there (D60).
+    this.args = ["--profile", "acp"];
     this.childEnv = child.env;
   }
 

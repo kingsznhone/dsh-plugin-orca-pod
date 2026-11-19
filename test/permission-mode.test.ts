@@ -16,7 +16,7 @@ import { fakeAcpCommand } from "./support/fake-acp.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
 const acpExecutor = (config: AcpExecutorConfig) =>
-  new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { profile: undefined, env: () => ({}) });
+  new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { env: () => ({}) });
 
 /** Every event of a run; resuming after a suspension is an approval of the mode it asked for. */
 async function collect(stream: AsyncGenerator<ExecutorEvent, void, void>): Promise<ExecutorEvent[]> {

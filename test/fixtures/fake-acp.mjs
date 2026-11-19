@@ -11,7 +11,7 @@
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-// Skip trailing option-looking args the executor appends (e.g. `--profile desktop`):
+// Skip trailing option-looking args the executor appends (e.g. `--profile acp`):
 // without this guard argv[3] would become a log path literally named "--profile".
 const rawMode = process.argv[2] ?? "ok";
 const mode = rawMode.startsWith("-")
@@ -142,7 +142,7 @@ function onRequest(message) {
       inTask: process.env.ORCA_POD_IN_TASK,
       nodeUrl: process.env.ORCA_POD_NODE_URL,
       hasNodeToken: (process.env.ORCA_POD_NODE_TOKEN ?? "").length > 0,
-      // What the executor appended after the mode and the log path (`--profile <name>`).
+      // What the executor appended after the mode and the log path (`--profile acp`).
       extraArgs: process.argv.slice(4),
     });
     respond(id, {

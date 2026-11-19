@@ -69,9 +69,10 @@ export const inject: Inject<Context> = ["tools", "credentials"];
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
  *
- * A session the task executor spawned loads this plugin too, since tasks run in
- * the host's profile (D46). There it starts no node and offers `orca_pod` with
- * the file methods only, which go through this machine's node (§5.6, §7.9).
+ * A session the task executor spawned loads this plugin too: the executor starts
+ * the `acp` profile, which must load this plugin as well (D60). There it starts
+ * no node and offers `orca_pod` with the file methods only, which go through this
+ * machine's node (§5.6, §7.9).
  */
 export function apply(ctx: Context, config: Config): void {
   const sandbox = new OptionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy");
@@ -91,8 +92,7 @@ export function apply(ctx: Context, config: Config): void {
   const launch = launchEnvironmentOf(ctx);
   const dshHome = resolveDshHome(ctx.dshHomePath?.(), { [DSH_HOME_ENV]: launch.get(DSH_HOME_ENV)?.value });
   const feed = new ModelCatalogFeed(ctx, logger);
-  // Tasks run in the profile this plugin was loaded from, present only when dsh launched it (D46).
-  const pod = new Pod(logger, ctx, feed, resolve(dshHome, "orca-pod"), ctx.profileContext?.name);
+  const pod = new Pod(logger, ctx, feed, resolve(dshHome, "orca-pod"));
   const agents = new OptionalService(ctx, "agents", "orca-pod.agents");
   // The tracker polls whatever the dispatch log holds; the host's sessions only
   // decide who hears about a task when it ends.

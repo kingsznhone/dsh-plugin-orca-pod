@@ -130,7 +130,7 @@ GET /blobs/<blob_id>                         # 成员签名；只读本节点发
 两边的 agent 都用同一个工具 `orca_pod` 的两个方法：`publish`（`path`，可选 `ttl_s`）把本机文件登记到本机节点、返回名字；`fetch`（`ref`、`output`）按名字取任一成员发布的文件，写到会话沙箱允许写的位置。
 
 - **宿主 agent**：工具和节点在同一个进程里，直接调用节点。
-- **任务里的 agent**：任务在宿主的 profile 里运行（[§6.14](06-execution.md#614-acpexecutor)），所以插件也在那个 `dsh` 进程里；看到 `ORCA_POD_IN_TASK=1` 时它不起节点，只注册只有 `fetch`/`publish` 两个方法的 `orca_pod`，经本机节点的**本地路由**办事。执行器启动子进程时注入 `ORCA_POD_NODE_URL`（本机节点的 loopback 地址）与 `ORCA_POD_NODE_TOKEN`（节点每次启动随机生成的令牌）。
+- **任务里的 agent**：任务在 `acp` profile 里运行（[§6.14](06-execution.md#614-acpexecutor)，D60），所以那个 `dsh` 进程也要装本插件；看到 `ORCA_POD_IN_TASK=1` 时它不起节点，只注册只有 `fetch`/`publish` 两个方法的 `orca_pod`，经本机节点的**本地路由**办事。执行器启动子进程时注入 `ORCA_POD_NODE_URL`（本机节点的 loopback 地址）与 `ORCA_POD_NODE_TOKEN`（节点每次启动随机生成的令牌）。
 
 ```http
 GET  /blobs/<blob_id>                        # 成员签名；只读本节点发布的文件，答复签名覆盖 status 与 blob_id

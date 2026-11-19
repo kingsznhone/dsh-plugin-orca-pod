@@ -24,7 +24,7 @@
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区
 
-- `AcpExecutor`；专属 profile；cwd = workgroup 根（工作区）。
+- `AcpExecutor`；固定 `acp` profile（该 profile 也装本插件，D60）；cwd = workgroup 根（工作区）。
 - context → session 绑定；`session/update` → 结论文本；thought 过滤。
 - 取消（`session/cancel` + 进程树）；`input-required` 透传。
 - 工作区持久化（根即 cwd）、`notes/`；工作区配额；单槽 busy（`429 orca_node_busy`）。
@@ -129,7 +129,7 @@
 - [x] 改密码后旧节点在下一拍心跳被双方丢弃（`401 bad_proof`）
 - [x] 重放请求（同 nonce）被拒；重启前签发的请求被 `stale_request` 拒绝
 - [x] 候选端点指向 `169.254.169.254` 被拒；私网候选正常拨号，回环默认允许、可用 `allow_loopback_peers: false` 收紧
-- [x] 非成员的签名请求 `403 not_a_member`；`local` 路由带转发头 `403 local_only`
+- [x] 非成员的签名请求 `403 not_a_member`；`local` 路由（`/local/blobs`）不带或带错本机 token（`X-Orca-Local`）`401 missing_auth`
 
 #### 10 orca node
 

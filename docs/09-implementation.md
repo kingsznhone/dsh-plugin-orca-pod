@@ -124,7 +124,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 
 ### 9.4 进程内多 orca node
 
-`node/orca.ts` 的 `new Orca(settings, identity, key, dataRoot, options?)` 构造一个 orca 实例：身份、workgroup key 与数据根都由调用者给（测试用 `test/support/node.ts` 的 `nodeParts` / `newNode` 造内存身份），构造器很轻，不写盘、不联网；`start()` 才创建工作区目录、监听端口、开始心跳。子系统以只读字段公开，调用方直接用它们：`orca.models`（模型目录）、`orca.mesh`（节点表，本机是 `mesh.self`）、`orca.dispatches`（派发日志）、`orca.tasks`（本机任务）、`orca.workspace`（工作区路径）；`options` 只有 `runtime`、`timings`、`fetch`、`executor`、`profile`、`logger`，一次运行一个 `Orca`。
+`node/orca.ts` 的 `new Orca(settings, identity, key, dataRoot, options?)` 构造一个 orca 实例：身份、workgroup key 与数据根都由调用者给（测试用 `test/support/node.ts` 的 `nodeParts` / `newNode` 造内存身份），构造器很轻，不写盘、不联网；`start()` 才创建工作区目录、监听端口、开始心跳。子系统以只读字段公开，调用方直接用它们：`orca.models`（模型目录）、`orca.mesh`（节点表，本机是 `mesh.self`）、`orca.dispatches`（派发日志）、`orca.tasks`（本机任务）、`orca.workspace`（工作区路径）；`options` 只有 `runtime`、`timings`、`fetch`、`executor`、`logger`，一次运行一个 `Orca`。ACP 子进程固定用 `acp` profile（D60），所以没有 profile 选项。
 
 - 端口用 `0` 让系统分配，避免并行测试抢 11811；`start()` 返回实际 `url` 与 `port`。
 - harness 的 `createMesh({ orcaNodes, workgroupId, password, basePort, displayNamePrefix, dataRoot, timings, taskTimeoutS, fetch })` 返回 `{ orcaNodes, urls, dataRoot, ownsDataRoot, stop() }`：启动后让每个 orca node join 第一个、用同文件的 `connectAll` 按返回目录补 join，再对 bootstrap 发一轮心跳。它住在 `test/support/harness.ts`（不进 `lib/`、不是包导出），只是对本文件上面那些生产 API 的组装，不复制实现；每个节点都注入 `ScriptExecutor`。手工拼节点的测试用 `connectAll` 互相 join（出站调用只到成员，陌生 URL 是 `unknown_peer`）。
@@ -195,7 +195,7 @@ export function apply(ctx, config) {
   // 建：数据目录固定为 $DSH_HOME/orca-pod：整台机器一个节点，不看 profile（D44）；
   // DSH home 取宿主解析的 ctx.dshHomePath()，环境变量从 DSH 的启动环境快照读（launchEnvironmentOf，含 .env 层）
   const feed = new ModelCatalogFeed(ctx, logger); // llm 与 agentDefaultModel 各自一道 ctx.inject 围栏
-  const pod = new Pod(logger, ctx, feed, dataRoot, ctx.profileContext?.name); // 自己创建 PodStores；订阅 feed.changes
+  const pod = new Pod(logger, ctx, feed, dataRoot); // 自己创建 PodStores；订阅 feed.changes
   // tracker 轮询派发日志里未结束的任务，并留着等用户作答的权限请求；会话只在交付 notice 时按 agent_id 查（D45）
   const tracker = new Tracker(pod, logger, (id) => agents.current()?.get(id));
   // 挂：卸载 disposer（tracker.stop()、pod.stop()）、agent 钩子（用户发消息 → tracker.resetWakes）、

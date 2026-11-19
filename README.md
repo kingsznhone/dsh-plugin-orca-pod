@@ -46,7 +46,7 @@ dsh --profile desktop --dump-config
 
 首次启动保持空闲：`cordis.patch.yml` 不携带 workgroup 或密码，必须先在面板向导里完成 setup（workgroup、密码、监听地址）才会开始监听。监听默认 `127.0.0.1`；要让局域网 peer 直连，在向导里选择 LAN 地址或 `::`。
 
-**在新机器上加入 mesh**：装 DSH 与本插件，打开面板填同一个 workgroup 与密码，再在任一已在 mesh 里的机器上 `connect` 它的地址（或在它的面板里填已在 mesh 里的机器）。没有无头安装器：要在没有桌面的 Linux 机器上跑，就在那里装 DSH，用它的 Web UI 装本插件。
+**在新机器上加入 mesh**：装 DSH，并在 **web profile 与 acp profile 里都装本插件**（`dsh plugin --profile web add …`、`dsh plugin --profile acp add …`），打开面板填同一个 workgroup 与密码，再在任一已在 mesh 里的机器上 `connect` 它的地址（或在它的面板里填已在 mesh 里的机器）。web profile 里的插件跑本机节点、让别的机器能调用；acp profile 里的插件只服务任务子进程，给任务 agent 提供 `orca_pod` 的 `fetch`/`publish`。缺了 acp profile 这一份，任务仍能跑，但交换不了文件。没有无头安装器：要在没有桌面的 Linux 机器上跑，就在那里装 DSH，用它的 Web UI 装本插件（两个 profile 各装一次）。
 
 节点只监听节点端口（默认 11811）。**一台机器一个节点**：身份、密码、设置、任务库、工作区整台机器一份，不论有几个 DSH profile；两个 DSH 进程同时开着时，只有先绑定端口的那个跑节点，另一个显示“已在另一个进程中运行”。
 
@@ -62,7 +62,7 @@ dsh --profile desktop --dump-config
 | `bind_host` / `port`   | `127.0.0.1` / `11811`                  | 监听地址与端口（`port: 0` 自选）                                                                       |
 | `endpoints`            | `[]`（按监听地址推导）                 | 对外宣告的拨号地址，1–8 个，第一个是 primary                                                          |
 | `peers`                | `[]`                                   | 启动时作为种子接触的 peer；没应答的会按退避继续重试                                                    |
-| `acp`                  | 未设置                                 | 本机 ACP 执行器的配置（origin 不能指定执行器），只有 `command`（默认 `dsh`，只是程序名）；任务总在宿主自己的 profile 里运行，子进程只带 `--profile <宿主 profile>`，工具也是该 profile 的 |
+| `acp`                  | 未设置                                 | 本机 ACP 执行器的配置（origin 不能指定执行器），只有 `command`（默认 `dsh`，只是程序名）；子进程固定 `--profile acp`，所以 acp profile 也要装本插件，任务 agent 才有 `orca_pod` 的文件方法 |
 | `permission_mode`      | 未设置（无本机上限）                   | 本机权限上限；生效模式 = 它与 origin 继承值中较窄的                                                    |
 | `task_timeout_s`       | `3600`                                 | 单任务硬上限，对外公布为 `max_task_ttl_s`                                                              |
 | `max_workspace_bytes`  | 5 GiB                                  | 工作区配额（只按字节）；超出时新任务 `507 quota_exceeded`                                              |
@@ -72,7 +72,7 @@ dsh --profile desktop --dump-config
 
 节点私钥在凭据库，所以 node id 跨重启保持不变；改密码 = 重建组（改了密码的节点在它的下一个请求就被旧 mesh 拒绝）；面板的“完全重置”删掉整台机器的节点（密码、私钥、设置、peers），没有分支。旧版本按 profile 存的身份和任务库不读、不迁移：已装过的机器会得到新身份，需要重新入组。
 
-任务的权限模式继承发起会话（没继承到就 `read-only`），显式传的模式只能更窄，本机 `permission_mode` 是上限；任务需要更多权限时请求发起者把本任务升级一档，人在面板或聊天卡上批准后，该任务余下的同类操作不再询问。挂起的权限请求一直等到人答复（没有超时设置）。结论文本内联上限（32 KiB）与单次出站调用超时（30 s）是常量，不是设置。任务只有一跳：任务在宿主的 profile 里运行，执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，插件见到就不启动节点，`orca_pod` 只剩 `fetch` 与 `publish`、经本机节点收发文件——这是防 agent 转手的非对抗性约束，不是密钥隔离。
+任务的权限模式继承发起会话（没继承到就 `read-only`），显式传的模式只能更窄，本机 `permission_mode` 是上限；任务需要更多权限时请求发起者把本任务升级一档，人在面板或聊天卡上批准后，该任务余下的同类操作不再询问。挂起的权限请求一直等到人答复（没有超时设置）。结论文本内联上限（32 KiB）与单次出站调用超时（30 s）是常量，不是设置。任务只有一跳：任务在 `acp` profile 里运行，执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，插件见到就不启动节点，`orca_pod` 只剩 `fetch` 与 `publish`、经本机节点收发文件——这是防 agent 转手的非对抗性约束，不是密钥隔离。
 
 ## 工具
 

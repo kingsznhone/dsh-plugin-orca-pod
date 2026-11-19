@@ -82,13 +82,13 @@ type ExecuteInput = {
 ```text
 Pod gateway (local)
   → AcpExecutor
-    → spawn dsh --profile <宿主的 profile>（cwd = 本 orca node 工作区）
+    → spawn dsh --profile acp（cwd = 本 orca node 工作区）
       → stdio JSON-RPC（换行分隔）
 ```
 
 禁止：把 ACP 端口暴露给 peer；让 peer 直接发 ACP 请求；把 ACP sessionId 当 A2A taskId；原样转发 thought。
 
-任务在**宿主自己的 profile** 里运行（D46，`ctx.profileContext.name`；宿主不是由 dsh 拉起时不传 `--profile`）：这样任务进程里也有本插件，任务 agent 才能用 `orca_pod` 收发文件，不需要另配 profile。代价是任务会话带着宿主 profile 的其他插件与设置。ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
+任务固定用 **`acp` profile**（D60，推翻 D46 的“宿主自己的 profile”）：`acp profile` 是唯一在 stdio 上讲 ACP 的 profile，所以启动参数固定 `--profile acp`；该 profile 也要装本插件，任务 agent 才有 `orca_pod` 的 `fetch`/`publish`（[§5.6](05-tasks.md#56-文件交换blob-通道)）。web/desktop 等宿主 profile 只跑本机节点，不再出现在任务子进程里。代价是每台机器要在两个 profile 里各装一次插件；ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
 
 **ACP 会话不转发任务，也不派新任务**：任务只有一跳，任务会话里的 `orca_pod` 没有 `send`（[§7.9](07-security.md#79-权限跟随发起-orca-node)）；做不完就以 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）。
 
@@ -218,9 +218,9 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 ### 6.14 AcpExecutor
 
-`AcpExecutor`（`src/executor/acp/`）是唯一的真实执行器，也是唯一能承接**权限挂起**的那种：任务交给宿主 profile 下的 `dsh`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
+`AcpExecutor`（`src/executor/acp/`）是唯一的真实执行器，也是唯一能承接**权限挂起**的那种：任务交给 `acp` profile 下的 `dsh`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
 
-配置（本机设置文件 `<data_root>/settings.json`）：`acp.command`（可选，缺省 `dsh`）只覆盖 ACP 子进程的可执行文件；没有执行器种类选项，也没有额外参数或 MCP 透传。
+配置（本机设置文件 `<data_root>/settings.json`）：`acp.command`（可选，缺省 `dsh`）只覆盖 ACP 子进程的可执行文件；启动参数固定 `--profile acp`，没有执行器种类选项，也没有额外参数或 MCP 透传。
 
 ```json
 { "acp": { "command": "dsh" } }
@@ -251,7 +251,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 **批准与 ACP 的对齐**：[§7.11](07-security.md#711-批准与拒绝) 的批准升级的是任务的模式，不是单次调用：触发它的那次 `session/request_permission` 回 `allow_once`，之后的请求由执行器按新模式（挂起的请求里的 `requested_mode`）自己应答，不再挂起。target 侧只校验恢复消息（谁发的、任务是否在等、批准是否对着这次请求）。
 
-**给 ACP 会话的东西：只管文件的 `orca_pod`**：任务在宿主的 profile 里运行，所以 ACP agent 所在的 `dsh` 进程也加载了本插件。executor 给子进程环境注入三个变量：`ORCA_POD_IN_TASK=1`（这是任务会话：插件见到它就不启动节点、不注册 skill，[§7.9](07-security.md#79-权限跟随发起-orca-node)），以及 `ORCA_POD_NODE_URL` 与 `ORCA_POD_NODE_TOKEN`（本机节点的 loopback 地址与本地路由的令牌，节点开始监听之后、每次启动子进程时读取）。插件据此只注册 `fetch` 与 `publish` 两个方法的 `orca_pod`，经本机节点办事（[§5.6](05-tasks.md#56-文件交换blob-通道)）。任务书的可信前言（[§6.7](06-execution.md#67-工作区一份持久)）教 agent 怎么用：
+**给 ACP 会话的东西：只管文件的 `orca_pod`**：任务在 `acp` profile 里运行，所以 ACP agent 所在的 `dsh` 进程也加载了本插件（前提是 acp profile 装了它，D60）。executor 给子进程环境注入三个变量：`ORCA_POD_IN_TASK=1`（这是任务会话：插件见到它就不启动节点、不注册 skill，[§7.9](07-security.md#79-权限跟随发起-orca-node)），以及 `ORCA_POD_NODE_URL` 与 `ORCA_POD_NODE_TOKEN`（本机节点的 loopback 地址与本地路由的令牌，节点开始监听之后、每次启动子进程时读取）。插件据此只注册 `fetch` 与 `publish` 两个方法的 `orca_pod`，经本机节点办事（[§5.6](05-tasks.md#56-文件交换blob-通道)）。任务书的可信前言（[§6.7](06-execution.md#67-工作区一份持久)）教 agent 怎么用：
 
 - 文件写作 `<orca node id>/<sha256>`：任务文本提到的用 `orca_pod` 的 `fetch` 取，要交回的用 `publish` 发布、把名字写进结论；**没有 `send`**：任务只有一跳；
 - **要权限就直接调工具**：模式之外的请求由执行器挂起任务、等 origin 的人决定，agent 这一侧什么都不用做（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；
