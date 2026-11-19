@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "../src/mesh/timings.ts";
 import type { OrcaNodeId } from "../src/core/wire/peer.ts";
-import { fakeNodeId, labelId } from "./fixtures/ids.ts";
-import { listed, testMesh } from "./support/mesh.ts";
+import type { Mesh } from "../src/mesh/mesh.ts";
+import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "../src/mesh/timings.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
+import { listed, TestNet, type NetNode } from "./support/net.ts";
 
+/** A fast, pinned cadence: a hello every ~200 ms, suspect after 600 ms of silence, offline after 1.2 s. */
 const TIMINGS: MeshTimings = {
   intervalMs: 200,
   suspectAfterMs: 600,
@@ -15,259 +17,231 @@ const TIMINGS: MeshTimings = {
   tombstoneMs: 10000,
   heartbeatTimeoutMs: 50,
 };
+/** The latest a round can come after the one before it: the interval plus its jitter. */
+const ROUND_MS = TIMINGS.intervalMs * 1.1;
 
-const B = labelId("BBBBBB");
-const C = labelId("CCCCCC");
-const D = labelId("DDDDDD");
-
-function setup() {
-  return testMesh(TIMINGS);
+function stateOf(viewer: NetNode, node: NetNode): string | undefined {
+  return viewer.mesh.get(node.id)?.state;
 }
 
-/** Whether a hello to the node is due now. */
-function isDue(table: ReturnType<typeof setup>, id: OrcaNodeId): boolean {
-  return table.mesh.require(id).due(table.clock.monotonicMs());
+function ids(mesh: Mesh): OrcaNodeId[] {
+  return mesh
+    .list()
+    .map((node) => node.id)
+    .sort();
 }
 
-/** One failed greeting, the way the mesh counts it: a drop forgets the node and tombstones its id. */
-function miss(table: ReturnType<typeof setup>, id: OrcaNodeId): void {
-  const node = table.mesh.get(id);
-  if (node?.missed(table.clock.monotonicMs(), TIMINGS) === "drop") table.mesh.remove(id);
+/** What `node` vouches for (§3.5), as a node meeting it for the first time learns it from its answer. */
+async function vouchedBy(net: TestNet, node: NetNode): Promise<OrcaNodeId[]> {
+  const stranger = net.node();
+  await stranger.mesh.probe(node.url);
+  // The stranger is in the list only because it asked.
+  net.down(stranger);
+  return ids(stranger.mesh).filter((id) => id !== stranger.id);
+}
+
+/** `node` greets `viewer` with this description, as the hello route hands it over (proofs checked, endpoints screened). */
+function greet(viewer: NetNode, id: OrcaNodeId, endpoints = ["http://10.9.9.9:11811"], display_name = `node-${id}`) {
+  viewer.mesh.answer(id, { self: { display_name, endpoints }, busy: null, digest: "" }, endpoints);
+  return viewer.mesh.require(id);
 }
 
 describe("the node table", () => {
-  it("has this node in it, always online, never due for a hello", () => {
-    const { mesh, advance } = setup();
-    expect(mesh.list().map((node) => node.id)).toEqual([mesh.self.id]);
-    expect(mesh.get(mesh.self.id)).toBe(mesh.self);
-    expect(mesh.self.isSelf).toBe(true);
-    advance(1_000_000);
-    mesh.evaluate();
-    expect(mesh.self.state).toBe("online");
-    expect(mesh.self.due(1_000_000)).toBe(false);
+  it("has this node in it, always online, and never greets it", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a] = (await net.started(1)) as [NetNode];
+    await net.advance(20_000);
+    expect(ids(a.mesh)).toEqual([a.id]);
+    expect(a.mesh.self.state).toBe("online");
+    expect(net.dialsTo(a, a)).toBe(0);
     // Nobody can forget it.
-    mesh.remove(mesh.self.id);
-    expect(mesh.get(mesh.self.id)).toBe(mesh.self);
+    a.mesh.remove(a.id);
+    expect(a.mesh.get(a.id)).toBe(a.mesh.self);
   });
 
-  it("lists the others apart from itself", () => {
-    const table = setup();
-    table.greeted(B);
-    expect(table.mesh.list()).toHaveLength(2);
-    expect(table.mesh.peers().map((node) => node.id)).toEqual([B]);
+  it("lists the others apart from itself", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b] = (await net.started(2)) as [NetNode, NetNode];
+    expect(a.mesh.list()).toHaveLength(2);
+    expect(a.mesh.peers().map((node) => node.id)).toEqual([b.id]);
+    expect(b.mesh.peers().map((node) => node.id)).toEqual([a.id]);
   });
 
-  it("remote member lists add records but never mark them online", () => {
-    const { mesh } = setup();
-    mesh.mergeRemote([listed(B)]);
+  it("learns members from a peer's list as unknown candidates, online only once it reaches them", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b] = (await net.started(2)) as [NetNode, NetNode];
+    const c = net.node();
+    c.mesh.start();
+    net.cut(b, c);
+    await c.mesh.probe(a.url);
+    await net.advance(2 * ROUND_MS);
+    expect(b.mesh.get(c.id)?.view()).toMatchObject({ state: "unknown", last_recv_at: null });
 
-    expect(mesh.get(B)?.state).toBe("unknown");
-    expect(mesh.get(B)?.view().last_recv_at).toBeNull();
-    expect(mesh.require(B).due(0)).toBe(true);
+    net.heal(b, c);
+    await net.advance(TIMINGS.maxRecoverProbeMs + 2 * ROUND_MS);
+    expect(stateOf(b, c)).toBe("online");
   });
 
-  it("does not let a third-party roster overwrite a known member", () => {
-    const { mesh } = setup();
-    mesh.mergeRemote([listed(B)]);
-    mesh.mergeRemote([listed(B, "http://192.0.2.9:11811", { display_name: "mallory" })]);
-
-    const peer = mesh.get(B)?.view();
-    expect(peer?.display_name).toBe("node-BBBBBB");
-    expect(peer?.endpoints).toEqual(["http://127.0.0.1:11811"]);
+  it("does not let a third-party roster overwrite a known member", async () => {
+    const net = new TestNet(TIMINGS);
+    const b = net.node();
+    const c = net.node();
+    const hostile = net.node();
+    await b.mesh.probe(c.url);
+    const honest = hostile.mesh.answer.bind(hostile.mesh);
+    vi.spyOn(hostile.mesh, "answer").mockImplementation((caller, request, endpoints) => ({
+      ...honest(caller, request, endpoints),
+      members: [listed(c.id, "http://192.0.2.9:11811", { display_name: "mallory" })],
+    }));
+    await b.mesh.probe(hostile.url);
+    expect(b.mesh.get(c.id)?.view()).toMatchObject({ display_name: c.mesh.self.displayName, endpoints: [c.url] });
   });
 
-  it("walks online -> suspect(quiet) -> offline -> pruned from inbound silence", () => {
-    const table = setup();
-    const { mesh, advance } = table;
-    mesh.mergeRemote([listed(B)]);
-    table.hear(B);
-    expect(mesh.get(B)?.state).toBe("online");
+  it("walks online -> suspect -> offline -> pruned from silence, and a peer's list cannot bring it back", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b, c] = (await net.started(3)) as [NetNode, NetNode, NetNode];
+    await net.advance(1000);
+    expect(stateOf(a, b)).toBe("online");
 
-    advance(700);
-    mesh.evaluate();
-    expect(mesh.get(B)?.state).toBe("suspect");
+    // A partition: a no longer hears b, while c still does and keeps vouching for it.
+    net.cut(a, b);
+    // The last round saw 600-1040 ms of silence: past the suspect window, short of the offline one.
+    await net.advance(TIMINGS.suspectAfterMs + ROUND_MS);
+    expect(stateOf(a, b)).toBe("suspect");
+    await net.advance(TIMINGS.offlineAfterMs - TIMINGS.suspectAfterMs + ROUND_MS);
+    expect(stateOf(a, b)).toBe("offline");
+    expect(await vouchedBy(net, a)).not.toContain(b.id);
 
-    advance(600);
-    mesh.evaluate();
-    expect(mesh.get(B)?.state).toBe("offline");
-
-    advance(5100);
-    mesh.evaluate();
-    expect(mesh.get(B)).toBeUndefined();
-    // Tombstoned: a stale list cannot bring it back.
-    mesh.mergeRemote([listed(B)]);
-    expect(mesh.get(B)).toBeUndefined();
-
-    mesh.mergeRemote([listed(B)]);
-    expect(mesh.get(B)).toBeUndefined();
+    await net.advance(TIMINGS.recordTtlMs + 2 * ROUND_MS);
+    expect(a.mesh.get(b.id)).toBeUndefined();
+    // c's list still names b every round, but the tombstone holds.
+    await net.advance(2000);
+    expect(stateOf(c, b)).toBe("online");
+    expect(a.mesh.get(b.id)).toBeUndefined();
   });
 
-  it("marks suspect(unreachable) when sends fail but heartbeats still arrive", () => {
-    const table = setup();
-    const { mesh, advance } = table;
-    mesh.mergeRemote([listed(B)]);
-    table.hear(B);
+  it("keeps a removed node out against stale lists, and lets it back in through its own greeting", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b, c] = (await net.started(3)) as [NetNode, NetNode, NetNode];
+    await net.advance(1000);
+    // b's own hellos do not reach a; c keeps listing b.
+    net.cut(b, a, true);
+    a.mesh.remove(b.id);
+    await net.advance(1000);
+    expect(stateOf(c, b)).toBe("online");
+    expect(a.mesh.get(b.id)).toBeUndefined();
 
-    advance(100);
-    miss(table, B);
-    miss(table, B);
-    miss(table, B);
-
-    expect(mesh.get(B)?.state).toBe("suspect");
-
-    mesh.require(B).answered();
-    expect(mesh.get(B)?.state).toBe("online");
-
-    miss(table, B);
-    miss(table, B);
-    miss(table, B);
-    table.hear(B);
-    expect(mesh.get(B)?.state).toBe("online");
+    // b proves the password in its next hello: the tombstone must not lock it out.
+    net.heal(b, a);
+    await net.advance(TIMINGS.maxRecoverProbeMs + 2 * ROUND_MS);
+    expect(stateOf(a, b)).toBe("online");
   });
 
-  it("a removed peer is tombstoned against stale lists", () => {
-    const table = setup();
-    const { mesh } = table;
-    mesh.mergeRemote([listed(B)]);
-    table.hear(B);
+  it("probes an offline peer on a backoff instead of every round", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b] = (await net.started(2)) as [NetNode, NetNode];
+    net.down(b);
+    await net.advance(TIMINGS.offlineAfterMs + 2 * ROUND_MS);
+    expect(stateOf(a, b)).toBe("offline");
+    // Probes at 0, 1.5 s and 4.5 s after it went offline; the record TTL ends them at 5 s.
+    await net.advance(TIMINGS.recordTtlMs + ROUND_MS);
+    expect(a.mesh.get(b.id)).toBeUndefined();
 
-    mesh.remove(B);
-    expect(mesh.peers()).toHaveLength(0);
-    // Tombstoned: a stale list cannot bring it back.
-    mesh.mergeRemote([listed(B)]);
-    expect(mesh.get(B)).toBeUndefined();
-
-    mesh.mergeRemote([listed(B)]);
-    expect(mesh.get(B)).toBeUndefined();
-  });
-
-  it("lets a removed node back in through its own greeting, while stale lists stay blocked", () => {
-    const table = setup();
-    const { mesh } = table;
-    table.greeted(B);
-    mesh.remove(B);
-    // Tombstoned: a stale list cannot bring it back.
-    mesh.mergeRemote([listed(B)]);
-    expect(mesh.get(B)).toBeUndefined();
-
-    // The node leaves and comes back within the tombstone window: it proved the password
-    // in the request, so the record must exist afterwards.
-    table.greeted(B);
-    expect(mesh.get(B)?.state).toBe("online");
-
-    mesh.remove(B);
-    mesh.mergeRemote([listed(B)]);
-    expect(mesh.get(B)).toBeUndefined();
-  });
-
-  it("offline peers back off probe attempts", () => {
-    const table = setup();
-    const { mesh, advance } = table;
-    mesh.mergeRemote([listed(B)]);
-    table.hear(B);
-    advance(1300);
-    mesh.evaluate();
-    expect(mesh.get(B)?.state).toBe("offline");
-    expect(isDue(table, B)).toBe(true);
-
-    miss(table, B);
-    expect(isDue(table, B)).toBe(false);
-    advance(TIMINGS.recoverProbeMs);
-    expect(isDue(table, B)).toBe(true);
-  });
-
-  it("backs off an unreached candidate like an offline peer and drops it after five failures (B24)", () => {
-    const table = setup();
-    const { mesh, advance } = table;
-    mesh.mergeRemote([listed(D)]);
-    for (let attempt = 1; attempt < CANDIDATE_MAX_FAILURES; attempt += 1) {
-      expect(isDue(table, D)).toBe(true);
-      miss(table, D);
-      expect(isDue(table, D)).toBe(false);
-      advance(TIMINGS.maxRecoverProbeMs);
+    const times = net.dialTimes(a, b);
+    const backoffs = times
+      .slice(1)
+      .map((at, index) => at - (times[index] ?? at))
+      .filter((gap) => gap > 2 * ROUND_MS);
+    const [first, ...rest] = backoffs;
+    expect(first).toBeGreaterThanOrEqual(TIMINGS.recoverProbeMs);
+    expect(first).toBeLessThanOrEqual(TIMINGS.recoverProbeMs + ROUND_MS);
+    expect(rest).toHaveLength(1);
+    for (const gap of rest) {
+      expect(gap).toBeGreaterThanOrEqual(TIMINGS.maxRecoverProbeMs);
+      expect(gap).toBeLessThanOrEqual(TIMINGS.maxRecoverProbeMs + ROUND_MS);
     }
-    miss(table, D);
-    expect(mesh.get(D)).toBeUndefined();
-    // Tombstoned: a stale list cannot bring it back.
-    mesh.mergeRemote([listed(D)]);
-    expect(mesh.get(D)).toBeUndefined();
-    // A stale list cannot bring it straight back.
-    mesh.mergeRemote([listed(D)]);
-    expect(mesh.get(D)).toBeUndefined();
   });
 
-  it("keeps a candidate that answers, so its failures start over", () => {
-    const table = setup();
-    const { mesh } = table;
-    mesh.mergeRemote([listed(D)]);
-    for (let attempt = 1; attempt < CANDIDATE_MAX_FAILURES; attempt += 1) miss(table, D);
-    table.hear(D);
-    mesh.require(D).answered();
-    miss(table, D);
-    expect(mesh.get(D)?.state).toBe("online");
+  it("gives up on a candidate it never reaches after five tries, until the node greets it itself (B24)", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b] = (await net.started(2)) as [NetNode, NetNode];
+    const d = net.node();
+    d.mesh.start();
+    net.cut(b, d);
+    await d.mesh.probe(a.url);
+    await net.advance(2 * ROUND_MS);
+    expect(stateOf(b, d)).toBe("unknown");
+
+    await net.advance(15_000);
+    expect(net.dialsTo(b, d)).toBe(CANDIDATE_MAX_FAILURES);
+    expect(b.mesh.get(d.id)).toBeUndefined();
+    // a still vouches for d in every answer, but the tombstone holds.
+    expect(stateOf(a, d)).toBe("online");
+    expect(net.dialsTo(b, d)).toBe(CANDIDATE_MAX_FAILURES);
+
+    // d greets b for itself, with both proofs: tombstone or not, it is a member.
+    net.heal(b, d);
+    await d.mesh.probe(b.url);
+    expect(stateOf(b, d)).toBe("online");
   });
 
-  it("passes on only itself and the members it hears from, not candidates or offline nodes (B24)", () => {
-    const table = setup();
-    const { mesh, advance } = table;
-    mesh.mergeRemote([listed(B), listed(C)]);
-    table.hear(B);
-    // C is a candidate this node never reached: kept locally, not passed on.
-    expect(
-      mesh
-        .directory()
-        .map((peer) => peer.orca_node_id)
-        .sort(),
-    ).toEqual([mesh.self.id, B].sort());
-    expect(mesh.list()).toHaveLength(3);
-    advance(TIMINGS.offlineAfterMs);
-    mesh.evaluate();
-    expect(mesh.get(B)?.state).toBe("offline");
-    expect(mesh.directory().map((peer) => peer.orca_node_id)).toEqual([mesh.self.id]);
+  it("keeps a candidate that answers before it runs out of tries", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b] = (await net.started(2)) as [NetNode, NetNode];
+    const d = net.node();
+    d.mesh.start();
+    net.cut(b, d);
+    await d.mesh.probe(a.url);
+    await net.advance(2 * ROUND_MS);
+    // Four tries fail (0, 1.5 s, 4.5 s, 7.5 s from now); the fifth would come at 10.5 s.
+    await net.advance(9000);
+    expect(net.dialsTo(b, d)).toBe(CANDIDATE_MAX_FAILURES - 1);
+
+    net.heal(b, d);
+    await net.advance(TIMINGS.maxRecoverProbeMs + 2 * ROUND_MS);
+    expect(stateOf(b, d)).toBe("online");
+    // A member it has heard from is not given up like a candidate when it goes quiet.
+    net.cut(b, d);
+    await net.advance(TIMINGS.offlineAfterMs + 2 * ROUND_MS);
+    expect(stateOf(b, d)).toBe("offline");
   });
 
-  it("stops a dead node from circulating between two members (B24)", () => {
-    const a = setup();
-    const c = setup();
-    // A knows D first-hand; C learns D only from A's directory.
-    a.mesh.mergeRemote([listed(D)]);
-    a.hear(D);
-    c.mesh.mergeRemote(a.mesh.directory());
-    // D dies. A stops vouching for it once it goes offline; C gives up on its candidate.
-    for (let round = 0; round < 20; round += 1) {
-      a.advance(TIMINGS.maxRecoverProbeMs);
-      c.advance(TIMINGS.maxRecoverProbeMs);
-      a.mesh.evaluate();
-      c.mesh.evaluate();
-      if (c.mesh.get(D) && isDue(c, D)) miss(c, D);
-      if (a.mesh.get(D) && isDue(a, D)) miss(a, D);
-      // They keep exchanging directories every round.
-      a.mesh.mergeRemote(c.mesh.directory());
-      c.mesh.mergeRemote(a.mesh.directory());
-    }
-    expect(c.mesh.get(D)).toBeUndefined();
-    expect(a.mesh.directory().some((peer) => peer.orca_node_id === D)).toBe(false);
-    // A keeps its own offline record until the record TTL, then prunes it for good.
-    a.advance(TIMINGS.recordTtlMs);
-    a.mesh.evaluate();
-    expect(a.mesh.get(D)).toBeUndefined();
-    c.mesh.mergeRemote(a.mesh.directory());
-    a.mesh.mergeRemote(c.mesh.directory());
-    expect(a.mesh.get(D)).toBeUndefined();
-    expect(c.mesh.get(D)).toBeUndefined();
+  it("vouches only for itself and the members it hears from, not candidates or offline nodes (B24)", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, b] = (await net.started(2)) as [NetNode, NetNode];
+    const d = net.node();
+    d.mesh.start();
+    net.cut(b, d);
+    await d.mesh.probe(a.url);
+    await net.advance(2 * ROUND_MS);
+    // d is a candidate b never reached: kept locally, not passed on.
+    expect(stateOf(b, d)).toBe("unknown");
+    expect(await vouchedBy(net, b)).toEqual([a.id, b.id].sort());
+
+    net.cut(b, a);
+    await net.advance(TIMINGS.offlineAfterMs + 2 * ROUND_MS);
+    expect(stateOf(b, a)).toBe("offline");
+    expect(await vouchedBy(net, b)).toEqual([b.id]);
   });
 
-  it("lets a dropped candidate back in when it greets itself, tombstone or not", () => {
-    const table = setup();
-    const { mesh } = table;
-    mesh.mergeRemote([listed(D)]);
-    for (let attempt = 0; attempt < CANDIDATE_MAX_FAILURES; attempt += 1) miss(table, D);
-    // Tombstoned: a stale list cannot bring it back.
-    mesh.mergeRemote([listed(D)]);
-    expect(mesh.get(D)).toBeUndefined();
-    // The node comes back and greets with both proofs.
-    table.greeted(D);
-    expect(mesh.get(D)?.state).toBe("online");
+  it("stops a dead node from circulating between two members (B24)", async () => {
+    const net = new TestNet(TIMINGS);
+    const [a, c] = (await net.started(2)) as [NetNode, NetNode];
+    // a knows d first-hand; d dies before c reaches it, so c knows it only from a's list.
+    const d = net.node();
+    await d.mesh.probe(a.url);
+    net.down(d);
+    await net.advance(2 * ROUND_MS);
+    expect(stateOf(c, d)).toBe("unknown");
+
+    // a stops vouching once d is offline and prunes it after the record TTL; c gives up on its candidate.
+    await net.advance(15_000);
+    expect(a.mesh.get(d.id)).toBeUndefined();
+    expect(c.mesh.get(d.id)).toBeUndefined();
+    // Past both tombstones, neither list brings it back.
+    await net.advance(TIMINGS.tombstoneMs + 2000);
+    expect(a.mesh.get(d.id)).toBeUndefined();
+    expect(c.mesh.get(d.id)).toBeUndefined();
   });
 });
 
@@ -276,51 +250,47 @@ const NODE_C = fakeNodeId("row-c");
 
 describe("a node as the table's row", () => {
   it("is found by id, by a unique display name, and by an address it advertises or answered at", () => {
-    const table = setup();
-    const { mesh } = table;
-    const node = table.greeted(NODE_B, ["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
+    const a = new TestNet(TIMINGS).node();
+    const node = greet(a, NODE_B, ["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
 
-    expect(mesh.resolve(NODE_B)).toBe(node);
-    expect(mesh.resolve(`node-${NODE_B}`)).toBe(node);
-    expect(mesh.resolve("10.0.0.2:11811")).toBe(node);
-    expect(mesh.resolve("http://127.0.0.1:11811/")).toBe(node);
+    expect(a.mesh.resolve(NODE_B)).toBe(node);
+    expect(a.mesh.resolve(`node-${NODE_B}`)).toBe(node);
+    expect(a.mesh.resolve("10.0.0.2:11811")).toBe(node);
+    expect(a.mesh.resolve("http://127.0.0.1:11811/")).toBe(node);
     // Another address that reached it, though it does not advertise it.
     node.learnUrl("http://localhost:11811");
-    expect(mesh.resolve("http://localhost:11811")).toBe(node);
+    expect(a.mesh.resolve("http://localhost:11811")).toBe(node);
     // This node is found like any other.
-    expect(mesh.resolve("self")).toBe(mesh.self);
-    expect(mesh.resolve(mesh.self.id)).toBe(mesh.self);
+    expect(a.mesh.resolve(a.mesh.self.displayName)).toBe(a.mesh.self);
+    expect(a.mesh.resolve(a.id)).toBe(a.mesh.self);
   });
 
   it("refuses a stranger, and a name that two nodes have", () => {
-    const table = setup();
-    const { mesh } = table;
-    expect(() => mesh.resolve("http://203.0.113.9:11811")).toThrow(/not a known node/);
-    expect(() => mesh.resolve("nobody")).toThrow(/not a known node/);
+    const a = new TestNet(TIMINGS).node();
+    expect(() => a.mesh.resolve("http://203.0.113.9:11811")).toThrow(/not a known node/);
+    expect(() => a.mesh.resolve("nobody")).toThrow(/not a known node/);
 
-    table.greeted(NODE_B);
-    table.greeted(NODE_C);
-    mesh.get(NODE_B)?.describe({ display_name: "twin", endpoints: ["http://127.0.0.1:11811"] });
-    mesh.get(NODE_C)?.describe({ display_name: "twin", endpoints: ["http://127.0.0.1:11812"] });
-    expect(() => mesh.resolve("twin")).toThrow(
+    greet(a, NODE_B, ["http://127.0.0.1:11811"], "twin");
+    greet(a, NODE_C, ["http://127.0.0.1:11812"], "twin");
+    expect(() => a.mesh.resolve("twin")).toThrow(
       new RegExp(`several nodes.*${NODE_B}.*${NODE_C}|several nodes.*${NODE_C}.*${NODE_B}`),
     );
   });
 
   it("forgets what it learned about a node that is forgotten", () => {
-    const table = setup();
-    const { mesh } = table;
-    table.greeted(NODE_B).learnUrl("http://localhost:11811");
-    mesh.remove(NODE_B);
-    expect(() => mesh.resolve("http://localhost:11811")).toThrow(/not a known node/);
+    const a = new TestNet(TIMINGS).node();
+    greet(a, NODE_B).learnUrl("http://localhost:11811");
+    a.mesh.remove(NODE_B);
+    expect(() => a.mesh.resolve("http://localhost:11811")).toThrow(/not a known node/);
   });
 
   it("is not handed a task while it is not online", async () => {
-    const table = setup();
-    const { mesh, advance } = table;
-    const node = table.greeted(NODE_B);
-    advance(5000);
-    mesh.evaluate();
+    const net = new TestNet(TIMINGS);
+    const a = net.node();
+    // Nothing answers at the address it declared.
+    const node = greet(a, NODE_B);
+    a.mesh.start();
+    await net.advance(TIMINGS.offlineAfterMs + 2 * ROUND_MS);
     expect(node.state).toBe("offline");
     await expect(node.sendTask({ message: { role: "user", parts: [] } })).rejects.toMatchObject({
       code: "peer_not_online",
@@ -328,8 +298,8 @@ describe("a node as the table's row", () => {
   });
 
   it("takes its own latest description, and no one else's", () => {
-    const table = setup();
-    const node = table.greeted(NODE_B);
+    const a = new TestNet(TIMINGS).node();
+    const node = greet(a, NODE_B);
     node.describe({
       display_name: "renamed",
       endpoints: ["http://10.0.0.9:11811"],

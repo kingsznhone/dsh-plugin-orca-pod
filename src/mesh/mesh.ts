@@ -126,7 +126,7 @@ export class Mesh {
    * hears from. Candidates it never reached and nodes gone quiet stay in `list()`
    * but are never passed on.
    */
-  directory(): PeerView[] {
+  private directory(): PeerView[] {
     return this.list()
       .filter((node) => node.listed)
       .map((node) => node.view());
@@ -153,7 +153,7 @@ export class Mesh {
   }
 
   /** Remote lists only add records; they never touch online state. */
-  mergeRemote(members: readonly PeerView[]): void {
+  private mergeRemote(members: readonly PeerView[]): void {
     for (const member of members) {
       if (member.orca_node_id === this.self.id) continue;
       if (this.isTombstoned(member.orca_node_id)) continue;
@@ -167,7 +167,7 @@ export class Mesh {
   }
 
   /** Apply timeout transitions and prune stale records. */
-  evaluate(): void {
+  private evaluate(): void {
     const nowMs = this.ctx.clock.monotonicMs();
     for (const node of [...this.nodes.values()]) {
       node.reassess(nowMs, this.current);

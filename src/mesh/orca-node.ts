@@ -307,7 +307,7 @@ export class OrcaNode {
   }
 
   /** Addresses this node can be dialed at: screened if it came from a remote list, the last good one first. */
-  async dialOrder(): Promise<string[]> {
+  private async dialOrder(): Promise<string[]> {
     const allowed: string[] = [];
     for (const endpoint of this.record.endpoints) {
       if (!this.isCandidate || (await this.candidateAllowed(endpoint))) allowed.push(endpoint);

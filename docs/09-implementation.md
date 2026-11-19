@@ -118,7 +118,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | `executor/` 契约与 echo           | echo 脚本样本                                                     | 状态时序、`input-required`、resume                                                     |
 | `executor/acp/`                   | 假 ACP server（`test/fixtures/fake-acp.mjs`）                     | 完成文本、cwd、权限挂起→grant→继续、`session/cancel`、session 复用与 resume、崩溃后重建连接 |
 | `task/runner.ts`                  | `EchoExecutor` 或自定义 executor + 临时目录上的 SQLite           | 单槽、TTL、取消、重启恢复                                                              |
-| `mesh/mesh.ts` / `mesh/orca-node.ts` | `test/support/mesh.ts` 的手动时钟节点表（无网络）；多 orca node 真实 HTTP | 状态从静默推出、目录只转发亲耳听到的、墓碑；`resolve` 的 id/名字/URL；种子重试；改密码即被拒、答复被改即拒 |
+| `mesh/mesh.ts` / `mesh/orca-node.ts` | `test/support/net.ts` 的进程内工作组（真 mesh 加真 gateway，出站经 Fastify `inject`，假计时器推进时间，可断开任意两点）；多 orca node 真实 HTTP | 状态从静默推出、目录只转发亲耳听到的、墓碑；`resolve` 的 id/名字/URL；种子重试；改密码即被拒、答复被改即拒 |
 | `test/support/harness.ts`（测试专用） | 多 orca node mesh + 可注入时钟/传输                            | 成员收敛、故障、任务往返                                                               |
 | `plugin/`                         | 假 DSH host；真实、未启动的 `Pod`（需要节点时 `vi.spyOn` 它的 `status`） | 工具注册、tracker 投递与退避、broker、面板路由闸门、配置存放（`PodStores`）与生命周期     |
 

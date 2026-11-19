@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { EndpointScreen } from "../src/mesh/screening.ts";
 import {
@@ -8,8 +8,8 @@ import {
   isLoopbackEndpoint,
   pickFreePort,
 } from "../src/core/net.ts";
-import { labelId } from "./fixtures/ids.ts";
-import { listed, testMesh } from "./support/mesh.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
+import { listed, TestNet } from "./support/net.ts";
 
 describe("candidate endpoint filtering (§7.7)", () => {
   it("allows private ranges", async () => {
@@ -86,19 +86,33 @@ describe("candidate endpoint filtering (§7.7)", () => {
 });
 
 describe("peer origin (§7.7)", () => {
-  it("screens a candidate's addresses before they are dialed, and reuses a verdict for a while", async () => {
-    const table = testMesh();
-    const { mesh } = table;
-    mesh.mergeRemote([
-      listed(labelId("BBBBBB"), "http://169.254.169.254:80", {
-        endpoints: ["http://169.254.169.254:80", "http://10.0.0.5:1"],
-      }),
-    ]);
-    // The metadata address is dropped from the dial order; the private one stays.
-    expect(await mesh.require(labelId("BBBBBB")).dialOrder()).toEqual(["http://10.0.0.5:1"]);
-    // A node that greeted for itself is dialed at what it declared.
-    table.greeted(labelId("CCCCCC"), ["http://8.8.8.8:1"]);
-    expect(await mesh.require(labelId("CCCCCC")).dialOrder()).toEqual(["http://8.8.8.8:1"]);
+  it("screens a candidate's addresses before they are dialed, but not what a node declared for itself", async () => {
+    const net = new TestNet();
+    const a = net.node();
+    // A member whose list names a node at the cloud metadata address and at a private one.
+    const lister = net.node();
+    const honest = lister.mesh.answer.bind(lister.mesh);
+    vi.spyOn(lister.mesh, "answer").mockImplementation((caller, request, endpoints) => ({
+      ...honest(caller, request, endpoints),
+      members: [
+        listed(fakeNodeId("listed-only"), "http://169.254.169.254:80", {
+          endpoints: ["http://169.254.169.254:80", "http://10.0.0.99:1"],
+        }),
+      ],
+    }));
+    // A node that greets for itself from a public address.
+    const remote = net.node({ endpoints: ["http://8.8.8.8:1"] });
+    await a.mesh.probe(lister.url);
+    await remote.mesh.probe(a.url);
+    a.mesh.start();
+    await net.advance(100);
+
+    const dialed = net.dials.filter((dial) => dial.from === a.id).map((dial) => dial.url);
+    // The metadata address is never dialed; the private one is.
+    expect(dialed.some((url) => url.startsWith("http://169.254.169.254"))).toBe(false);
+    expect(dialed.some((url) => url.startsWith("http://10.0.0.99:1"))).toBe(true);
+    // The public address a member declared for itself is dialed.
+    expect(dialed.some((url) => url.startsWith("http://8.8.8.8:1"))).toBe(true);
   });
 });
 

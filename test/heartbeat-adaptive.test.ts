@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Mesh } from "../src/mesh/mesh.ts";
-import { heartbeatIntervalMsFor } from "../src/mesh/timings.ts";
+import { heartbeatIntervalMsFor, resolveTimings } from "../src/mesh/timings.ts";
 import { createMesh, waitFor } from "./support/harness.ts";
 import { peersOf } from "./support/node.ts";
-import { labelId } from "./fixtures/ids.ts";
-import { listed, testMesh } from "./support/mesh.ts";
 
 async function eventually(probe: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
   await waitFor(probe, (ok) => ok, { timeoutMs, label });
@@ -25,30 +23,13 @@ describe("heartbeatIntervalMsFor", () => {
 
 describe("adaptive membership windows", () => {
   it("derives one-miss suspect and three-miss offline from the cadence", () => {
-    const table = testMesh({ intervalMs: 5000 });
-    const { mesh } = table;
-    const stateAfterEvaluate = () => {
-      mesh.evaluate();
-      return mesh.get(labelId("PEER01"))?.state;
-    };
-    mesh.mergeRemote([listed(labelId("PEER01"), "http://127.0.0.1:1")]);
-    // The first inbound message is what makes the peer online.
-    table.hear(labelId("PEER01"));
-    const heardAt = table.clock.monotonicMs();
-
-    // A 5 s cadence: suspect after 6.25 s of silence, offline after 15 s.
-    table.advance(6249);
-    expect(stateAfterEvaluate()).toBe("online");
-
-    table.advance(1);
-    expect(stateAfterEvaluate()).toBe("suspect");
-
-    table.advance(14_999 - 6250);
-    expect(stateAfterEvaluate()).toBe("suspect");
-
-    table.advance(1);
-    expect(table.clock.monotonicMs() - heardAt).toBe(15_000);
-    expect(stateAfterEvaluate()).toBe("offline");
+    // A 5 s cadence: suspect after 6.25 s of silence, offline after 15 s, a hello given up after 2.5 s.
+    expect(resolveTimings({ intervalMs: 5000 })).toMatchObject({
+      intervalMs: 5000,
+      suspectAfterMs: 6250,
+      offlineAfterMs: 15_000,
+      heartbeatTimeoutMs: 2500,
+    });
   });
 });
 

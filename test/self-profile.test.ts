@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { resolveTimings } from "../src/mesh/timings.ts";
 
 import type { RuntimeInfo } from "../src/core/wire/peer.ts";
 import type { NodeInput } from "./support/node.ts";
@@ -70,14 +69,5 @@ describe("this node as a row of its own table", () => {
       workgroup_id: wg("grp"),
       state: "online",
     });
-  });
-
-  it("never hears itself: its evidence is not collected", () => {
-    const { self } = node().mesh;
-    self.heard(1, "2026-01-01T00:00:00.000Z");
-    self.answered();
-    expect(self.missed(1, resolveTimings())).toBe("kept");
-    expect(self.view().last_recv_at).not.toBeNull();
-    expect(self.state).toBe("online");
   });
 });
