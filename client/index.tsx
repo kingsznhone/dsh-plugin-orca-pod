@@ -22,6 +22,7 @@ import { ApprovalDock, ApprovalPopup } from "./approvals.tsx";
 import { NS } from "./constants.ts";
 import { TEXT, bindTranslate, t } from "./i18n.ts";
 import { OverlayPanel, Panel, SidebarAction } from "./panel.tsx";
+import { PodSounds } from "./sound-layer.tsx";
 import { store } from "./store.ts";
 import type { ClientContext } from "./types.ts";
 
@@ -48,6 +49,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject("shell.overlay", () => {
     ctx.slots.register({ name: "shell.overlay", id: `${NS}.panel`, order: 60 }, OverlayPanel);
     ctx.slots.register({ name: "shell.overlay", id: `${NS}.approval-popup`, order: 61 }, ApprovalPopup);
+    ctx.slots.register({ name: "shell.overlay", id: `${NS}.sounds`, order: 62 }, PodSounds);
   });
   ctx.slots.inject("conversation.input.dock", () =>
     ctx.slots.register({ name: "conversation.input.dock", id: `${NS}.approval-dock`, order: 60 }, ApprovalDock),

@@ -76,6 +76,7 @@ describe("client bundle", () => {
       "orca-pod",
       "orca-pod.panel",
       "orca-pod.approval-popup",
+      "orca-pod.sounds",
       "orca-pod.approval-dock",
     ]);
   });

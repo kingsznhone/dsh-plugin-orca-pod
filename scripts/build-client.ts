@@ -86,6 +86,8 @@ export async function buildClient(outfile = `${ROOT}lib/client.js`): Promise<voi
     target: "es2022",
     jsx: "automatic",
     external: CLIENT_EXTERNALS,
+    // The approval cues are inlined so the bundle needs no asset route.
+    loader: { ".mp3": "dataurl" },
     plugins: [cssModules()],
     sourcemap: "linked",
     legalComments: "none",
