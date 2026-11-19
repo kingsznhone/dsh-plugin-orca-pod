@@ -8,7 +8,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { WorkgroupIdSchema } from "../src/core/wire/peer.ts";
+import { WorkgroupIdSchema } from "../src/core/ids.ts";
 import { isTerminal, messageText } from "../src/task/wire.ts";
 import { newNode } from "../test/support/node.ts";
 

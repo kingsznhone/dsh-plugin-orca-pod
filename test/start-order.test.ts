@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SqliteDb, storeDbPath } from "../src/core/sqlite.ts";
-import type { Orca } from "../src/node/orca.ts";
+import { SqliteDb } from "../src/core/sqlite.ts";
+import { storeDbPath, type Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
 import { waitFor } from "./support/harness.ts";
 import { newNode } from "./support/node.ts";

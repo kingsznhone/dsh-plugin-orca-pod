@@ -4,11 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
 import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
-import { peersOf } from "./support/node.ts";
 
 const WORKGROUP = wg("orca-accept");
 const PASSWORD = "correct horse";

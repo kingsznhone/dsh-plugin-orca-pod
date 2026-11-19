@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { SqliteDb, storeDbPath } from "../src/core/sqlite.ts";
+import { SqliteDb } from "../src/core/sqlite.ts";
+import { storeDbPath } from "../src/node/orca.ts";
 import { createTestRunner, tempDir, type TestRunner } from "./fixtures/runner.ts";
 
 async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {

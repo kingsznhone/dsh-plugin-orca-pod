@@ -3,9 +3,9 @@ import { isAbsolute } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
-import { BlobIdSchema, blobRefText, type FileBlobRegistry } from "../core/blobs.ts";
+import { BlobIdSchema, formatBlobRef, type FileBlobRegistry } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
-import { OrcaNodeIdSchema } from "../core/wire/peer.ts";
+import { OrcaNodeIdSchema } from "../core/ids.ts";
 import type { Mesh } from "../mesh/mesh.ts";
 import { sendBlob } from "./blob-routes.ts";
 import { parseInput } from "./input.ts";
@@ -37,7 +37,7 @@ export class LocalRoutes {
         throw new PodError("bad_request", `cannot publish ${path}: ${errorMessage(error)}`);
       });
       return {
-        ref: blobRefText({ node: this.mesh.self.id, blob: blob.blob_id }),
+        ref: formatBlobRef({ node: this.mesh.self.id, blob_id: blob.blob_id }),
         size: blob.size,
         expires_at: blob.expires_at,
       };

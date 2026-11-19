@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PanelModel } from "../src/plugin/panel.ts";
 import type { PodApproval, PodPeer, PodTaskRow } from "../src/plugin/panel-api.ts";
 import { ApprovalBroker } from "../src/plugin/broker.ts";
-import type { SelfRecord } from "../src/core/wire/peer.ts";
+import type { SelfRecord } from "../src/mesh/wire.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { isDirectLoopbackRequest } from "../src/core/net.ts";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
@@ -114,10 +114,6 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
     },
     connect: async (peer) => {
       calls.push(`connect:${peer}`);
-      return panel.config();
-    },
-    disconnect: async () => {
-      calls.push("disconnect");
       return panel.config();
     },
     reset: async () => {
@@ -252,7 +248,7 @@ describe("panel HTTP bridge", () => {
     const { response, headers, body } = streamResponse();
     const request = Object.assign(Readable.from([]), {
       method: "GET",
-      url: `${POD_API_PREFIX}/blob?node=${node}&blob=${blobId}`,
+      url: `${POD_API_PREFIX}/blob?node=${node}&blob_id=${blobId}`,
       headers: { host: "127.0.0.1:7775", "x-orca-pod": "1" },
       socket: { remoteAddress: "127.0.0.1" },
     });
@@ -264,7 +260,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("refuses a blob request that does not name a published file", async () => {
-    const result = await invoke(apiHandler(fakePanel()), { url: `${POD_API_PREFIX}/blob?node=x&blob=y` });
+    const result = await invoke(apiHandler(fakePanel()), { url: `${POD_API_PREFIX}/blob?node=x&blob_id=y` });
     expect(result.status).toBe(400);
   });
 
@@ -502,14 +498,6 @@ describe("panel HTTP bridge", () => {
     const missing = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/connect`, body: {} });
     expect(missing.status).toBe(400);
     expect(missing.body.error).toMatch(/peer/);
-  });
-
-  it("disconnects from the panel", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
-    const handler = apiHandler(panel);
-    const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/disconnect`, body: {} });
-    expect(result.status).toBe(200);
-    expect(panel.calls).toEqual(["disconnect"]);
   });
 
   it("resets the panel configuration", async () => {

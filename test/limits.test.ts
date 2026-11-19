@@ -4,18 +4,17 @@
  * visible/recorded so an origin can size its delegations.
  */
 
-import { JsonTable } from "../src/core/sqlite.ts";
+import { JsonTable } from "../src/task/json-table.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
 import { isTerminal, type TaskView } from "../src/task/wire.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { wg } from "./fixtures/ids.ts";
-import { peersOf } from "./support/node.ts";
 
 const WORKGROUP = wg("orca-limits");
 

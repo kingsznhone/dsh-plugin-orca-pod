@@ -1,13 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { EndpointScreen } from "../src/mesh/screening.ts";
-import {
-  bindUrl,
-  detectLocalEndpoints,
-  isBlockedFetchPort,
-  isLoopbackEndpoint,
-  pickFreePort,
-} from "../src/core/net.ts";
+import { bindUrl, detectLocalEndpoints } from "../src/core/net.ts";
+import { isBlockedFetchPort, pickFreePort } from "../src/api/gateway.ts";
+import { isLoopbackEndpoint } from "../src/plugin/pod.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 import { listed, TestNet } from "./support/net.ts";
 

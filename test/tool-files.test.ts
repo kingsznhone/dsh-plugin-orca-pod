@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 
-import { blobRefText } from "../src/core/blobs.ts";
+import { formatBlobRef } from "../src/core/blobs.ts";
 import type { Orca } from "../src/node/orca.ts";
 import { LocalNode } from "../src/plugin/local-node.ts";
 import { PodTool } from "../src/plugin/tools.ts";
@@ -76,7 +76,7 @@ describe("orca_pod publish", () => {
     )({ method: "publish", path: "plan.md", ttl_s: 0 });
 
     expect(published).toEqual([[join(root, "plan.md"), 0]]);
-    expect(result).toEqual({ ref: blobRefText({ node: OWN, blob: sha256("the plan") }), size: 8, expires_at: null });
+    expect(result).toEqual({ ref: formatBlobRef({ node: OWN, blob_id: sha256("the plan") }), size: 8, expires_at: null });
   });
 
   it("needs a path, and a ttl_s that is a whole number of seconds", async () => {
@@ -108,7 +108,7 @@ describe("orca_pod fetch", () => {
   it("saves the file where the session sandbox allows writing, checked against the hash in its name", async () => {
     const root = tempRoot();
     const { node, asked } = fetchingNode("the result");
-    const ref = blobRefText({ node: PEER, blob: sha256("the result") });
+    const ref = formatBlobRef({ node: PEER, blob_id: sha256("the result") });
 
     const result = await toolOf(
       node,
@@ -123,7 +123,7 @@ describe("orca_pod fetch", () => {
   it("writes nothing when the bytes are not the ones the name promises", async () => {
     const root = tempRoot();
     const { node } = fetchingNode("something else");
-    const ref = blobRefText({ node: PEER, blob: sha256("what was promised") });
+    const ref = formatBlobRef({ node: PEER, blob_id: sha256("what was promised") });
 
     await expect(
       toolOf(node, policyOf("workspace-write", root))({ method: "fetch", ref, output: "result.txt" }),
@@ -138,7 +138,7 @@ describe("orca_pod fetch", () => {
     ["a path outside the session workspace", policyOf("workspace-write", tmpdir()), join(process.cwd(), "x.txt")],
   ])("refuses to write for %s, and fetches nothing", async (_label, policy, output) => {
     const { node, asked } = fetchingNode("x");
-    const ref = blobRefText({ node: PEER, blob: sha256("x") });
+    const ref = formatBlobRef({ node: PEER, blob_id: sha256("x") });
 
     await expect(toolOf(node, policy)({ method: "fetch", ref, output })).rejects.toThrow(/does not allow writing/);
     expect(asked).toEqual([]);
@@ -147,7 +147,7 @@ describe("orca_pod fetch", () => {
   it("writes anywhere under danger-full-access, and nowhere when the sandbox policy cannot be read", async () => {
     const root = tempRoot();
     const { node } = fetchingNode("x");
-    const ref = blobRefText({ node: PEER, blob: sha256("x") });
+    const ref = formatBlobRef({ node: PEER, blob_id: sha256("x") });
 
     await toolOf(node, policyOf("danger-full-access", tmpdir()))({ method: "fetch", ref, output: join(root, "x.txt") });
     expect(readFileSync(join(root, "x.txt"), "utf8")).toBe("x");
@@ -179,7 +179,7 @@ describe("orca_pod inside a task", () => {
     const { harness, call } = await taskTool(root);
 
     const published = (await call({ method: "publish", path: "result.md" })) as { ref: string; size: number };
-    expect(published.ref).toBe(blobRefText({ node: harness.mesh.self.id, blob: sha256("handed back") }));
+    expect(published.ref).toBe(formatBlobRef({ node: harness.mesh.self.id, blob_id: sha256("handed back") }));
     expect(published.size).toBe(11);
 
     await call({ method: "fetch", ref: published.ref, output: "again.md" });

@@ -6,12 +6,12 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { PeerView, WorkgroupId } from "../src/core/wire/peer.ts";
-import { peersOf } from "./support/node.ts";
+import type { PeerView } from "../src/mesh/wire.ts";
+import type { WorkgroupId } from "../src/core/ids.ts";
 
 const TIMINGS: Partial<MeshTimings> = {
   intervalMs: 100,

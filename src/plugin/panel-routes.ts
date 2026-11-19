@@ -26,7 +26,7 @@ import { readAll } from "../core/stream.ts";
 import { isDirectLoopbackRequest } from "../core/net.ts";
 import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
-import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
+import { BlobRefSchema, type OpenedBlob } from "../core/blobs.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 const POD_API_PREFIX = "/orca-api";
@@ -62,7 +62,6 @@ const POST_ACTIONS: Record<string, PostAction> = {
   // parser behind `saveConfig` checks the merged result.
   config: withBody(PanelPatchSchema, (panel, patch) => panel.saveConfig(patch)),
   connect: withBody(ConnectBodySchema, (panel, { peer }) => panel.connect(peer)),
-  disconnect: { body: null, run: (panel) => panel.disconnect() },
   reset: { body: null, run: (panel) => panel.reset() },
   approve: withBody(PeerTaskBodySchema, async (panel, { peer, task_id }) => ({
     task: await panel.approve(peer, task_id),
@@ -151,19 +150,22 @@ export class PanelRoutes {
   }
 
   /**
-   * `GET /orca-api/blob?node=&blob=`: a file a member published, fetched by this
+   * `GET /orca-api/blob?node=&blob_id=`: a file a member published, fetched by this
    * node and streamed to the panel (§5.6). A failure before the first byte is the
    * usual JSON error; one after it can only cut the transfer short.
    */
   private async sendBlob(url: URL, response: ServerResponse): Promise<void> {
-    const ref = parseBlobRef(`${url.searchParams.get("node") ?? ""}/${url.searchParams.get("blob") ?? ""}`);
-    if (ref === null) {
+    const parsed = BlobRefSchema.safeParse({
+      node: url.searchParams.get("node"),
+      blob_id: url.searchParams.get("blob_id"),
+    });
+    if (!parsed.success) {
       PanelRoutes.sendJson(response, 400, { error: "node and blob must name a published file" });
       return;
     }
     let opened: OpenedBlob;
     try {
-      opened = await this.panel.blob(ref.node, ref.blob);
+      opened = await this.panel.blob(parsed.data.node, parsed.data.blob_id);
     } catch (error) {
       const status =
         error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;

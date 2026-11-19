@@ -66,10 +66,6 @@ export class PodError extends HarnessError {
   }
 }
 
-export function isPodErrorCode(value: unknown): value is PodErrorCode {
-  return typeof value === "string" && Object.hasOwn(POD_ERROR_STATUS, value);
-}
-
 /** True when a filesystem call failed because the path does not exist (no `instanceof`: errors may cross realms). */
 export function isMissingFile(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT";

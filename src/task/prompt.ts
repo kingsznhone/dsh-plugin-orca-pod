@@ -5,7 +5,7 @@
  * notes, and where, is its own decision.
  */
 
-import type { OrcaNodeId } from "../core/wire/peer.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
 
 type PromptParts = {
   taskId: string;

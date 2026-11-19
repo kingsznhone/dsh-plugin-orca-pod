@@ -9,7 +9,7 @@ import type { LlmReasoningEffortInfo } from "@deepseek-ai/dsh-llm";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { z } from "zod";
 
-import type { PeerView, SelfRecord } from "../core/wire/peer.ts";
+import type { PeerView, SelfRecord } from "../mesh/wire.ts";
 import type { PanelPatch, Settings } from "../node/settings.ts";
 import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
 
@@ -130,11 +130,10 @@ type DenyBody = z.infer<typeof DenyBodySchema>;
 export const ConnectBodySchema = z.object({ peer: Text });
 type ConnectBody = z.infer<typeof ConnectBodySchema>;
 
-/** What each POST action of the panel takes; `disconnect` and `reset` read no body. */
+/** What each POST action of the panel takes; `reset` reads no body. */
 export type PodActions = {
   config: PanelPatch;
   connect: ConnectBody;
-  disconnect: Record<string, never>;
   reset: Record<string, never>;
   approve: PeerTaskBody;
   deny: DenyBody;

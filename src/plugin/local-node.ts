@@ -39,7 +39,7 @@ export class LocalNode {
 
   /** A file any member published, as the node fetches it; the caller checks the bytes against the sha256. */
   async open(ref: BlobRef, signal: AbortSignal): Promise<OpenedBlob> {
-    const response = await this.call(`/local/blobs/${ref.node}/${ref.blob}`, signal);
+    const response = await this.call(`/local/blobs/${ref.node}/${ref.blob_id}`, signal);
     if (response.body === null) throw new Error("this machine's node answered without the file");
     const length = response.headers.get("content-length");
     return {

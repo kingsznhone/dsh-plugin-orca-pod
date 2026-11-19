@@ -48,7 +48,6 @@
 | GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | member                          |
 | POST   | `/cluster/hello`               | 接触与心跳：自述 + 忙闲 + 摘要；答复自己的记录，摘要不一致时回目录（[§3.3](03-membership.md#33-心跳与双向看门狗)） | hello                           |
 | GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲），给对端检查用              | member                          |
-| POST   | `/cluster/leave`               | 主动离开（不是安全操作）                                   | member                          |
 
 文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点登记的文件；取别的成员的文件由本机节点对象（`mesh.get(id).fetchBlob`）按对方宣告的地址去拨，所以发布方在反代后面也照样取得到。登记没有成员可用的路由，只在本机发生：宿主的 `orca_pod` 在进程内登记，任务里的 `orca_pod` 走只认本节点令牌的本地路由 `/local/blobs`（[§5.6](05-tasks.md#56-文件交换blob-通道)）；节点之间不推送文件。
 

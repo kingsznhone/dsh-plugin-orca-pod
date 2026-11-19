@@ -3,10 +3,11 @@ import { randomBytes } from "node:crypto";
 import { afterEach } from "vitest";
 
 import { FileBlobRegistry } from "../../src/core/blobs.ts";
-import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
+import { DEFAULT_TASK_TIMEOUT_S } from "../../src/node/orca.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
 import { buildAuthHeader, newNonce } from "../../src/core/signing.ts";
-import type { RuntimeInfo, WorkgroupId } from "../../src/core/wire/peer.ts";
+import type { RuntimeInfo } from "../../src/mesh/wire.ts";
+import type { WorkgroupId } from "../../src/core/ids.ts";
 import { Gateway } from "../../src/api/gateway.ts";
 import { MeshContext } from "../../src/mesh/context.ts";
 import { Mesh } from "../../src/mesh/mesh.ts";
@@ -100,16 +101,17 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
   const tasks = options.tasks ?? createTestRunner();
   const gateway = new Gateway(mesh, tasks, key, identity, { token: localToken, blobs });
   const signAs: GatewayHarness["signAs"] = (caller, method, path, extra = {}) =>
-    buildAuthHeader({
-      identity: caller,
-      key: extra.key ?? key,
-      workgroupId: extra.workgroup ?? workgroup,
-      method,
-      url: path,
-      targetOrcaNodeId: extra.target ?? identity.orcaNodeId,
-      body: extra.body,
-      nonce: newNonce(),
-    });
+    buildAuthHeader(
+      caller,
+      extra.key ?? key,
+      { method, url: path, body: extra.body },
+      {
+        target: extra.target ?? identity.orcaNodeId,
+        workgroupId: extra.workgroup ?? workgroup,
+        ts: Date.now(),
+        nonce: newNonce(),
+      },
+    );
   let base: Promise<string> | undefined;
   const listen = (): Promise<string> => {
     if (base === undefined) {

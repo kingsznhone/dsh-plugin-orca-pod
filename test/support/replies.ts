@@ -4,7 +4,7 @@ import { bodySha256, buildReplyHeader, parseAuthHeader } from "../../src/core/si
 /** The nonce a request carried in its Authorization header: what its reply must be bound to. */
 export function nonceOf(init: RequestInit): string {
   const headers = init.headers as Record<string, string>;
-  return parseAuthHeader(headers.authorization)?.nonce ?? "";
+  return parseAuthHeader(headers.authorization)?.claim.nonce ?? "";
 }
 
 /**

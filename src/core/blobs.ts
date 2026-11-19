@@ -18,24 +18,26 @@ import { z } from "zod";
 
 import { PodError } from "./errors.ts";
 import type { SqliteDb } from "./sqlite.ts";
-import { type OrcaNodeId, OrcaNodeIdSchema } from "./wire/peer.ts";
+import { OrcaNodeIdSchema } from "./ids.ts";
 
 /** A blob id is the sha256 of the file, as lowercase hex. */
 export const BLOB_ID_PATTERN = /^[0-9a-f]{64}$/;
 export const BlobIdSchema = z.string().regex(BLOB_ID_PATTERN, "must be a lowercase sha256 hex digest");
 
-/** A published file: who published it and what its bytes hash to. */
-export type BlobRef = { node: OrcaNodeId; blob: string };
+/** A published file's name: the member that published it and the sha256 of its bytes. */
+export const BlobRefSchema = z.object({ node: OrcaNodeIdSchema, blob_id: BlobIdSchema });
+export type BlobRef = z.infer<typeof BlobRefSchema>;
 
-export const blobRefText = ({ node, blob }: BlobRef): string => `${node}/${blob}`;
-
-const BlobRefSchema = z.object({ node: OrcaNodeIdSchema, blob: BlobIdSchema });
+/** Write a name as `<orca_node_id>/<sha256>`, the text `parseBlobRef` reads back. */
+export function formatBlobRef({ node, blob_id }: BlobRef): string {
+  return `${node}/${blob_id}`;
+}
 
 /** Read `<orca_node_id>/<sha256>`; null when the text is not one. */
 export function parseBlobRef(text: string): BlobRef | null {
-  const [node, blob, ...rest] = text.trim().split("/");
+  const [node, blob_id, ...rest] = text.trim().split("/");
   if (rest.length > 0) return null;
-  const parsed = BlobRefSchema.safeParse({ node, blob });
+  const parsed = BlobRefSchema.safeParse({ node, blob_id });
   return parsed.success ? parsed.data : null;
 }
 
@@ -167,7 +169,7 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
  *
  * Files move between nodes by link only: a node publishes a file of its own,
  * and whoever needs it pulls the bytes from that node's gateway. A name is
- * `<orca_node_id>/<sha256>` (`blobRefText`), while the `blob_id` itself is the
+ * `<orca_node_id>/<sha256>` (`formatBlobRef`), while the `blob_id` itself is the
  * bare sha256. Tasks know nothing of files: whoever hands one over writes its
  * name into the text it sends.
  *

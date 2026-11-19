@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { nodeParts } from "./node.ts";
-import { WorkgroupIdSchema } from "../../src/core/wire/peer.ts";
+import { WorkgroupIdSchema } from "../../src/core/ids.ts";
 import type { MeshTimings } from "../../src/mesh/timings.ts";
 import { Orca } from "../../src/node/orca.ts";
 

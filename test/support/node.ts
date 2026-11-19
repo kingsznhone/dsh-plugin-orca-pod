@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
 import { deriveWorkgroupKey } from "../../src/core/signing.ts";
-import type { PeerView, WorkgroupId } from "../../src/core/wire/peer.ts";
+import type { PeerView } from "../../src/mesh/wire.ts";
+import type { WorkgroupId } from "../../src/core/ids.ts";
 import { Orca } from "../../src/node/orca.ts";
 import { parseSettings, type Settings } from "../../src/node/settings.ts";
 

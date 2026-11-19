@@ -8,20 +8,10 @@ import { z } from "zod";
 import { BLOB_ID_PATTERN, type OpenedBlob } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import { parseOrThrow } from "../core/schema.ts";
-import type { Grant, ResumeControl } from "../core/wire/grant.ts";
 import {
-  HelloResponseSchema,
-  runtimeDigest,
+  type Grant,
+  type ResumeControl,
   type BusyState,
-  type HelloResponse,
-  type OrcaNodeId,
-  type PeerState,
-  type PeerView,
-  type SelfRecord,
-} from "../core/wire/peer.ts";
-import { ErrorReplySchema } from "../core/wire/reply.ts";
-import { signGrant } from "../task/grants.ts";
-import {
   RpcResultSchema,
   controlMessage,
   permissionRequestOf,
@@ -29,10 +19,22 @@ import {
   type SubmitTaskInput,
   type TaskView,
 } from "../task/wire.ts";
+import {
+  HelloResponseSchema,
+  runtimeDigest,
+  type HelloResponse,
+  type PeerState,
+  type PeerView,
+  type SelfRecord,
+  SelfDescriptionSchema,
+  type HelloRequest,
+  type SelfDescription,
+} from "./wire.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
+import { signGrant } from "../task/grants.ts";
 import type { MeshContext } from "./context.ts";
-import { remoteError, type Answer } from "./peer-client.ts";
+import { ErrorReplySchema, remoteError, type Answer } from "./peer-client.ts";
 import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "./timings.ts";
-import { SelfDescriptionSchema, type HelloRequest, type SelfDescription } from "./wire.ts";
 
 type SuspectReason = "quiet" | "unreachable";
 

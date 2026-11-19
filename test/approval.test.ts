@@ -7,11 +7,16 @@ import { signGrant } from "../src/task/grants.ts";
 import type { NodeIdentity } from "../src/core/identity.ts";
 import { createMesh, type Mesh } from "./support/harness.ts";
 import type { Orca } from "../src/node/orca.ts";
-import { permissionRequestOf } from "../src/task/wire.ts";
-import type { A2AMessage, TaskState, TaskView } from "../src/task/wire.ts";
-import type { Grant, SignedGrant } from "../src/core/wire/grant.ts";
+import {
+  permissionRequestOf,
+  type A2AMessage,
+  type TaskState,
+  type TaskView,
+  type Grant,
+  type SignedGrant,
+} from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { OrcaNodeId } from "../src/core/wire/peer.ts";
+import type { OrcaNodeId } from "../src/core/ids.ts";
 
 const WORKGROUP = wg("orca-approval");
 const PASSWORD = "approval-secret";
@@ -96,16 +101,12 @@ async function signedResume(
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: buildAuthHeader({
-        identity: signer,
-        key: deriveWorkgroupKey(WORKGROUP, PASSWORD),
-        workgroupId: WORKGROUP,
-        method: "POST",
-        url: `${url.pathname}${url.search}`,
-        targetOrcaNodeId: health.orca_node_id,
-        body,
-        nonce: newNonce(),
-      }),
+      authorization: buildAuthHeader(
+        signer,
+        deriveWorkgroupKey(WORKGROUP, PASSWORD),
+        { method: "POST", url: `${url.pathname}${url.search}`, body },
+        { target: health.orca_node_id, workgroupId: WORKGROUP, ts: Date.now(), nonce: newNonce() },
+      ),
     },
     body,
   });

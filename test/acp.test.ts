@@ -10,7 +10,7 @@ import { nodeParts } from "./support/node.ts";
 import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
 import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
 import { AcpExecutor } from "../src/executor/acp/executor.ts";
-import { ModelCatalog } from "../src/core/model-catalog.ts";
+import { ModelCatalog } from "../src/executor/model-catalog.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { Orca } from "../src/node/orca.ts";

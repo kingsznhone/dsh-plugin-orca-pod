@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { signGrant, GrantLedger } from "../src/task/grants.ts";
 import { parseResume } from "../src/task/meta.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
-import type { Grant, PermissionRequest } from "../src/core/wire/grant.ts";
+import type { Grant, PermissionRequest } from "../src/task/wire.ts";
 
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 

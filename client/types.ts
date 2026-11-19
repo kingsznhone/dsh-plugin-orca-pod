@@ -30,8 +30,8 @@ export type {
 } from "../src/plugin/panel-api.ts";
 export type { PanelPatch } from "../src/node/settings.ts";
 export type { ModelSelection } from "@deepseek-ai/dsh-agent";
-export type { ModelOffer } from "../src/core/wire/model.ts";
-export type { PeerState, PeerView, RuntimeInfo } from "../src/core/wire/peer.ts";
+export type { ModelOffer } from "../src/executor/model.ts";
+export type { PeerState, PeerView, RuntimeInfo } from "../src/mesh/wire.ts";
 export type { TaskState } from "../src/task/wire.ts";
 
 /** One namespace's strings for one language. */

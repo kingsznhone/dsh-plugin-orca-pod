@@ -1,16 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { generateNodeIdentity, shortenNodeId } from "../src/core/identity.ts";
-import {
-  isHttpEndpoint,
-  membersDigest,
-  normalizeEndpoints,
-  OrcaNodeIdSchema,
-  WorkgroupIdSchema,
-  runtimeDigest,
-  type PeerView,
-  type RuntimeInfo,
-  type OrcaNodeId,
-} from "../src/core/wire/peer.ts";
+import { isHttpEndpoint, normalizeEndpoints } from "../src/core/net.ts";
+import { membersDigest, runtimeDigest, type PeerView, type RuntimeInfo } from "../src/mesh/wire.ts";
+import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId } from "../src/core/ids.ts";
 import { labelId } from "./fixtures/ids.ts";
 
 const acceptsNodeId = (value: unknown) => OrcaNodeIdSchema.safeParse(value).success;

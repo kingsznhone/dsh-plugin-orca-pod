@@ -16,7 +16,7 @@ import type {
 import { IN_TASK_ENV } from "../../core/entry.ts";
 import { abortError } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
-import type { ModelCatalog } from "../../core/model-catalog.ts";
+import type { ModelCatalog } from "../model-catalog.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
 import { KILL_GRACE_MS, type SessionRoute } from "./connection.ts";

@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from
 
 import { PodError } from "./errors.ts";
 import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "./identity.ts";
-import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId, type WorkgroupId } from "./wire/peer.ts";
+import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId, type WorkgroupId } from "./ids.ts";
 
 const AUTH_SCHEME = "Pod";
 /**
@@ -62,28 +62,39 @@ export function bodySha256(body?: Uint8Array | string): string {
 // key pair, and a password alone would let one member speak as another.
 // ---------------------------------------------------------------------------
 
-type SignatureFields = {
+/** A request as both proofs cover it: what is sent, and where on the receiver. */
+type SignedRequest = {
   method: string;
   /** Request target on the receiver, path *and* query included (§7.1). */
   url: string;
-  /** The node the request is addressed to; empty only for a first contact. */
-  targetOrcaNodeId: string;
-  workgroupId: string;
-  bodySha256: string;
+  body?: Uint8Array | string;
+};
+
+/**
+ * What the sender states about a request in its header, covered by both proofs
+ * together with the request. The sender's id is not part of it: it is the key
+ * the signature is checked with.
+ */
+type RequestClaim = {
+  /** The node the request is addressed to; empty only for a first contact, which cannot know it yet. */
+  target: string;
+  workgroupId: WorkgroupId;
+  /** When it was sent, in ms; the receiver refuses it outside the skew window. */
   ts: number;
+  /** Fresh per request (`newNonce`); the sender keeps it to check the reply against. */
   nonce: string;
 };
 
-function signatureInput(fields: SignatureFields): string {
+function signatureInput(request: SignedRequest, claim: RequestClaim): string {
   return [
     REQUEST_DOMAIN,
-    fields.method.toUpperCase(),
-    fields.targetOrcaNodeId,
-    fields.url,
-    fields.bodySha256,
-    String(fields.ts),
-    fields.nonce,
-    fields.workgroupId,
+    request.method.toUpperCase(),
+    claim.target,
+    request.url,
+    bodySha256(request.body),
+    String(claim.ts),
+    claim.nonce,
+    claim.workgroupId,
   ].join("|");
 }
 
@@ -91,56 +102,30 @@ function hmacOf(key: Buffer, input: string): string {
   return createHmac("sha256", key).update(input).digest("base64url");
 }
 
-type AuthHeaderOptions = {
-  identity: NodeIdentity;
-  /** The workgroup key: what the `proof` is made with. */
-  key: Buffer;
-  workgroupId: WorkgroupId;
-  method: string;
-  url: string;
-  /** Empty for a first contact, which cannot know the receiver's id yet. */
-  targetOrcaNodeId: string;
-  body?: Uint8Array | string;
-  /** The caller keeps it to check the reply against (`newNonce`). */
-  nonce: string;
-};
-
 /** A fresh request nonce. The caller keeps it to check the reply against. */
 export function newNonce(): string {
   return randomBytes(16).toString("base64url");
 }
 
-export function buildAuthHeader(options: AuthHeaderOptions): string {
-  const ts = Date.now();
-  const { nonce } = options;
-  const target = options.targetOrcaNodeId;
-  const input = signatureInput({
-    method: options.method,
-    url: options.url,
-    targetOrcaNodeId: target,
-    workgroupId: options.workgroupId,
-    bodySha256: bodySha256(options.body),
-    ts,
-    nonce,
-  });
-  const signature = signWithIdentity(options.identity, input);
-  const proof = hmacOf(options.key, input);
-  const targetField = target === "" ? "" : `target=${target}; `;
-  return `${AUTH_SCHEME} id=${options.identity.orcaNodeId}; wg=${options.workgroupId}; ${targetField}ts=${ts}; nonce=${nonce}; sig=${signature}; proof=${proof}`;
+/** The `Authorization` header of a request: the claim, the sender's signature, and the proof made with the workgroup `key`. */
+export function buildAuthHeader(
+  identity: NodeIdentity,
+  key: Buffer,
+  request: SignedRequest,
+  claim: RequestClaim,
+): string {
+  const input = signatureInput(request, claim);
+  const signature = signWithIdentity(identity, input);
+  const proof = hmacOf(key, input);
+  const target = claim.target === "" ? "" : `target=${claim.target}; `;
+  return `${AUTH_SCHEME} id=${identity.orcaNodeId}; wg=${claim.workgroupId}; ${target}ts=${claim.ts}; nonce=${claim.nonce}; sig=${signature}; proof=${proof}`;
 }
 
-type ParsedAuthHeader = {
-  /** As sent; `verifyAuth` checks that it is a node id. */
-  orcaNodeId: string;
-  workgroupId: string;
-  target: string;
-  ts: number;
-  nonce: string;
-  signature: string;
-  proof: string;
-};
+/** An `Authorization` header as received: who claims to send it, what it claims, and the two proofs, not yet checked. */
+type AuthHeader = { orcaNodeId: OrcaNodeId; claim: RequestClaim; signature: string; proof: string };
 
-export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | null {
+/** Read an `Authorization` header; null when it is not one of this protocol (a field missing, an id that is not one). */
+export function parseAuthHeader(header: string | undefined): AuthHeader | null {
   if (!header) return null;
   const match = /^Pod\s+(.+)$/i.exec(header.trim());
   if (!match) return null;
@@ -151,16 +136,19 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
     if (separator <= 0) return null;
     fields.set(part.slice(0, separator).trim().toLowerCase(), part.slice(separator + 1).trim());
   }
-  const orcaNodeId = fields.get("id");
-  const workgroupId = fields.get("wg");
-  const ts = fields.get("ts");
+  const sender = OrcaNodeIdSchema.safeParse(fields.get("id"));
+  const workgroup = WorkgroupIdSchema.safeParse(fields.get("wg"));
+  const ts = Number(fields.get("ts") || Number.NaN);
   const nonce = fields.get("nonce");
   const signature = fields.get("sig");
   const proof = fields.get("proof");
-  if (!orcaNodeId || !workgroupId || !ts || !nonce || !signature || !proof) return null;
-  const tsValue = Number(ts);
-  if (!Number.isSafeInteger(tsValue)) return null;
-  return { orcaNodeId, workgroupId, target: fields.get("target") ?? "", ts: tsValue, nonce, signature, proof };
+  if (!sender.success || !workgroup.success || !Number.isSafeInteger(ts) || !nonce || !signature || !proof) return null;
+  return {
+    orcaNodeId: sender.data,
+    claim: { target: fields.get("target") ?? "", workgroupId: workgroup.data, ts, nonce },
+    signature,
+    proof,
+  };
 }
 
 /** Bounded set of recently seen nonces. remember() returns false on replay. */
@@ -188,10 +176,11 @@ export class NonceCache {
 }
 
 type VerifyAuthOptions = {
-  method: string;
-  url: string;
+  /** The request as it arrived. */
+  request: SignedRequest;
+  header: string | undefined;
   /** This node's id; a request addressed to another node is rejected. */
-  targetOrcaNodeId: string;
+  selfOrcaNodeId: string;
   /** The workgroup this node is in; a request for another is rejected. */
   workgroupId: WorkgroupId;
   /** The workgroup key the `proof` must have been made with. */
@@ -200,8 +189,6 @@ type VerifyAuthOptions = {
   allowEmptyTarget?: boolean;
   /** Reject requests issued before this process started: blocks restart replay. */
   notBefore: number;
-  body?: Uint8Array | string;
-  header: string | undefined;
   nonceCache: NonceCache;
 };
 
@@ -212,40 +199,25 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (!options.header) throw new PodError("missing_auth", "missing Authorization header");
   const parsed = parseAuthHeader(options.header);
   if (!parsed) throw new PodError("malformed_auth", "malformed Authorization header");
-  const sender = OrcaNodeIdSchema.safeParse(parsed.orcaNodeId);
-  if (!sender.success) {
-    throw new PodError("malformed_auth", "id in the Authorization header is not an Ed25519 public key");
-  }
-  const workgroup = WorkgroupIdSchema.safeParse(parsed.workgroupId);
-  if (!workgroup.success) {
-    throw new PodError("malformed_auth", "wg in the Authorization header is not a workgroup id");
-  }
-  if (Math.abs(Date.now() - parsed.ts) > CLOCK_SKEW_MS) {
+  const { claim } = parsed;
+  if (Math.abs(Date.now() - claim.ts) > CLOCK_SKEW_MS) {
     throw new PodError("clock_skew", "timestamp outside the allowed skew window");
   }
-  if (parsed.ts < options.notBefore) {
+  if (claim.ts < options.notBefore) {
     throw new PodError("stale_request", "timestamp predates this node process; restart replay rejected");
   }
-  if (parsed.target === "") {
+  if (claim.target === "") {
     if (options.allowEmptyTarget !== true) {
       throw new PodError("wrong_target", "request is not bound to a target orca node");
     }
-  } else if (parsed.target !== options.targetOrcaNodeId) {
+  } else if (claim.target !== options.selfOrcaNodeId) {
     throw new PodError("wrong_target", "request is addressed to another orca node");
   }
-  if (workgroup.data !== options.workgroupId) {
+  if (claim.workgroupId !== options.workgroupId) {
     throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
   }
-  const input = signatureInput({
-    method: options.method,
-    url: options.url,
-    targetOrcaNodeId: parsed.target,
-    workgroupId: workgroup.data,
-    bodySha256: bodySha256(options.body),
-    ts: parsed.ts,
-    nonce: parsed.nonce,
-  });
-  if (!verifyWithNodeId(sender.data, input, parsed.signature)) {
+  const input = signatureInput(options.request, claim);
+  if (!verifyWithNodeId(parsed.orcaNodeId, input, parsed.signature)) {
     throw new PodError("bad_signature", "signature does not match");
   }
   // After the signature, so only a node that exists can make a caller learn the workgroup was wrong.
@@ -254,10 +226,10 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (expected.length !== proof.length || !timingSafeEqual(expected, proof)) {
     throw new PodError("bad_proof", "workgroup proof does not verify");
   }
-  if (!options.nonceCache.remember(`${sender.data}:${parsed.nonce}`)) {
+  if (!options.nonceCache.remember(`${parsed.orcaNodeId}:${claim.nonce}`)) {
     throw new PodError("nonce_replay", "nonce already used");
   }
-  return { orcaNodeId: sender.data };
+  return { orcaNodeId: parsed.orcaNodeId };
 }
 
 // ---------------------------------------------------------------------------

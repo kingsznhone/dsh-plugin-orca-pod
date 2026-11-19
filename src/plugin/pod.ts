@@ -20,20 +20,47 @@
  * lock: the one that cannot bind reports that a node is already running.
  */
 
+import { isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
 import type { Logger } from "@deepseek-ai/cordis";
 
 import { errorMessage } from "../core/errors.ts";
-import { isLoopbackEndpoint } from "../core/net.ts";
-import { SerialQueue } from "../core/serial-queue.ts";
+import type { WorkgroupId } from "../core/ids.ts";
 import { deriveWorkgroupKey } from "../core/signing.ts";
-import type { WorkgroupId } from "../core/wire/peer.ts";
 import { Orca } from "../node/orca.ts";
-import { parseSettings } from "../node/settings.ts";
-import type { PanelPatch, Settings } from "../node/settings.ts";
+import { parseSettings, type PanelPatch, type Settings } from "../node/settings.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
 import { RememberedPeers } from "./peers-file.ts";
 import { SettingsFile } from "./settings-file.ts";
 import type { PodStores } from "./stores.ts";
+
+/**
+ * Runs async operations one after another. A failed operation must not poison
+ * the lane: its caller still sees the rejection, but the next operation starts
+ * against a clean queue.
+ */
+export class SerialQueue {
+  /** Settles when everything queued so far has; it never rejects. */
+  private tail: Promise<void> = Promise.resolve();
+
+  run<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation);
+    this.tail = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+}
+
+/** True for URLs that dial the local machine only. */
+export function isLoopbackEndpoint(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "localhost" || isLoopbackHost(host);
+  } catch {
+    return false;
+  }
+}
 
 /** One started node; replaced as a whole on every restart, never mutated. */
 export type PodRun = { readonly orca: Orca; readonly port: number };
@@ -179,22 +206,6 @@ export class Pod {
       await Pod.runOf(this.outcome).orca.mesh.probe(peer);
       await this.peers.add(peer);
     });
-  }
-
-  /** Leave the workgroup: tell known peers and forget every remembered and configured peer. */
-  async disconnect(): Promise<void> {
-    await this.queue.run(async () => {
-      if (this.outcome.kind === "running") {
-        try {
-          await this.outcome.run.orca.mesh.leave();
-        } catch (error) {
-          this.logger.warn(`orca-pod: leave failed: ${errorMessage(error)}`);
-        }
-      }
-      await this.peers.clear();
-    });
-    // Startup peers named in the settings are forgotten too.
-    if (this.saved.peers.length > 0) await this.commit((raw) => Pod.applyPanelFields(raw, { peers: null }));
   }
 
   /**

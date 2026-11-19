@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { PodError } from "../core/errors.ts";
 
 import { NonceCache, verifyAuth, type VerifiedAuth } from "../core/signing.ts";
-import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
 
 /**
  * Who may call a route (§7.1). Every route declares one in `config.access`;
@@ -89,19 +89,17 @@ export class AccessPolicy {
   /** Verify both proofs of a request and return who sent it. */
   private authenticate(request: FastifyRequest, access: Access): VerifiedAuth {
     return verifyAuth({
-      method: request.method,
       // The signature covers the full request target, query included: a captured
       // request cannot be replayed with different query parameters (§7.1).
-      url: request.url,
-      targetOrcaNodeId: this.selfId,
+      request: { method: request.method, url: request.url, body: request.rawBody },
+      header: request.headers.authorization,
+      selfOrcaNodeId: this.selfId,
       workgroupId: this.workgroupId,
       key: this.key,
       allowEmptyTarget: access === "hello",
       // Nonces live only in this process; refusing anything issued before it
       // started closes the replay window a restart would otherwise reopen.
       notBefore: this.startedAt,
-      body: request.rawBody,
-      header: request.headers.authorization,
       nonceCache: this.nonces,
     });
   }

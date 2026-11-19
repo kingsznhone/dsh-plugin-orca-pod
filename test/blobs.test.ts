@@ -7,7 +7,7 @@ import { bodySha256 } from "../src/core/signing.ts";
 import { FileBlobRegistry } from "../src/core/blobs.ts";
 import { PodError } from "../src/core/errors.ts";
 import { SqliteDb } from "../src/core/sqlite.ts";
-import type { BusyState } from "../src/core/wire/peer.ts";
+import type { BusyState } from "../src/task/wire.ts";
 import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
 import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";

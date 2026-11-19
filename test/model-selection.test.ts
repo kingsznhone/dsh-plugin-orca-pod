@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Context, Logger } from "@deepseek-ai/cordis";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
+import { ModelOffersSchema, ModelSelectionSchema } from "../src/executor/model.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { ModelCatalogFeed } from "../src/plugin/catalog.ts";
 import { Pod } from "../src/plugin/pod.ts";
@@ -15,7 +15,6 @@ import { PASSWORD_REF } from "../src/plugin/stores.ts";
 import { MemoryCredentials, podStores } from "./fixtures/credentials.ts";
 import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
-import { peersOf } from "./support/node.ts";
 
 const LIVE: Orca[] = [];
 const ROOTS: string[] = [];

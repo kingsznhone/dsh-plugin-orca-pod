@@ -7,17 +7,11 @@
  */
 
 import { errorMessage, PodError } from "../core/errors.ts";
-import { JsonTable, type SqliteDb } from "../core/sqlite.ts";
+import { JsonTable } from "./json-table.ts";
+import type { SqliteDb } from "../core/sqlite.ts";
 import { EventBus } from "../core/events.ts";
-import type { BusyState, OrcaNodeId } from "../core/wire/peer.ts";
-import type { LocalExecutor } from "../executor/executor.ts";
-import { ulid } from "ulid";
-
-import { GrantLedger } from "./grants.ts";
-import { parsePodMetadata, parseResume } from "./meta.ts";
-import { WorkspaceQuota } from "./quota.ts";
-import { TaskRecord, type TaskConfig } from "./record.ts";
 import {
+  type BusyState,
   isTerminal,
   messageText,
   type A2AMessage,
@@ -25,6 +19,14 @@ import {
   type TaskEvent,
   type TaskView,
 } from "./wire.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
+import type { LocalExecutor } from "../executor/executor.ts";
+import { ulid } from "ulid";
+
+import { GrantLedger } from "./grants.ts";
+import { parsePodMetadata, parseResume } from "./meta.ts";
+import { WorkspaceQuota } from "./quota.ts";
+import { TaskRecord, type TaskConfig } from "./record.ts";
 import type { Workspace } from "./workspace.ts";
 
 /**

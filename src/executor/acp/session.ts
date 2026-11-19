@@ -24,7 +24,7 @@ import type { ExecuteInput } from "../executor.ts";
 import { parseOrThrow } from "../../core/schema.ts";
 import { errorMessage, isMissingFile } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
-import { describeModelRequest } from "../../core/wire/model.ts";
+import { describeModelRequest } from "../model.ts";
 import type { AcpMcpServer } from "./config.ts";
 import { AcpConnection, HANDSHAKE_TIMEOUT_MS } from "./connection.ts";
 

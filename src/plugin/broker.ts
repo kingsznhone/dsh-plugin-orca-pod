@@ -8,10 +8,9 @@
  * drops the prompt when the task settles.
  */
 
-import type { PermissionRequest } from "../core/wire/grant.ts";
-import type { OrcaNodeId } from "../core/wire/peer.ts";
+import type { PermissionRequest, TaskView } from "../task/wire.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
 import type { OrcaNode } from "../mesh/orca-node.ts";
-import type { TaskView } from "../task/wire.ts";
 import type { Pod } from "./pod.ts";
 
 /** One approval the UI may answer; `agent_id` is the session that dispatched the task, null for a send without one. */

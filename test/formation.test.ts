@@ -5,16 +5,15 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
 import type { TaskView } from "../src/task/wire.ts";
-import { pickFreePort } from "../src/core/net.ts";
+import { pickFreePort } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/core/wire/peer.ts";
+import type { WorkgroupId } from "../src/core/ids.ts";
 import type { NodeIdentity } from "../src/core/identity.ts";
-import { peersOf } from "./support/node.ts";
 
 const FAST: Partial<MeshTimings> = {
   intervalMs: 50,

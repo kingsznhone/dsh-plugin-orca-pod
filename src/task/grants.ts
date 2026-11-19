@@ -6,8 +6,8 @@
 
 import type { PodErrorCode } from "../core/errors.ts";
 import { signWithIdentity, verifyWithNodeId, type NodeIdentity } from "../core/identity.ts";
-import type { Grant, PermissionRequest, SignedGrant } from "../core/wire/grant.ts";
-import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
+import type { Grant, PermissionRequest, SignedGrant } from "./wire.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
 
 const GRANT_DOMAIN = "orca-pod/grant";
 

@@ -5,14 +5,15 @@ import { join } from "node:path";
 
 import { Gateway } from "../api/gateway.ts";
 import { FileBlobRegistry } from "../core/blobs.ts";
-import { DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_RESULT_MAX_BYTES, DEFAULT_TASK_TIMEOUT_S } from "../core/constants.ts";
+
 import { NODE_TOKEN_ENV, NODE_URL_ENV } from "../core/entry.ts";
 import { EventBus, type NodeLogger } from "../core/events.ts";
 import { shortenNodeId, type NodeIdentity } from "../core/identity.ts";
-import { ModelCatalog } from "../core/model-catalog.ts";
+import { ModelCatalog } from "../executor/model-catalog.ts";
 import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
-import { SqliteDb, storeDbPath } from "../core/sqlite.ts";
-import type { OrcaNodeId, RuntimeInfo, WorkgroupId } from "../core/wire/peer.ts";
+import { SqliteDb } from "../core/sqlite.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
+import type { RuntimeInfo, MembersEvent, SelfDescription } from "../mesh/wire.ts";
 import { AcpExecutor } from "../executor/acp/executor.ts";
 import { EchoExecutor } from "../executor/echo.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
@@ -21,12 +22,25 @@ import { Mesh } from "../mesh/mesh.ts";
 import { HttpPeerClient, type FetchLike } from "../mesh/peer-client.ts";
 import { EndpointScreen } from "../mesh/screening.ts";
 import { resolveClock, type MeshClock, type MeshTimings } from "../mesh/timings.ts";
-import type { MembersEvent, SelfDescription } from "../mesh/wire.ts";
 import { DispatchLog } from "../task/dispatch-log.ts";
 import { SingleSlotTaskRunner } from "../task/runner.ts";
 import type { DispatchEvent, TaskEvent } from "../task/wire.ts";
 import { Workspace } from "../task/workspace.ts";
 import type { Settings } from "./settings.ts";
+
+/** Deadline of one outbound call to a peer unless `request_timeout_ms` says otherwise (§4.7). */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Hard cap on one task's lifetime unless `task_timeout_s` says otherwise; peers see it as `max_task_ttl_s` (§6.9). */
+export const DEFAULT_TASK_TIMEOUT_S = 3600;
+
+/** Inline result summary cap unless `result_max_bytes` says otherwise; longer summaries are truncated (§6.11). */
+export const DEFAULT_RESULT_MAX_BYTES = 32 * 1024;
+
+/** The one SQLite file of a data root: tasks, published files and the dispatch log share it. */
+export function storeDbPath(dataRoot: string): string {
+  return join(dataRoot, "tasks.db");
+}
 
 /** What an orca node tells an in-process listener (the UI panel) it may want to re-render (§9.2). */
 export type PodEventInput = TaskEvent | MembersEvent | DispatchEvent;

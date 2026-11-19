@@ -9,11 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
-import type { SubmitTaskInput, TaskView } from "../src/task/wire.ts";
-import { isTerminal } from "../src/task/wire.ts";
+import { type SubmitTaskInput, type TaskView, isTerminal } from "../src/task/wire.ts";
 import { shortenNodeId } from "../src/core/identity.ts";
 import { waitFor } from "./support/harness.ts";
 import { PanelModel } from "../src/plugin/panel.ts";
@@ -24,8 +23,7 @@ import { catalogFeed, podRunning } from "./fixtures/pod.ts";
 import type { Logger } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/core/wire/peer.ts";
-import { peersOf } from "./support/node.ts";
+import type { WorkgroupId } from "../src/core/ids.ts";
 
 const LEAF = fakeNodeId("orca-node-leaf");
 

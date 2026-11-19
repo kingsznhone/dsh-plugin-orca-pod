@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
 import {
   NonceCache,
@@ -29,8 +29,6 @@ const KEY = freshKey();
 /** How far a request's timestamp may be from the receiver's clock. */
 const CLOCK_SKEW_MS = 60_000;
 
-type VerifyAuthOptions = Parameters<typeof verifyAuth>[0];
-
 /** A header as a node of the workgroup builds it: both proofs, bound to `TARGET`. */
 function header(
   identity: NodeIdentity,
@@ -44,33 +42,41 @@ function header(
     workgroup?: typeof WORKGROUP_ID;
   } = {},
 ): string {
-  const build = (): string =>
-    buildAuthHeader({
-      identity,
-      key: options.key ?? KEY,
+  return buildAuthHeader(
+    identity,
+    options.key ?? KEY,
+    { method: METHOD, url: options.url ?? PATH, body: options.body },
+    {
+      target: options.target ?? TARGET,
       workgroupId: options.workgroup ?? WORKGROUP_ID,
-      method: METHOD,
-      url: options.url ?? PATH,
-      targetOrcaNodeId: options.target ?? TARGET,
-      body: options.body,
+      ts: options.ts ?? Date.now(),
       nonce: options.nonce ?? newNonce(),
-    });
-  if (options.ts === undefined) return build();
-  // A header is stamped with the time it is built: build it at `ts`.
-  vi.useFakeTimers({ toFake: ["Date"] });
-  try {
-    vi.setSystemTime(options.ts);
-    return build();
-  } finally {
-    vi.useRealTimers();
-  }
+    },
+  );
 }
 
+/** A request as it arrives at `TARGET`, and what may differ from the gateway's defaults. */
+type Arrival = {
+  method: string;
+  url: string;
+  body?: string;
+  header: string | undefined;
+  nonceCache: NonceCache;
+  selfOrcaNodeId?: string;
+  allowEmptyTarget?: boolean;
+  notBefore?: number;
+};
+
 /** `verifyAuth` the way the gateway calls it: the receiver, its workgroup and key, and the restart cutoff. */
-function verify(
-  options: Partial<VerifyAuthOptions> & Pick<VerifyAuthOptions, "method" | "url" | "header" | "nonceCache">,
-) {
-  return verifyAuth({ targetOrcaNodeId: TARGET, workgroupId: WORKGROUP_ID, key: KEY, notBefore: 0, ...options });
+function verify({ method, url, body, ...receiver }: Arrival) {
+  return verifyAuth({
+    request: { method, url, body },
+    selfOrcaNodeId: TARGET,
+    workgroupId: WORKGROUP_ID,
+    key: KEY,
+    notBefore: 0,
+    ...receiver,
+  });
 }
 
 function expectAuthError(code: PodErrorCode, action: () => void): void {
@@ -145,7 +151,7 @@ describe("buildAuthHeader + verifyAuth", () => {
       verify({
         method: METHOD,
         url: URL_WITH_QUERY,
-        targetOrcaNodeId: "another-orca-node",
+        selfOrcaNodeId: "another-orca-node",
         header: signed,
         nonceCache: new NonceCache(),
       }),
@@ -276,10 +282,12 @@ describe("parseAuthHeader", () => {
     const parsed = parseAuthHeader(signed);
     expect(parsed).not.toBeNull();
     expect(parsed?.orcaNodeId).toBe(identity.orcaNodeId);
-    expect(parsed?.workgroupId).toBe(WORKGROUP_ID);
-    expect(parsed?.target).toBe("target-orca-node");
-    expect(parsed?.ts).toBe(1_700_000_000_000);
-    expect(parsed?.nonce).toBe("abc");
+    expect(parsed?.claim).toEqual({
+      target: "target-orca-node",
+      workgroupId: WORKGROUP_ID,
+      ts: 1_700_000_000_000,
+      nonce: "abc",
+    });
     expect(parsed?.signature.length).toBeGreaterThan(0);
     expect(parsed?.proof.length).toBeGreaterThan(0);
   });
@@ -291,6 +299,12 @@ describe("parseAuthHeader", () => {
     expect(parseAuthHeader("Pod id=x; ts=1; nonce=n")).toBeNull();
     // Both proofs are required: a header without the workgroup proof is not a request of this protocol.
     expect(parseAuthHeader("Pod id=x; wg=orca-dev; ts=1; nonce=n; sig=s")).toBeNull();
+    // The sender and the workgroup are checked here: a header naming no node or no workgroup is not one.
+    const node = generateNodeIdentity().orcaNodeId;
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=n; sig=s; proof=p`)).not.toBeNull();
+    expect(parseAuthHeader("Pod id=ABC123; wg=orca-dev; ts=1; nonce=n; sig=s; proof=p")).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=Orca Dev; ts=1; nonce=n; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=; nonce=n; sig=s; proof=p`)).toBeNull();
   });
 });
 

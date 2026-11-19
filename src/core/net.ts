@@ -1,61 +1,10 @@
-/** Network helpers: peer URL normalization, loopback checks, dialable ports and local addresses. */
+/** Network helpers: peer URL normalization, endpoint lists, loopback requests and local addresses. */
 
 import type { IncomingHttpHeaders } from "node:http";
-import { createServer, type AddressInfo } from "node:net";
 import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 
 import { bindUrlHost, isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
 import { DEFAULT_PORT } from "./constants.ts";
-import { isHttpEndpoint } from "./wire/peer.ts";
-
-/**
- * Ports the WHATWG fetch standard forbids. `undici` (and browsers) reject a
- * request whose URL names one of them with `fetch failed` / `bad port`, so an
- * orca node must never advertise such a port as its dial endpoint.
- */
-const BLOCKED_FETCH_PORTS: ReadonlySet<number> = new Set([
-  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110,
-  111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
-  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
-  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
-]);
-
-/** True when `fetch` refuses to connect to this port. */
-export function isBlockedFetchPort(port: number): boolean {
-  return BLOCKED_FETCH_PORTS.has(port);
-}
-
-/**
- * Pick a free loopback port that `fetch` may dial.
- *
- * `listen(0)` lets the kernel choose, but it may choose one of the blocked
- * ports above; peers would then fail to reach this orca node with `bad port`.
- * The probe closes immediately; the caller listens on the returned port.
- */
-export async function pickFreePort(): Promise<number> {
-  for (;;) {
-    const server = createServer();
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
-    });
-    const { port } = server.address() as AddressInfo;
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
-    if (!isBlockedFetchPort(port)) return port;
-  }
-}
-
-/** True for URLs that dial the local machine only. */
-export function isLoopbackEndpoint(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return host === "localhost" || isLoopbackHost(host);
-  } catch {
-    return false;
-  }
-}
 
 /** Headers a reverse proxy adds; their presence means the socket peer is not the real client. */
 const PROXY_HEADERS = ["x-forwarded-for", "forwarded", "x-real-ip"];
@@ -95,12 +44,6 @@ export function detectLocalEndpoints(port: number): string[] {
   const ipv6 = external.filter((address) => address.family === "IPv6" && !/^fe80:/i.test(address.address));
   const urls = [...ipv4, ...ipv6].map((address) => bindUrl(address.address, port));
   return [...new Set(urls.filter((url): url is string => url !== undefined))];
-}
-
-/** Listen-address choices for setup UIs: loopback, every interface, then each detected local address. */
-export function bindChoices(port: number): string[] {
-  const hosts = detectLocalEndpoints(port).map((url) => new URL(url).hostname.replace(/^\[|\]$/g, ""));
-  return [...new Set(["127.0.0.1", "::", ...hosts])];
 }
 
 /** Split `host[:port]` or `[ipv6][:port]` into the host and the port text (`undefined` when there is none). */
@@ -143,4 +86,32 @@ export function normalizePeerUrl(peer: string): string {
   const url = `${scheme}://${host.includes(":") ? `[${host}]` : host}:${port}`;
   if (!isHttpEndpoint(url)) throw new Error(`peer address must be an http(s) host[:port]: ${trimmed}`);
   return url;
+}
+
+export function isHttpEndpoint(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Max advertised base URLs per orca node; enough for IPv4/IPv6/LAN/public. */
+const MAX_ENDPOINTS = 8;
+
+/**
+ * Validate and normalize an advertised endpoint list: http(s) base URLs with no
+ * trailing slash, deduplicated, order preserved (first is preferred).
+ */
+export function normalizeEndpoints(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ENDPOINTS) return null;
+  const endpoints: string[] = [];
+  for (const item of value) {
+    if (!isHttpEndpoint(item)) return null;
+    const endpoint = item.endsWith("/") ? item.slice(0, -1) : item;
+    if (!endpoints.includes(endpoint)) endpoints.push(endpoint);
+  }
+  return endpoints.length > 0 ? endpoints : null;
 }

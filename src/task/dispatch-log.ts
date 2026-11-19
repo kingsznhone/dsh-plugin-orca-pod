@@ -1,8 +1,9 @@
 import type { SessionId } from "@deepseek-ai/dsh-session";
 
 import { EventBus, type NodeLogger } from "../core/events.ts";
-import { JsonTable, type SqliteDb } from "../core/sqlite.ts";
-import type { OrcaNodeId } from "../core/wire/peer.ts";
+import { JsonTable } from "./json-table.ts";
+import type { SqliteDb } from "../core/sqlite.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
 import { TERMINAL_STATES, type DispatchEntry, type DispatchEvent, type TaskView } from "./wire.ts";
 
 /** The SQL condition "this entry's task has not ended". */

@@ -51,12 +51,6 @@ export class RememberedPeers {
     await this.save();
   }
 
-  /** Forget every peer. */
-  async clear(): Promise<void> {
-    this.peers = [];
-    await this.save();
-  }
-
   /** Forget every peer and delete the file (the node is being reset). */
   async remove(): Promise<void> {
     this.peers = [];

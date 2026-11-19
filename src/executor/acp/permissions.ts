@@ -9,7 +9,7 @@ import type {
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 
-import { narrowPermissionMode, widerModes } from "../../core/wire/permission.ts";
+import { narrowPermissionMode, widerModes } from "../permission.ts";
 
 export const CANCELLED: RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 

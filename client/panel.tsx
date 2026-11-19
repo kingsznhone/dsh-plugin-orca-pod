@@ -127,11 +127,6 @@ function StatusPage({
           {self ? <div className={`${css.identityMeta} ${ui.mono}`}>{self.orca_node_id}</div> : null}
         </div>
         <div className={css.toolbar}>
-          {joined ? (
-            <Button variant={"outline"} size={"sm"} disabled={busy} onClick={() => store.act("disconnect", {})}>
-              {t("disconnect")}
-            </Button>
-          ) : null}
           <Tooltip label={t("settings")} side={"bottom"} portal={true}>
             <Button
               variant={"ghost"}

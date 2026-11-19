@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
 
-import { DEFAULT_RESULT_MAX_BYTES, DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
-import { SqliteDb, storeDbPath } from "../../src/core/sqlite.ts";
-import type { OrcaNodeId } from "../../src/core/wire/peer.ts";
+import { DEFAULT_RESULT_MAX_BYTES, DEFAULT_TASK_TIMEOUT_S, storeDbPath } from "../../src/node/orca.ts";
+import { SqliteDb } from "../../src/core/sqlite.ts";
+import type { OrcaNodeId } from "../../src/core/ids.ts";
 import { EchoExecutor } from "../../src/executor/echo.ts";
 import type { LocalExecutor } from "../../src/executor/executor.ts";
 import type { TaskConfig } from "../../src/task/record.ts";

@@ -3,9 +3,10 @@ import { randomBytes } from "node:crypto";
 import { afterEach, vi } from "vitest";
 
 import { FileBlobRegistry } from "../../src/core/blobs.ts";
-import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
+import { DEFAULT_TASK_TIMEOUT_S } from "../../src/node/orca.ts";
 import { generateNodeIdentity } from "../../src/core/identity.ts";
-import type { OrcaNodeId, PeerView, WorkgroupId } from "../../src/core/wire/peer.ts";
+import type { OrcaNodeId, WorkgroupId } from "../../src/core/ids.ts";
+import type { PeerView } from "../../src/mesh/wire.ts";
 import { Gateway } from "../../src/api/gateway.ts";
 import { MeshContext } from "../../src/mesh/context.ts";
 import { Mesh } from "../../src/mesh/mesh.ts";

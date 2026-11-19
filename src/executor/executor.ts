@@ -8,9 +8,19 @@ import { z } from "zod";
 
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import { RequestedAccessSchema, type RequestedAccess } from "../core/wire/grant.ts";
-import type { OrcaNodeId } from "../core/wire/peer.ts";
-import { SandboxModeSchema } from "../core/wire/permission.ts";
+
+import type { OrcaNodeId } from "../core/ids.ts";
+import { SandboxModeSchema } from "./permission.ts";
+
+/**
+ * What a permission request asks to do: the ACP tool call and its kind, when
+ * the executor knows them, plus whatever else the executor describes.
+ */
+export const RequestedAccessSchema = z.looseObject({
+  tool_call_id: z.string().optional(),
+  tool_kind: z.string().optional(),
+});
+export type RequestedAccess = z.infer<typeof RequestedAccessSchema>;
 
 const ECHO_LIMITS = {
   max_steps: 8,

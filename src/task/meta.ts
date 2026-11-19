@@ -7,13 +7,11 @@
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { parseEchoScript } from "../executor/echo.ts";
 import type { EchoScript } from "../executor/executor.ts";
-import type { A2AMessage, TaskMetadata } from "./wire.ts";
+import { type A2AMessage, type TaskMetadata, type SignedGrant, SignedGrantSchema } from "./wire.ts";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
-import type { SignedGrant } from "../core/wire/grant.ts";
 import { PodError } from "../core/errors.ts";
 import { parseOrThrow } from "../core/schema.ts";
-import { SignedGrantSchema } from "../core/wire/grant.ts";
 
 export type TaskMeta = {
   /** What the origin session allows; a task that names no mode runs read-only (§7.10). */

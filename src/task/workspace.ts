@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { WorkgroupId } from "../core/wire/peer.ts";
+import type { WorkgroupId } from "../core/ids.ts";
 import { isMissingFile } from "../core/errors.ts";
 
 export type WorkspaceUsage = { bytes: number; files: number };

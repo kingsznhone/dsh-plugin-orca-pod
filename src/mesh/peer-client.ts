@@ -1,14 +1,35 @@
-import type { z } from "zod";
+import { z } from "zod";
 
 import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 
+import { POD_ERROR_STATUS, PodError, type PodErrorCode } from "../core/errors.ts";
 import { readAll } from "../core/stream.ts";
 import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER, verifyReplyHeader } from "../core/signing.ts";
 import { parseOrThrow } from "../core/schema.ts";
-import { isPodErrorCode, PodError } from "../core/errors.ts";
 import type { NodeIdentity } from "../core/identity.ts";
-import { ErrorReplySchema, type ErrorReply } from "../core/wire/reply.ts";
-import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
+
+/** Whether a peer's error code is one this node knows. */
+function isPodErrorCode(value: unknown): value is PodErrorCode {
+  return typeof value === "string" && Object.hasOwn(POD_ERROR_STATUS, value);
+}
+
+/**
+ * Read a peer's error leniently: a body we cannot make sense of keeps the
+ * generic code. The gateway's `{code, message}` and the same inside a JSON-RPC
+ * `error.data` both parse, and so does a 200 reply carrying an `error` envelope.
+ */
+export const ErrorReplySchema = z.object({
+  code: z.string().optional(),
+  message: z.string().optional(),
+  error: z
+    .object({
+      message: z.string().optional(),
+      data: z.object({ code: z.string().optional(), message: z.string().optional() }).optional(),
+    })
+    .optional(),
+});
+export type ErrorReply = z.infer<typeof ErrorReplySchema>;
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
@@ -217,16 +238,12 @@ export class HttpPeerClient {
 
   /** The two proofs of one request: bound to the node it is addressed to, the workgroup, and the body when there is one. */
   private authorization(method: HttpMethod, url: URL, target: string, nonce: string, body?: string): string {
-    return buildAuthHeader({
-      identity: this.identity,
-      key: this.key,
-      workgroupId: this.workgroupId,
-      method,
-      url: `${url.pathname}${url.search}`,
-      targetOrcaNodeId: target,
-      nonce,
-      body,
-    });
+    return buildAuthHeader(
+      this.identity,
+      this.key,
+      { method, url: `${url.pathname}${url.search}`, body },
+      { target, workgroupId: this.workgroupId, ts: Date.now(), nonce },
+    );
   }
 
   /**

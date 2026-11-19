@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { RuntimeInfo } from "../src/core/wire/peer.ts";
-import type { NodeInput } from "./support/node.ts";
-import { newNode } from "./support/node.ts";
-import { wg } from "./fixtures/ids.ts";
-import { labelId } from "./fixtures/ids.ts";
+import type { RuntimeInfo } from "../src/mesh/wire.ts";
+import { type NodeInput, newNode } from "./support/node.ts";
+import { wg, labelId } from "./fixtures/ids.ts";
 
 const RUNTIME: RuntimeInfo = {
   os: { family: "linux", name: "Linux", version: "6" },

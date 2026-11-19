@@ -12,15 +12,15 @@
 
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
-import type { DispatchEntry, PodTaskMetadata, TaskView } from "../task/wire.ts";
+import { type DispatchEntry, type PodTaskMetadata, type TaskView, isTerminal, messageText } from "../task/wire.ts";
 import { shortenNodeId } from "../core/identity.ts";
-import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
-import { isTerminal, messageText } from "../task/wire.ts";
-import type { OrcaNodeId, PeerView, SelfRecord } from "../core/wire/peer.ts";
+import { detectLocalEndpoints, normalizePeerUrl } from "../core/net.ts";
+import { isLoopbackEndpoint, type Pod } from "./pod.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
+import type { PeerView, SelfRecord } from "../mesh/wire.ts";
 import type { PanelPatch } from "../node/settings.ts";
 import type { Orca } from "../node/orca.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
-import type { Pod } from "./pod.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 import type {
   PodApproval,
@@ -147,13 +147,19 @@ export class PanelModel {
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
       permission_modes: SANDBOX_MODES,
       reasoning_efforts: this.catalog.current().reasoningEfforts,
-      bind_choices: [...new Set([...bindChoices(port), settings.bind_host])],
+      bind_choices: [...new Set([...PanelModel.bindChoices(port), settings.bind_host])],
       peers: [...new Set([...settings.peers, ...pod.rememberedPeers])],
       data_root: pod.dataRoot,
       password_set: await pod.passwordConfigured(),
       running: current !== null,
       error: status.kind === "failed" ? status.error.message : null,
     };
+  }
+
+  /** Listen-address choices for setup UIs: loopback, every interface, then each detected local address. */
+  private static bindChoices(port: number): string[] {
+    const hosts = detectLocalEndpoints(port).map((url) => new URL(url).hostname.replace(/^\[|\]$/g, ""));
+    return [...new Set(["127.0.0.1", "::", ...hosts])];
   }
 
   /** Store a new password, write the panel fields into the settings file, and restart. */
@@ -167,12 +173,6 @@ export class PanelModel {
   /** `join` one peer now and remember it for later starts. */
   async connect(peer: string): Promise<PodConfigView> {
     await this.pod.addPeer(normalizePeerUrl(peer));
-    return this.config();
-  }
-
-  /** Leave the workgroup: tell known peers and forget them locally. */
-  async disconnect(): Promise<PodConfigView> {
-    await this.pod.disconnect();
     return this.config();
   }
 
@@ -252,7 +252,7 @@ export class PanelModel {
     const found = new Map<string, PodFileRef>();
     for (const [name] of text.matchAll(FILE_NAME)) {
       const ref = parseBlobRef(name);
-      if (ref !== null) found.set(name, { node: ref.node, blob_id: ref.blob });
+      if (ref !== null) found.set(name, ref);
     }
     return [...found.values()];
   }

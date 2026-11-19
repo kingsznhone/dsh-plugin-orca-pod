@@ -5,12 +5,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
 import { wg } from "./fixtures/ids.ts";
 import { replyTo } from "./support/replies.ts";
-import { peersOf } from "./support/node.ts";
 
 const WORKGROUP = wg("orca-outbound");
 const PASSWORD = "outbound-secret";

@@ -36,11 +36,11 @@ describe("RememberedPeers", () => {
     expect(second.list()).toEqual(first.list());
   });
 
-  it("forgets every peer, in memory and on disk", async () => {
+  it("forgets every peer on reset, in memory and on disk", async () => {
     const root = await tempRoot();
     const peers = new RememberedPeers(root, logger);
     await peers.add("http://10.0.0.2:11811");
-    await peers.clear();
+    await peers.remove();
     expect(peers.list()).toEqual([]);
 
     const reloaded = new RememberedPeers(root, logger);

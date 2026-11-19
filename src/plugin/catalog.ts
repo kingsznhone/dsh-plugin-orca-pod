@@ -20,7 +20,7 @@ import type { LlmModelInfo, LlmProviderInfo, LlmReasoningEffortInfo, LlmRuntime 
 
 import { errorMessage } from "../core/errors.ts";
 import { ChangeSignal } from "../core/events.ts";
-import { MAX_MODEL_OFFERS, type ModelOffer } from "../core/wire/model.ts";
+import { MAX_MODEL_OFFERS, type ModelOffer } from "../executor/model.ts";
 import { OptionalService } from "./services.ts";
 
 type HostModelCatalog = {

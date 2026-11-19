@@ -3,7 +3,7 @@ import type { z } from "zod";
 
 import { PodError } from "../core/errors.ts";
 import { isRecord } from "../core/schema.ts";
-import type { OrcaNodeId } from "../core/wire/peer.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
 import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { A2ARequestSchema, type TaskView } from "../task/wire.ts";
 import { parseInput } from "./input.ts";

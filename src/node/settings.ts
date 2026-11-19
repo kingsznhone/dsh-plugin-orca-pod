@@ -7,12 +7,12 @@
 
 import { z } from "zod";
 
-import { normalizePeerUrl } from "../core/net.ts";
+import { normalizePeerUrl, normalizeEndpoints } from "../core/net.ts";
 import { DEFAULT_PORT, EXECUTOR_KINDS } from "../core/constants.ts";
 import { HarnessError } from "@deepseek-ai/dsh-error";
-import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../core/wire/model.ts";
-import { SandboxModeSchema } from "../core/wire/permission.ts";
-import { WorkgroupIdSchema, normalizeEndpoints } from "../core/wire/peer.ts";
+import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../executor/model.ts";
+import { SandboxModeSchema } from "../executor/permission.ts";
+import { WorkgroupIdSchema } from "../core/ids.ts";
 import { errorMessage } from "../core/errors.ts";
 import { isRecord } from "../core/schema.ts";
 import { AcpExecutorConfigSchema } from "../executor/acp/config.ts";

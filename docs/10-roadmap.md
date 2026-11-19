@@ -19,7 +19,7 @@
 - 新 orca node join 任意 orca node → 按目录补全 mesh（被拒就 join，幂等）。
 - 双向看门狗（1 拍 suspect、3 拍 offline）、单调时钟、`unreachable` 状态、自适应心跳节奏。
 - 候选端点与墓碑（[§3.5](03-membership.md#35-候选端点与墓碑)）：验证“死 orca node 不会互相刷活”。
-- `runtime` 采集与展示；`members_digest` 比对；leave；记录修剪。
+- `runtime` 采集与展示；`members_digest` 比对；记录修剪。
 - 验收：C 加入 A 后一拍内 A/B/C 互相可见；kill B 后 1 拍 suspect、3 拍 offline；拔掉 B 的网线后 A/C 不会把 B 互相刷回在线；B 重启并重新发心跳后 15s 内恢复。
 
 ### 10.3 Phase 2：接 DSH 执行 + workgroup 工作区

@@ -2,8 +2,8 @@ import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { describe, expect, it } from "vitest";
 
 import { ChangeSignal, EventBus } from "../src/core/events.ts";
-import { ModelCatalog } from "../src/core/model-catalog.ts";
-import { SerialQueue } from "../src/core/serial-queue.ts";
+import { ModelCatalog } from "../src/executor/model-catalog.ts";
+import { SerialQueue } from "../src/plugin/pod.ts";
 
 describe("EventBus", () => {
   it("stamps events, delivers them in order and stops after unsubscribe", () => {

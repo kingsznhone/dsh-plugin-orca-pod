@@ -1,7 +1,7 @@
 import type { FileBlobRegistry } from "../core/blobs.ts";
 import type { NodeLogger } from "../core/events.ts";
 import type { NodeIdentity } from "../core/identity.ts";
-import type { WorkgroupId } from "../core/wire/peer.ts";
+import type { WorkgroupId } from "../core/ids.ts";
 import type { DispatchLog } from "../task/dispatch-log.ts";
 import type { HttpPeerClient } from "./peer-client.ts";
 import type { EndpointScreen } from "./screening.ts";

@@ -30,7 +30,7 @@ describe("node identity", () => {
   });
 
   it("refuses text that is not an Ed25519 seed", () => {
-    expect(() => importIdentity("0OIl")).toThrow(/not a base58 character/);
+    expect(() => importIdentity("0OIl")).toThrow(/base58/i);
     // 31 bytes of 7.
     expect(() => importIdentity("7DUeBUtEcb7nujVZRJmeBju3X1mo6PpnWNtJ9EBhdY")).toThrow(/32 bytes/);
   });

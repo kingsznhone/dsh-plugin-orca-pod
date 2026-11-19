@@ -17,14 +17,21 @@ import { assertNever } from "@deepseek-ai/dsh-util-values";
 
 import { errorMessage, PodError } from "../core/errors.ts";
 import { ChangeSignal, type NodeLogger } from "../core/events.ts";
-import type { PermissionRequest } from "../core/wire/grant.ts";
-import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
-import { narrowPermissionMode } from "../core/wire/permission.ts";
+import {
+  type PermissionRequest,
+  isTerminal,
+  messageText,
+  textMessage,
+  type A2AMessage,
+  type TaskState,
+  type TaskView,
+} from "./wire.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
+import { narrowPermissionMode } from "../executor/permission.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor/executor.ts";
 import type { GrantFailure } from "./grants.ts";
 import type { TaskMeta } from "./meta.ts";
 import { composePrompt } from "./prompt.ts";
-import { isTerminal, messageText, textMessage, type A2AMessage, type TaskState, type TaskView } from "./wire.ts";
 import type { Workspace } from "./workspace.ts";
 
 /** How this node runs tasks: the runner and every record it builds read the same object. */

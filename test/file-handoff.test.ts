@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { blobRefText, parseBlobRef, saveBlob } from "../src/core/blobs.ts";
+import { formatBlobRef, parseBlobRef, saveBlob } from "../src/core/blobs.ts";
 import type { ExecutorEvent, LocalExecutor } from "../src/executor/executor.ts";
 import { nodeParts } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
@@ -61,14 +61,14 @@ describe("file hand-off", () => {
         const ref = parseBlobRef(FILE_NAME.exec(input.prompt)?.[0] ?? "");
         if (ref === null) throw new Error("the task text names no file");
         const input_ = join(input.workspaceDir, "in.txt");
-        await saveBlob(await node.mesh.require(ref.node).fetchBlob(ref.blob), input_, ref.blob);
+        await saveBlob(await node.mesh.require(ref.node).fetchBlob(ref.blob_id), input_, ref.blob_id);
         const text = readFileSync(input_, "utf8");
         seen.push(text);
         // publish: what the agent hands back, named in its result.
         const output = join(input.workspaceDir, "out.txt");
         writeFileSync(output, text.toUpperCase());
         const blob = await node.blobs.register(output);
-        yield { type: "completed", text: `converted: ${blobRefText({ node: node.orcaNodeId, blob: blob.blob_id })}` };
+        yield { type: "completed", text: `converted: ${formatBlobRef({ node: node.orcaNodeId, blob_id: blob.blob_id })}` };
       },
     };
     const origin = await startNode();
@@ -78,7 +78,7 @@ describe("file hand-off", () => {
     const source = join(tempRoot(), "in.txt");
     writeFileSync(source, "hello from the origin");
     const published = await origin.blobs.register(source);
-    const name = blobRefText({ node: origin.orcaNodeId, blob: published.blob_id });
+    const name = formatBlobRef({ node: origin.orcaNodeId, blob_id: published.blob_id });
     const submitted = await origin.mesh.resolve(target.mesh.self.endpoints[0] as string).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: `convert ${name}` }] },
     });
@@ -96,7 +96,7 @@ describe("file hand-off", () => {
     expect(back?.node).toBe(target.orcaNodeId);
 
     const saved = join(tempRoot(), "out.txt");
-    await saveBlob(await origin.mesh.require(back!.node).fetchBlob(back!.blob), saved, back!.blob);
+    await saveBlob(await origin.mesh.require(back!.node).fetchBlob(back!.blob_id), saved, back!.blob_id);
     expect(readFileSync(saved, "utf8")).toBe("HELLO FROM THE ORIGIN");
   });
 

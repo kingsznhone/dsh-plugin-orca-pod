@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { OrcaNodeId } from "../src/core/wire/peer.ts";
+import type { OrcaNodeId } from "../src/core/ids.ts";
 import type { Mesh } from "../src/mesh/mesh.ts";
 import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "../src/mesh/timings.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";

@@ -12,23 +12,25 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
-import { blobRefText, parseBlobRef, saveBlob } from "../core/blobs.ts";
+import { z } from "zod";
+
+import { formatBlobRef, parseBlobRef, saveBlob } from "../core/blobs.ts";
 import { normalizePeerUrl } from "../core/net.ts";
 import { DEFAULT_PORT } from "../core/constants.ts";
 import { isTerminal, type SubmitTaskInput, type TaskState } from "../task/wire.ts";
-import { parseModelSpec } from "../core/wire/model.ts";
-import { narrowPermissionMode } from "../core/wire/permission.ts";
-import type { PeerView } from "../core/wire/peer.ts";
+import { parseModelSpec, ReasoningEffortSchema } from "../executor/model.ts";
+import { narrowPermissionMode, SandboxModeSchema } from "../executor/permission.ts";
+import { parseOrThrow } from "../core/schema.ts";
+import type { PeerView } from "../mesh/wire.ts";
 import { abortError, errorMessage, PodError } from "../core/errors.ts";
 import type { Orca } from "../node/orca.ts";
 
 import { canonicalPath, writableRoots, type SandboxExecutionPolicy, type SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import { ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
+import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import { snapshotJsonValue, type JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
   defineTool,
-  type InferArgs,
   type ParameterSchemaSpec,
   type ToolDefinition,
   type ToolExecution,
@@ -122,29 +124,41 @@ const TASK_PARAMETERS = {
   ttl_s: PARAMETERS.ttl_s,
 } as const satisfies ParameterSchemaSpec;
 
-type ToolArgs = InferArgs<typeof PARAMETERS>;
-type TextKey = "peer" | "text" | "task_id" | "reasoning_effort" | "ref" | "output" | "path";
+/**
+ * What each method needs, checked after DSH has checked the types and enums
+ * against `PARAMETERS`: the model may still leave out an argument its method
+ * needs, or send one that is blank. Text arguments are trimmed.
+ */
+const Text = z.string("must be a non-empty string").trim().min(1, "must be a non-empty string");
 
-type PeerArgs = { peer: string };
-type TaskArgs = PeerArgs & { task_id: string };
-type FetchArgs = { ref: string; output: string };
-type PublishArgs = { path: string; ttl_s: number | undefined };
-type SendArgs = PeerArgs & {
-  text: string;
-  echo: ToolArgs["echo"];
-  permission_mode: SandboxMode | undefined;
-  model: string | undefined;
-  reasoning_effort: ReasoningEffortId | undefined;
-};
+const FetchCall = z.object({ method: z.literal("fetch"), ref: Text, output: Text });
+const PublishCall = z.object({
+  method: z.literal("publish"),
+  path: Text,
+  ttl_s: z.int("must be a non-negative integer").min(0, "must be a non-negative integer").optional(),
+});
+const SendCall = z.object({
+  method: z.literal("send"),
+  peer: Text,
+  text: Text,
+  echo: z.unknown().optional(),
+  permission_mode: SandboxModeSchema.optional(),
+  model: z.string().optional(),
+  reasoning_effort: ReasoningEffortSchema.optional(),
+});
 
-/** One call of the tool: its method and the arguments that method takes. */
-type PodCall =
-  | { method: "send"; args: SendArgs }
-  | { method: "fetch"; args: FetchArgs }
-  | { method: "publish"; args: PublishArgs }
-  | { method: "status" | "cancel"; args: TaskArgs }
-  | { method: "connect"; args: PeerArgs }
-  | { method: "members" };
+/** The calls a task session can make: files only. */
+const FileCallSchema = z.discriminatedUnion("method", [FetchCall, PublishCall]);
+
+/** One call of the host's tool: its method and the arguments that method takes. */
+const PodCallSchema = z.discriminatedUnion("method", [
+  SendCall,
+  FetchCall,
+  PublishCall,
+  z.object({ method: z.enum(["status", "cancel"]), peer: Text, task_id: Text }),
+  z.object({ method: z.literal("connect"), peer: Text }),
+  z.object({ method: z.literal("members") }),
+]);
 
 // ---- what a call answers ----
 
@@ -157,9 +171,6 @@ type ConnectResult = { peer: string; members: PeerView[]; members_digest: string
  * or, inside a task, the node's local routes.
  */
 type ToolNode = { kind: "host"; pod: Pod } | { kind: "task"; local: LocalNode };
-
-/** The calls a task session can make: files only. */
-type FileCall = Extract<PodCall, { method: "fetch" | "publish" }>;
 
 /** The single `orca_pod` tool, bound to this machine's node. */
 export class PodTool {
@@ -183,7 +194,7 @@ export class PodTool {
         description: `Move files between this task and the Orca Pod mesh, through this machine's orca node. ${FILES_HELP}`,
         parameters: TASK_PARAMETERS,
         output,
-        execute: (args, exec) => this.execute(exec, () => this.runFile(PodTool.parseFileCall(args), exec)),
+        execute: (args, exec) => this.execute(exec, () => this.runFile(PodTool.parseCall(FileCallSchema, args), exec)),
       });
     }
     return defineTool({
@@ -195,7 +206,8 @@ export class PodTool {
         ASYNC_NOTE,
       parameters: PARAMETERS,
       output,
-      execute: (args, exec) => this.execute(exec, () => this.run(node.pod, PodTool.parseCall(args), exec)),
+      execute: (args, exec) =>
+        this.execute(exec, () => this.run(node.pod, PodTool.parseCall(PodCallSchema, args), exec)),
     });
   }
 
@@ -216,7 +228,7 @@ export class PodTool {
   }
 
   /** Dispatch a task; the dispatch log records it for the tracker. */
-  private async send(pod: Pod, args: SendArgs, exec: ToolRunContext): Promise<SendResult> {
+  private async send(pod: Pod, args: z.output<typeof SendCall>, exec: ToolRunContext): Promise<SendResult> {
     const { signal } = exec;
     const permissionMode = PodTool.taskMode(args.permission_mode, this.sessionPolicy(exec)?.mode);
     const model =
@@ -252,7 +264,7 @@ export class PodTool {
   }
 
   /** Save a file a member published, where the session sandbox lets it write (§5.6). */
-  private async fetch(args: FetchArgs, exec: ToolRunContext): Promise<FetchResult> {
+  private async fetch(args: z.output<typeof FetchCall>, exec: ToolRunContext): Promise<FetchResult> {
     const ref = parseBlobRef(args.ref);
     if (ref === null) throw new Error("ref must be <orca node id>/<sha256>");
     const policy = this.sessionPolicy(exec);
@@ -277,14 +289,14 @@ export class PodTool {
         ? await node.local.open(ref, exec.signal)
         : await (await PodTool.awaitOrca(node.pod, exec.signal)).mesh
             .require(ref.node)
-            .fetchBlob(ref.blob, exec.signal);
+            .fetchBlob(ref.blob_id, exec.signal);
     await mkdir(dirname(output), { recursive: true });
-    const { size } = await saveBlob(opened, output, ref.blob);
+    const { size } = await saveBlob(opened, output, ref.blob_id);
     return { path: output, size };
   }
 
   /** Copy a local file into this machine's node and name it (§5.6); the copy lives for its TTL. */
-  private async publish(args: PublishArgs, exec: ToolRunContext): Promise<PublishedFile> {
+  private async publish(args: z.output<typeof PublishCall>, exec: ToolRunContext): Promise<PublishedFile> {
     const path = resolve(this.sessionPolicy(exec)?.workspaceRoot ?? process.cwd(), args.path);
     const { node } = this;
     if (node.kind === "task") return node.local.publish(path, args.ttl_s, exec.signal);
@@ -293,7 +305,7 @@ export class PodTool {
     PodTool.throwIfAborted(exec.signal);
     const blob = await orca.blobs.register(path, args.ttl_s);
     return {
-      ref: blobRefText({ node: orca.orcaNodeId, blob: blob.blob_id }),
+      ref: formatBlobRef({ node: orca.orcaNodeId, blob_id: blob.blob_id }),
       size: blob.size,
       expires_at: blob.expires_at,
     };
@@ -310,8 +322,8 @@ export class PodTool {
     return policy === undefined || session === undefined ? undefined : policy.resolve({ session });
   }
 
-  private async connect(pod: Pod, args: PeerArgs, signal: AbortSignal): Promise<ConnectResult> {
-    const peer = normalizePeerUrl(args.peer);
+  private async connect(pod: Pod, peerRef: string, signal: AbortSignal): Promise<ConnectResult> {
+    const peer = normalizePeerUrl(peerRef);
     await PodTool.awaitOrca(pod, signal);
     // Connecting persists the peer; do not start it for a turn that is already gone.
     PodTool.throwIfAborted(signal);
@@ -325,24 +337,22 @@ export class PodTool {
   }
 
   /** Dispatch one call of the host's tool against the running node. */
-  private async run(pod: Pod, call: PodCall, exec: ToolRunContext): Promise<unknown> {
+  private async run(pod: Pod, call: z.output<typeof PodCallSchema>, exec: ToolRunContext): Promise<unknown> {
     const { signal } = exec;
     switch (call.method) {
       case "send":
-        return this.send(pod, call.args, exec);
+        return this.send(pod, call, exec);
       case "fetch":
       case "publish":
         return this.runFile(call, exec);
       case "status": {
-        const view = await (await PodTool.awaitOrca(pod, signal)).mesh
-          .resolve(call.args.peer)
-          .getTask(call.args.task_id, signal);
+        const view = await (await PodTool.awaitOrca(pod, signal)).mesh.resolve(call.peer).getTask(call.task_id, signal);
         return { ...view, terminal: isTerminal(view.status.state) };
       }
       case "cancel": {
         const view = await (await PodTool.awaitOrca(pod, signal)).mesh
-          .resolve(call.args.peer)
-          .cancelTask(call.args.task_id, signal);
+          .resolve(call.peer)
+          .cancelTask(call.task_id, signal);
         return { ...view, terminal: isTerminal(view.status.state) };
       }
       case "members": {
@@ -354,12 +364,12 @@ export class PodTool {
         };
       }
       case "connect":
-        return this.connect(pod, call.args, signal);
+        return this.connect(pod, call.peer, signal);
     }
   }
 
-  private runFile(call: FileCall, exec: ToolRunContext): Promise<FetchResult | PublishedFile> {
-    return call.method === "fetch" ? this.fetch(call.args, exec) : this.publish(call.args, exec);
+  private runFile(call: z.output<typeof FileCallSchema>, exec: ToolRunContext): Promise<FetchResult | PublishedFile> {
+    return call.method === "fetch" ? this.fetch(call, exec) : this.publish(call, exec);
   }
 
   /**
@@ -371,60 +381,9 @@ export class PodTool {
     return PodTool.waitUnlessAborted(pod.orca(), signal);
   }
 
-  /** A text argument with its whitespace trimmed; blank counts as absent. */
-  private static optional(args: ToolArgs, key: TextKey): string | undefined {
-    const value = args[key]?.trim();
-    return value === undefined || value.length === 0 ? undefined : value;
-  }
-
-  /** A text argument the method needs. */
-  private static need(args: ToolArgs, key: TextKey): string {
-    const value = PodTool.optional(args, key);
-    if (value === undefined) throw new Error(`${key} must be a non-empty string`);
-    return value;
-  }
-
-  private static parseCall(args: ToolArgs): PodCall {
-    const { method } = args;
-    switch (method) {
-      case "send": {
-        if (args.reasoning_effort !== undefined && PodTool.optional(args, "reasoning_effort") === undefined) {
-          throw new Error("reasoning_effort must not be blank");
-        }
-        const effort = PodTool.optional(args, "reasoning_effort");
-        return {
-          method,
-          args: {
-            peer: PodTool.need(args, "peer"),
-            text: PodTool.need(args, "text"),
-            echo: args.echo,
-            permission_mode: args.permission_mode,
-            model: args.model,
-            reasoning_effort: effort === undefined ? undefined : ReasoningEffortId(effort),
-          },
-        };
-      }
-      case "fetch":
-      case "publish":
-        return PodTool.parseFileCall({ ...args, method });
-      case "status":
-      case "cancel":
-        return { method, args: { peer: PodTool.need(args, "peer"), task_id: PodTool.need(args, "task_id") } };
-      case "connect":
-        return { method, args: { peer: PodTool.need(args, "peer") } };
-      case "members":
-        return { method };
-    }
-  }
-
-  private static parseFileCall(args: ToolArgs & { method: FileCall["method"] }): FileCall {
-    if (args.method === "fetch") {
-      return { method: "fetch", args: { ref: PodTool.need(args, "ref"), output: PodTool.need(args, "output") } };
-    }
-    if (args.ttl_s !== undefined && (!Number.isInteger(args.ttl_s) || args.ttl_s < 0)) {
-      throw new Error("ttl_s must be a non-negative integer");
-    }
-    return { method: "publish", args: { path: PodTool.need(args, "path"), ttl_s: args.ttl_s } };
+  /** Parse a call; an error names the argument and what is wrong with it. */
+  private static parseCall<T extends z.ZodType>(schema: T, args: unknown): z.output<T> {
+    return parseOrThrow(schema, args, (problem) => new Error(problem));
   }
 
   /**

@@ -274,7 +274,7 @@ describe("workgroup proof gate (C1)", () => {
 
 describe("signed replies (§7.1)", () => {
   /** The nonce a request carried, which its reply is bound to. */
-  const nonceOf = (authorization: string): string => parseAuthHeader(authorization)?.nonce ?? "";
+  const nonceOf = (authorization: string): string => parseAuthHeader(authorization)?.claim.nonce ?? "";
 
   it("signs the answer to a request: its nonce, its status and its body", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });

@@ -11,7 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
 import { DEFAULT_PORT } from "../src/core/constants.ts";
-import { WorkgroupIdSchema } from "../src/core/wire/peer.ts";
+import { WorkgroupIdSchema } from "../src/core/ids.ts";
 import type { Orca } from "../src/node/orca.ts";
 import { isTerminal } from "../src/task/wire.ts";
 import { newNode } from "../test/support/node.ts";

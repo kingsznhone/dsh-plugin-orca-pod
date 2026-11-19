@@ -699,23 +699,4 @@ describe("panel model configuration", () => {
       await handle.stop();
     }
   });
-
-  it("disconnects: leaves known peers and forgets remembered and configured ones", async () => {
-    const b = await started(bundle("wg-leave"));
-    const a = await started({ ...bundle("wg-leave"), peers: [urlOf(b.handle)] });
-    try {
-      await a.handle.addPeer(urlOf(b.handle));
-      expect(a.handle.rememberedPeers).toHaveLength(1);
-      const panel = panelFor(a.handle);
-      await panel.disconnect();
-      expect(a.handle.rememberedPeers).toEqual([]);
-      expect(await readJson(peerStatePath(a.root))).toEqual({ peers: [] });
-      expect(await readJson(settingsPath(a.root))).not.toHaveProperty("peers");
-      expect((await panel.config()).peers).toEqual([]);
-      expect((await panel.state()).members.map((member) => member.orca_node_id)).toEqual([]);
-    } finally {
-      await a.handle.stop();
-      await b.handle.stop();
-    }
-  });
 });

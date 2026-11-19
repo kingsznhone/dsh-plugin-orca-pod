@@ -9,7 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { PodError, abortError } from "../core/errors.ts";
 import { parseOrThrow } from "../core/schema.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-import { describeModelRequest } from "../core/wire/model.ts";
+import { describeModelRequest } from "./model.ts";
 import {
   EchoScriptSchema,
   type EchoScript,

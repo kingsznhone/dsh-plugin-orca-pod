@@ -111,7 +111,7 @@ act("approve",{peer,task_id})
 ```
 
 - **契约只有一个文件**：`src/plugin/panel-api.ts`。请求体用 zod schema，host 端解析；响应用 TS 类型（`PodState`、`PodReads`、`PodActions`），client 只做 type-only import。
-- GET 路由：`state`、`tasks`、`task`、`blob`（流式下载）。POST 动作：`config`、`connect`、`disconnect`、`reset`、`approve`、`deny`、`cancel`。
+- GET 路由：`state`、`tasks`、`task`、`blob`（流式下载）。POST 动作：`config`、`connect`、`reset`、`approve`、`deny`、`cancel`。
 - client 不放业务逻辑：名称、标签、能不能取消，这些都由 `PanelModel`（`src/plugin/panel.ts`）在 host 端算好。
 - 轮询只有一个计时器：有订阅者时运行，最后一个订阅者离开就停；payload 不变时不触发重渲染。
 - 审批**不经过模型**：面板直接调 `ApprovalBroker`，因为批准权属于人。

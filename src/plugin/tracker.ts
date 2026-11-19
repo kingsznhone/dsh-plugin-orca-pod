@@ -28,10 +28,9 @@ import type { Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { boundContextSummary, createUserMessage, type ContextFormed } from "@deepseek-ai/dsh-llm";
 
-import type { DispatchEntry, TaskView } from "../task/wire.ts";
-import { isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
+import { type DispatchEntry, type TaskView, isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
 import { shortenNodeId } from "../core/identity.ts";
-import type { OrcaNodeId } from "../core/wire/peer.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
 import type { OrcaNode } from "../mesh/orca-node.ts";
 import type { Pod, PodRun } from "./pod.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";

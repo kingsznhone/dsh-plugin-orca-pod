@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/core/wire/peer.ts";
+import type { WorkgroupId } from "../src/core/ids.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
 import { waitFor } from "./support/harness.ts";
 import { nodeParts, peersOf } from "./support/node.ts";

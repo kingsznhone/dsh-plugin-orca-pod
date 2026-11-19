@@ -28,10 +28,16 @@ import type { Config } from "./config.ts";
 import { NODE_KEY, PASSWORD_REF, PodStores } from "./stores.ts";
 import { LocalNode } from "./local-node.ts";
 import { PodTool } from "./tools.ts";
-import { runningInTask } from "../core/entry.ts";
+
 import { Tracker } from "./tracker.ts";
 import { PanelRoutes } from "./panel-routes.ts";
 import { defaultDataRoot } from "./data-root.ts";
+import { IN_TASK_ENV } from "../core/entry.ts";
+
+/** True inside a session the task executor spawned (see `IN_TASK_ENV`). */
+function runningInTask(): boolean {
+  return process.env[IN_TASK_ENV] === "1";
+}
 
 export { Config } from "./config.ts";
 

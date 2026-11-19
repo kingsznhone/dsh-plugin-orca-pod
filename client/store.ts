@@ -48,8 +48,8 @@ export async function read<K extends keyof PodReads>(
  * which needs the panel header, so a plain link cannot fetch it: the bytes are
  * read here and handed to the browser through a detached download link.
  */
-export async function downloadBlob(node: string, blob: string, name: string): Promise<void> {
-  const query = new URLSearchParams({ node, blob }).toString();
+export async function downloadBlob(node: string, blob_id: string, name: string): Promise<void> {
+  const query = new URLSearchParams({ node, blob_id }).toString();
   const response = await fetch(`/orca-api/blob?${query}`, { headers: { "x-orca-pod": "1" } });
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { error?: string };

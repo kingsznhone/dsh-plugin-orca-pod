@@ -6,14 +6,14 @@ import { describe, expect, it } from "vitest";
 
 import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
 import { AcpExecutor } from "../src/executor/acp/executor.ts";
-import { ModelCatalog } from "../src/core/model-catalog.ts";
+import { ModelCatalog } from "../src/executor/model-catalog.ts";
 import { parseEchoScript } from "../src/executor/echo.ts";
 import { nodeParts } from "./support/node.ts";
 import { parsePodMetadata } from "../src/task/meta.ts";
 import { permissionRequestOf, TaskMetadataSchema, type TaskView } from "../src/task/wire.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
 import { Orca } from "../src/node/orca.ts";
-import { narrowPermissionMode } from "../src/core/wire/permission.ts";
+import { narrowPermissionMode } from "../src/executor/permission.ts";
 import { escalationFor, modeAllows } from "../src/executor/acp/permissions.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { labelId, wg } from "./fixtures/ids.ts";

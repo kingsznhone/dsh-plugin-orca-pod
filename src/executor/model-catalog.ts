@@ -1,8 +1,8 @@
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 
-import { ChangeSignal, type NodeLogger } from "./events.ts";
-import type { ModelDefaults, ModelOffer } from "./wire/model.ts";
+import { ChangeSignal, type NodeLogger } from "../core/events.ts";
+import type { ModelDefaults, ModelOffer } from "./model.ts";
 
 /** What the settings may pin about models (§6.15). */
 type ModelPins = {

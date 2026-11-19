@@ -6,14 +6,13 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { nodeParts } from "./support/node.ts";
+import { nodeParts, peersOf } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
-import type { WorkgroupId } from "../src/core/wire/peer.ts";
-import { peersOf } from "./support/node.ts";
+import type { WorkgroupId } from "../src/core/ids.ts";
 
 /**
  * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，

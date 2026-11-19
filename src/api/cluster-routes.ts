@@ -1,17 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { z } from "zod";
 
 import { PodError } from "../core/errors.ts";
-import { isDirectLoopbackRequest } from "../core/net.ts";
-import { membersDigest, normalizeEndpoints, type HelloResponse, type MembersResponse } from "../core/wire/peer.ts";
-import type { AckSchema } from "../core/wire/reply.ts";
+import { isDirectLoopbackRequest, normalizeEndpoints } from "../core/net.ts";
+import { membersDigest, type HelloResponse, type MembersResponse, HelloRequestSchema } from "../mesh/wire.ts";
 import type { Mesh } from "../mesh/mesh.ts";
-import { HelloRequestSchema } from "../mesh/wire.ts";
 import { parseInput } from "./input.ts";
 
-const ack: z.infer<typeof AckSchema> = { ok: true };
-
-/** The routes of the workgroup (§3, §7.1): `hello`, leave and the inspection routes. */
+/** The routes of the workgroup (§3, §7.1): `hello` and the inspection routes. */
 export class ClusterRoutes {
   constructor(private readonly mesh: Mesh) {}
 
@@ -22,7 +17,6 @@ export class ClusterRoutes {
     // Inspection: every record this node holds, offline ones included. No node
     // merges it into its own table.
     app.get("/cluster/members", { config: { access: "member" } }, () => this.members());
-    app.post("/cluster/leave", { config: { access: "member" } }, (request) => this.leave(request));
   }
 
   private health() {
@@ -69,10 +63,5 @@ export class ClusterRoutes {
   private members(): MembersResponse {
     const members = [...this.mesh.peers().map((node) => node.view()), this.mesh.self.selfRecord()];
     return { members_digest: membersDigest(members), members };
-  }
-
-  private leave(request: FastifyRequest): z.infer<typeof AckSchema> {
-    this.mesh.remove(request.auth.orcaNodeId);
-    return ack;
   }
 }

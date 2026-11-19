@@ -22,8 +22,8 @@ orca-pod/
 ├── skills/orca-node/     # 标准 skill bundle，介绍 orca_pod 工具（随包发布）
 ├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按功能分 7 个目录：core ← executor ← task ← mesh ← api ← node ← plugin
 │   ├── index.ts          # 公共入口：apply / Config / inject
-│   ├── core/             # 公共底座：errors、schema、events（EventBus / ChangeSignal）、serial-queue、constants、net、identity（Ed25519 与 base58 的纯函数，orca_node_id=公钥）、signing（请求的签名 + workgroup 证明、答复签名、nonce）、sqlite、blobs（发布文件）、model-catalog；wire/（跨模块共用的线上词汇）
-│   ├── executor/         # executor 契约、echo、kinds（执行器种类）、acp/（config / connection / session / permissions / executor）
+│   ├── core/             # 公共底座（只放多个上下文共用的）：errors、schema、events（EventBus / ChangeSignal）、constants、ids（orca node id 与 workgroup id）、net、identity（Ed25519 与 base58 的纯函数，orca_node_id=公钥）、signing（请求的签名 + workgroup 证明、答复签名、nonce）、sqlite、stream、blobs（发布文件）、wire/reply（错误体与 ack）
+│   ├── executor/         # executor 契约、echo、model（模型路由）与 model-catalog、permission（权限模式）、acp/（config / connection / session / permissions / executor）
 │   ├── task/             # 本机执行：wire、runner（单槽运行器）、record（任务状态机）、quota、workspace、grants、meta、prompt（任务书）、dispatch-log（派发日志，含它的表）
 │   ├── mesh/             # 节点表：mesh（`Mesh`：Map<节点 id, OrcaNode>，本机自己也在表里；hello / 种子 / 目录 / 墓碑 / 心跳循环）、orca-node（表里的一行：自述、状态机、拨号、sendTask / fetchBlob）、context（一个实例里所有节点共用的 `MeshContext`）、peer-client（唯一的出站客户端）、screening（端点筛查）、timings、wire
 │   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes、local-routes（本机进程发布与取文件）、input

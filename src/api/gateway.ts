@@ -1,8 +1,9 @@
+import { createServer, type AddressInfo } from "node:net";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import { bodySha256, buildReplyHeader, parseAuthHeader, REPLY_HEADER } from "../core/signing.ts";
 import { PodError, POD_ERROR_STATUS } from "../core/errors.ts";
-import { isBlockedFetchPort, pickFreePort } from "../core/net.ts";
+
 import type { Mesh } from "../mesh/mesh.ts";
 import type { FileBlobRegistry } from "../core/blobs.ts";
 import type { NodeIdentity } from "../core/identity.ts";
@@ -88,7 +89,7 @@ export class Gateway {
    * file is named by.
    */
   private signReply(request: FastifyRequest, reply: FastifyReply, payload: unknown): unknown {
-    const nonce = parseAuthHeader(request.headers.authorization)?.nonce;
+    const nonce = parseAuthHeader(request.headers.authorization)?.claim.nonce;
     if (nonce === undefined) return payload;
     let subject: string | undefined;
     if (typeof payload === "string" || Buffer.isBuffer(payload)) subject = bodySha256(payload);
@@ -147,5 +148,44 @@ export class Gateway {
     }
     if (error instanceof SyntaxError) return new PodError("bad_request", "invalid JSON body");
     return new PodError("internal", "internal server error");
+  }
+}
+
+/**
+ * Ports the WHATWG fetch standard forbids. `undici` (and browsers) reject a
+ * request whose URL names one of them with `fetch failed` / `bad port`, so an
+ * orca node must never advertise such a port as its dial endpoint.
+ */
+const BLOCKED_FETCH_PORTS: ReadonlySet<number> = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110,
+  111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
+]);
+
+/** True when `fetch` refuses to connect to this port. */
+export function isBlockedFetchPort(port: number): boolean {
+  return BLOCKED_FETCH_PORTS.has(port);
+}
+
+/**
+ * Pick a free loopback port that `fetch` may dial.
+ *
+ * `listen(0)` lets the kernel choose, but it may choose one of the blocked
+ * ports above; peers would then fail to reach this orca node with `bad port`.
+ * The probe closes immediately; the caller listens on the returned port.
+ */
+export async function pickFreePort(): Promise<number> {
+  for (;;) {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const { port } = server.address() as AddressInfo;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    if (!isBlockedFetchPort(port)) return port;
   }
 }

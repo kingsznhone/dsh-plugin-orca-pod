@@ -3,18 +3,18 @@ import { PodError } from "../core/errors.ts";
 import { normalizePeerUrl } from "../core/net.ts";
 import {
   membersDigest,
-  OrcaNodeIdSchema,
   type HelloResponse,
-  type OrcaNodeId,
   type PeerView,
-  type WorkgroupId,
-} from "../core/wire/peer.ts";
-import { AckSchema } from "../core/wire/reply.ts";
+  SelfDescriptionSchema,
+  type HelloRequest,
+  type MembersEvent,
+  type SelfDescription,
+} from "./wire.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId } from "../core/ids.ts";
 import type { MeshContext } from "./context.ts";
 import { OrcaNode } from "./orca-node.ts";
 import type { EndpointScreen } from "./screening.ts";
 import { heartbeatIntervalMsFor, resolveTimings, windowsFor, type MeshTimings } from "./timings.ts";
-import { SelfDescriptionSchema, type HelloRequest, type MembersEvent, type SelfDescription } from "./wire.ts";
 
 /** A seed address that has not answered yet, and when it is tried again. */
 type Seed = { fails: number; nextAtMs: number; trying: boolean };
@@ -248,18 +248,6 @@ export class Mesh {
     return { reached, pending };
   }
 
-  /** Leave the workgroup (§9.2): tell each peer, best effort, then clear the table; resolves to the nodes that answered and so know this node is gone. */
-  async leave(): Promise<OrcaNodeId[]> {
-    const left: OrcaNodeId[] = [];
-    for (const node of this.peers()) {
-      if (await this.notifyLeave(node)) left.push(node.id);
-      this.remove(node.id);
-    }
-    this.seeds.clear();
-    this.emitMembersIfChanged();
-    return left;
-  }
-
   /**
    * A node greeted this one (§3.3): record it (or refresh it) as an explicit
    * member that was heard just now, and answer with this node's own record and,
@@ -386,22 +374,6 @@ export class Mesh {
       return null;
     } finally {
       seed.trying = false;
-    }
-  }
-
-  /** Tell one node we are leaving; true when it acknowledged. A node that is already gone must not keep us from leaving. */
-  private async notifyLeave(node: OrcaNode): Promise<boolean> {
-    const [endpoint] = node.endpoints;
-    if (endpoint === undefined) return false;
-    try {
-      await this.ctx.client.call(
-        endpoint,
-        { method: "POST", path: "/cluster/leave", reply: AckSchema },
-        { target: node.id },
-      );
-      return true;
-    } catch {
-      return false;
     }
   }
 
