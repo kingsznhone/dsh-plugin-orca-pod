@@ -160,7 +160,7 @@ function StatusPage({
           </Button>
         }
       >
-        <TaskTable rows={recent} showFiles={false} busy={busy} onOpen={setTask} onCancel={cancel} />
+        <TaskTable rows={recent} busy={busy} onOpen={setTask} onCancel={cancel} />
       </Section>
       <div className={css.split}>
         <Section title={t("members")} count={members.length}>

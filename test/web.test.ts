@@ -5,7 +5,7 @@
  * UI's login whether the browser is on this machine or another.
  */
 
-import { PassThrough, Readable } from "node:stream";
+import { Readable } from "node:stream";
 import type { Logger } from "@deepseek-ai/cordis";
 import { describe, expect, it, vi } from "vitest";
 
@@ -19,14 +19,11 @@ import type { TaskView } from "../src/task/wire.ts";
 import type { ConnectionTrustRequest, PeerAdmission } from "@deepseek-ai/dsh-client-connection";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import { PanelRoutes } from "../src/plugin/panel-routes.ts";
-import { fakeNodeId } from "./fixtures/ids.ts";
 import { catalogFeed, idlePod, logger } from "./fixtures/pod.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"]): TaskView {
   return { kind: "task", id, contextId: "ctx-1", status: { state, timestamp: "2026-01-01T00:00:00.000Z" } };
 }
-
-const FILE = { node: fakeNodeId("NODE02"), blob_id: "a".repeat(64) };
 
 const RECENT: PodTaskRow[] = [
   {
@@ -36,7 +33,6 @@ const RECENT: PodTaskRow[] = [
     who: "node two",
     who_title: "NODE02",
     at: "2026-01-01T00:00:02.000Z",
-    files: [],
     cancellable: true,
   },
   {
@@ -46,7 +42,6 @@ const RECENT: PodTaskRow[] = [
     who: "node two",
     who_title: "http://127.0.0.1:11812",
     at: "2026-01-01T00:00:01.000Z",
-    files: [FILE],
     cancellable: false,
   },
 ];
@@ -105,7 +100,7 @@ function fakeApi(): FakeApi {
   vi.spyOn(panel, "recent").mockImplementation((limit) => RECENT.slice(0, limit));
   vi.spyOn(panel, "task").mockImplementation(async (peer, taskId) => {
     calls.push(`task:${peer}:${taskId}`);
-    return { task: taskView(taskId, "working"), origin: "node two", dispatch: null, files: [FILE] };
+    return { task: taskView(taskId, "working"), origin: "node two", dispatch: null };
   });
   vi.spyOn(pod, "reconfigure").mockImplementation(async (patch) => {
     calls.push(`reconfigure:${JSON.stringify(patch)}`);
@@ -122,12 +117,8 @@ function fakeApi(): FakeApi {
       calls.push(`cancel:${ref}:${taskId}`);
       return taskView(taskId, "canceled");
     },
-    fetchBlob: async (blobId: string) => {
-      calls.push(`blob:${ref}/${blobId}`);
-      return { stream: Readable.from([Buffer.from("file bytes")]), size: 10 };
-    },
   });
-  vi.spyOn(pod, "orca").mockResolvedValue({ mesh: { resolve: node, require: node } } as unknown as Orca);
+  vi.spyOn(pod, "orca").mockResolvedValue({ mesh: { resolve: node } } as unknown as Orca);
   vi.spyOn(tracker, "approve").mockImplementation(async (peer, taskId) => {
     calls.push(`approve:${peer}:${taskId}`);
     return taskView(taskId, "working");
@@ -225,48 +216,7 @@ async function invoke(handler: (request: never, response: never) => Promise<void
   return { status, body: body.length === 0 ? null : JSON.parse(body) };
 }
 
-/** A response that collects what the bridge streams. */
-function streamResponse() {
-  const sink = new PassThrough();
-  const chunks: Buffer[] = [];
-  sink.on("data", (chunk: Buffer) => chunks.push(chunk));
-  const headers: Record<string, string> = {};
-  const response = Object.assign(sink, {
-    statusCode: 0,
-    setHeader(name: string, value: string) {
-      headers[name] = value;
-    },
-    writeHead(code: number) {
-      response.statusCode = code;
-      return response;
-    },
-  });
-  return { response, headers, body: () => Buffer.concat(chunks).toString("utf8") };
-}
-
 describe("panel HTTP bridge", () => {
-  it("streams a member's file this node fetched, named by node and sha256", async () => {
-    const panel = fakeApi();
-    const node = fakeNodeId("publisher");
-    const blobId = "c".repeat(64);
-    const { response, headers, body } = streamResponse();
-    const request = Object.assign(Readable.from([]), {
-      method: "GET",
-      url: `${POD_API_PREFIX}/blob?node=${node}&blob_id=${blobId}`,
-      headers: { host: "127.0.0.1:7775", cookie: OWNER_COOKIE, "x-orca-pod": "1" },
-    });
-    await apiHandler(panel)(request as never, response as never);
-    expect(response.statusCode).toBe(200);
-    expect(headers["content-length"]).toBe("10");
-    expect(body()).toBe("file bytes");
-    expect(panel.calls).toContain(`blob:${node}/${blobId}`);
-  });
-
-  it("refuses a blob request that does not name a published file", async () => {
-    const result = await invoke(apiHandler(fakeApi()), { url: `${POD_API_PREFIX}/blob?node=x&blob_id=y` });
-    expect(result.status).toBe(400);
-  });
-
   it("serves one state snapshot with members, recent tasks and pending approvals", async () => {
     const panel = fakeApi();
     const result = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/state` });
@@ -274,7 +224,6 @@ describe("panel HTTP bridge", () => {
     expect(result.body.self.orca_node_id).toBe("NODE01");
     expect(result.body.members).toHaveLength(1);
     expect(result.body.recent.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
-    expect(result.body.recent[1].files).toEqual([FILE]);
     expect(result.body.approvals).toHaveLength(1);
     expect(result.body.approvals[0]).toMatchObject({ tool: "write_file", from: "node two", agent_id: "session-1" });
     expect(result.body.workspace_root).toBe("/data/workgroups/wg");
@@ -388,12 +337,12 @@ describe("panel HTTP bridge", () => {
     expect(unknown.status).toBe(404);
   });
 
-  it("serves one task with its dispatch and the files its result names in a single call", async () => {
+  it("serves one task with its dispatch in a single call", async () => {
     const panel = fakeApi();
     const result = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
     expect(result.status).toBe(200);
     expect(result.body.task.id).toBe("TASK01");
-    expect(result.body).toMatchObject({ origin: "node two", dispatch: null, files: [FILE] });
+    expect(result.body).toMatchObject({ origin: "node two", dispatch: null });
     expect(panel.calls).toEqual(["task:p:TASK01"]);
 
     const missing = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/task?peer=p` });

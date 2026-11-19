@@ -1,18 +1,17 @@
 /**
  * The model behind the UI panel (§9.2): what it shows and what it can do.
  *
- * The panel renders members, tasks, pending approvals, workspace files and
- * artifact links. Everything here is a projection over the pod's running node
- * and the approval broker, already resolved for display (names, labels, links,
- * what can be cancelled): the client holds no business logic. The shapes it
+ * The panel renders members, tasks, pending approvals and the workspace root.
+ * Everything here is a projection over the pod's running node and the approval
+ * broker, already resolved for display (names, labels, what can be cancelled):
+ * the client holds no business logic. The shapes it
  * answers with are the contract in `panel-api.ts`. Permission
  * decisions bypass the model on purpose, because the human is sitting at this
  * node (see §7.12) and should not need a tool round-trip.
  */
 
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
-import { parseBlobRef, type BlobRef } from "../core/blobs.ts";
-import { type DispatchEntry, type PodTaskMetadata, type TaskView, isTerminal, messageText } from "../task/wire.ts";
+import { type DispatchEntry, type PodTaskMetadata, type TaskView, isTerminal } from "../task/wire.ts";
 import { shortenNodeId } from "../core/identity.ts";
 import { detectLocalEndpoints, type Orca } from "../node/orca.ts";
 import { isLoopbackEndpoint, type Pod } from "./pod.ts";
@@ -23,8 +22,6 @@ import type { PodConfigView, PodPeer, PodState, PodTaskDetail, PodTaskRow } from
 
 const REQUESTED_PREVIEW_CHARS = 160;
 
-/** A file name in a task's text: an orca node id (43 base64url chars), a slash, a sha256 (§5.6). */
-const FILE_NAME = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}\/[0-9a-f]{64}(?![0-9a-f])/g;
 /** Rows of the status page's recent-tasks table. */
 const RECENT_LIMIT = 5;
 
@@ -110,7 +107,6 @@ export class PanelModel {
       task,
       origin: new RosterLabels(current).label(PanelModel.podOf(task).origin_orca_node),
       dispatch: current.dispatches.list().find((entry) => entry.task_id === task.id) ?? null,
-      files: PanelModel.filesOf(task),
     };
   }
 
@@ -152,20 +148,6 @@ export class PanelModel {
     return text.length > REQUESTED_PREVIEW_CHARS ? `${text.slice(0, REQUESTED_PREVIEW_CHARS - 1)}…` : text;
   }
 
-  /**
-   * The files a task's result names (§5.6). Files are not part of a task: the
-   * agent writes their names into its text, and the panel offers each as a link.
-   */
-  private static filesOf(view: TaskView): BlobRef[] {
-    const text = view.status.message === undefined ? "" : messageText(view.status.message);
-    const found = new Map<string, BlobRef>();
-    for (const [name] of text.matchAll(FILE_NAME)) {
-      const ref = parseBlobRef(name);
-      if (ref !== null) found.set(name, ref);
-    }
-    return [...found.values()];
-  }
-
   /** The newest `limit` tasks this node runs and dispatched, merged, newest first. */
   private static recentOf(current: Orca, labels: RosterLabels, limit: number): PodTaskRow[] {
     const tasks = current.tasks.list(limit);
@@ -190,7 +172,6 @@ export class PanelModel {
       who: labels.label(entry.node),
       who_title: entry.node,
       at: entry.updated_at,
-      files: [],
       cancellable: PanelModel.isActive(entry.state),
     };
   }
@@ -205,7 +186,6 @@ export class PanelModel {
       who: labels.label(origin),
       who_title: origin ?? "",
       at: view.status.timestamp,
-      files: PanelModel.filesOf(view),
       cancellable: PanelModel.isActive(view.status.state),
     };
   }

@@ -13,7 +13,7 @@ import { parseBlobRef } from "../src/core/blobs.ts";
 import { nodeParts, peersOf } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
-import { type SubmitTaskInput, type TaskView, isTerminal } from "../src/task/wire.ts";
+import { type TaskView, isTerminal } from "../src/task/wire.ts";
 import { shortenNodeId } from "../src/core/identity.ts";
 import { waitFor } from "./support/harness.ts";
 import { PanelModel } from "../src/plugin/panel.ts";
@@ -66,19 +66,14 @@ async function makeNode(workgroupId: WorkgroupId, password: string): Promise<Orc
   return node;
 }
 
-/**
- * A file `node` published, and a task whose result names it, the way a task's
- * agent hands one back (§5.6): files are not part of the task, only its text.
- */
-async function handingBack(node: Orca): Promise<{ blobId: string; message: SubmitTaskInput["message"] }> {
+/** A file `node` published (§5.6), as its sha256. */
+async function published(node: Orca): Promise<string> {
   const path = join(tempDir(), "out.txt");
   writeFileSync(path, "hello");
-  const { blob_id: blobId } = parseBlobRef((await node.mesh.self.publish(path)).ref)!;
-  return {
-    blobId,
-    message: scriptMessage({ final: { state: "completed", text: `done: ${node.mesh.self.id}/${blobId}` } }),
-  };
+  return parseBlobRef((await node.mesh.self.publish(path)).ref)!.blob_id;
 }
+
+const COMPLETES = scriptMessage({ final: { state: "completed", text: "done" } });
 
 async function readAll(stream: AsyncIterable<Buffer | string>): Promise<string> {
   const chunks: Buffer[] = [];
@@ -146,7 +141,7 @@ describe("UI data surface", () => {
 
   it("fetches a member's file by who published it and its sha256", async () => {
     const { a, b } = await startPair();
-    const { blobId } = await handingBack(b);
+    const blobId = await published(b);
 
     // a dials b where b answers; the reference carries no address.
     expect(await readAll((await a.mesh.require(b.mesh.self.id).fetchBlob(blobId)).stream)).toBe("hello");
@@ -156,15 +151,12 @@ describe("UI data surface", () => {
     });
   });
 
-  it("exposes the workspace path and the files a result names through the panel model", async () => {
+  it("exposes the workspace path and a finished local task through the panel model", async () => {
     const { a, b } = await startPair();
     const { panel } = podOver(b);
     expect((await panel.state()).workspace_root).toBe(b.workspace.root);
 
-    const { blobId, message } = await handingBack(b);
-    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
-      message,
-    });
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({ message: COMPLETES });
     const rows = await waitFor(
       () => panel.recent(10),
       (list: PodTaskRow[]) => list.some((row) => row.id === submitted.id && isTerminal(row.state)),
@@ -176,7 +168,6 @@ describe("UI data surface", () => {
       cancellable: false,
       who: a.mesh.self.selfRecord().display_name,
     });
-    expect(row.files).toEqual([{ node: b.mesh.self.id, blob_id: blobId }]);
 
     expect((await panel.state()).members.map((peer) => peer.orca_node_id)).toContain(a.mesh.self.id);
   });
@@ -195,14 +186,12 @@ describe("UI data surface", () => {
       { label: "task runs on b" },
     );
 
-    // The origin knows it only through its dispatch log: the target is the node it went to and
-    // the log keeps no result, so it names no files.
+    // The origin knows it only through its dispatch log: the target is the node it went to.
     const dispatched = panelA.recent(10).find((row) => row.id === submitted.id)!;
     expect(dispatched).toMatchObject({
       peer: b.mesh.self.id,
       who: b.mesh.self.selfRecord().display_name,
       cancellable: true,
-      files: [],
     });
 
     // The target runs it locally: the row addresses its own node, and a call there works.
@@ -220,13 +209,10 @@ describe("UI data surface", () => {
     );
   });
 
-  it("serves a remote task with its dispatch record and the files its result names", async () => {
+  it("serves a remote task with its dispatch record", async () => {
     const { a, b } = await startPair();
     const { panel: panelA } = podOver(a);
-    const { blobId, message } = await handingBack(b);
-    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
-      message,
-    });
+    const submitted = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({ message: COMPLETES });
     await waitFor(
       () => b.tasks.list(10),
       (tasks) => tasks.some((task) => task.id === submitted.id && isTerminal(task.status.state)),
@@ -236,7 +222,6 @@ describe("UI data surface", () => {
     const detail = await panelA.task(b.mesh.self.endpoints[0]!, submitted.id);
     expect(detail.task.id).toBe(submitted.id);
     expect(detail.dispatch).toMatchObject({ task_id: submitted.id, node: b.mesh.self.id });
-    expect(detail.files).toEqual([{ node: b.mesh.self.id, blob_id: blobId }]);
     expect(detail.origin).toBe(a.mesh.self.selfRecord().display_name);
   });
 

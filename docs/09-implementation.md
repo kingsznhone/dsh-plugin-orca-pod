@@ -54,10 +54,9 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | ------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
 | `orca.tasks.list(limit?)`                               | `task/runner.ts`             | 本机任务（inbound），内存记录在前，持久 store 回填历史                               |
 | `orca.dispatches.list()`                                | `task/dispatch-log.ts`       | 本机派发出去的任务（origin 侧），最近任务与任务详情读它                              |
-| `orca.mesh.require(node).fetchBlob(blobId)`             | `mesh/orca-node.ts`          | 取任一成员发布的文件（自己的读盘，别人的按拨号顺序拉取），面板经 `/orca-api/blob` 下载产物 |
 | `orca.workspace`                                        | `node/orca.ts`               | workgroup 根与 `state/` 路径                                                         |
 
-`new PanelModel(pod, tracker, catalog)` 组合出面板 API（`catalog` 给出宿主模型目录的 reasoning effort 列表，宿主没有 `llm` 时为空；响应形状全在 `plugin/panel-api.ts`）：`state()`（面板一次轮询要渲染的全部：本机记录、可达成员（不含 offline）、最近任务、待审批（只读 tracker：待审批只有这一个登记处，答复后卡片立即消失）、工作区路径 `workspace_root`、配置）、`recent(limit)`（本机任务与派发到 peer 的任务合并）、`task(peer, id)`、`config()`（去敏视图，**永不返回密码**，也没有“有没有设密码”的标志）。动作不经 `PanelModel`：`PanelRoutes` 直接调 `Pod`（`reconfigure`、`addPeer`、`reset`、经 `pod.orca()` 取消任务与取文件）和 `Tracker`（`approve`、`deny`），答复都是 `{}`，面板靠下一次轮询 `/orca-api/state` 拿新状态，没有变化推送入口。面板读取当前运行只有两种方式：展示（`state`、`recent`）读 `pod.run`，没有节点就是空；动作（`task`、取消、取文件、批准与拒绝）先 `await pod.orca()`，所以保存设置后立即点“取消任务”会等重启结束，而不是报“没在运行”。审批只在 `Tracker`（`plugin/tracker.ts`）一处：它在轮询中看到的权限请求留在自己手里，UI 三个落点读它、答复它，答复直接调目标节点的 `OrcaNode.approve/deny`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
+`new PanelModel(pod, tracker, catalog)` 组合出面板 API（`catalog` 给出宿主模型目录的 reasoning effort 列表，宿主没有 `llm` 时为空；响应形状全在 `plugin/panel-api.ts`）：`state()`（面板一次轮询要渲染的全部：本机记录、可达成员（不含 offline）、最近任务、待审批（只读 tracker：待审批只有这一个登记处，答复后卡片立即消失）、工作区路径 `workspace_root`、配置）、`recent(limit)`（本机任务与派发到 peer 的任务合并）、`task(peer, id)`、`config()`（去敏视图，**永不返回密码**，也没有“有没有设密码”的标志）。动作不经 `PanelModel`：`PanelRoutes` 直接调 `Pod`（`reconfigure`、`addPeer`、`reset`、经 `pod.orca()` 取消任务）和 `Tracker`（`approve`、`deny`），答复都是 `{}`，面板靠下一次轮询 `/orca-api/state` 拿新状态，没有变化推送入口。面板读取当前运行只有两种方式：展示（`state`、`recent`）读 `pod.run`，没有节点就是空；动作（`task`、取消、批准与拒绝）先 `await pod.orca()`，所以保存设置后立即点“取消任务”会等重启结束，而不是报“没在运行”。审批只在 `Tracker`（`plugin/tracker.ts`）一处：它在轮询中看到的权限请求留在自己手里，UI 三个落点读它、答复它，答复直接调目标节点的 `OrcaNode.approve/deny`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。
 
 **UI 改配置与连接 peer**（`plugin/pod.ts` 的 `Pod`，存放见 `plugin/stores.ts`）：
 
@@ -77,9 +76,8 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | 路由                                    | 方法       | 内容                                                                                                                  |
 | --------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
 | `/orca-api/state`                       | GET        | 一次轮询拿全量：`self`、`config`、`members`（不含 offline，人数就是可达的成员数）、`approvals`、`recent`（最近 5 条）、`workspace_root` |
-| `/orca-api/task?peer=&task=`            | GET        | 单任务详情（任务视图、origin 标签、派发日志条目、结论里提到的文件）；`peer` 是节点 id、唯一的显示名或 URL            |
+| `/orca-api/task?peer=&task=`            | GET        | 单任务详情（任务视图、origin 标签、派发日志条目）；`peer` 是节点 id、唯一的显示名或 URL                              |
 | `/orca-api/tasks`                       | GET        | `PodTaskRow[]`：全部任务视图（固定 500 条上限，没有 `limit` 参数）                                                    |
-| `/orca-api/blob?node=&blob_id=`            | GET        | 本节点取来的文件，流式返回；面板用带 `X-Orca-Pod` 头的 `fetch` 读出再交给浏览器保存                                   |
 | `/orca-api/config`                      | POST       | `Pod.reconfigure`：密码进凭据库、设置写进 `settings.json`，节点原地重启                                                 |
 | `/orca-api/connect` / `reset` | POST  | `{peer}` / `{}`                                                                                                |
 | `/orca-api/approve` / `deny` / `cancel` | POST       | `{peer, task_id}`（`deny` 另带 `reason?`）：批准/拒绝经 `Tracker`，取消经 `Pod`，都不经模型                              |
@@ -166,7 +164,7 @@ src/plugin/        bundle / pod / settings-file / stores / catalog / services / 
 | 策略 | 写法 | 用在 |
 | --- | --- | --- |
 | 展示：没有就是空 | `pod.run`（一次回答只读一次） | `PanelModel.state()` 的全部内容、`recent()` |
-| 动作：等重启结束，失败要说出原因 | `await pod.orca()` | `PodTool`（可被 abort）、`Tracker` 的 `approve` / `deny`、`PanelModel.task`、面板路由的取消与取文件 |
+| 动作：等重启结束，失败要说出原因 | `await pod.orca()` | `PodTool`（可被 abort）、`Tracker` 的 `approve` / `deny`、`PanelModel.task`、面板路由的取消 |
 | 后台：没有就跳过这一轮 | `const run = pod.run; if (run === null) return;` | `Tracker.poll`、`Pod` 内部安装模型目录 |
 | 写副作用 | 不依赖“碰巧有节点” | 派发时就把会话写进派发日志（`OrcaNode.sendTask(…, { agentId })`），不再事后补写 |
 

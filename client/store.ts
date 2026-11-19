@@ -52,25 +52,6 @@ export async function read<K extends keyof PodReads>(
 }
 
 /**
- * Save a file a member published (§5.6). It comes through this node's bridge,
- * which needs the panel header, so a plain link cannot fetch it: the bytes are
- * read here and handed to the browser through a detached download link.
- */
-export async function downloadBlob(node: string, blob_id: string, name: string): Promise<void> {
-  const query = new URLSearchParams({ node, blob_id }).toString();
-  const response = await fetch(apiUrl(`blob?${query}`), { headers: { "x-orca-pod": "1" } });
-  if (!response.ok) {
-    const data = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(data.error ?? `HTTP ${response.status}`);
-  }
-  const url = URL.createObjectURL(await response.blob());
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-/**
  * The one shared snapshot every slot component reads. A single timer polls
  * `/state` while anything is subscribed and stops with the last subscriber;
  * an action refreshes the snapshot for everyone, and an unchanged payload

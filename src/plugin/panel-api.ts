@@ -9,7 +9,6 @@ import type { LlmReasoningEffortInfo } from "@deepseek-ai/dsh-llm";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { z } from "zod";
 
-import type { BlobRef } from "../core/blobs.ts";
 import type { PeerView } from "../mesh/wire.ts";
 import type { PanelPatch, Settings } from "../node/settings.ts";
 import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
@@ -46,8 +45,6 @@ export interface PodTaskRow {
   who: string;
   who_title: string;
   at: string;
-  /** The files its result names (§5.6); a dispatched task's result is not kept here, so it names none. */
-  files: BlobRef[];
   cancellable: boolean;
 }
 
@@ -56,7 +53,6 @@ export interface PodTaskDetail {
   task: TaskView;
   origin: string;
   dispatch: DispatchEntry | null;
-  files: BlobRef[];
 }
 
 /** The pod's configuration as the panel sees it: the settings, and what the running node made of them. */

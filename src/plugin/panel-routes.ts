@@ -15,7 +15,6 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { pipeline } from "node:stream/promises";
 
 import type { z } from "zod";
 
@@ -32,7 +31,6 @@ import { PanelPatchSchema } from "../node/settings.ts";
 import { readAll } from "../core/stream.ts";
 import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
-import { BlobRefSchema, type OpenedBlob } from "../core/blobs.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 const POD_API_PREFIX = "/orca-api";
@@ -87,10 +85,6 @@ export class PanelRoutes {
       return;
     }
     const url = new URL(request.url ?? POD_API_PREFIX, "http://localhost");
-    if (request.method === "GET" && url.pathname === `${POD_API_PREFIX}/blob`) {
-      await this.sendBlob(url, response);
-      return;
-    }
     let reply: Reply;
     try {
       if (request.method === "GET") reply = await this.handleGet(url);
@@ -173,35 +167,6 @@ export class PanelRoutes {
       default:
         return NOT_FOUND;
     }
-  }
-
-  /**
-   * `GET /orca-api/blob?node=&blob_id=`: a file a member published, fetched by this
-   * node and streamed to the panel (§5.6). A failure before the first byte is the
-   * usual JSON error; one after it can only cut the transfer short.
-   */
-  private async sendBlob(url: URL, response: ServerResponse): Promise<void> {
-    const parsed = BlobRefSchema.safeParse({
-      node: url.searchParams.get("node"),
-      blob_id: url.searchParams.get("blob_id"),
-    });
-    if (!parsed.success) {
-      PanelRoutes.sendJson(response, 400, { error: "node and blob must name a published file" });
-      return;
-    }
-    let opened: OpenedBlob;
-    try {
-      opened = await (await this.pod.orca()).mesh.require(parsed.data.node).fetchBlob(parsed.data.blob_id);
-    } catch (error) {
-      const status =
-        error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;
-      PanelRoutes.sendJson(response, status, { error: errorMessage(error) });
-      return;
-    }
-    response.statusCode = 200;
-    response.setHeader("content-type", "application/octet-stream");
-    if (opened.size !== undefined) response.setHeader("content-length", String(opened.size));
-    await pipeline(opened.stream, response).catch(() => response.destroy());
   }
 
   private static headerOf(request: IncomingMessage, name: string): string | undefined {

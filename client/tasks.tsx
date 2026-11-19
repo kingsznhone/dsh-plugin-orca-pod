@@ -4,7 +4,7 @@ import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
 import { age, short } from "./format.ts";
 import { t } from "./i18n.ts";
-import { FileLinks, Dialog, Empty, Facts, Row, StateText, SubTitle, Table, modelText, stop } from "./primitives.tsx";
+import { Dialog, Empty, Facts, Row, StateText, SubTitle, Table, modelText, stop } from "./primitives.tsx";
 import { store, useRead, useStore } from "./store.ts";
 import type { PodTaskDetail, PodTaskRow } from "./types.ts";
 import ui from "./ui.module.css";
@@ -12,19 +12,17 @@ import ui from "./ui.module.css";
 /** Recent or all tasks: rows arrive merged, sorted and labelled by the host. */
 export function TaskTable({
   rows,
-  showFiles,
   busy,
   onOpen,
   onCancel,
 }: {
   rows: PodTaskRow[];
-  showFiles?: boolean;
   busy: boolean;
   onOpen: (row: PodTaskRow) => void;
   onCancel: (row: PodTaskRow) => void;
 }) {
   if (rows.length === 0) return <Empty>{t("noTasks")}</Empty>;
-  const columns = [t("colTask"), t("colState"), t("colOrigin"), t("colAge"), ...(showFiles ? [t("colFiles")] : []), ""];
+  const columns = [t("colTask"), t("colState"), t("colOrigin"), t("colAge"), ""];
   return (
     <Table columns={columns}>
       {rows.map((row) => (
@@ -46,12 +44,6 @@ export function TaskTable({
             {row.who}
           </td>
           <td className={ui.tertiary}>{age(row.at)}</td>
-          {showFiles ? (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: only keeps a link click from also opening the row.
-            <td onClick={(event) => event.stopPropagation()}>
-              <FileLinks files={row.files} />
-            </td>
-          ) : null}
           <td className={ui.end}>
             {row.cancellable ? (
               <Button
@@ -73,7 +65,7 @@ export function TaskTable({
 
 /** What the detail dialog shows once the task is loaded. */
 function TaskFacts({ data }: { data: PodTaskDetail }) {
-  const { task, origin, dispatch, files } = data;
+  const { task, origin, dispatch } = data;
   const pod = task.metadata?.pod ?? {};
   const message = (task.status.message?.parts ?? [])
     .map((part) => (part.kind === "text" ? part.text : ""))
@@ -106,14 +98,6 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
           ]}
         />
       )}
-      <SubTitle>{t("dtFiles")}</SubTitle>
-      {files.length === 0 ? (
-        <Empty>{t("dtFilesNone")}</Empty>
-      ) : (
-        <div className={ui.chips}>
-          <FileLinks files={files} />
-        </div>
-      )}
     </>
   );
 }
@@ -131,7 +115,7 @@ function Loaded<T>({
   return render(result.data);
 }
 
-/** Task detail: one `/task` call returns the task, its dispatch record and the files its result names. */
+/** Task detail: one `/task` call returns the task and its dispatch record. */
 export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: string; onClose: () => void }) {
   const result = useRead("task", { peer, task: taskId });
   return (
@@ -153,7 +137,7 @@ export function AllTasks({ onOpen, onClose }: { onOpen: (row: PodTaskRow) => voi
     <Dialog title={t("allTasks")} wide={true} onClose={onClose}>
       <Loaded
         result={result}
-        render={(rows) => <TaskTable rows={rows} showFiles={true} busy={busy} onOpen={onOpen} onCancel={cancel} />}
+        render={(rows) => <TaskTable rows={rows} busy={busy} onOpen={onOpen} onCancel={cancel} />}
       />
     </Dialog>
   );

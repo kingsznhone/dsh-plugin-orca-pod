@@ -2,11 +2,10 @@
 
 import { Modal, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
-import { ageOf, short, stateDot, stateLabel, type ShownState } from "./format.ts";
+import { ageOf, stateDot, stateLabel, type ShownState } from "./format.ts";
 import { t } from "./i18n.ts";
-import { errorMessage } from "../src/core/errors.ts";
-import { downloadBlob, store } from "./store.ts";
-import type { BlobRef, ModelOffer, ModelSelection } from "./types.ts";
+import { store } from "./store.ts";
+import type { ModelOffer, ModelSelection } from "./types.ts";
 import ui from "./ui.module.css";
 
 /** `provider/model`: how a model route is written everywhere in the panel. */
@@ -142,31 +141,4 @@ export function Updated() {
     return () => window.clearInterval(id);
   }, []);
   return <span className={ui.caption}>{t("updated") + ageOf(store.polledAt()) + t("updatedSuffix")}</span>;
-}
-
-/** The files a task's result names, each saved through this node on click. */
-export function FileLinks({ files }: { files: BlobRef[] }) {
-  const [failed, setFailed] = React.useState<string | null>(null);
-  const save = (file: BlobRef) => {
-    setFailed(null);
-    downloadBlob(file.node, file.blob_id, file.blob_id).catch((error: unknown) =>
-      setFailed(`${short(file.blob_id)}: ${errorMessage(error)}`),
-    );
-  };
-  return (
-    <>
-      {files.map((file) => (
-        <button
-          key={`${file.node}/${file.blob_id}`}
-          type={"button"}
-          className={ui.linkButton}
-          title={`${file.node}/${file.blob_id}`}
-          onClick={stop(() => save(file))}
-        >
-          {short(file.blob_id)}
-        </button>
-      ))}
-      {failed ? <span className={ui.error}>{failed}</span> : null}
-    </>
-  );
 }
