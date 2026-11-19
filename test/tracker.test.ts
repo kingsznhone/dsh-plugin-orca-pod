@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
-import type { TaskState, TaskView, DispatchEvent } from "../src/task/wire.ts";
+import type { TaskState, TaskView } from "../src/task/wire.ts";
 import { DispatchLog } from "../src/task/dispatch-log.ts";
-import { ApprovalBroker } from "../src/plugin/broker.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
@@ -136,19 +135,16 @@ function setup(
       return read(taskId);
     },
   };
-  const dispatches = new DispatchLog(openDb(), logger);
-  const written: DispatchEvent[] = [];
-  dispatches.events.subscribe((event) => written.push(event));
+  const dispatches = new DispatchLog(openDb());
   const entry = (taskId: string) => dispatches.list().find((item) => item.task_id === taskId);
   const pod = podRunning({ dispatches, mesh: { get: (id: string) => (id === NODE_A ? node : undefined) } });
-  const broker = new ApprovalBroker(pod);
   const sessions = new Map((options.sessions ?? []).map((agent) => [agent.id, agent as unknown as Agent]));
-  const tracker = new Tracker(pod, broker, logger, (id) => sessions.get(id));
+  const tracker = new Tracker(pod, logger, (id) => sessions.get(id));
   started.push(tracker);
   /** What `send` does: the dispatch log gets the task, nothing tells the tracker. `null` is a send without a session. */
   const send = (taskId: string, agentId: SessionId | null = SESSION): void =>
     dispatches.recordSend(NODE_A, taskView(taskId, "submitted"), agentId ?? undefined);
-  return { tracker, entry, dispatches, broker, views, reads, written, sessions, send };
+  return { tracker, entry, dispatches, views, reads, sessions, send };
 }
 
 describe("the notice a finished task gets", () => {
@@ -251,13 +247,15 @@ describe("the dispatch log is the tracker's work", () => {
   });
 
   it("writes the log only when what it read changed", async () => {
-    const { tracker, views, reads, written, send } = setup();
+    const { tracker, views, reads, entry, send } = setup();
     views.set("01RUN", taskView("01RUN", "working"));
     send("01RUN");
-    written.length = 0;
     tracker.start();
+    await waitFor(() => reads.length >= 2);
+    const first = entry("01RUN");
+    expect(first?.state).toBe("working");
     await waitFor(() => reads.length >= 5);
-    expect(written.map(({ entry }) => entry.state)).toEqual(["working"]);
+    expect(entry("01RUN")?.updated_at).toBe(first?.updated_at);
   });
 
   it("never runs two poll rounds at once", async () => {
@@ -371,59 +369,59 @@ describe("telling the dispatching session", () => {
 });
 
 describe("permission requests", () => {
-  it("parks a request in the broker instead of notifying the agent", async () => {
+  it("holds a request for the UI instead of notifying the agent", async () => {
     const agent = new FakeAgent();
     agent.status = "running";
-    const { tracker, broker, views, send } = setup({ sessions: [agent] });
+    const { tracker, views, send } = setup({ sessions: [agent] });
     views.set("01TASK", permissionView("01TASK", "req-1"));
     send("01TASK");
     tracker.start();
 
-    await waitFor(() => broker.list().length === 1);
-    const first = broker.list()[0]!;
+    await waitFor(() => tracker.approvals().length === 1);
+    const first = tracker.approvals()[0]!;
     expect(first).toMatchObject({
       node: NODE_A,
-      task_id: "01TASK",
-      agent_id: "agent-1",
+      view: { id: "01TASK" },
+      agentId: "agent-1",
       request: { tool: "write_file" },
     });
     // Several polls follow while the task stays suspended: same request, same prompt.
     await sleep(3_000);
-    expect(broker.list()).toEqual([first]);
+    expect(tracker.approvals()).toEqual([first]);
     // The raw request text never enters the chat; the UI card carries it.
     expect(agent.followed).toHaveLength(0);
     expect(agent.injected).toHaveLength(0);
 
     // A new request id replaces the prompt.
     views.set("01TASK", permissionView("01TASK", "req-2"));
-    await waitFor(() => broker.list()[0]?.request.request_id === "req-2");
-    expect(broker.list()).toHaveLength(1);
+    await waitFor(() => tracker.approvals()[0]?.request.request_id === "req-2");
+    expect(tracker.approvals()).toHaveLength(1);
 
     // Settling the task withdraws the prompt and still notifies the agent once.
     views.set("01TASK", taskView("01TASK", "completed", "written"));
     await waitFor(() => agent.injected.length === 1);
-    expect(broker.list()).toEqual([]);
+    expect(tracker.approvals()).toEqual([]);
     expect(noticeText(agent.injected[0]!)).toContain("completed");
   });
 
-  it("parks the request of a send without a session too, for the panel to answer", async () => {
-    const { tracker, broker, views, send } = setup();
+  it("holds the request of a send without a session too, for the panel to answer", async () => {
+    const { tracker, views, send } = setup();
     views.set("01TASK", permissionView("01TASK", "req-1"));
     send("01TASK", null);
     tracker.start();
-    await waitFor(() => broker.list().length === 1);
-    expect(broker.list()[0]!.agent_id).toBeNull();
+    await waitFor(() => tracker.approvals().length === 1);
+    expect(tracker.approvals()[0]!.agentId).toBeNull();
   });
 
-  it("withdraws a prompt answered elsewhere while the task keeps running", async () => {
-    const { tracker, broker, views, reads, send } = setup();
+  it("forgets a request answered elsewhere while the task keeps running", async () => {
+    const { tracker, views, reads, send } = setup();
     views.set("01TASK", permissionView("01TASK", "req-1"));
     send("01TASK");
     tracker.start();
-    await waitFor(() => broker.list().length === 1);
+    await waitFor(() => tracker.approvals().length === 1);
 
     views.set("01TASK", taskView("01TASK", "working"));
-    await waitFor(() => broker.list().length === 0);
+    await waitFor(() => tracker.approvals().length === 0);
     // The task is not over: it is still being read.
     const readsNow = reads.length;
     await waitFor(() => reads.length > readsNow + 1);

@@ -9,19 +9,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { WorkgroupIdSchema } from "../src/core/ids.ts";
+import { Orca } from "../src/node/orca.ts";
 import { isTerminal, messageText } from "../src/task/wire.ts";
-import { newNode } from "../test/support/node.ts";
+import { nodeParts } from "../test/support/node.ts";
 
 const prompt = process.argv[2] ?? "Reply with exactly the word pong";
 const root = await mkdtemp(join(tmpdir(), "orca-e2e-acp-"));
-const node = newNode({
-  workgroup_id: WorkgroupIdSchema.parse("e2e-acp"),
-  workgroup_password: "e2e-password",
-  data_root: root,
-  port: 0,
-  executor: "acp",
-  acp: {},
-});
+// No executor option: the node runs its default, the ACP executor.
+const node = new Orca(
+  ...nodeParts({
+    workgroup_id: WorkgroupIdSchema.parse("e2e-acp"),
+    workgroup_password: "e2e-password",
+    data_root: root,
+    port: 0,
+    acp: {},
+  }),
+);
 await node.start();
 
 const endpoint = node.mesh.self.endpoints[0] ?? "";

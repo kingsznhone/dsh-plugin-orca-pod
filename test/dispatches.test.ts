@@ -11,6 +11,7 @@ import type { TaskView } from "../src/task/wire.ts";
 import { Orca } from "../src/node/orca.ts";
 import { SqliteDb } from "../src/core/sqlite.ts";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
+import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 const WORKGROUP = wg("orca-dispatches");
 const PASSWORD = "dispatch-secret";
@@ -41,7 +42,7 @@ function tempRoot(): string {
 function logAt(file: string): { log: DispatchLog; db: SqliteDb } {
   const db = new SqliteDb(file);
   db.open();
-  return { log: new DispatchLog(db, { warn() {} }), db };
+  return { log: new DispatchLog(db), db };
 }
 
 describe("dispatch log on disk (13.4)", () => {
@@ -89,7 +90,7 @@ describe("origin dispatch log (13.4)", () => {
       bind_host: "127.0.0.1",
       port: 0,
     });
-    const peer = new Orca(...peerConfig);
+    const peer = new Orca(...peerConfig, { executor: new ScriptExecutor() });
     await peer.start();
     nodes.push(peer);
 
@@ -108,13 +109,10 @@ describe("origin dispatch log (13.4)", () => {
 
     const view = await origin.mesh.resolve(peer.mesh.self.endpoints[0]!).sendTask(
       {
-        message: { role: "user", parts: [{ kind: "text", text: "slow echo" }] },
-        metadata: {
-          echo: {
-            steps: [{ at_ms: 30, suspend: { kind: "permission", tool: "write_file", requested: {} } }],
-            final: { state: "completed", text: "done" },
-          },
-        },
+        message: scriptMessage({
+          steps: [{ at_ms: 30, suspend: { tool: "write_file", requested: {} } }],
+          final: { state: "completed", text: "done" },
+        }),
       },
       { agentId: SessionId("session-1") },
     );
@@ -127,7 +125,7 @@ describe("origin dispatch log (13.4)", () => {
     }
     // The target answers `submitted` while it prepares the task, `working` once the executor runs.
     // The dispatching session is written with the entry, not added afterwards.
-    expect(record).toMatchObject({ node: peer.orcaNodeId, agent_id: "session-1" });
+    expect(record).toMatchObject({ node: peer.mesh.self.id, agent_id: "session-1" });
     expect(["submitted", "working"]).toContain(record?.state);
 
     // Restart the origin: in-flight dispatches become unknown, never "failed".
@@ -141,7 +139,7 @@ describe("origin dispatch log (13.4)", () => {
     expect(recovered).toMatchObject({
       state: "unknown",
       last_error: "origin_restart",
-      node: peer.orcaNodeId,
+      node: peer.mesh.self.id,
       agent_id: "session-1",
     });
   });

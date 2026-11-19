@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  exportIdentity,
-  generateNodeIdentity,
-  importIdentity,
-  signWithIdentity,
-  verifyWithNodeId,
-} from "../src/core/identity.ts";
+import { signWithIdentity, verifyWithNodeId } from "../src/core/identity.ts";
+import { exportIdentity, generateNodeIdentity, importIdentity } from "../src/plugin/stores.ts";
 
 /** A seed of 32 bytes, two of them leading zeros, in base58 (Bitcoin alphabet): what an identity is stored as. */
 const SEED_WITH_LEADING_ZEROS = "11CiMQsCUhqABwwLyCFeX2iPnBZX3s28dUUCBrirhs";

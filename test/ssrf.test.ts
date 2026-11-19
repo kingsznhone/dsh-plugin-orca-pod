@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { EndpointScreen } from "../src/mesh/screening.ts";
-import { bindUrl, detectLocalEndpoints } from "../src/core/net.ts";
+import { bindUrl, detectLocalEndpoints } from "../src/node/orca.ts";
 import { isBlockedFetchPort, pickFreePort } from "../src/api/gateway.ts";
 import { isLoopbackEndpoint } from "../src/plugin/pod.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
@@ -87,9 +87,9 @@ describe("peer origin (§7.7)", () => {
     const a = net.node();
     // A member whose list names a node at the cloud metadata address and at a private one.
     const lister = net.node();
-    const honest = lister.mesh.answer.bind(lister.mesh);
-    vi.spyOn(lister.mesh, "answer").mockImplementation((caller, request, endpoints) => ({
-      ...honest(caller, request, endpoints),
+    const honest = lister.mesh.greeted.bind(lister.mesh);
+    vi.spyOn(lister.mesh, "greeted").mockImplementation(async (caller, request, overLoopback) => ({
+      ...(await honest(caller, request, overLoopback)),
       members: [
         listed(fakeNodeId("listed-only"), "http://169.254.169.254:80", {
           endpoints: ["http://169.254.169.254:80", "http://10.0.0.99:1"],

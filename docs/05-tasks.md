@@ -28,7 +28,7 @@
 - `pod.model` / `pod.reasoning_effort`（可选）：origin 想用的模型与 effort；由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
 - `pod.task_ttl_s`（可选）：origin 期望的任务寿命；实际寿命取它与本机 `task_timeout_s`（默认 3600）的较小者。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
 - **任务只有一跳**：任务不转发，执行任务的 agent 也不能再派新任务（插件的 `send` 在执行器会话里拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。做不完就以 `BLOCKED:` 结论交回 origin，由 origin 的会话决定把哪部分派给谁。元数据里因此没有调用链、根任务或跳数。
-- 元数据是不可信输入：在 `submit` 时一次性解析成类型化的 `TaskMeta`，之后的代码不再读原始 metadata。`pod` 块类型不合法 → `400 bad_request`；`metadata.echo` 不合法 → `400 bad_echo_script`（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)），不会建出任务。
+- 元数据是不可信输入：网关用 `TaskMetadataSchema` 解析，之后任务记录只读解析过的 `view.metadata.pod`。`pod` 块类型不合法 → `400 bad_request`，不会建出任务。
 
 ### 5.2 任务回报
 
@@ -58,7 +58,7 @@ tracker 的行为：
 - **瞬时失败**（超时、网络错误、5xx、节点不在线）：该任务按 1s 起翻倍、上限 30s 退避重试；连续 5 次失败后在派发日志里把它记成 `failed`（`last_error` 是最后一次的错误），停止轮询，告诉 agent `task … on … is failed; reason: …; this node could not read the task and stopped following it`。不补发 `tasks/cancel`。
 - **确定性失败**（`404 task_not_found`、节点已不在节点表、401/403）：第一次读到就记成 `failed`，同样告知 agent。
 - **终态**：照常合并成 notice。结论文本以 `BLOCKED` 开头的 completed 任务会被标注为“completed with a blocker report”（[§6.14](06-execution.md#614-acpexecutor)）。
-- **权限请求**：任务进入 `input-required` 且带 `permission_request` 时，tracker 把它交给 `ApprovalBroker`（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）等 UI 作答，**不产生聊天 notice**，不唤醒 agent；任务继续被跟踪到终态。`input-required` 只因权限请求出现；任务因其他原因无法继续时以 `BLOCKED:` 结论结束，按上一条作为终态通知 agent。
+- **权限请求**：任务进入 `input-required` 且带 `permission_request` 时，tracker 把它留着等 UI 作答（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)），**不产生聊天 notice**，不唤醒 agent；任务继续被跟踪到终态。`input-required` 只因权限请求出现；任务因其他原因无法继续时以 `BLOCKED:` 结论结束，按上一条作为终态通知 agent。
 - **与会话无关**（D45）：轮询哪些任务只看派发日志，不看宿主里开着哪些会话；没有发起会话的派发（`agent_id` 为空）也照常轮询，权限请求进面板。会话只在交付 notice 时用到：按条目的 `agent_id` 向宿主的 agent 注册表找会话，找到就 inject / followup，找不到（会话已关闭，或重启后还没恢复）就不通知，结果留在派发日志与面板里。
 - **宿主重启**：不需要“恢复跟踪”。节点启动时把未结束的条目标成 `unknown`（[§8.3](08-reliability.md#83-目标重启)），tracker 下一轮照常读到真实状态。
 
@@ -87,8 +87,7 @@ tracker 的行为：
 
 `tasks/cancel` 必须传到 LocalExecutor：
 
-- ACP：发 `session/cancel`；2s 宽限后如果该 session 仍是连接上正在跑的那个，就关闭连接、终止子进程树（避免误杀已复用同一连接的下一个任务）；
-- Echo：中止脚本。
+- ACP：发 `session/cancel`；2s 宽限后如果该 session 仍是连接上正在跑的那个，就关闭连接、终止子进程树（避免误杀已复用同一连接的下一个任务）。
 
 取消后 task 置 `canceled`；挂着的权限请求随之作废（ACP 侧回 `cancelled`）。task 已是终态时原样返回，不报错、不改状态。
 
@@ -106,7 +105,7 @@ tracker 的行为：
 每个 orca node 的 task store 是它自己产生的 task 状态的唯一事实来源。2–10 个 orca node 不需要数据库服务：一个文件、一个进程、可备份，就是全部要求。
 
 - **单机 SQLite**：`<data_root>/tasks.db`，Node 内置 `node:sqlite`，WAL 模式，`synchronous=NORMAL`；一个进程独占写；不做连接池、不做服务、不共享库。
-- `tasks` 与 `dispatches` 结构相同——`(task_id TEXT PRIMARY KEY, payload TEXT /* JSON */, updated_at TEXT)`：`tasks`（目标侧任务：`{view, origin_orca_node, created_at, updated_at}`）、`dispatches`（origin 派发日志，[§8.3](08-reliability.md#83-目标重启)）。另有 `file_blobs`，列不同：`(blob_id TEXT PRIMARY KEY, path TEXT, size INTEGER, expires_at TEXT)`（`publish` 登记的本机文件）。
+- `tasks` 与 `dispatches` 结构相同——`(task_id TEXT PRIMARY KEY, payload TEXT /* JSON */, updated_at TEXT)`：`tasks`（目标侧任务：就是对外的 `TaskView`，来源在 `metadata.pod.origin_orca_node`，`updated_at` 列取 `status.timestamp`）、`dispatches`（origin 派发日志，[§8.3](08-reliability.md#83-目标重启)）。另有 `file_blobs`，列不同：`(blob_id TEXT PRIMARY KEY, path TEXT, size INTEGER, expires_at TEXT)`（`publish` 登记的本机文件）。
 - 任务每次状态变迁都写库；`tasks/get` 先查内存，再回落 SQLite，所以重启后仍可查。进程启动时所有非终态 task 标 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)）。
 - 备份 = 拷贝 db（WAL 下先 checkpoint）；落盘失败只记 warning，任务继续留在内存里可读。
 - 内存 store 只用于协议单测与 harness。

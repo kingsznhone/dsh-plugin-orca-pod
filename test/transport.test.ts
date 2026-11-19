@@ -13,6 +13,7 @@ import type { MeshTimings } from "../src/mesh/timings.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/ids.ts";
+import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 /**
  * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，
@@ -88,7 +89,11 @@ async function makeNode(
     port: 0,
     data_root: mkdtempSync(join(tmpdir(), "orca-transport-")),
   });
-  return new Orca(...config, { timings: options.timings ?? JITTER, fetch: options.fetch });
+  return new Orca(...config, {
+    timings: options.timings ?? JITTER,
+    fetch: options.fetch,
+    executor: new ScriptExecutor(),
+  });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10000): Promise<void> {
@@ -202,8 +207,8 @@ describe("transport jitter during formation", () => {
       // a 的心跳仍能到 c，所以 c 不应该把 a 判死，也不应该报 peer_not_online。
       blocked = true;
       await sleep(1500);
-      expect(peersOf(c).some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online")).toBe(true);
-      expect(peersOf(a).some((peer) => peer.orca_node_id === c.orcaNodeId && peer.state === "online")).toBe(true);
+      expect(peersOf(c).some((peer) => peer.orca_node_id === a.mesh.self.id && peer.state === "online")).toBe(true);
+      expect(peersOf(a).some((peer) => peer.orca_node_id === c.mesh.self.id && peer.state === "online")).toBe(true);
 
       let error: unknown;
       try {
@@ -217,8 +222,7 @@ describe("transport jitter during formation", () => {
       // 链路恢复后同一调用应该成功并跑完。
       blocked = false;
       const task = await c.mesh.resolve(aUrl).sendTask({
-        message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
-        metadata: { echo: { final: { state: "completed", text: "ok" } } },
+        message: scriptMessage({ final: { state: "completed", text: "ok" } }),
       });
       await waitForTask(c, aUrl, task.id);
     } finally {
@@ -241,8 +245,8 @@ describe("transport jitter during formation", () => {
       await b.mesh.probe(aUrl);
       await waitFor(
         () =>
-          peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
-          peersOf(b).some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
+          peersOf(a).some((peer) => peer.orca_node_id === b.mesh.self.id && peer.state === "online") &&
+          peersOf(b).some((peer) => peer.orca_node_id === a.mesh.self.id && peer.state === "online"),
       );
 
       // 500ms 全断 = 5 个心跳间隔：超过 suspect 阈值（3 个间隔），但不到 offline（6 个间隔）。
@@ -254,8 +258,8 @@ describe("transport jitter during formation", () => {
       blocked = false;
       await waitFor(
         () =>
-          peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online") &&
-          peersOf(b).some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"),
+          peersOf(a).some((peer) => peer.orca_node_id === b.mesh.self.id && peer.state === "online") &&
+          peersOf(b).some((peer) => peer.orca_node_id === a.mesh.self.id && peer.state === "online"),
       );
       expect(peersOf(a)).toHaveLength(1);
       expect(a.mesh.digest()).toBe(b.mesh.digest());

@@ -8,6 +8,7 @@ import { nodeParts } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { wg } from "./fixtures/ids.ts";
+import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 const dirs: string[] = [];
 const orcaNodes: Orca[] = [];
@@ -30,7 +31,7 @@ async function nodeFor(dataRoot: string): Promise<Orca> {
     data_root: dataRoot,
     port: 0,
   });
-  const orcaNode = new Orca(...config);
+  const orcaNode = new Orca(...config, { executor: new ScriptExecutor() });
   orcaNodes.push(orcaNode);
   return orcaNode;
 }
@@ -49,8 +50,7 @@ describe("orca node persistence", () => {
     const first = await nodeFor(dataRoot);
     await first.start();
     const task = await first.mesh.resolve(first.mesh.self.endpoints[0]!).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
-      metadata: { echo: { final: { state: "completed", text: "from sqlite" } } },
+      message: scriptMessage({ final: { state: "completed", text: "from sqlite" } }),
     });
     await waitFor(async () => {
       const view = await first.mesh.resolve(first.mesh.self.endpoints[0]!).getTask(task.id);
@@ -69,8 +69,7 @@ describe("orca node persistence", () => {
     const first = await nodeFor(dataRoot);
     await first.start();
     const task = await first.mesh.resolve(first.mesh.self.endpoints[0]!).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
-      metadata: { echo: { steps: [], final: { state: "hang", text: "" } } },
+      message: scriptMessage({ steps: [], final: { state: "hang", text: "" } }),
     });
     await waitFor(async () => {
       const view: TaskView = await first.mesh.resolve(first.mesh.self.endpoints[0]!).getTask(task.id);

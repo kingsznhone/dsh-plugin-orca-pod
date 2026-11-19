@@ -45,7 +45,12 @@ export class MemoryCredentials {
   }
 }
 
+/** A host that has only this credential store, as the pod and its stores take it. */
+export function credentialHost(credentials = new MemoryCredentials()): Pick<Context, "credentials"> {
+  return { credentials } as unknown as Pick<Context, "credentials">;
+}
+
 /** The pod's real stores over an in-memory credential store. */
 export function podStores(credentials = new MemoryCredentials()): PodStores {
-  return new PodStores({ credentials } as unknown as Pick<Context, "credentials">);
+  return new PodStores(credentialHost(credentials));
 }

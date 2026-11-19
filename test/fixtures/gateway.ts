@@ -3,21 +3,19 @@ import { randomBytes } from "node:crypto";
 import { afterEach } from "vitest";
 
 import { FileBlobRegistry } from "../../src/core/blobs.ts";
-import { DEFAULT_TASK_TIMEOUT_S } from "../../src/node/orca.ts";
-import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
+import { parseSettings } from "../../src/node/settings.ts";
+import type { NodeIdentity } from "../../src/core/identity.ts";
 import { buildAuthHeader, newNonce } from "../../src/core/signing.ts";
 import type { RuntimeInfo } from "../../src/mesh/wire.ts";
 import type { WorkgroupId } from "../../src/core/ids.ts";
 import { Gateway } from "../../src/api/gateway.ts";
 import { MeshContext } from "../../src/mesh/context.ts";
 import { Mesh } from "../../src/mesh/mesh.ts";
-import { HttpPeerClient } from "../../src/mesh/peer-client.ts";
-import { EndpointScreen } from "../../src/mesh/screening.ts";
-import { resolveClock } from "../../src/mesh/timings.ts";
 import { DispatchLog } from "../../src/task/dispatch-log.ts";
 import type { SingleSlotTaskRunner } from "../../src/task/runner.ts";
 import { wg } from "./ids.ts";
 import { createTestRunner, openDb, tempDir } from "./runner.ts";
+import { generateNodeIdentity } from "../../src/plugin/stores.ts";
 
 export const GATEWAY_ENDPOINT = "http://orca-node.test";
 
@@ -77,29 +75,29 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
   const db = openDb();
   const blobs = options.blobs ?? new FileBlobRegistry(db, tempDir("orca-blobs-"));
   const localToken = randomBytes(16).toString("base64url");
+  const tasks = options.tasks ?? createTestRunner();
   const context = new MeshContext(
     identity,
     workgroup,
-    new HttpPeerClient(identity, key, workgroup, {
+    key,
+    new DispatchLog(db),
+    blobs,
+    tasks,
+    {},
+    { warn() {} },
+    {
       fetch: async () => {
         throw new Error("no outbound calls in a gateway test");
       },
-      timeoutMs: 1000,
-    }),
-    new DispatchLog(db, { warn() {} }),
-    blobs,
-    new EndpointScreen({}),
-    resolveClock(),
-    { warn() {} },
+    },
   );
   const mesh = new Mesh(context, {
     display_name: options.displayName ?? "gateway-test",
     endpoints: [GATEWAY_ENDPOINT],
     runtime: RUNTIME,
-    max_task_ttl_s: DEFAULT_TASK_TIMEOUT_S,
+    max_task_ttl_s: parseSettings({}).task_timeout_s,
   });
-  const tasks = options.tasks ?? createTestRunner();
-  const gateway = new Gateway(mesh, tasks, key, identity, { token: localToken, blobs });
+  const gateway = new Gateway(mesh, tasks, workgroup, key, identity, localToken);
   const signAs: GatewayHarness["signAs"] = (caller, method, path, extra = {}) =>
     buildAuthHeader(
       caller,

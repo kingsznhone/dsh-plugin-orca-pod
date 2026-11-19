@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { nodeParts } from "./node.ts";
+import { ScriptExecutor } from "./script.ts";
 import { WorkgroupIdSchema } from "../../src/core/ids.ts";
 import type { MeshTimings } from "../../src/mesh/timings.ts";
 import { Orca } from "../../src/node/orca.ts";
@@ -17,8 +18,8 @@ type MeshOptions = {
   displayNamePrefix?: string;
   dataRoot?: string;
   timings?: Partial<MeshTimings>;
-  /** Per-orca-node approval timeout; unset means parked requests wait forever (§7.12). */
-  approvalTimeoutS?: number;
+  /** Every node's task lifetime cap (`task_timeout_s`); the default when unset. */
+  taskTimeoutS?: number;
   /** Per-orca-node outbound HTTP override, used to simulate jitter and partitions. */
   fetch?: (index: number) => FetchLike | undefined;
 };
@@ -60,9 +61,15 @@ export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
         data_root: join(dataRoot, `orca-node-${index}`),
         port: options.basePort ? options.basePort + index : 0,
         display_name: `${options.displayNamePrefix ?? "orca-node"}-${index}`,
-        approval_timeout_s: options.approvalTimeoutS,
+        task_timeout_s: options.taskTimeoutS,
       });
-      orcaNodes.push(new Orca(...config, { timings: options.timings, fetch: options.fetch?.(index) }));
+      orcaNodes.push(
+        new Orca(...config, {
+          timings: options.timings,
+          fetch: options.fetch?.(index),
+          executor: new ScriptExecutor(),
+        }),
+      );
     }
 
     for (const orcaNode of orcaNodes) {

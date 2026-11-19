@@ -67,8 +67,8 @@ describe("file hand-off", () => {
         // publish: what the agent hands back, named in its result.
         const output = join(input.workspaceDir, "out.txt");
         writeFileSync(output, text.toUpperCase());
-        const blob = await node.blobs.register(output);
-        yield { type: "completed", text: `converted: ${formatBlobRef({ node: node.orcaNodeId, blob_id: blob.blob_id })}` };
+        const published = await node.mesh.self.publish(output);
+        yield { type: "completed", text: `converted: ${published.ref}` };
       },
     };
     const origin = await startNode();
@@ -77,8 +77,8 @@ describe("file hand-off", () => {
 
     const source = join(tempRoot(), "in.txt");
     writeFileSync(source, "hello from the origin");
-    const published = await origin.blobs.register(source);
-    const name = formatBlobRef({ node: origin.orcaNodeId, blob_id: published.blob_id });
+    const published = parseBlobRef((await origin.mesh.self.publish(source)).ref)!;
+    const name = formatBlobRef({ node: origin.mesh.self.id, blob_id: published.blob_id });
     const submitted = await origin.mesh.resolve(target.mesh.self.endpoints[0] as string).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: `convert ${name}` }] },
     });
@@ -93,7 +93,7 @@ describe("file hand-off", () => {
     expect(seen).toEqual(["hello from the origin"]);
     const result = done.status.message?.parts[0];
     const back = parseBlobRef(FILE_NAME.exec(result?.kind === "text" ? result.text : "")?.[0] ?? "");
-    expect(back?.node).toBe(target.orcaNodeId);
+    expect(back?.node).toBe(target.mesh.self.id);
 
     const saved = join(tempRoot(), "out.txt");
     await saveBlob(await origin.mesh.require(back!.node).fetchBlob(back!.blob_id), saved, back!.blob_id);
@@ -107,11 +107,15 @@ describe("file hand-off", () => {
 
     const source = join(tempRoot(), "gone.txt");
     writeFileSync(source, "soon deleted");
-    const published = await origin.blobs.register(source);
+    const published = parseBlobRef((await origin.mesh.self.publish(source)).ref)!;
     rmSync(source);
 
     const saved = join(tempRoot(), "copy.txt");
-    await saveBlob(await target.mesh.require(origin.orcaNodeId).fetchBlob(published.blob_id), saved, published.blob_id);
+    await saveBlob(
+      await target.mesh.require(origin.mesh.self.id).fetchBlob(published.blob_id),
+      saved,
+      published.blob_id,
+    );
     expect(readFileSync(saved, "utf8")).toBe("soon deleted");
   });
 });

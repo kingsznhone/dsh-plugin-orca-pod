@@ -19,17 +19,23 @@ import type { z } from "zod";
 import type { Context } from "@deepseek-ai/cordis";
 import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
-import type { PanelModel } from "./panel.ts";
+import type { ModelCatalogFeed } from "./catalog.ts";
+import { PanelModel } from "./panel.ts";
 import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads } from "./panel-api.ts";
+import type { Pod } from "./pod.ts";
+import type { Tracker } from "./tracker.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
 import { readAll } from "../core/stream.ts";
-import { isDirectLoopbackRequest } from "../core/net.ts";
+import { isDirectLoopbackRequest } from "../api/access.ts";
 import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
 import { BlobRefSchema, type OpenedBlob } from "../core/blobs.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
 const POD_API_PREFIX = "/orca-api";
+
+/** Rows of the panel's "all tasks" view. */
+const TASKS_LIMIT = 500;
 
 /** Largest JSON body accepted for one approval action. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -40,43 +46,27 @@ const PANEL_HEADER = "x-orca-pod";
 /** An answer: the status it goes out with, and its JSON body. */
 type Reply = { status: number; body: unknown };
 
-const ok = (body: unknown): Reply => ({ status: 200, body });
-
 /** A GET route's answer, checked against the shape the panel reads for it. */
-const answer = <K extends keyof PodReads>(_route: K, body: PodReads[K]["response"]): Reply => ok(body);
+const answer = <K extends keyof PodReads>(_route: K, body: PodReads[K]["response"]): Reply => ({ status: 200, body });
 const NOT_FOUND: Reply = { status: 404, body: { error: "not_found" } };
+/** What every action answers once it is done: the panel reads the new state with its next poll. */
+const DONE: Reply = { status: 200, body: {} };
 
-/** One POST action: the schema its JSON body must satisfy (`null`: it reads none) and what it does with it. */
-type PostAction = { body: z.ZodType | null; run(panel: PanelModel, body: unknown): Promise<unknown> };
-
-/** An action that takes a body; `handlePost` parses it with the same schema before `run` sees it. */
-function withBody<S extends z.ZodType>(
-  body: S,
-  run: (panel: PanelModel, parsed: z.output<S>) => Promise<unknown>,
-): PostAction {
-  return { body, run: (panel, parsed) => run(panel, parsed as z.output<S>) };
-}
-
-const POST_ACTIONS: Record<string, PostAction> = {
-  // The panel sends typed values (`null` clears a field); the settings
-  // parser behind `saveConfig` checks the merged result.
-  config: withBody(PanelPatchSchema, (panel, patch) => panel.saveConfig(patch)),
-  connect: withBody(ConnectBodySchema, (panel, { peer }) => panel.connect(peer)),
-  reset: { body: null, run: (panel) => panel.reset() },
-  approve: withBody(PeerTaskBodySchema, async (panel, { peer, task_id }) => ({
-    task: await panel.approve(peer, task_id),
-  })),
-  deny: withBody(DenyBodySchema, async (panel, { peer, task_id, reason }) => ({
-    task: await panel.deny(peer, task_id, reason),
-  })),
-  cancel: withBody(PeerTaskBodySchema, async (panel, { peer, task_id }) => ({
-    task: await panel.cancel(peer, task_id),
-  })),
-};
-
-/** The panel's HTTP API (`/orca-api`) over one panel model. */
+/**
+ * The panel's HTTP API (`/orca-api`): reads are the panel model's projections,
+ * actions go straight to the pod, or to the tracker for the permission requests it holds.
+ */
 export class PanelRoutes {
-  constructor(private readonly panel: PanelModel) {}
+  private readonly panel: PanelModel;
+
+  constructor(
+    private readonly pod: Pod,
+    private readonly tracker: Tracker,
+    /** The host's model catalog; the panel offers its reasoning efforts. */
+    catalog: ModelCatalogFeed,
+  ) {
+    this.panel = new PanelModel(pod, tracker, catalog);
+  }
 
   /** Route handler for `/orca-api`. */
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -130,23 +120,47 @@ export class PanelRoutes {
         return answer("task", await panel.task(peer, taskId));
       }
       // Every task this node knows about, for the panel's "all tasks" view.
-      case "/tasks": {
-        const rawLimit = Number(url.searchParams.get("limit") ?? "500");
-        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
-        return answer("tasks", { recent: panel.recent(limit) });
-      }
+      case "/tasks":
+        return answer("tasks", panel.recent(TASKS_LIMIT));
       default:
         return NOT_FOUND;
     }
   }
 
   private async handlePost(request: IncomingMessage, url: URL): Promise<Reply> {
-    const name = url.pathname.slice(POD_API_PREFIX.length + 1);
-    const action = Object.hasOwn(POST_ACTIONS, name) ? POST_ACTIONS[name] : undefined;
-    if (action === undefined) return NOT_FOUND;
-    if (action.body === null) return ok(await action.run(this.panel, undefined));
-    const body = parseOrThrow(action.body, await PanelRoutes.readJsonBody(request), (problem) => new Error(problem));
-    return ok(await action.run(this.panel, body));
+    const { pod, tracker } = this;
+    const body = async <S extends z.ZodType>(schema: S): Promise<z.output<S>> =>
+      parseOrThrow(schema, await PanelRoutes.readJsonBody(request), (problem) => new Error(problem));
+    switch (url.pathname.slice(POD_API_PREFIX.length)) {
+      case "/config":
+        // The password goes to the DSH credential store and the other fields to the
+        // settings file (`null` clears a field); the settings parser checks the merged result.
+        await pod.reconfigure(await body(PanelPatchSchema));
+        return DONE;
+      case "/connect":
+        await pod.addPeer((await body(ConnectBodySchema)).peer);
+        return DONE;
+      case "/reset":
+        await pod.reset();
+        return DONE;
+      case "/approve": {
+        const { peer, task_id } = await body(PeerTaskBodySchema);
+        await tracker.approve(peer, task_id);
+        return DONE;
+      }
+      case "/deny": {
+        const { peer, task_id, reason } = await body(DenyBodySchema);
+        await tracker.deny(peer, task_id, reason);
+        return DONE;
+      }
+      case "/cancel": {
+        const { peer, task_id } = await body(PeerTaskBodySchema);
+        await (await pod.orca()).mesh.resolve(peer).cancelTask(task_id);
+        return DONE;
+      }
+      default:
+        return NOT_FOUND;
+    }
   }
 
   /**
@@ -165,7 +179,7 @@ export class PanelRoutes {
     }
     let opened: OpenedBlob;
     try {
-      opened = await this.panel.blob(parsed.data.node, parsed.data.blob_id);
+      opened = await (await this.pod.orca()).mesh.require(parsed.data.node).fetchBlob(parsed.data.blob_id);
     } catch (error) {
       const status =
         error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 400;

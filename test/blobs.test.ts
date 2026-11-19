@@ -9,9 +9,9 @@ import { PodError } from "../src/core/errors.ts";
 import { SqliteDb } from "../src/core/sqlite.ts";
 import type { BusyState } from "../src/task/wire.ts";
 import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
-import { generateNodeIdentity } from "../src/core/identity.ts";
 import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
 import { createTestRunner, openDb, tempDir } from "./fixtures/runner.ts";
+import { generateNodeIdentity } from "../src/plugin/stores.ts";
 
 const createHarness = (tasks?: SingleSlotTaskRunner, blobs?: FileBlobRegistry): GatewayHarness =>
   createGatewayHarness({ tasks, blobs });
@@ -242,8 +242,8 @@ describe("a2a busy response", () => {
       throw new PodError("orca_node_busy", "node is busy");
     });
     const harness = createHarness(tasks);
-    // The node keeps its own row of the table in step with the runner; the gateway reports it.
-    harness.mesh.self.setBusy(holder);
+    // The node's own row reports the runner's slot; the gateway reports that.
+    vi.spyOn(tasks, "busy").mockReturnValue(holder);
     const payload = JSON.stringify({
       jsonrpc: "2.0",
       id: "req-1",

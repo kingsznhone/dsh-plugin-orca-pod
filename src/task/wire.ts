@@ -5,12 +5,10 @@ import { z } from "zod";
 
 import { ModelSelectionSchema, ReasoningEffortSchema } from "../executor/model.ts";
 import { SandboxModeSchema } from "../executor/permission.ts";
-import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId } from "../core/ids.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId } from "../core/ids.ts";
 import { RequestedAccessSchema } from "../executor/executor.ts";
 
-// ---- permission requests and grants (§7.11, §7.12) ----
-
-const Text = z.string().min(1, "must be a non-empty string");
+// ---- permission requests and decisions (§7.11, §7.12) ----
 
 /**
  * A suspended task's ask to run with a wider permission mode (§7.11, §7.12):
@@ -18,7 +16,7 @@ const Text = z.string().min(1, "must be a non-empty string");
  * the narrowest mode that covers it. It lives in `status.message`, so the origin
  * discovers it by reading task state; nothing is pushed to it.
  */
-export const PermissionRequestSchema = z.object({
+const PermissionRequestSchema = z.object({
   request_id: z.string(),
   task_id: z.string(),
   tool: z.string(),
@@ -29,43 +27,23 @@ export const PermissionRequestSchema = z.object({
   current_mode: SandboxModeSchema,
   /** The mode the task asks to continue with, wider than `current_mode` and within the target's ceiling. */
   requested_mode: SandboxModeSchema,
-  /** Present only when the executing orca node configures an approval timeout (§7.12). */
-  expires_at: z.string().optional(),
 });
 export type PermissionRequest = z.infer<typeof PermissionRequestSchema>;
 
 /**
- * A human decision travelling from the origin back down to the target (§7.11):
- * the task may continue with `permission_mode` until it ends. Signed by the
- * origin node's Ed25519 key: the transport is already authenticated, but a
- * grant is also the durable record of who allowed what.
+ * What the origin sends back to a suspended task (§7.11), as the one data part
+ * of a resume message: its human's approval of the request the task is parked
+ * on (named by `request_id`; the task then runs with that request's
+ * `requested_mode` until it ends), or a refusal. The resume request itself is
+ * signed by the origin, and only the origin may resume its task. A refusal
+ * wins over an approval in the same part; a reason that is not text reads as
+ * the default.
  */
-const GrantSchema = z.object({
-  grant_id: Text,
-  workgroup_id: WorkgroupIdSchema,
-  /** Orca node whose signature authorizes this grant (the deciding origin). */
-  origin_orca_node: OrcaNodeIdSchema,
-  task_id: Text,
-  target_orca_node: OrcaNodeIdSchema,
-  tool: Text,
-  /** The mode the task runs with from now on; it is the request's `requested_mode`. */
-  permission_mode: SandboxModeSchema,
-  /** The permission request this grant answers. */
-  request_id: Text,
-  issued_at: Text,
-  expires_at: Text.refine((value) => !Number.isNaN(Date.parse(value)), "must be a date"),
-});
-export type Grant = z.infer<typeof GrantSchema>;
-
-export const SignedGrantSchema = GrantSchema.extend({ sig: Text });
-export type SignedGrant = z.infer<typeof SignedGrantSchema>;
-
-/**
- * What the origin sends back to a suspended task (§7.11): a signed grant, or a
- * refusal. The sender builds this shape; the receiving task checks the grant
- * with `SignedGrantSchema` before it acts on it.
- */
-export type ResumeControl = { grant: SignedGrant } | { permission_denied: true; reason: string };
+const ResumeControlSchema = z.union([
+  z.object({ permission_denied: z.literal(true), reason: z.string().catch("denied by origin") }),
+  z.object({ permission_granted: z.literal(true), request_id: z.string() }),
+]);
+export type ResumeControl = z.infer<typeof ResumeControlSchema>;
 
 const TaskStateSchema = z.enum(["submitted", "working", "input-required", "completed", "failed", "canceled"]);
 export type TaskState = z.infer<typeof TaskStateSchema>;
@@ -81,15 +59,12 @@ export function isTerminal(state: string): boolean {
 
 /**
  * One part of an A2A message. Loose objects keep the fields this node does not
- * read, so a newer peer's extras survive; the kinds themselves are closed.
+ * read, so a newer peer's extras survive; the kinds themselves are closed. There
+ * is no `file` part: files are not part of a task, its text names them (§5.6).
  */
 const MessagePartSchema = z.discriminatedUnion("kind", [
   z.looseObject({ kind: z.literal("text"), text: z.string() }),
   z.looseObject({ kind: z.literal("data"), data: z.record(z.string(), z.unknown()) }),
-  z.looseObject({
-    kind: z.literal("file"),
-    file: z.looseObject({ name: z.string(), mimeType: z.string().optional(), bytes: z.string().optional() }),
-  }),
 ]);
 
 const A2AMessageSchema = z.looseObject({
@@ -115,16 +90,21 @@ export function messageText(message: A2AMessage): string {
     .join("\n");
 }
 
-/** A control message answering a suspended task: one data part, addressed by task id. */
-export function controlMessage(taskId: string, control: ResumeControl, messageId: string): A2AMessage {
-  return { role: "user", parts: [{ kind: "data", data: { ...control } }], taskId, messageId };
+/** The decision a resume message carries (§7.11); null when it carries none. */
+export function resumeControlOf(message: A2AMessage): ResumeControl | null {
+  for (const part of message.parts) {
+    if (part.kind !== "data") continue;
+    const control = ResumeControlSchema.safeParse(part.data);
+    if (control.success) return control.data;
+  }
+  return null;
 }
 
 /**
  * The `pod` block of a task's metadata (§5.1). Unknown keys are kept: another
- * node may be newer. The task lifetime is narrowed further where the task is
- * accepted (`task/meta.ts`). A task is always single-hop: an agent running a
- * task cannot dispatch another one, so there is no delegation chain to carry.
+ * node may be newer; a task's lifetime is the target's own cap, not the
+ * origin's to set (§6.9). A task is always single-hop: an agent running a task
+ * cannot dispatch another one, so there is no delegation chain to carry.
  */
 const PodTaskMetadataSchema = z.looseObject({
   /**
@@ -138,18 +118,11 @@ const PodTaskMetadataSchema = z.looseObject({
   model: ModelSelectionSchema.optional(),
   /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
   reasoning_effort: ReasoningEffortSchema.optional(),
-  task_ttl_s: z.number("must be a positive number").positive("must be a positive number").optional(),
 });
 export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;
 
-/**
- * Task metadata on the wire: the `pod` block, an echo script (checked by the
- * echo executor's own parser), and whatever else a caller attaches.
- */
-export const TaskMetadataSchema = z.looseObject({
-  pod: PodTaskMetadataSchema.optional(),
-  echo: z.unknown().optional(),
-});
+/** Task metadata on the wire: the `pod` block, and whatever else a caller attaches. */
+export const TaskMetadataSchema = z.looseObject({ pod: PodTaskMetadataSchema.optional() });
 export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
 
 const TaskStatusSchema = z.object({
@@ -213,7 +186,6 @@ export type DispatchEntry = {
   task_id: string;
   /** The node the task was dispatched to. */
   node: OrcaNodeId;
-  context_id?: string;
   /** Last observed task state; `unknown` once a restart cut the origin off from it. */
   state: TaskState | "unknown";
   last_error?: string;
@@ -225,14 +197,6 @@ export type DispatchEntry = {
   created_at: string;
   updated_at: string;
 };
-
-// ---- events an in-process listener hears about (§9.2) ----
-
-/** A task this node runs changed. */
-export type TaskEvent = { type: "task"; view: TaskView };
-
-/** An entry of this node's dispatch log changed. */
-export type DispatchEvent = { type: "dispatch"; entry: DispatchEntry };
 
 /** The task holding a node's single slot (§6.9). */
 export const BusyStateSchema = z.object({

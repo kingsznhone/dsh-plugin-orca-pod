@@ -6,100 +6,101 @@
  * where every transition goes through `move` (live states) or `finish` (the
  * single exit, which also releases everything the record itself holds). The
  * executor loop, the permission wait (§7.11, §7.12) and the timers all live
- * here. What does not: the single slot, the grant ledger, the store and the
- * events belong to the runner, which listens to `changes` and reads the state.
+ * here. What does not: the single slot and the store belong to the runner,
+ * which the record calls after every change and which reads the state.
  */
 
 import { randomUUID } from "node:crypto";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
+import { z } from "zod";
 
 import { errorMessage, PodError } from "../core/errors.ts";
-import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import {
   type PermissionRequest,
   isTerminal,
   messageText,
   textMessage,
   type A2AMessage,
+  type PodTaskMetadata,
   type TaskState,
   type TaskView,
 } from "./wire.ts";
-import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
-import { narrowPermissionMode } from "../executor/permission.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
+import { narrowPermissionMode, SandboxModeSchema } from "../executor/permission.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor/executor.ts";
-import type { GrantFailure } from "./grants.ts";
-import type { TaskMeta } from "./meta.ts";
 import { composePrompt } from "./prompt.ts";
 import type { Workspace } from "./workspace.ts";
 
-/** How this node runs tasks: the runner and every record it builds read the same object. */
-export type TaskConfig = {
-  logger: NodeLogger;
-  selfOrcaNodeId: OrcaNodeId;
-  workgroupId: WorkgroupId;
-  /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
-  permissionCeiling?: SandboxMode;
-  /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
-  permissionTtlS?: number;
-  /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). */
-  resultMaxBytes: number;
-  /** Hard cap on task lifetime; peers see it as max_task_ttl_s (§6.9). */
-  taskTimeoutS: number;
-  /** A new task is refused while the workspace holds more than this (§6.13). */
-  maxWorkspaceBytes: number;
-  maxWorkspaceFiles: number;
-};
+const PositiveNumber = z.number().positive();
+const PositiveInteger = z.number().int().min(1);
+
+/**
+ * The node settings that say how it runs tasks for others. They are part of the
+ * node's settings (`node/settings.ts` spreads them in) and declared here, where
+ * they are read: the runner and every record it builds read the same object.
+ */
+export const TaskSettingsSchema = z.object({
+  /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
+  permission_mode: SandboxModeSchema.optional(),
+  /** Hard cap on a task's lifetime (§6.9). */
+  task_timeout_s: PositiveNumber.default(3600),
+  /** A new task is refused while the group workspace holds more bytes than this (§6.13). */
+  max_workspace_bytes: PositiveInteger.default(5 * 1024 ** 3),
+});
+export type TaskSettings = z.output<typeof TaskSettingsSchema>;
+
+/** Inline result summary cap in bytes; a longer summary is truncated (§6.11). */
+const RESULT_MAX_BYTES = 32 * 1024;
 
 type RecordInit = {
+  /** The task as accepted; its `metadata.pod` is what the origin asked for (§5.1). */
   view: TaskView;
   origin: OrcaNodeId;
-  meta: TaskMeta;
-  /** Task lifetime in seconds, after the local cap; paused while the task waits for input. */
-  ttlS: number;
-  /** The origin's task text. */
-  text: string;
+  /** The origin's message: the task text. */
+  message: A2AMessage;
 };
 
 export class TaskRecord {
   readonly id: string;
   readonly origin: OrcaNodeId;
   readonly createdAt: string;
-  /** Notified after every observable change of state. */
-  readonly changes: ChangeSignal;
   private readonly view: TaskView;
-  private readonly meta: TaskMeta;
-  private readonly ttlS: number;
+  /** What is left of the task's lifetime; the clock runs only while the task works. */
+  private ttlLeftMs: number;
+  /** When the running lifetime runs out (`Date.now()` time); null while the clock stands still. */
+  private ttlDeadline: number | null = null;
   private readonly text: string;
   private readonly abort = new AbortController();
-  /** Effective mode: inherited and capped at the start, widened by a grant (§7.12). */
+  /** Effective mode: inherited and capped at the start, widened by the origin's approval (§7.12). */
   private mode: SandboxMode;
   /** The executor run; created by `begin()` before the first `drive()`. */
-  private iterator!: AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined>;
+  private iterator!: AsyncGenerator<ExecutorEvent, void, void>;
   private ttl: NodeJS.Timeout | null = null;
-  private permissionTimer: NodeJS.Timeout | null = null;
   private request: PermissionRequest | null = null;
 
   constructor(
     init: RecordInit,
     private readonly executor: LocalExecutor,
     private readonly workspace: Workspace,
-    private readonly settings: TaskConfig,
+    private readonly settings: TaskSettings,
+    /** The node the task runs on: it names itself in the prompt and in a permission request. */
+    private readonly selfOrcaNodeId: OrcaNodeId,
+    /** Called after every observable change of state; the runner stores the task then. */
+    private readonly changed: () => void,
   ) {
     this.view = init.view;
     this.id = init.view.id;
     this.origin = init.origin;
     this.createdAt = init.view.status.timestamp;
-    this.changes = new ChangeSignal(settings.logger);
-    this.meta = init.meta;
-    this.ttlS = init.ttlS;
-    this.text = init.text;
-    // The ceiling only narrows what the origin asked for (§7.10); a grant widens it later (§7.12).
-    this.mode =
-      settings.permissionCeiling === undefined
-        ? init.meta.permissionMode
-        : narrowPermissionMode(settings.permissionCeiling, init.meta.permissionMode);
+    this.text = messageText(init.message);
+    const { permission_mode: asked = "read-only" } = this.pod;
+    // A task lives as long as this node allows (§6.9).
+    this.ttlLeftMs = settings.task_timeout_s * 1000;
+    // A task that names no mode runs read-only. The ceiling only narrows what the origin
+    // asked for (§7.10); an approval widens it later (§7.12).
+    this.mode = settings.permission_mode === undefined ? asked : narrowPermissionMode(settings.permission_mode, asked);
   }
 
   get state(): TaskState {
@@ -118,7 +119,7 @@ export class TaskRecord {
   /** Start the task's clock and run it: compose the prompt, then drive the executor. */
   begin(): void {
     this.armTtl();
-    this.changes.notify();
+    this.changed();
     void this.guarded(async () => {
       const input = this.prepare();
       this.iterator = this.executor.run(input, this.abort.signal);
@@ -127,20 +128,18 @@ export class TaskRecord {
     });
   }
 
-  /** The origin granted the parked request: the task runs with the granted mode until it ends; nothing else inherits it. */
-  grant(mode: SandboxMode): void {
-    this.mode = mode;
+  /**
+   * The origin approved the parked request: the task runs with the mode it asked
+   * for until it ends (§7.12); nothing else inherits it.
+   */
+  grant(): void {
+    if (this.request !== null) this.mode = this.request.requested_mode;
     this.proceed();
   }
 
   /** The origin denied the parked request. */
   deny(reason: string): void {
     this.terminate("failed", textMessage(`permission denied: ${reason}`), "permission_denied");
-  }
-
-  /** The origin's grant did not hold up. */
-  reject(failure: GrantFailure): void {
-    this.terminate("failed", textMessage(`permission grant rejected: ${failure}`), failure);
   }
 
   cancel(): void {
@@ -155,7 +154,7 @@ export class TaskRecord {
 
   private move(state: TaskState, message?: A2AMessage): void {
     this.view.status = { state, timestamp: new Date().toISOString(), message };
-    this.changes.notify();
+    this.changed();
   }
 
   /** The single exit: after this the task holds no timer or permission request. */
@@ -164,13 +163,12 @@ export class TaskRecord {
     this.view.status = {
       state,
       timestamp: new Date().toISOString(),
-      message: message && TaskRecord.truncateMessage(message, this.settings.resultMaxBytes),
+      message: message && TaskRecord.truncateMessage(message, RESULT_MAX_BYTES),
       reason,
     };
     this.clearTtl();
-    this.clearPermissionTimer();
     this.request = null;
-    this.changes.notify();
+    this.changed();
   }
 
   /**
@@ -184,114 +182,98 @@ export class TaskRecord {
     this.abort.abort();
   }
 
-  /** Back to work after a grant: re-take the clock, then restart the executor loop. */
+  /** Back to work after an approval: the clock runs on from where it stood, then the executor loop restarts. */
   private proceed(): void {
     this.request = null;
-    this.clearPermissionTimer();
     this.armTtl();
     this.move("working");
-    void this.guarded(() => this.drive(this.mode));
+    void this.guarded(() => this.drive());
   }
 
   // ---- running ----
 
+  /** What the origin asked for (§5.1). */
+  private get pod(): PodTaskMetadata {
+    return this.view.metadata?.pod ?? {};
+  }
+
   private prepare(): ExecuteInput {
-    const { meta, settings, workspace } = this;
+    const { settings, workspace } = this;
+    const { model, reasoning_effort } = this.pod;
     return {
       contextId: this.view.contextId,
       prompt: composePrompt({
         taskId: this.id,
-        selfOrcaNodeId: settings.selfOrcaNodeId,
+        selfOrcaNodeId: this.selfOrcaNodeId,
         text: this.text,
       }),
       originOrcaNode: this.origin,
       workspaceDir: workspace.root,
       podDir: workspace.state,
       permissionMode: this.mode,
-      permissionCeiling: settings.permissionCeiling,
-      model: meta.model,
-      reasoningEffort: meta.effort,
-      echo: meta.echo,
+      permissionCeiling: settings.permission_mode,
+      model,
+      // The `reasoning_effort` field, else the effort pinned in `model` (§6.15).
+      reasoningEffort: reasoning_effort ?? model?.reasoningEffort,
     };
   }
 
-  /** Feed executor events into the state machine until the task ends or parks; `granted` answers the last suspension. */
-  private async drive(granted?: SandboxMode): Promise<void> {
-    let answer = granted;
-    for (;;) {
-      const step = await this.iterator.next(answer);
-      answer = undefined;
-      if (this.over) {
-        await this.iterator.return();
-        return;
-      }
-      if (step.done)
-        return this.finish("failed", textMessage("executor exited without a terminal event"), "executor_exited");
-      const event = step.value;
-      switch (event.type) {
-        case "suspend":
-          return this.requestPermission(event.suspend);
-        case "completed":
-          return this.finish("completed", textMessage(event.text));
-        case "failed":
-          return this.finish("failed", textMessage(event.text), event.reason ?? "executor_error");
-        default:
-          return assertNever(event);
-      }
+  /** Feed executor events into the state machine until the task ends or parks; resuming it answers the last suspension. */
+  private async drive(): Promise<void> {
+    const step = await this.iterator.next();
+    if (this.over) {
+      await this.iterator.return();
+      return;
+    }
+    if (step.done) {
+      return this.finish("failed", textMessage("executor exited without a terminal event"), "executor_exited");
+    }
+    const event = step.value;
+    switch (event.type) {
+      case "suspend":
+        return this.requestPermission(event);
+      case "completed":
+        return this.finish("completed", textMessage(event.text));
+      case "failed":
+        return this.finish("failed", textMessage(event.text), event.reason ?? "executor_error");
+      default:
+        return assertNever(event);
     }
   }
 
   /** Ask the origin to let this task continue with a wider mode (§7.12); the executor waits for the answer. */
   private requestPermission({ tool, requested, requestedMode }: Suspension): void {
-    const { permissionTtlS } = this.settings;
     const request: PermissionRequest = {
       request_id: randomUUID(),
       task_id: this.id,
       tool,
       requested,
-      requested_by: this.settings.selfOrcaNodeId,
+      requested_by: this.selfOrcaNodeId,
       current_mode: this.mode,
       requested_mode: requestedMode,
-      // No expiry by default: the origin waits however long the human takes (§7.12).
-      expires_at: permissionTtlS === undefined ? undefined : new Date(Date.now() + permissionTtlS * 1000).toISOString(),
     };
     this.request = request;
-    // `input-required`: the TTL stands still while the task waits.
+    // `input-required`: the TTL stands still while the task waits, however long the human takes (§7.12).
     this.clearTtl();
-    this.armPermissionTimer();
     this.move("input-required", { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] });
   }
 
   // ---- timers ----
 
+  /** Run the lifetime clock for what is left of it. */
   private armTtl(): void {
     this.clearTtl();
-    this.ttl = setTimeout(
-      () => this.terminate("failed", textMessage("task ttl exceeded"), "timeout"),
-      this.ttlS * 1000,
-    );
+    this.ttlDeadline = Date.now() + this.ttlLeftMs;
+    this.ttl = setTimeout(() => this.terminate("failed", textMessage("task ttl exceeded"), "timeout"), this.ttlLeftMs);
     this.ttl.unref();
   }
 
-  /** Only when the node configures an approval timeout does a parked request expire by itself (§7.12). */
-  private armPermissionTimer(): void {
-    const { permissionTtlS } = this.settings;
-    if (permissionTtlS === undefined) return;
-    this.permissionTimer = setTimeout(
-      () => this.terminate("failed", textMessage("permission request timed out"), "permission_timeout"),
-      permissionTtlS * 1000,
-    );
-    this.permissionTimer.unref();
-  }
-
+  /** Stop the lifetime clock, keeping what is left of it. */
   private clearTtl(): void {
     if (this.ttl !== null) clearTimeout(this.ttl);
     this.ttl = null;
-  }
-
-  private clearPermissionTimer(): void {
-    if (this.permissionTimer !== null) clearTimeout(this.permissionTimer);
-    this.permissionTimer = null;
+    if (this.ttlDeadline !== null) this.ttlLeftMs = Math.max(0, this.ttlDeadline - Date.now());
+    this.ttlDeadline = null;
   }
 
   // ---- plumbing ----

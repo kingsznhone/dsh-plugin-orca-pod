@@ -3,19 +3,18 @@ import { randomBytes } from "node:crypto";
 import { afterEach, vi } from "vitest";
 
 import { FileBlobRegistry } from "../../src/core/blobs.ts";
-import { DEFAULT_TASK_TIMEOUT_S } from "../../src/node/orca.ts";
-import { generateNodeIdentity } from "../../src/core/identity.ts";
+import { parseSettings } from "../../src/node/settings.ts";
 import type { OrcaNodeId, WorkgroupId } from "../../src/core/ids.ts";
 import type { PeerView } from "../../src/mesh/wire.ts";
 import { Gateway } from "../../src/api/gateway.ts";
 import { MeshContext } from "../../src/mesh/context.ts";
 import { Mesh } from "../../src/mesh/mesh.ts";
-import { HttpPeerClient, type FetchLike } from "../../src/mesh/peer-client.ts";
-import { EndpointScreen } from "../../src/mesh/screening.ts";
+import type { FetchLike } from "../../src/mesh/peer-client.ts";
 import { resolveClock, type MeshTimings } from "../../src/mesh/timings.ts";
 import { DispatchLog } from "../../src/task/dispatch-log.ts";
 import { wg } from "../fixtures/ids.ts";
 import { createTestRunner, openDb, tempDir } from "../fixtures/runner.ts";
+import { generateNodeIdentity } from "../../src/plugin/stores.ts";
 
 /** One node of a `TestNet`: a real mesh behind its real gateway, reachable at `url`. */
 export type NetNode = {
@@ -76,28 +75,24 @@ export class TestNet {
     const identity = generateNodeIdentity();
     const db = openDb();
     const blobs = new FileBlobRegistry(db, tempDir("orca-blobs-"));
+    const tasks = createTestRunner();
     const context = new MeshContext(
       identity,
       this.workgroup,
-      new HttpPeerClient(identity, this.key, this.workgroup, {
-        fetch: this.fetchFrom(identity.orcaNodeId),
-        timeoutMs: 1000,
-      }),
-      new DispatchLog(db, { warn() {} }),
+      this.key,
+      new DispatchLog(db),
       blobs,
-      new EndpointScreen({}),
-      this.clock,
+      tasks,
+      {},
       { warn() {} },
+      { fetch: this.fetchFrom(identity.orcaNodeId), clock: this.clock },
     );
     const mesh = new Mesh(
       context,
-      { display_name: `node-${this.hosts}`, endpoints, max_task_ttl_s: DEFAULT_TASK_TIMEOUT_S },
+      { display_name: `node-${this.hosts}`, endpoints, max_task_ttl_s: parseSettings({}).task_timeout_s },
       { timings: { ...this.timings, ...options.timings } },
     );
-    const gateway = new Gateway(mesh, createTestRunner(), this.key, identity, {
-      token: randomBytes(16).toString("base64url"),
-      blobs,
-    });
+    const gateway = new Gateway(mesh, tasks, this.workgroup, this.key, identity, randomBytes(16).toString("base64url"));
     const [url] = endpoints;
     if (url === undefined) throw new Error("a net node needs an address");
     const node: NetNode = { id: identity.orcaNodeId, url, mesh, gateway };

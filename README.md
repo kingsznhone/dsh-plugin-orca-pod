@@ -22,13 +22,13 @@ orca-pod/
 ├── skills/orca-node/     # 标准 skill bundle，介绍 orca_pod 工具（随包发布）
 ├── src/                  # TypeScript 源码（tsc 构建到 lib/）；按功能分 7 个目录：core ← executor ← task ← mesh ← api ← node ← plugin
 │   ├── index.ts          # 公共入口：apply / Config / inject
-│   ├── core/             # 公共底座（只放多个上下文共用的）：errors、schema、events（EventBus / ChangeSignal）、constants、ids（orca node id 与 workgroup id）、net、identity（Ed25519 与 base58 的纯函数，orca_node_id=公钥）、signing（请求的签名 + workgroup 证明、答复签名、nonce）、sqlite、stream、blobs（发布文件）、wire/reply（错误体与 ack）
-│   ├── executor/         # executor 契约、echo、model（模型路由）与 model-catalog、permission（权限模式）、acp/（config / connection / session / permissions / executor）
-│   ├── task/             # 本机执行：wire、runner（单槽运行器）、record（任务状态机）、quota、workspace、grants、meta、prompt（任务书）、dispatch-log（派发日志，含它的表）
+│   ├── core/             # 公共底座（只放多个上下文共用的）：errors、schema、events（ChangeSignal）、constants、ids（orca node id 与 workgroup id）、net（peer 地址归一化）、identity（Ed25519 签名与验签，orca_node_id=公钥）、signing（请求的签名 + workgroup 证明、答复签名）、sqlite、stream、blobs（发布文件）
+│   ├── executor/         # executor 契约、model（模型路由）与 model-catalog、permission（权限模式）、acp/（connection / session / permissions / executor，执行器的 `command` 设置也在 executor 里）
+│   ├── task/             # 本机执行：wire、runner（单槽运行器）、record（任务状态机）、quota、workspace、prompt（任务书）、dispatch-log（派发日志，含它的表）
 │   ├── mesh/             # 节点表：mesh（`Mesh`：Map<节点 id, OrcaNode>，本机自己也在表里；hello / 种子 / 目录 / 墓碑 / 心跳循环）、orca-node（表里的一行：自述、状态机、拨号、sendTask / fetchBlob）、context（一个实例里所有节点共用的 `MeshContext`）、peer-client（唯一的出站客户端）、screening（端点筛查）、timings、wire
-│   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes、local-routes（本机进程发布与取文件）、input
+│   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes（含本机路由 /local/*；本机进程发布与取文件）、input
 │   ├── node/             # orca（组合根 `Orca`：本进程里的这个实例）、settings（设置 schema 与解析器）、events
-│   └── plugin/           # DSH bundle：broker / bundle / catalog / config / local-node（任务进程经本机节点收发文件）/ panel / panel-api / panel-routes / peers-file / pod / services / settings-file / skill / stores / tools / tracker
+│   └── plugin/           # DSH bundle：bundle / catalog / panel / panel-api / panel-routes / pod / services / settings-file / skill / stores / tools / tracker
 └── test/                 # vitest 套件
 ```
 
@@ -52,7 +52,7 @@ dsh --profile desktop --dump-config
 
 ## 配置
 
-节点设置只在 `src/node/settings.ts` 的 `SettingsSchema` 里声明一次；面板与测试都走同一个解析器。**设置存在 `$DSH_HOME/orca-pod/settings.json`**（不含机密，面板写它，节点原地重启；DSH 的 `configEditor` 只能写当前 profile 的 patch，没法让所有 profile 共用）。profile 的插件配置只剩一个字段 `skill_injection`，旧的节点字段会被忽略（面板里重新填一次）。机密都在 DSH 凭据库：密码是引用 `ORCA_POD_PASSWORD`（固定名字、整台机器一份，也是无头宿主可导出的环境变量名），节点私钥是记录 `orca-pod/node`；workgroup 密钥由密码在启动时派生，只在内存里。运行期记住的 peer 在 `<data_root>/peers.json`，`data_root` 固定为 `$DSH_HOME/orca-pod`。常用字段：
+节点设置只在 `src/node/settings.ts` 的 `SettingsSchema` 里声明一次；面板与测试都走同一个解析器。**设置存在 `$DSH_HOME/orca-pod/settings.json`**（不含机密，面板写它，节点原地重启；DSH 的 `configEditor` 只能写当前 profile 的 patch，没法让所有 profile 共用）。profile 的插件配置只剩一个字段 `skill_injection`，旧的节点字段会被忽略（面板里重新填一次）。机密都在 DSH 凭据库：密码是引用 `ORCA_POD_PASSWORD`（固定名字、整台机器一份，也是无头宿主可导出的环境变量名），节点私钥是记录 `orca-pod/node`；workgroup 密钥由密码在启动时派生，只在内存里。运行期加入的 peer 也写进 `settings.json` 的 `peers`，`data_root` 固定为 `$DSH_HOME/orca-pod`。常用字段：
 
 | 字段                   | 默认                                   | 含义                                                                                                  |
 | ---------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -62,20 +62,17 @@ dsh --profile desktop --dump-config
 | `bind_host` / `port`   | `127.0.0.1` / `11811`                  | 监听地址与端口（`port: 0` 自选）                                                                       |
 | `endpoints`            | `[]`（按监听地址推导）                 | 对外宣告的拨号地址，1–8 个，第一个是 primary                                                          |
 | `peers`                | `[]`                                   | 启动时作为种子接触的 peer；没应答的会按退避继续重试                                                    |
-| `executor`             | 插件默认 `acp`，库未设置时 `echo`      | 本机执行器（origin 不能指定）；`acp` 对象配 `command`/`extra_args`/`mcp_servers`；任务总在宿主自己的 profile 里运行 |
+| `acp`                  | 未设置                                 | 本机 ACP 执行器的配置（origin 不能指定执行器），只有 `command`（默认 `dsh`，只是程序名）；任务总在宿主自己的 profile 里运行，子进程只带 `--profile <宿主 profile>`，工具也是该 profile 的 |
 | `permission_mode`      | 未设置（无本机上限）                   | 本机权限上限；生效模式 = 它与 origin 继承值中较窄的                                                    |
 | `task_timeout_s`       | `3600`                                 | 单任务硬上限，对外公布为 `max_task_ttl_s`                                                              |
-| `approval_timeout_s`   | 未设置（无限等待）                     | 挂起的权限请求到点自动拒绝（`failed(permission_timeout)`）                                             |
-| `result_max_bytes`     | 32 KiB                                 | 结论文本内联上限                                                                                      |
-| `max_workspace_bytes` / `max_workspace_files` | 5 GiB / 50 000    | 工作区配额；超出时新任务 `507 quota_exceeded`                                                          |
-| `request_timeout_ms`   | `30000`                                | 单次出站调用的超时                                                                                    |
+| `max_workspace_bytes`  | 5 GiB                                  | 工作区配额（只按字节）；超出时新任务 `507 quota_exceeded`                                              |
 | `allow_public_peers` / `allow_loopback_peers` | `false` / `true`  | 候选端点是否允许公网 / 回环地址                                                                        |
-| `models` / `default_model` / `default_reasoning_effort` | 空 | 节点自述的模型目录与默认值；插件从 DSH Host 采集                                                       |
-| `skill_injection`      | `false`                                | **插件配置**里唯一的字段：把内置 skill 注册到 DSH Host 的 skills 服务（不写用户 skill 目录）            |
+| `default_reasoning_effort` | 未设置（用 Host 的）               | 默认 reasoning effort，优先于 Host 报告的；模型目录与默认模型不是设置，节点照 DSH Host 报告的来自述 |
+| `skill_injection`      | `true`                                 | **插件配置**里唯一的字段：把内置 skill 注册到 DSH Host 的 skills 服务（不写用户 skill 目录）；`false` 关闭 |
 
 节点私钥在凭据库，所以 node id 跨重启保持不变；改密码 = 重建组（改了密码的节点在它的下一个请求就被旧 mesh 拒绝）；面板的“完全重置”删掉整台机器的节点（密码、私钥、设置、peers），没有分支。旧版本按 profile 存的身份和任务库不读、不迁移：已装过的机器会得到新身份，需要重新入组。
 
-任务的权限模式继承发起会话（没继承到就 `read-only`），显式传的模式只能更窄，本机 `permission_mode` 是上限；任务需要更多权限时请求发起者把本任务升级一档，人在面板或聊天卡上批准后，该任务余下的同类操作不再询问。审批默认无限等待，只有配置了 `approval_timeout_s` 才在到点自动拒绝。任务只有一跳：任务在宿主的 profile 里运行，执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，插件见到就不启动节点，`orca_pod` 只剩 `fetch` 与 `publish`、经本机节点收发文件——这是防 agent 转手的非对抗性约束，不是密钥隔离。
+任务的权限模式继承发起会话（没继承到就 `read-only`），显式传的模式只能更窄，本机 `permission_mode` 是上限；任务需要更多权限时请求发起者把本任务升级一档，人在面板或聊天卡上批准后，该任务余下的同类操作不再询问。挂起的权限请求一直等到人答复（没有超时设置）。结论文本内联上限（32 KiB）与单次出站调用超时（30 s）是常量，不是设置。任务只有一跳：任务在宿主的 profile 里运行，执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，插件见到就不启动节点，`orca_pod` 只剩 `fetch` 与 `publish`、经本机节点收发文件——这是防 agent 转手的非对抗性约束，不是密钥隔离。
 
 ## 工具
 
@@ -83,7 +80,7 @@ dsh --profile desktop --dump-config
 
 | Method    | Extra arguments                                                                       | Result                                                           |
 | --------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `send`    | `peer`, `text`, `echo?`, `model?`, `reasoning_effort?`, `permission_mode?`           | `{task_id, state, peer, node}`，远端接受后立即返回               |
+| `send`    | `peer`, `text`, `model?`, `reasoning_effort?`, `permission_mode?`           | `{task_id, state, peer, node}`，远端接受后立即返回               |
 | `publish` | `path`, `ttl_s?`                                                                      | `{ref, size, expires_at}`：把本机文件复制进本机节点，名字是 `<节点 id>/<sha256>`；默认 7 天过期，`0` 永不过期 |
 | `fetch`   | `ref`, `output`                                                                       | `{path, size}`：把任一成员发布的文件存到 `output`，校验 sha256；写入位置要经会话沙箱允许 |
 | `status`  | `peer`, `task_id`                                                                     | 远端 `TaskView` 加 `terminal` 标志                               |
@@ -91,7 +88,7 @@ dsh --profile desktop --dump-config
 | `members` | —                                                                                     | `{self, members, members_digest}`                                |
 | `connect` | `peer`                                                                                | 接触这个地址、记住它以便重启、返回刷新后的成员表                 |
 
-没有 approve 方法：权限请求只在 UI（会话聊天卡、后台弹窗、面板）里由人批准。`peer` 是**节点 id、唯一的显示名、或该节点的 URL**（重名时报错并列出候选 id）；出站调用只到已知的节点，陌生地址要先 `connect`（`connect` 的 `peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`，端口默认 11811）。`send` 不给 `permission_mode` 时继承当前会话的权限模式（DSH 的 `sandboxPolicy` 服务），显式传入则覆盖（[§7.10](docs/07-security.md#710-权限模式继承)）。
+没有 approve 方法：权限请求只在 UI（会话聊天卡、后台弹窗、面板）里由人批准。`peer` 是**节点 id、唯一的显示名、或该节点宣告过的 URL**（重名时报错并列出候选 id；节点没有宣告的地址，哪怕曾经靠它连上，也只能改用 id 或显示名）；出站调用只到已知的节点，陌生地址要先 `connect`（`connect` 的 `peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`，端口默认 11811）。`send` 不给 `permission_mode` 时继承当前会话的权限模式（DSH 的 `sandboxPolicy` 服务），显式传入则覆盖（[§7.10](docs/07-security.md#710-权限模式继承)）。
 
 **文件不是任务的一部分**：要交给任务的文件先 `publish`，把返回的名字写进任务文本；任务里的 agent 用同一个工具 `fetch` 它，要交回的文件也 `publish`、把名字写进结论，你再 `fetch`。任务进程里的 `orca_pod` 只有这两个方法（[§5.6](docs/05-tasks.md#56-文件交换blob-通道)）。需要收文件的任务要以 `workspace-write` 派出：`read-only` 的会话写不了任何地方。
 

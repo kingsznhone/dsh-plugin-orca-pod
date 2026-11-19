@@ -15,7 +15,7 @@ import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 
 import { formatBlobRef } from "../src/core/blobs.ts";
 import type { Orca } from "../src/node/orca.ts";
-import { LocalNode } from "../src/plugin/local-node.ts";
+import { LocalNode } from "../src/plugin/tools.ts";
 import { PodTool } from "../src/plugin/tools.ts";
 import type { OptionalService } from "../src/plugin/services.ts";
 import { createGatewayHarness } from "./fixtures/gateway.ts";
@@ -61,11 +61,12 @@ describe("orca_pod publish", () => {
     writeFileSync(join(root, "plan.md"), "the plan");
     const published: Array<[string, number | undefined]> = [];
     const node = {
-      orcaNodeId: OWN,
-      blobs: {
-        register: async (path: string, ttlS?: number) => {
-          published.push([path, ttlS]);
-          return { blob_id: sha256("the plan"), path: "copy", size: 8, expires_at: null };
+      mesh: {
+        self: {
+          publish: async (path: string, ttlS?: number) => {
+            published.push([path, ttlS]);
+            return { ref: formatBlobRef({ node: OWN, blob_id: sha256("the plan") }), size: 8, expires_at: null };
+          },
         },
       },
     } as unknown as Orca;
@@ -76,7 +77,11 @@ describe("orca_pod publish", () => {
     )({ method: "publish", path: "plan.md", ttl_s: 0 });
 
     expect(published).toEqual([[join(root, "plan.md"), 0]]);
-    expect(result).toEqual({ ref: formatBlobRef({ node: OWN, blob_id: sha256("the plan") }), size: 8, expires_at: null });
+    expect(result).toEqual({
+      ref: formatBlobRef({ node: OWN, blob_id: sha256("the plan") }),
+      size: 8,
+      expires_at: null,
+    });
   });
 
   it("needs a path, and a ttl_s that is a whole number of seconds", async () => {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { nodeParts, peersOf } from "./support/node.ts";
+import { identityOf, nodeParts, peersOf } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
@@ -14,6 +14,7 @@ import { pickFreePort } from "../src/api/gateway.ts";
 import { wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/ids.ts";
 import type { NodeIdentity } from "../src/core/identity.ts";
+import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 const FAST: Partial<MeshTimings> = {
   intervalMs: 50,
@@ -73,7 +74,7 @@ async function makeNode(
     },
     options.identity,
   );
-  return new Orca(...config, { timings: options.timings ?? FAST });
+  return new Orca(...config, { timings: options.timings ?? FAST, executor: new ScriptExecutor() });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
@@ -168,7 +169,7 @@ describe("mesh formation", () => {
       const bUrl = (await b.start()).url;
       if (!bUrl) throw new Error("b did not start");
       await b.mesh.probe(aUrl);
-      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"));
+      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.mesh.self.id && peer.state === "online"));
 
       // b 掉线：a 的目录里还留着它的死 endpoint。
       await b.stop();
@@ -178,13 +179,12 @@ describe("mesh formation", () => {
       await c.mesh.probe(aUrl);
 
       // a's directory still names b, so c knows it as a candidate that never answers.
-      expect(c.mesh.get(b.orcaNodeId)?.state).not.toBe("online");
-      await waitFor(() => peersOf(c).some((peer) => peer.orca_node_id === a.orcaNodeId && peer.state === "online"));
+      expect(c.mesh.get(b.mesh.self.id)?.state).not.toBe("online");
+      await waitFor(() => peersOf(c).some((peer) => peer.orca_node_id === a.mesh.self.id && peer.state === "online"));
 
       // 一个死条目不影响新 orca node 加入，也不影响它对存活 orca node 派任务。
       const task = await c.mesh.resolve(aUrl).sendTask({
-        message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
-        metadata: { echo: { final: { state: "completed", text: "ok" } } },
+        message: scriptMessage({ final: { state: "completed", text: "ok" } }),
       });
       const finished = await waitForTask(c, aUrl, task.id);
       expect(finished.status.state).toBe("completed");
@@ -206,16 +206,16 @@ describe("mesh formation", () => {
       const bUrl = (await b.start()).url;
       if (!bUrl) throw new Error("b did not start");
       await b.mesh.probe(aUrl);
-      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state === "online"));
+      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.mesh.self.id && peer.state === "online"));
 
       await b.stop();
-      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.orcaNodeId && peer.state !== "online"));
+      await waitFor(() => peersOf(a).some((peer) => peer.orca_node_id === b.mesh.self.id && peer.state !== "online"));
 
       // 同 orca_node_id、同 data_root、新端口：等价于“进程重启”。
       const restarted = await makeNode(workgroupId, password, {
         data_root: bRoot,
         display_name: "b",
-        identity: b.identity,
+        identity: identityOf(b),
       });
       try {
         const restartedUrl = (await restarted.start()).url;
@@ -225,12 +225,12 @@ describe("mesh formation", () => {
         await waitFor(() =>
           peersOf(a).some(
             (peer) =>
-              peer.orca_node_id === restarted.orcaNodeId &&
+              peer.orca_node_id === restarted.mesh.self.id &&
               peer.state === "online" &&
               peer.endpoints.includes(restarted.mesh.self.endpoints[0]!),
           ),
         );
-        expect(peersOf(a).filter((peer) => peer.orca_node_id === restarted.orcaNodeId)).toHaveLength(1);
+        expect(peersOf(a).filter((peer) => peer.orca_node_id === restarted.mesh.self.id)).toHaveLength(1);
       } finally {
         await restarted.stop();
       }
@@ -273,18 +273,18 @@ describe("mesh formation", () => {
       const bUrl = (await b.start()).url;
       await a.start();
       await a.mesh.probe(bUrl);
-      expect(b.mesh.get(a.orcaNodeId)?.state).toBe("online");
+      expect(b.mesh.get(a.mesh.self.id)?.state).toBe("online");
 
       // b prunes a (its record expired, or it was restarted and lost its table).
-      b.mesh.remove(a.orcaNodeId);
-      expect(b.mesh.get(a.orcaNodeId)).toBeUndefined();
+      b.mesh.remove(a.mesh.self.id);
+      expect(b.mesh.get(a.mesh.self.id)).toBeUndefined();
 
       // Nothing was rejected, so there is nothing to retry: one more hello is all it takes, and
       // a request of a member that b forgot is still answered, because both proofs hold.
       const hello = await a.mesh.probe(bUrl);
-      expect(hello.id).toBe(b.orcaNodeId);
-      expect(b.mesh.get(a.orcaNodeId)?.state).toBe("online");
-      expect(peersOf(b).filter((peer) => peer.orca_node_id === a.orcaNodeId)).toHaveLength(1);
+      expect(hello.id).toBe(b.mesh.self.id);
+      expect(b.mesh.get(a.mesh.self.id)?.state).toBe("online");
+      expect(peersOf(b).filter((peer) => peer.orca_node_id === a.mesh.self.id)).toHaveLength(1);
     } finally {
       await Promise.all([a.stop(), b.stop()]);
     }
@@ -307,10 +307,10 @@ describe("mesh formation", () => {
       // It comes up: the seed's backoff finds it without anyone connecting again.
       await late.start();
       await waitFor(() =>
-        peersOf(seeded).some((peer) => peer.orca_node_id === late.orcaNodeId && peer.state === "online"),
+        peersOf(seeded).some((peer) => peer.orca_node_id === late.mesh.self.id && peer.state === "online"),
       );
       // The node that came up was greeted as itself, so it knows the seeded node too.
-      expect(late.mesh.get(seeded.orcaNodeId)?.state).toBe("online");
+      expect(late.mesh.get(seeded.mesh.self.id)?.state).toBe("online");
     } finally {
       await Promise.all([late.stop(), seeded.stop()]);
     }

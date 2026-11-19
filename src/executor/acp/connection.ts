@@ -39,25 +39,22 @@ export type SessionRoute = {
   permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse>;
 };
 
-type ConnectionState = { status: "starting" } | { status: "ready" } | { status: "closed"; error: Error };
-
-type AcpSpawnSpec = { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
-
 /** The code DSH's `deadline` stamps on a request the child did not answer in time. */
 const ACP_TIMEOUT = "ACP_TIMEOUT";
 
 export class AcpConnection {
   /** Settles when `initialize` succeeded; rejects, with the connection closed, when it did not. */
   readonly ready: Promise<void>;
-  private state: ConnectionState = { status: "starting" };
+  /** Why the connection closed; null while it is open. */
+  private closedBy: Error | null = null;
   private readonly child: AcpChild;
   private readonly rpc: ClientConnection;
   private readonly routes = new Map<string, SessionRoute>();
   private stderr = "";
   private exited: Promise<void> = Promise.resolve();
 
-  /** Start the child `spec` describes and drive it. */
-  static spawn({ command, args, cwd, env }: AcpSpawnSpec): AcpConnection {
+  /** Start the child `command args` in `cwd` and drive it. */
+  static spawn(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): AcpConnection {
     // cross-spawn resolves Windows `.cmd` shims and quotes the command line for
     // cmd.exe, so the same spec works on every platform.
     const child = crossSpawn(command, args, {
@@ -71,7 +68,7 @@ export class AcpConnection {
   }
 
   /** The constructor takes a child that is already running, so building a connection starts nothing itself. */
-  constructor(child: AcpChild) {
+  private constructor(child: AcpChild) {
     this.child = child;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
@@ -108,9 +105,7 @@ export class AcpConnection {
       },
       HANDSHAKE_TIMEOUT_MS,
     ).then(
-      () => {
-        if (this.state.status === "starting") this.state = { status: "ready" };
-      },
+      () => {},
       (error: Error) => {
         void this.close();
         throw error;
@@ -119,7 +114,7 @@ export class AcpConnection {
   }
 
   isClosed(): boolean {
-    return this.state.status === "closed";
+    return this.closedBy !== null;
   }
 
   /** Route the child's messages for `sessionId` to `route` until the returned function is called. */
@@ -145,7 +140,7 @@ export class AcpConnection {
     params: AgentRequestParamsByMethod[Method],
     timeoutMs?: number,
   ): Promise<AgentRequestResponsesByMethod[Method]> {
-    if (this.state.status === "closed") throw this.state.error;
+    if (this.closedBy !== null) throw this.closedBy;
     if (timeoutMs === undefined) return this.rpc.agent.request(method, params);
     const limit = deadline(undefined, timeoutMs, ACP_TIMEOUT);
     try {
@@ -164,7 +159,7 @@ export class AcpConnection {
 
   /** Tell the child to stop the session's current prompt; it answers the prompt with `cancelled`. */
   cancel(sessionId: string): void {
-    if (this.state.status !== "closed") this.rpc.agent.notify("session/cancel", { sessionId }).catch(() => {});
+    if (this.closedBy === null) this.rpc.agent.notify("session/cancel", { sessionId }).catch(() => {});
   }
 
   /** Close the connection; resolves once the child process has exited. */
@@ -179,8 +174,8 @@ export class AcpConnection {
   }
 
   private fail(error: Error): void {
-    if (this.state.status === "closed") return;
-    this.state = { status: "closed", error };
+    if (this.closedBy !== null) return;
+    this.closedBy = error;
     this.routes.clear();
     this.rpc?.close(error);
     this.exited = AcpConnection.terminate(this.child);

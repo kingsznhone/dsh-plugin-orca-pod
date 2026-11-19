@@ -9,39 +9,28 @@ import {
   StateDot,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import { DEFAULT_PORT, EXECUTOR_KINDS } from "../src/core/constants.ts";
+import { DEFAULT_PORT } from "../src/core/constants.ts";
 import { DEFAULT_WORKGROUP, GIB } from "./constants.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
 import css from "./settings.module.css";
 import { store, useStore } from "./store.ts";
-import type { PanelPatch, PodActions, PodConfigView } from "./types.ts";
+import type { PanelPatch, PodActions, PodConfigView, PodPeer } from "./types.ts";
 import ui from "./ui.module.css";
 
 /** The settings the panel shows. */
 type ShownSettings = PodConfigView["settings"];
 
 /** Advanced settings edited as numbers. */
-type LimitKey =
-  | "task_timeout_s"
-  | "approval_timeout_s"
-  | "result_max_bytes"
-  | "max_workspace_bytes"
-  | "max_workspace_files";
+type LimitKey = "task_timeout_s" | "max_workspace_bytes";
 
 /** Advanced settings edited as a choice. */
-type SelectKey =
-  | "permission_mode"
-  | "allow_public_peers"
-  | "allow_loopback_peers"
-  | "default_reasoning_effort"
-  | "executor";
+type SelectKey = "permission_mode" | "allow_public_peers" | "allow_loopback_peers" | "default_reasoning_effort";
 
 interface Limit {
   key: LimitKey;
   label: string;
   hint?: string;
-  integer?: boolean;
   /** Bytes per displayed unit (MiB/GiB); unset means the value is shown as stored. */
   unit?: number;
 }
@@ -70,10 +59,7 @@ type Bind = (key: TextKey) => {
 /** Numeric limits; `unit` converts the displayed MiB/GiB to the bytes the host stores. */
 const LIMITS: Limit[] = [
   { key: "task_timeout_s", label: "cfgTaskTimeout", hint: "cfgTaskTimeoutHint" },
-  { key: "approval_timeout_s", label: "cfgApprovalTimeout", hint: "cfgApprovalTimeoutHint" },
-  { key: "result_max_bytes", label: "cfgResultMaxBytes", integer: true },
   { key: "max_workspace_bytes", label: "cfgMaxWorkspaceGiB", hint: "cfgMaxWorkspaceHint", unit: GIB },
-  { key: "max_workspace_files", label: "cfgMaxWorkspaceFiles", integer: true },
 ];
 const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
 
@@ -99,7 +85,6 @@ function selectFields(config: ChoiceSource): SelectField[] {
     ["allow_public_peers", "cfgAllowPublicPeers", tri],
     ["allow_loopback_peers", "cfgAllowLoopbackPeers", tri],
     ["default_reasoning_effort", "cfgDefaultEffort", [["", t("cfgDefaultOption")], ...efforts], "cfgDefaultEffortHint"],
-    ["executor", "cfgExecutor", literal(EXECUTOR_KINDS), "cfgExecutorHint"],
   ];
 }
 
@@ -125,12 +110,12 @@ function choiceTexts(config: ChoiceSource): Record<SelectKey, string> {
   return Object.fromEntries(selectFields(config).map(([key]) => [key, text(key)])) as Record<SelectKey, string>;
 }
 
-function initialForm(config: PodConfigView, wizard: boolean): FormState {
+function initialForm(config: PodConfigView, self: PodPeer | null): FormState {
   return {
     workgroup_id: config.settings.workgroup_id ?? DEFAULT_WORKGROUP,
     password: "",
-    /* The first run starts from this node's own id; a configured install keeps its saved name. */
-    display_name: (wizard ? config.node_id : config.display_name) ?? "",
+    /* The name the running node goes by (its shortened id unless one was set), else the setting. */
+    display_name: self?.display_name ?? config.settings.display_name ?? "",
     bind_host: config.settings.bind_host,
     port: String(config.port),
     endpoints: config.suggested_endpoints.length > 0 ? config.suggested_endpoints : [""],
@@ -147,12 +132,12 @@ function limitValues(
   config: PodConfigView,
 ): { values: LimitValues; error?: undefined } | { error: string; values?: undefined } {
   const values: LimitValues = {};
-  for (const { key, label, integer, unit } of LIMITS) {
+  for (const { key, label, unit } of LIMITS) {
     const text = form[key].trim();
     const value = Number(text);
     if (text === "") {
       values[key] = null;
-    } else if (!Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
+    } else if (!Number.isFinite(value) || value <= 0) {
       return { error: `${t(label)} ${t("cfgAdvancedInvalid")}` };
     } else if (unit === undefined) {
       values[key] = value;
@@ -183,7 +168,7 @@ function buildPatch(
   const port = Number(form.port);
   if (form.port.trim() === "" || !Number.isInteger(port) || port < 0 || port > 65535)
     return { error: `${t("cfgListenPort")} ${t("cfgPortInvalid")}` };
-  if (form.password.length === 0 && (wizard || !config.password_set)) return { error: t("cfgPasswordRequired") };
+  if (form.password.length === 0 && wizard) return { error: t("cfgPasswordRequired") };
   const addresses = form.endpoints.map((row) => row.trim()).filter(Boolean);
   const limits = limitValues(form, config);
   if (limits.error !== undefined) return { error: limits.error };
@@ -268,13 +253,9 @@ function Select({ options, ...props }: ReturnType<Bind> & { options: Array<[stri
   );
 }
 
-function IdentitySection({ bind, wizard, config }: { bind: Bind; wizard: boolean; config: PodConfigView }) {
-  const placeholder = wizard || !config.password_set ? t("cfgPasswordOpen") : t("cfgPasswordKeep");
-  const hint = wizard
-    ? t("cfgPasswordHintWizard")
-    : config.password_set
-      ? t("cfgPasswordHintSet")
-      : t("cfgPasswordHintNone");
+function IdentitySection({ bind, wizard }: { bind: Bind; wizard: boolean }) {
+  const placeholder = wizard ? t("cfgPasswordOpen") : t("cfgPasswordKeep");
+  const hint = wizard ? t("cfgPasswordHintWizard") : t("cfgPasswordHintSet");
   return (
     <Group title={t("cfgIdentity")}>
       <SettingRow label={t("cfgWorkgroupId")} hint={t("cfgWorkgroupIdHint")}>
@@ -390,9 +371,9 @@ function AdvancedSection({ bind, config }: { bind: Bind; config: ChoiceSource })
 export type Frame = (body: ReactNode, footer: ReactNode) => ReactNode;
 
 /** The form's state and actions, apart from how it is drawn. */
-function useConfigForm(config: PodConfigView, wizard: boolean, onDone: () => void) {
+function useConfigForm(config: PodConfigView, self: PodPeer | null, wizard: boolean, onDone: () => void) {
   const { busy, actionError } = useStore();
-  const [form, setForm] = React.useState(() => initialForm(config, wizard));
+  const [form, setForm] = React.useState(() => initialForm(config, self));
   const [error, setError] = React.useState<string | null>(null);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((previous) => ({ ...previous, [key]: value }));
@@ -433,20 +414,20 @@ function ResetGroup({ busy, onReset }: { busy: boolean; onReset: () => void }) {
 /** Node status (or the last error) on the left; back, use-existing and save on the right. */
 function ConfigFooter({
   config,
+  running,
   wizard,
   formId,
   busy,
   problem,
   onBack,
-  onUseExisting,
 }: {
   config: PodConfigView;
+  running: boolean;
   wizard: boolean;
   formId: string;
   busy: boolean;
   problem: string | null;
   onBack: () => void;
-  onUseExisting: () => void;
 }) {
   return (
     <div className={panel.footer}>
@@ -457,8 +438,8 @@ function ConfigFooter({
           </span>
         ) : (
           <>
-            <StateDot state={config.running ? "done" : "idle"} />
-            {config.running ? t("cfgRunning") + config.port : t("cfgNotRunning")}
+            <StateDot state={running ? "done" : "idle"} />
+            {running ? t("cfgRunning") + config.port : t("cfgNotRunning")}
           </>
         )}
       </span>
@@ -467,11 +448,6 @@ function ConfigFooter({
           {t("cfgBack")}
         </Button>
       )}
-      {wizard && config.running ? (
-        <Button variant={"outline"} disabled={busy} onClick={onUseExisting}>
-          {t("cfgUseExisting")}
-        </Button>
-      ) : null}
       <Button variant={"primary"} type={"submit"} form={formId} disabled={busy}>
         {wizard ? t("cfgStart") : t("cfgSave")}
       </Button>
@@ -481,21 +457,24 @@ function ConfigFooter({
 
 export function ConfigForm({
   config,
+  self,
   wizard,
   onDone,
   frame,
 }: {
   config: PodConfigView;
+  /** This node's own record while it runs. */
+  self: PodPeer | null;
   wizard: boolean;
   onDone: () => void;
   frame: Frame;
 }): ReactNode {
   const formId = React.useId();
-  const { form, set, bind, busy, problem, run, save } = useConfigForm(config, wizard, onDone);
+  const { form, set, bind, busy, problem, run, save } = useConfigForm(config, self, wizard, onDone);
   const body = (
     <form id={formId} onSubmit={save} className={css.form}>
       {wizard ? <p className={css.intro}>{t("cfgWizardIntro")}</p> : null}
-      <IdentitySection bind={bind} wizard={wizard} config={config} />
+      <IdentitySection bind={bind} wizard={wizard} />
       <NetworkSection form={form} set={set} bind={bind} config={config} busy={busy} />
       <AdvancedSection bind={bind} config={config} />
       {wizard ? null : <ResetGroup busy={busy} onReset={() => run("reset", {})} />}
@@ -504,12 +483,12 @@ export function ConfigForm({
   const footer = (
     <ConfigFooter
       config={config}
+      running={self !== null}
       wizard={wizard}
       formId={formId}
       busy={busy}
       problem={problem}
       onBack={onDone}
-      onUseExisting={() => run("config", {})}
     />
   );
   return frame(body, footer);

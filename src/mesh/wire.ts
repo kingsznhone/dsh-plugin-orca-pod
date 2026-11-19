@@ -10,11 +10,23 @@ import { BusyStateSchema } from "../task/wire.ts";
 
 // ---- the records of the node table (§3) ----
 
+/** Max advertised base URLs per orca node; enough for IPv4/IPv6/LAN/public. */
+const MAX_ENDPOINTS = 8;
+
+/**
+ * Dial addresses a node advertises for itself, best first (§3.2): http(s) base
+ * URLs, kept in the order given, without a trailing slash and without repeats.
+ */
+export const EndpointsSchema = z
+  .array(z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }))
+  .max(MAX_ENDPOINTS, `must be at most ${MAX_ENDPOINTS} URLs`)
+  .transform((endpoints) => [...new Set(endpoints.map((endpoint) => endpoint.replace(/\/$/, "")))]);
+
 const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
 export type PeerState = z.infer<typeof PeerStateSchema>;
 
 /** Host facts a node advertises in its hello (§3.3); `runtime_digest` covers them. */
-export const RuntimeInfoSchema = z.object({
+const RuntimeInfoSchema = z.object({
   os: z.object({ family: z.string(), name: z.string(), version: z.string() }),
   arch: z.string(),
   cpu: z.object({ model: z.string(), logical_cores: z.number().int() }),
@@ -24,7 +36,7 @@ export const RuntimeInfoSchema = z.object({
 });
 export type RuntimeInfo = z.infer<typeof RuntimeInfoSchema>;
 
-export const PeerViewSchema = z.object({
+const PeerViewSchema = z.object({
   orca_node_id: OrcaNodeIdSchema,
   display_name: z.string(),
   /** Base URLs peers may dial, best first; one entry is the common case (§3.2). */
@@ -60,9 +72,6 @@ export const HelloResponseSchema = z.object({
   members: z.array(PeerViewSchema).nullable(),
 });
 export type HelloResponse = z.infer<typeof HelloResponseSchema>;
-
-const MembersResponseSchema = z.object({ members_digest: z.string(), members: z.array(PeerViewSchema) });
-export type MembersResponse = z.infer<typeof MembersResponseSchema>;
 
 export function runtimeDigest(runtime: RuntimeInfo | null): string {
   if (!runtime) return "none";
@@ -106,12 +115,11 @@ export type SelfDescription = z.infer<typeof SelfDescriptionSchema>;
  * no digest to compare and no receiver id to sign to.
  */
 export const HelloRequestSchema = z.object({
-  self: SelfDescriptionSchema,
+  self: SelfDescriptionSchema.extend({
+    endpoints: EndpointsSchema.refine((endpoints) => endpoints.length > 0, "must name at least one endpoint"),
+  }),
   busy: BusyStateSchema.nullable(),
   /** The sender's members digest; the answer carries the directory only when it differs. */
   digest: z.string(),
 });
 export type HelloRequest = z.infer<typeof HelloRequestSchema>;
-
-/** The member list changed (§9.2). */
-export type MembersEvent = { type: "members"; members: PeerView[]; digest: string };

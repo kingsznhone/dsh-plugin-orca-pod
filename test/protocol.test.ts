@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { generateNodeIdentity, shortenNodeId } from "../src/core/identity.ts";
-import { isHttpEndpoint, normalizeEndpoints } from "../src/core/net.ts";
-import { membersDigest, runtimeDigest, type PeerView, type RuntimeInfo } from "../src/mesh/wire.ts";
+import { shortenNodeId } from "../src/core/identity.ts";
+import { EndpointsSchema, membersDigest, runtimeDigest, type PeerView, type RuntimeInfo } from "../src/mesh/wire.ts";
 import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId } from "../src/core/ids.ts";
 import { labelId } from "./fixtures/ids.ts";
+import { generateNodeIdentity } from "../src/plugin/stores.ts";
 
 const acceptsNodeId = (value: unknown) => OrcaNodeIdSchema.safeParse(value).success;
 const acceptsWorkgroupId = (value: unknown) => WorkgroupIdSchema.safeParse(value).success;
@@ -173,43 +173,30 @@ describe("membersDigest", () => {
   });
 });
 
-describe("isHttpEndpoint", () => {
-  it("accepts http and https urls", () => {
-    expect(isHttpEndpoint("http://127.0.0.1:11811")).toBe(true);
-    expect(isHttpEndpoint("https://pod.example.com/a2a")).toBe(true);
-  });
+describe("EndpointsSchema", () => {
+  const endpoints = (value: unknown) => {
+    const parsed = EndpointsSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  };
 
-  it("rejects non-http protocols", () => {
-    expect(isHttpEndpoint("ftp://x")).toBe(false);
-    expect(isHttpEndpoint("ws://127.0.0.1:11811")).toBe(false);
-  });
-
-  it("rejects strings that are not urls", () => {
-    expect(isHttpEndpoint("not a url")).toBe(false);
-  });
-
-  it("rejects non-strings", () => {
-    expect(isHttpEndpoint(42)).toBe(false);
-    expect(isHttpEndpoint(null)).toBe(false);
-    expect(isHttpEndpoint(undefined)).toBe(false);
-  });
-});
-
-describe("normalizeEndpoints", () => {
-  it("accepts an ordered list and rejects a bare string", () => {
-    expect(normalizeEndpoints(["http://a:1", "http://b:2"])).toEqual(["http://a:1", "http://b:2"]);
-    expect(normalizeEndpoints("http://a:1")).toBeNull();
+  it("accepts an ordered list of http(s) URLs and rejects a bare string", () => {
+    expect(endpoints(["http://a:1", "https://pod.example.com/a2a"])).toEqual([
+      "http://a:1",
+      "https://pod.example.com/a2a",
+    ]);
+    expect(endpoints("http://a:1")).toBeNull();
   });
 
   it("strips one trailing slash and deduplicates", () => {
-    expect(normalizeEndpoints(["http://a:1/", "http://a:1", "http://b:2/"])).toEqual(["http://a:1", "http://b:2"]);
+    expect(endpoints(["http://a:1/", "http://a:1", "http://b:2/"])).toEqual(["http://a:1", "http://b:2"]);
   });
 
-  it("rejects empty, malformed and oversized lists", () => {
-    expect(normalizeEndpoints([])).toBeNull();
-    expect(normalizeEndpoints(undefined)).toBeNull();
-    expect(normalizeEndpoints(["ftp://a:1"])).toBeNull();
-    expect(normalizeEndpoints(["http://a:1", "nope"])).toBeNull();
-    expect(normalizeEndpoints(Array.from({ length: 9 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
+  it("rejects other protocols, text that is not a URL, and more than eight", () => {
+    expect(endpoints(["ftp://a:1"])).toBeNull();
+    expect(endpoints(["ws://127.0.0.1:11811"])).toBeNull();
+    expect(endpoints(["http://a:1", "nope"])).toBeNull();
+    expect(endpoints([42])).toBeNull();
+    expect(endpoints(undefined)).toBeNull();
+    expect(endpoints(Array.from({ length: 9 }, (_, i) => `http://a:${i + 1}`))).toBeNull();
   });
 });

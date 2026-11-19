@@ -37,7 +37,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 - 授权请求随之失效；origin 下一次轮询看到 `failed(node_restart)`，卡片随之收回；
 - 工作区目录不删，cwd 不变；ACP session 绑定保留，下一个任务会 `session/resume`。
 
-**origin 重启（origin 侧派发日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（表只有 `task_id`、`payload`、`updated_at` 三列；条目 JSON 里才是 `peer`、`context_id`、`state`、`last_error`、`agent_id`、`created_at`）：
+**origin 重启（origin 侧派发日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（表只有 `task_id`、`payload`、`updated_at` 三列；条目 JSON 里才是 `node`、`state`、`last_error`、`agent_id`、`created_at`）：
 
 - 写入按写的人分开（D45）：只有 `sendTask` 新建条目；之后条目的状态只由 tracker 改，每次变化是一条 `UPDATE … SET payload = json_patch(payload, …)`，只在条目未结束、且状态或错误确有变化时写；`getTask`/`cancelTask`/审批都不写派发日志；
 - 节点启动时把仍非终态的条目标成 `state=unknown, last_error=origin_restart`：重启本身不算失败；tracker 下一轮读到真实状态再覆盖，读不到按 [§8.2](#82-orca-node-失联任务不重发读不到就记失败) 记成 `failed`；

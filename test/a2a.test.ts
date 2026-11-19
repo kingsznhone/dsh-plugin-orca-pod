@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createMesh, type Mesh } from "./support/harness.ts";
 import type { Orca } from "../src/node/orca.ts";
 import type { TaskState, TaskView } from "../src/task/wire.ts";
+import { scriptMessage } from "./support/script.ts";
 
 let mesh: Mesh | null = null;
 
@@ -41,17 +42,16 @@ function textOf(view: TaskView): string | null {
 }
 
 describe("A2A task surface", () => {
-  it("runs an echo task to completion and returns its text", async () => {
+  it("runs a task to completion and returns its text", async () => {
     const { origin, targetUrl } = await twoNodes();
     const submitted = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hi" }] },
-      metadata: { echo: { final: { state: "completed", text: "hello pod" } } },
+      message: scriptMessage({ final: { state: "completed", text: "hello pod" } }),
     });
     expect(submitted.kind).toBe("task");
     expect(["submitted", "working"]).toContain(submitted.status.state);
     // The view names the node that dispatched the task, so the panel can show it
     // without a second lookup (§9.2).
-    expect(submitted.metadata?.pod?.origin_orca_node).toBe(origin.orcaNodeId);
+    expect(submitted.metadata?.pod?.origin_orca_node).toBe(origin.mesh.self.id);
 
     const done = await waitForState(origin, targetUrl, submitted.id, "completed");
     expect(textOf(done)).toBe("hello pod");
@@ -60,18 +60,14 @@ describe("A2A task surface", () => {
   it("answers a resume with 429 orca_node_busy while another task holds the slot", async () => {
     const { origin, targetUrl } = await twoNodes();
     const parked = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "start" }] },
-      metadata: {
-        echo: {
-          steps: [{ at_ms: 10, suspend: { kind: "permission", tool: "write_file", requested: { path: "a.txt" } } }],
-          final: { state: "completed", text: "done" },
-        },
-      },
+      message: scriptMessage({
+        steps: [{ at_ms: 10, suspend: { tool: "write_file", requested: { path: "a.txt" } } }],
+        final: { state: "completed", text: "done" },
+      }),
     });
     const suspended = await waitForState(origin, targetUrl, parked.id, "input-required");
     const holder = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
-      metadata: { echo: { final: { state: "hang", text: "" } } },
+      message: scriptMessage({ final: { state: "hang", text: "" } }),
     });
     await waitForState(origin, targetUrl, holder.id, "working");
 
@@ -86,28 +82,16 @@ describe("A2A task surface", () => {
     expect(textOf(await waitForState(origin, targetUrl, parked.id, "completed"))).toBe("done");
   });
 
-  it("rejects an invalid echo script before creating a task", async () => {
-    const { origin, targetUrl } = await twoNodes();
-    await expect(
-      origin.mesh.resolve(targetUrl).sendTask({
-        message: { role: "user", parts: [{ kind: "text", text: "bad" }] },
-        metadata: { echo: { steps: [{ at_ms: 10 }, { at_ms: 5 }] } },
-      }),
-    ).rejects.toMatchObject({ code: "bad_echo_script", status: 400 });
-  });
-
   it("returns orca_node_busy when a task is already running", async () => {
     const { origin, targetUrl } = await twoNodes();
     const running = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
-      metadata: { echo: { final: { state: "hang", text: "" } } },
+      message: scriptMessage({ final: { state: "hang", text: "" } }),
     });
     await waitForState(origin, targetUrl, running.id, "working");
 
     await expect(
       origin.mesh.resolve(targetUrl).sendTask({
-        message: { role: "user", parts: [{ kind: "text", text: "second" }] },
-        metadata: { echo: { final: { state: "completed", text: "nope" } } },
+        message: scriptMessage({ final: { state: "completed", text: "nope" } }),
       }),
     ).rejects.toMatchObject({ code: "orca_node_busy", status: 429 });
 
@@ -117,8 +101,7 @@ describe("A2A task surface", () => {
   it("cancels a hanging task", async () => {
     const { origin, targetUrl } = await twoNodes();
     const submitted = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
-      metadata: { echo: { final: { state: "hang", text: "" } } },
+      message: scriptMessage({ final: { state: "hang", text: "" } }),
     });
     await waitForState(origin, targetUrl, submitted.id, "working");
 
@@ -134,8 +117,7 @@ describe("A2A task surface", () => {
     if (!origin || !target || !other) throw new Error("mesh did not create three orca nodes");
     const targetUrl = target.mesh.self.endpoints[0]!;
     const submitted = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
-      metadata: { echo: { final: { state: "hang", text: "" } } },
+      message: scriptMessage({ final: { state: "hang", text: "" } }),
     });
     await waitForState(origin, targetUrl, submitted.id, "working");
 

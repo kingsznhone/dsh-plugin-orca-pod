@@ -4,8 +4,9 @@
  *
  * `npm test` mixes fakes and in-process orca nodes freely. This script runs two
  * nodes in one process the way a deployment would see them: real listening
- * ports on loopback, real signed HTTP between them, the echo executor, and a real
- * shutdown. It joins them, dispatches one echo task and waits for a terminal state.
+ * ports on loopback, real signed HTTP between them, the scripted test executor, and
+ * a real shutdown. It joins them, dispatches one scripted task and waits for a
+ * terminal state.
  *
  * Run with `npm run harness`; exits non-zero on failure and removes its
  * temporary data roots in every case.
@@ -17,6 +18,7 @@ import { rmSync } from "node:fs";
 import { isTerminal, messageText } from "../src/task/wire.ts";
 import { createMesh, waitFor } from "../test/support/harness.ts";
 import { peersOf } from "../test/support/node.ts";
+import { scriptMessage } from "../test/support/script.ts";
 
 const STEP_TIMEOUT_MS = 30_000;
 
@@ -46,8 +48,7 @@ async function main(): Promise<void> {
     console.log(`mesh converged: ${String(size)} members`);
 
     const sent = await first.mesh.resolve(secondUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "harness ping" }] },
-      metadata: { echo: { final: { state: "completed", text: "pong" } } },
+      message: scriptMessage({ final: { state: "completed", text: "pong" } }),
     });
     console.log(`dispatched task ${sent.id} to orca-node-1`);
 

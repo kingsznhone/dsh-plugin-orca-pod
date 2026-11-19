@@ -44,8 +44,7 @@ export class JsonTable<T> {
 
   /**
    * Merge `patch` into one record in a single statement (a JSON merge patch: a
-   * null field is removed), only while `where` holds for it. Returns the record as
-   * written, or undefined when no record was written.
+   * null field is removed), only while `where` holds for it.
    */
   patch(
     taskId: string,
@@ -53,13 +52,12 @@ export class JsonTable<T> {
     updatedAt: string,
     where: string,
     ...params: SQLInputValue[]
-  ): T | undefined {
-    if (this.handle.closed) return undefined;
-    const row = this.statement(
+  ): void {
+    if (this.handle.closed) return;
+    this.statement(
       `UPDATE ${this.table} SET payload = json_patch(payload, ?), updated_at = ?
-       WHERE task_id = ? AND (${where}) RETURNING payload`,
-    ).get(JSON.stringify(patch), updatedAt, taskId, ...params);
-    return row === undefined ? undefined : this.parse(row);
+       WHERE task_id = ? AND (${where})`,
+    ).run(JSON.stringify(patch), updatedAt, taskId, ...params);
   }
 
   private statement(sql: string): StatementSync {

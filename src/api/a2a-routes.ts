@@ -13,10 +13,7 @@ const METHODS: ReadonlySet<unknown> = new Set(A2ARequestSchema.options.map((opti
 
 /** The A2A JSON-RPC surface (§4.7): submit, read and cancel tasks. */
 export class A2aRoutes {
-  constructor(
-    private readonly selfId: OrcaNodeId,
-    private readonly tasks: SingleSlotTaskRunner,
-  ) {}
+  constructor(private readonly tasks: SingleSlotTaskRunner) {}
 
   register(app: FastifyInstance): void {
     app.post("/a2a", { config: { access: "member", rpc: true } }, async (request) => {
@@ -48,16 +45,8 @@ export class A2aRoutes {
         if (!view) throw new PodError("task_not_found", `unknown task ${id}`);
         return view;
       }
-      case "tasks/cancel": {
-        const { id } = call.params;
-        const origin = this.tasks.originOf(id);
-        if (origin === null) throw new PodError("task_not_found", `unknown task ${id}`);
-        // Only the origin (or this orca node itself, e.g. local control paths) may cancel.
-        if (caller !== origin && caller !== this.selfId) {
-          throw new PodError("not_task_origin", "only the task origin may cancel it");
-        }
-        return this.tasks.cancel(id);
-      }
+      case "tasks/cancel":
+        return this.tasks.cancel(call.params.id, caller);
     }
   }
 }

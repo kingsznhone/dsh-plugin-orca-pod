@@ -19,15 +19,14 @@ import type { ComponentType } from "react";
 export type {
   PodActions,
   PodApproval,
-  PodFileRef,
   PodConfigView,
   PodPeer,
   PodReads,
   PodState,
   PodTaskDetail,
   PodTaskRow,
-  WorkspaceView,
 } from "../src/plugin/panel-api.ts";
+export type { BlobRef } from "../src/core/blobs.ts";
 export type { PanelPatch } from "../src/node/settings.ts";
 export type { ModelSelection } from "@deepseek-ai/dsh-agent";
 export type { ModelOffer } from "../src/executor/model.ts";

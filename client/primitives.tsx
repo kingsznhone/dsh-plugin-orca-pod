@@ -6,7 +6,7 @@ import { ageOf, short, stateDot, stateLabel, type ShownState } from "./format.ts
 import { t } from "./i18n.ts";
 import { errorMessage } from "../src/core/errors.ts";
 import { downloadBlob, store } from "./store.ts";
-import type { ModelOffer, ModelSelection, PodFileRef } from "./types.ts";
+import type { BlobRef, ModelOffer, ModelSelection } from "./types.ts";
 import ui from "./ui.module.css";
 
 /** `provider/model`: how a model route is written everywhere in the panel. */
@@ -145,9 +145,9 @@ export function Updated() {
 }
 
 /** The files a task's result names, each saved through this node on click. */
-export function FileLinks({ files }: { files: PodFileRef[] }) {
+export function FileLinks({ files }: { files: BlobRef[] }) {
   const [failed, setFailed] = React.useState<string | null>(null);
-  const save = (file: PodFileRef) => {
+  const save = (file: BlobRef) => {
     setFailed(null);
     downloadBlob(file.node, file.blob_id, file.blob_id).catch((error: unknown) =>
       setFailed(`${short(file.blob_id)}: ${errorMessage(error)}`),

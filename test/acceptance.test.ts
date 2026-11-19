@@ -8,6 +8,7 @@ import { nodeParts, peersOf } from "./support/node.ts";
 import { createMesh } from "./support/harness.ts";
 import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
+import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 const WORKGROUP = wg("orca-accept");
 const PASSWORD = "correct horse";
@@ -41,8 +42,7 @@ function stateOf(node: Orca, orcaNodeId: string): string | undefined {
 
 function hangTask() {
   return {
-    message: { role: "user" as const, parts: [{ kind: "text" as const, text: "wait" }] },
-    metadata: { echo: { final: { state: "hang" as const, text: "" } } },
+    message: scriptMessage({ final: { state: "hang" as const, text: "" } }),
   };
 }
 
@@ -82,14 +82,14 @@ describe("acceptance: membership under partition", () => {
       blockedIndex = 1;
       await waitFor(
         "B offline at A and C",
-        () => stateOf(a, b.orcaNodeId) === "offline" && stateOf(c, b.orcaNodeId) === "offline",
+        () => stateOf(a, b.mesh.self.id) === "offline" && stateOf(c, b.mesh.self.id) === "offline",
       );
 
       blockedPort = null;
       blockedIndex = -1;
       await waitFor(
         "B back online at A and C",
-        () => stateOf(a, b.orcaNodeId) === "online" && stateOf(c, b.orcaNodeId) === "online",
+        () => stateOf(a, b.mesh.self.id) === "online" && stateOf(c, b.mesh.self.id) === "online",
       );
     } finally {
       await mesh.stop();
@@ -102,8 +102,7 @@ describe("acceptance: membership under partition", () => {
       const [a, b, c] = mesh.orcaNodes;
       if (a === undefined || b === undefined || c === undefined) throw new Error("mesh is short");
       const created = await a.mesh.resolve(b.mesh.self.endpoints[0]!).sendTask({
-        message: { role: "user", parts: [{ kind: "text", text: "hello" }] },
-        metadata: { echo: { final: { state: "completed", text: "from b" } } },
+        message: scriptMessage({ final: { state: "completed", text: "from b" } }),
       });
       let view = await a.mesh.resolve(b.mesh.self.endpoints[0]!).getTask(created.id);
       for (let i = 0; i < 100 && view.status.state !== "completed"; i += 1) {
@@ -130,7 +129,7 @@ describe("acceptance: single slot concurrency", () => {
       data_root: root,
       port: 0,
     });
-    const node = new Orca(...config);
+    const node = new Orca(...config, { executor: new ScriptExecutor() });
     await node.start();
     try {
       const results = await Promise.allSettled(
@@ -192,7 +191,7 @@ describe("acceptance: password rotation", () => {
     await b2.start();
     try {
       await expect(b2.mesh.probe(a2.mesh.self.endpoints[0]!)).rejects.toMatchObject({ status: 401 });
-      expect(peersOf(b2).some((peer) => peer.orca_node_id === a2.orcaNodeId)).toBe(false);
+      expect(peersOf(b2).some((peer) => peer.orca_node_id === a2.mesh.self.id)).toBe(false);
     } finally {
       await a2.stop();
       await b2.stop();

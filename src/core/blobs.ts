@@ -21,8 +21,7 @@ import type { SqliteDb } from "./sqlite.ts";
 import { OrcaNodeIdSchema } from "./ids.ts";
 
 /** A blob id is the sha256 of the file, as lowercase hex. */
-export const BLOB_ID_PATTERN = /^[0-9a-f]{64}$/;
-export const BlobIdSchema = z.string().regex(BLOB_ID_PATTERN, "must be a lowercase sha256 hex digest");
+export const BlobIdSchema = z.string().regex(/^[0-9a-f]{64}$/, "must be a lowercase sha256 hex digest");
 
 /** A published file's name: the member that published it and the sha256 of its bytes. */
 export const BlobRefSchema = z.object({ node: OrcaNodeIdSchema, blob_id: BlobIdSchema });
@@ -41,6 +40,10 @@ export function parseBlobRef(text: string): BlobRef | null {
   return parsed.success ? parsed.data : null;
 }
 
+/** A file once published: its name across the mesh, its size, and when it stops being downloadable (null: never). */
+export const PublishedFileSchema = z.object({ ref: z.string(), size: z.number(), expires_at: z.string().nullable() });
+export type PublishedFile = z.infer<typeof PublishedFileSchema>;
+
 /** How long a published file stays downloadable unless its publisher says otherwise (§5.6): 7 days. */
 const DEFAULT_BLOB_TTL_S = 7 * 24 * 60 * 60;
 
@@ -57,65 +60,6 @@ type FileBlob = {
 
 /** A published file, open for streaming. */
 export type OpenedBlob = { stream: Readable; size: number | undefined };
-
-/**
- * Durable file-blob mapping (§5.6), in the same database as tasks so one
- * `data_root` holds all node state. This node writes rows when it publishes a
- * file and the gateway reads them, which is why publishing needs no network route at all.
- */
-class FileBlobStore {
-  /** Prepared on first use, because the database opens after the store is built. */
-  private statements:
-    | { upsert: StatementSync; selectOne: StatementSync; selectExpired: StatementSync; remove: StatementSync }
-    | undefined;
-
-  constructor(private readonly handle: SqliteDb) {}
-
-  save(blob: FileBlob): void {
-    if (!this.handle.closed) this.prepared().upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
-  }
-
-  get(blobId: string): FileBlob | undefined {
-    const row = this.handle.closed ? undefined : (this.prepared().selectOne.get(blobId) as FileBlob | undefined);
-    return row && { ...row, size: Number(row.size) };
-  }
-
-  /** Every file whose time ran out at or before `at` (an ISO timestamp). */
-  expired(at: string): FileBlob[] {
-    if (this.handle.closed) return [];
-    return (this.prepared().selectExpired.all(at) as FileBlob[]).map((row) => ({ ...row, size: Number(row.size) }));
-  }
-
-  delete(blobId: string): void {
-    if (!this.handle.closed) this.prepared().remove.run(blobId);
-  }
-
-  private prepared(): NonNullable<FileBlobStore["statements"]> {
-    if (this.statements !== undefined) return this.statements;
-    const { db } = this.handle;
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS file_blobs (
-         blob_id TEXT PRIMARY KEY,
-         path TEXT NOT NULL,
-         size INTEGER NOT NULL,
-         expires_at TEXT
-       )`,
-    );
-    this.statements = {
-      upsert: db.prepare(
-        `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
-      ),
-      selectOne: db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?"),
-      // ISO timestamps of one format compare as text.
-      selectExpired: db.prepare(
-        "SELECT blob_id, path, size, expires_at FROM file_blobs WHERE expires_at IS NOT NULL AND expires_at <= ?",
-      ),
-      remove: db.prepare("DELETE FROM file_blobs WHERE blob_id = ?"),
-    };
-    return this.statements;
-  }
-}
 
 /**
  * A pass-through that hashes (sha256) and counts what flows through it: a file
@@ -183,16 +127,23 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
  * the node's local routes); peers only ever see the name, never a path.
  */
 export class FileBlobRegistry {
-  private readonly store: FileBlobStore;
   private sweeper: NodeJS.Timeout | undefined;
+  /** Prepared on first use, because the database opens after the registry is built. */
+  private statements:
+    | { upsert: StatementSync; selectOne: StatementSync; selectExpired: StatementSync; remove: StatementSync }
+    | undefined;
 
   constructor(
-    db: SqliteDb,
+    /**
+     * The node's database: the `file_blobs` table maps a blob id to its copy (§5.6),
+     * next to the tasks, so one `data_root` holds all node state. This node writes a
+     * row when it publishes a file and the gateway reads it, which is why publishing
+     * needs no network route at all.
+     */
+    private readonly handle: SqliteDb,
     /** Where the copies live; every file in it belongs to this registry. */
     private readonly dir: string,
-  ) {
-    this.store = new FileBlobStore(db);
-  }
+  ) {}
 
   /** Sweep the expired files now, then every hour until `stop()`. */
   start(): void {
@@ -227,20 +178,20 @@ export class FileBlobRegistry {
       throw error;
     }
     const requested = ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null;
-    const previous = this.store.get(sha);
+    const previous = this.row(sha);
     const blob: FileBlob = {
       blob_id: sha,
       path: join(this.dir, sha),
       size,
       expires_at: previous === undefined ? requested : FileBlobRegistry.later(previous.expires_at, requested),
     };
-    this.store.save(blob);
+    if (!this.handle.closed) this.prepared().upsert.run(blob.blob_id, blob.path, blob.size, blob.expires_at);
     return { ...blob };
   }
 
   /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (§5.6). */
   open(blobId: string): OpenedBlob {
-    const file = this.store.get(blobId);
+    const file = this.row(blobId);
     if (!file) throw new PodError("blob_not_found");
     if (file.expires_at !== null && Date.parse(file.expires_at) <= Date.now()) throw new PodError("blob_expired");
     if (!existsSync(file.path)) throw new PodError("blob_file_missing");
@@ -249,7 +200,9 @@ export class FileBlobRegistry {
 
   /** Delete every file whose time ran out, its row and its copy. */
   private sweep(): void {
-    for (const blob of this.store.expired(new Date().toISOString())) {
+    if (this.handle.closed) return;
+    const expired = this.prepared().selectExpired.all(new Date().toISOString()) as FileBlob[];
+    for (const blob of expired) {
       // Only a copy this registry made is its to delete: a row an older version
       // wrote names the publisher's own file, which stays where it is.
       const inside = relative(this.dir, blob.path);
@@ -260,8 +213,40 @@ export class FileBlobRegistry {
         // Still open for a download (Windows): keep the row, so the next sweep tries again.
         continue;
       }
-      this.store.delete(blob.blob_id);
+      this.prepared().remove.run(blob.blob_id);
     }
+  }
+
+  /** The row of a blob id; none once the database is closed. */
+  private row(blobId: string): FileBlob | undefined {
+    const row = this.handle.closed ? undefined : (this.prepared().selectOne.get(blobId) as FileBlob | undefined);
+    return row && { ...row, size: Number(row.size) };
+  }
+
+  private prepared(): NonNullable<FileBlobRegistry["statements"]> {
+    if (this.statements !== undefined) return this.statements;
+    const { db } = this.handle;
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS file_blobs (
+         blob_id TEXT PRIMARY KEY,
+         path TEXT NOT NULL,
+         size INTEGER NOT NULL,
+         expires_at TEXT
+       )`,
+    );
+    this.statements = {
+      upsert: db.prepare(
+        `INSERT INTO file_blobs (blob_id, path, size, expires_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
+      ),
+      selectOne: db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?"),
+      // ISO timestamps of one format compare as text.
+      selectExpired: db.prepare(
+        "SELECT blob_id, path, size, expires_at FROM file_blobs WHERE expires_at IS NOT NULL AND expires_at <= ?",
+      ),
+      remove: db.prepare("DELETE FROM file_blobs WHERE blob_id = ?"),
+    };
+    return this.statements;
   }
 
   /** The later of two expiries; null (never) wins. */

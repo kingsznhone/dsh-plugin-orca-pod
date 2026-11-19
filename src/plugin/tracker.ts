@@ -21,6 +21,11 @@
  *
  * The notice is a user-role message built with DSH's own `createUserMessage`,
  * with the source kind this bundle registers.
+ *
+ * A task can also suspend on a permission request. The tracker sees it and
+ * holds it until the task moves on; the Orca Pod UI (chat card, popup, panel) is
+ * the only channel that answers it, because granting authority belongs to the
+ * user, never to a model. The answer goes to the remote task from here.
  */
 
 import type { SessionId } from "@deepseek-ai/dsh-session";
@@ -28,12 +33,19 @@ import type { Logger } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { boundContextSummary, createUserMessage, type ContextFormed } from "@deepseek-ai/dsh-llm";
 
-import { type DispatchEntry, type TaskView, isTerminal, messageText, permissionRequestOf } from "../task/wire.ts";
+import {
+  type DispatchEntry,
+  type PermissionRequest,
+  type TaskView,
+  isTerminal,
+  messageText,
+  permissionRequestOf,
+} from "../task/wire.ts";
 import { shortenNodeId } from "../core/identity.ts";
 import type { OrcaNodeId } from "../core/ids.ts";
 import type { OrcaNode } from "../mesh/orca-node.ts";
-import type { Pod, PodRun } from "./pod.ts";
-import { taskKey, type ApprovalBroker } from "./broker.ts";
+import type { Orca } from "../node/orca.ts";
+import type { Pod } from "./pod.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 
 declare module "@deepseek-ai/dsh-llm" {
@@ -54,26 +66,19 @@ interface Retry {
   nextAttemptAt: number;
 }
 
-/** How a task ended, as the notice tells it. */
-type Outcome = { who: string } & (
-  | {
-      kind: "terminal";
-      view: TaskView;
-    }
-  | {
-      kind: "failed";
-      /** Why the task could not be read. */
-      reason: string;
-    }
-);
-
-type FinishedTask = Outcome & {
-  /** The DSH session that dispatched the task. */
-  agentId: SessionId;
+/** A permission request a dispatched task waits on, for the UI to answer. */
+export interface Approval {
   /** The node the task runs on. */
   node: OrcaNodeId;
-  taskId: string;
-};
+  /** The task as last read; an approval names exactly the request it carries. */
+  view: TaskView;
+  request: PermissionRequest;
+  /** The session that dispatched the task; null for a send without one. */
+  agentId: SessionId | null;
+}
+
+/** The key a task is known by on this side: the node it runs on and its id there. Stable across polls. */
+export const taskKey = (node: OrcaNodeId, taskId: string): string => `${node}|${taskId}`;
 
 /** Pause between two poll rounds over the dispatch log. */
 const INTERVAL_MS = 1000;
@@ -118,45 +123,14 @@ function taskNoticeLine(view: TaskView, who: string): string {
 }
 
 /**
- * A timer that runs one round at a time, and the next one only after the
- * previous finished, instead of `setInterval`: a slow peer cannot stack
- * overlapping rounds that deliver the same terminal state twice (§8.3).
- */
-class PollLoop {
-  private timer: NodeJS.Timeout | undefined;
-  private stopped = false;
-
-  constructor(private readonly round: () => Promise<void>) {}
-
-  /** Run the first round now and keep going until `stop()`. */
-  start(): void {
-    this.next(0);
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer !== undefined) clearTimeout(this.timer);
-    this.timer = undefined;
-  }
-
-  private next(delayMs: number): void {
-    if (this.stopped) return;
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      void this.round().finally(() => this.next(INTERVAL_MS));
-    }, delayMs);
-    this.timer.unref();
-  }
-}
-
-/**
  * Hands the notices of finished tasks to the sessions that dispatched them:
  * terminal states that arrive close together are delivered as one notice, an
  * agent that is idle is woken only while its wake budget lasts, and a session
  * the host does not run at delivery time gets nothing.
  */
 class NoticeDelivery {
-  private readonly finished: FinishedTask[] = [];
+  /** The notice lines waiting to go out, with the session each goes to. */
+  private readonly finished: Array<{ agentId: SessionId; line: string }> = [];
   private readonly awake = new Map<string, number>();
   private timer: NodeJS.Timeout | undefined;
 
@@ -165,9 +139,9 @@ class NoticeDelivery {
     private readonly resolveAgent: AgentResolver,
   ) {}
 
-  /** Queue the notice of a task that ended (or was recorded as failed). */
-  add(task: FinishedTask): void {
-    this.finished.push(task);
+  /** Queue the notice line of a task that ended (or was recorded as failed) for the session that dispatched it. */
+  add(agentId: SessionId, line: string): void {
+    this.finished.push({ agentId, line });
     if (this.timer !== undefined) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
@@ -189,14 +163,8 @@ class NoticeDelivery {
 
   private flush(): void {
     const batches = new Map<SessionId, string[]>();
-    for (const task of this.finished.splice(0)) {
-      const lines = batches.get(task.agentId) ?? [];
-      lines.push(
-        task.kind === "failed"
-          ? `task ${task.taskId} on ${task.who} is failed; reason: ${task.reason}; this node could not read the task and stopped following it`
-          : taskNoticeLine(task.view, task.who),
-      );
-      batches.set(task.agentId, lines);
+    for (const { agentId, line } of this.finished.splice(0)) {
+      batches.set(agentId, [...(batches.get(agentId) ?? []), line]);
     }
     for (const [agentId, lines] of batches) {
       // The session was closed, or not resumed since a restart: the log keeps the outcome.
@@ -236,42 +204,93 @@ class NoticeDelivery {
 
 /**
  * Follows the tasks this node dispatched, bound to the running node of one pod.
- * The work of a round is what the dispatch log holds as not ended; the tracker
- * keeps nothing of its own but the backoff of reads that failed.
+ * The work of a round is what the dispatch log holds as not ended; besides that
+ * the tracker keeps only the backoff of reads that failed and the permission
+ * requests waiting for the user.
+ *
+ * Rounds run one at a time, the next one only after the previous finished,
+ * instead of `setInterval`: a slow peer cannot stack overlapping rounds that
+ * deliver the same terminal state twice (§8.3).
  */
 export class Tracker {
   /** Backoff of the tasks whose last reads failed, by task key. */
   private readonly retries = new Map<string, Retry>();
-  private readonly loop: PollLoop;
+  /** Permission requests waiting for the user, by task key; oldest first. */
+  private readonly waiting = new Map<string, Approval>();
   private readonly delivery: NoticeDelivery;
+  private timer: NodeJS.Timeout | undefined;
   private stopped = false;
 
   constructor(
     private readonly pod: Pod,
-    private readonly broker: ApprovalBroker,
     private readonly logger: Logger,
     resolveAgent: AgentResolver,
   ) {
-    this.loop = new PollLoop(() => this.poll());
     this.delivery = new NoticeDelivery(logger, resolveAgent);
   }
 
-  /** Begin the poll rounds. A round while no node runs reads nothing. */
+  /** Run the first round now and keep going until `stop()`. A round while no node runs reads nothing. */
   start(): void {
-    this.loop.start();
+    this.next(0);
   }
 
-  /** Stop polling and drop pending notices. */
+  /** Stop polling, and drop pending notices and the requests waiting for the user. */
   stop(): void {
     this.stopped = true;
-    this.loop.stop();
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = undefined;
     this.delivery.stop();
     this.retries.clear();
+    this.waiting.clear();
   }
 
   /** Give the agent a fresh wake budget (the user just spoke to it). */
   resetWakes(agentId: string): void {
     this.delivery.resetWakes(agentId);
+  }
+
+  /** The permission requests waiting for the user, oldest first. */
+  approvals(): Approval[] {
+    return [...this.waiting.values()];
+  }
+
+  /** Grant the waiting request once; resolves with the resumed task. `ref` names the node: its id, display name or address. */
+  approve(ref: string, taskId: string): Promise<TaskView> {
+    return this.decide(ref, taskId, (node, view) => node.approve(view));
+  }
+
+  /** Fail the waiting request on the remote task. */
+  deny(ref: string, taskId: string, reason = "denied from the UI"): Promise<TaskView> {
+    return this.decide(ref, taskId, (node, view) => node.deny(view, reason));
+  }
+
+  /**
+   * Run one decision against the remote task, then forget the request it
+   * answered: the next poll is a second away, and until then nothing but this
+   * may speak for the task. A failed call leaves the request for a retry; a
+   * newer request keeps its own.
+   */
+  private async decide(
+    ref: string,
+    taskId: string,
+    act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
+  ): Promise<TaskView> {
+    const node = (await this.pod.orca()).mesh.resolve(ref);
+    const key = taskKey(node.id, taskId);
+    const approval = this.waiting.get(key);
+    if (approval === undefined) throw new Error("task has no pending permission request");
+    const resumed = await act(node, approval.view);
+    if (this.waiting.get(key) === approval) this.waiting.delete(key);
+    return resumed;
+  }
+
+  private next(delayMs: number): void {
+    if (this.stopped) return;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.poll().finally(() => this.next(INTERVAL_MS));
+    }, delayMs);
+    this.timer.unref();
   }
 
   /** One round: every task the log holds as not ended, unless its backoff says not yet. */
@@ -280,11 +299,11 @@ export class Tracker {
     if (run === null) return;
     try {
       const keys = new Set<string>();
-      for (const entry of run.orca.dispatches.open()) {
+      for (const entry of run.dispatches.open()) {
         const key = taskKey(entry.node, entry.task_id);
         keys.add(key);
         if (Date.now() < (this.retries.get(key)?.nextAttemptAt ?? 0)) continue;
-        await this.pollEntry(run, key, entry);
+        await this.pollEntry(run, entry);
         if (!this.current(run)) return;
       }
       // A task that ended, or left the log, has no backoff to keep.
@@ -295,41 +314,46 @@ export class Tracker {
   }
 
   /** Read one task and record what it says. */
-  private async pollEntry(run: PodRun, key: string, entry: DispatchEntry): Promise<void> {
-    const node = run.orca.mesh.get(entry.node);
-    let view: TaskView;
+  private async pollEntry(run: Orca, entry: DispatchEntry): Promise<void> {
+    const key = taskKey(entry.node, entry.task_id);
+    const node = run.mesh.get(entry.node);
+    let view: TaskView | undefined;
+    let failure: unknown;
     try {
       // A node that left the table cannot be asked: the same as a task that is gone.
       if (node === undefined) throw new PodError("unknown_orca_node", `${entry.node} is no longer a known node`);
       view = await node.getTask(entry.task_id);
     } catch (error) {
-      if (this.current(run)) this.failPoll(run, key, entry, error);
-      return;
+      failure = error;
     }
     // The node was replaced or stopped while the read ran: the next round reads again.
     if (!this.current(run)) return;
+    if (view === undefined) return this.failPoll(run, entry, failure);
     this.retries.delete(key);
-    run.orca.dispatches.update(view);
+    run.dispatches.update(view);
     const request = permissionRequestOf(view);
     if (request !== null) {
       // The UI answers a suspended request; the task stays open until it
-      // finishes. Parking is idempotent per request id.
-      this.broker.park({ node: entry.node, view, request, agentId: entry.agent_id ?? null });
+      // finishes. The same request id keeps the view the user is looking at.
+      if (this.waiting.get(key)?.request.request_id !== request.request_id) {
+        this.waiting.set(key, { node: entry.node, view, request, agentId: entry.agent_id ?? null });
+      }
       return;
     }
-    // Not suspended: any earlier prompt was answered elsewhere or the task settled.
-    this.broker.withdraw(entry.node, entry.task_id);
-    if (isTerminal(view.status.state)) this.notify(entry, { kind: "terminal", view, who: nodeLabel(node, entry.node) });
+    // Not suspended: any earlier request was answered elsewhere or the task settled.
+    this.waiting.delete(key);
+    if (isTerminal(view.status.state)) this.notify(entry, taskNoticeLine(view, this.who(run, entry)));
   }
 
   /** A 404 or a refusal fails the task at once; no answer or a 5xx is retried with backoff, up to N times in a row. */
-  private failPoll(run: PodRun, key: string, entry: DispatchEntry, error: unknown): void {
+  private failPoll(run: Orca, entry: DispatchEntry, error: unknown): void {
+    const key = taskKey(entry.node, entry.task_id);
     const status = error instanceof PodError ? error.status : undefined;
     const code = error instanceof PodError ? error.code : undefined;
     const gone = status === 404 || code === "task_not_found";
     const unauthorized = status === 401 || status === 403;
     if (gone || unauthorized) {
-      this.fail(run, key, entry, errorMessage(error));
+      this.fail(run, entry, errorMessage(error));
       return;
     }
     const retry = this.retries.get(key) ?? { failures: 0, nextAttemptAt: 0 };
@@ -341,32 +365,35 @@ export class Tracker {
         `orca-pod: poll of ${entry.task_id} on ${this.who(run, entry)} failed (retrying): ${errorMessage(error)}`,
       );
     }
-    if (retry.failures >= MAX_TRANSIENT_FAILURES) this.fail(run, key, entry, errorMessage(error));
+    if (retry.failures >= MAX_TRANSIENT_FAILURES) this.fail(run, entry, errorMessage(error));
   }
 
   /** Record the task as failed, which ends its polling, and tell the session. */
-  private fail(run: PodRun, key: string, entry: DispatchEntry, reason: string): void {
+  private fail(run: Orca, entry: DispatchEntry, reason: string): void {
+    const key = taskKey(entry.node, entry.task_id);
     this.retries.delete(key);
-    this.broker.withdraw(entry.node, entry.task_id);
+    this.waiting.delete(key);
     const who = this.who(run, entry);
     this.logger.warn(`orca-pod: recorded ${entry.task_id} on ${who} as failed: ${reason}`);
-    run.orca.dispatches.fail(entry.task_id, reason);
-    this.notify(entry, { kind: "failed", reason, who });
+    run.dispatches.fail(entry.task_id, reason);
+    this.notify(
+      entry,
+      `task ${entry.task_id} on ${who} is failed; reason: ${reason}; this node could not read the task and stopped following it`,
+    );
   }
 
-  /** Queue the notice for the dispatching session; a send without a session has nobody to tell. */
-  private notify(entry: DispatchEntry, outcome: Outcome): void {
-    if (entry.agent_id === undefined) return;
-    this.delivery.add({ ...outcome, agentId: entry.agent_id, node: entry.node, taskId: entry.task_id });
+  /** Queue the notice line for the dispatching session; a send without a session has nobody to tell. */
+  private notify(entry: DispatchEntry, line: string): void {
+    if (entry.agent_id !== undefined) this.delivery.add(entry.agent_id, line);
   }
 
   /** Whether `run` is still the pod's node and the tracker still runs. */
-  private current(run: PodRun): boolean {
+  private current(run: Orca): boolean {
     return !this.stopped && this.pod.run === run;
   }
 
   /** The node a task runs on, as a person knows it. */
-  private who(run: PodRun, entry: DispatchEntry): string {
-    return nodeLabel(run.orca.mesh.get(entry.node), entry.node);
+  private who(run: Orca, entry: DispatchEntry): string {
+    return nodeLabel(run.mesh.get(entry.node), entry.node);
   }
 }

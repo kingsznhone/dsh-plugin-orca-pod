@@ -1,10 +1,10 @@
 import { SessionId } from "@deepseek-ai/dsh-session";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { fakeNodeId } from "./fixtures/ids.ts";
 import { DispatchLog } from "../src/task/dispatch-log.ts";
 import { openDb } from "./fixtures/runner.ts";
-import type { DispatchEvent, TaskView } from "../src/task/wire.ts";
+import type { TaskView } from "../src/task/wire.ts";
 
 const NODE_A = fakeNodeId("node-a");
 
@@ -13,33 +13,36 @@ function view(id: string, state: TaskView["status"]["state"], reason?: string): 
 }
 
 function log() {
-  const dispatches = new DispatchLog(openDb(), { warn() {} });
-  const seen: DispatchEvent[] = [];
-  dispatches.events.subscribe((event) => seen.push(event));
+  const dispatches = new DispatchLog(openDb());
   const entry = (taskId: string) => dispatches.list().find((item) => item.task_id === taskId);
-  return { dispatches, entry, seen };
+  return { dispatches, entry };
 }
 
 describe("DispatchLog", () => {
   it("records a send with the node it went to and what it answered", () => {
-    const { dispatches, entry, seen } = log();
+    const { dispatches, entry } = log();
     dispatches.recordSend(NODE_A, view("t1", "submitted"));
-    expect(entry("t1")).toMatchObject({ task_id: "t1", node: NODE_A, context_id: "ctx-t1", state: "submitted" });
-    expect(seen.map((event) => event.type)).toEqual(["dispatch"]);
+    expect(entry("t1")).toMatchObject({ task_id: "t1", node: NODE_A, state: "submitted" });
   });
 
   it("never creates an entry from an update, and only writes when something changed", () => {
-    const { dispatches, entry, seen } = log();
-    dispatches.update(view("ghost", "working"));
-    expect(dispatches.list()).toEqual([]);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { dispatches, entry } = log();
+      dispatches.update(view("ghost", "working"));
+      expect(dispatches.list()).toEqual([]);
 
-    dispatches.recordSend(NODE_A, view("t1", "working"));
-    seen.length = 0;
-    dispatches.update(view("t1", "working"));
-    expect(seen).toEqual([]);
-    dispatches.update(view("t1", "failed", "timeout"));
-    expect(entry("t1")).toMatchObject({ state: "failed", last_error: "timeout" });
-    expect(seen).toHaveLength(1);
+      dispatches.recordSend(NODE_A, view("t1", "working"));
+      const sent = entry("t1")?.updated_at;
+      vi.advanceTimersByTime(1000);
+      dispatches.update(view("t1", "working"));
+      expect(entry("t1")?.updated_at).toBe(sent);
+      dispatches.update(view("t1", "failed", "timeout"));
+      expect(entry("t1")).toMatchObject({ state: "failed", last_error: "timeout" });
+      expect(entry("t1")?.updated_at).not.toBe(sent);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("leaves an entry that ended as it is, lists only the open ones, and drops an error that is gone", () => {

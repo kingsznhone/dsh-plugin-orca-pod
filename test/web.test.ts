@@ -9,21 +9,23 @@ import type { Logger } from "@deepseek-ai/cordis";
 import { describe, expect, it, vi } from "vitest";
 
 import { PanelModel } from "../src/plugin/panel.ts";
-import type { PodApproval, PodPeer, PodTaskRow } from "../src/plugin/panel-api.ts";
-import { ApprovalBroker } from "../src/plugin/broker.ts";
-import type { SelfRecord } from "../src/mesh/wire.ts";
+import type { PodApproval, PodConfigView, PodPeer, PodTaskRow } from "../src/plugin/panel-api.ts";
+import type { Pod } from "../src/plugin/pod.ts";
+import type { Orca } from "../src/node/orca.ts";
+import { parseSettings } from "../src/node/settings.ts";
+import { Tracker } from "../src/plugin/tracker.ts";
 import type { TaskView } from "../src/task/wire.ts";
-import { isDirectLoopbackRequest } from "../src/core/net.ts";
+import { isDirectLoopbackRequest } from "../src/api/access.ts";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import { PanelRoutes } from "../src/plugin/panel-routes.ts";
-import { fakeNodeId, wg } from "./fixtures/ids.ts";
-import { catalogFeed, idlePod } from "./fixtures/pod.ts";
+import { fakeNodeId } from "./fixtures/ids.ts";
+import { catalogFeed, idlePod, logger } from "./fixtures/pod.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"]): TaskView {
   return { kind: "task", id, contextId: "ctx-1", status: { state, timestamp: "2026-01-01T00:00:00.000Z" } };
 }
 
-const FILE = { node: "NODE02", blob_id: "a".repeat(64) };
+const FILE = { node: fakeNodeId("NODE02"), blob_id: "a".repeat(64) };
 
 const RECENT: PodTaskRow[] = [
   {
@@ -60,101 +62,84 @@ const APPROVAL: PodApproval = {
   agent_id: "session-1",
 };
 
-/** A real panel model over an idle pod whose answers are replaced, so the HTTP bridge is tested on its own. */
-function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: string[] } {
+/** What the panel routes are built over: the panel model's reads, the pod and the tracker for the actions. */
+type FakeApi = { panel: PanelModel; pod: Pod; tracker: Tracker; calls: string[] };
+
+/**
+ * A real pod and tracker, and the panel model the routes build, whose answers are
+ * replaced (the model's on its prototype), so the HTTP bridge is tested on its
+ * own; `calls` records what the routes asked of them.
+ */
+function fakeApi(): FakeApi {
   const calls: string[] = [];
   const pod = idlePod();
-  const broker = new ApprovalBroker(pod);
-  const panel = new PanelModel(pod, broker, catalogFeed());
-  const stubs: Partial<PanelModel> = {
-    state: async () => ({
-      self: {
-        orca_node_id: "NODE01",
-        display_name: "node one",
-        endpoints: ["http://127.0.0.1:11811"],
-        state: "online",
-        workgroup_id: "wg",
-        busy_from: null,
-      } as unknown as PodPeer<SelfRecord>,
-      config: await panel.config(),
-      members: [{ orca_node_id: "NODE02", state: "online", endpoints: [], busy_from: null } as unknown as PodPeer],
-      approvals: [APPROVAL],
-      recent: RECENT,
-      workspace: { root: "/data/workgroups/wg", state: "/data/state/wg" },
-    }),
-    recent: (limit) => RECENT.slice(0, limit),
-    config: async () => ({
-      configured: true,
-      settings: {
-        workgroup_id: wg("wg"),
-        bind_host: "127.0.0.1",
-        port: 11811,
-        endpoints: [],
-        peers: [],
-        max_workspace_bytes: 5368709120,
-        max_workspace_files: 50000,
-      },
-      node_id: "NODE01",
+  const tracker = new Tracker(pod, logger, () => undefined);
+  const panel = PanelModel.prototype;
+  const config: PodConfigView = {
+    configured: true,
+    settings: parseSettings({ workgroup_id: "wg" }),
+    port: 11811,
+    suggested_endpoints: ["http://192.168.1.5:11811"],
+    bind_choices: ["127.0.0.1", "::", "192.168.1.5"],
+    permission_modes: ["read-only", "workspace-write", "danger-full-access"],
+    reasoning_efforts: [],
+    error: null,
+  };
+  vi.spyOn(panel, "config").mockResolvedValue(config);
+  vi.spyOn(panel, "state").mockResolvedValue({
+    self: {
+      orca_node_id: "NODE01",
       display_name: "node one",
-      port: 11811,
       endpoints: ["http://127.0.0.1:11811"],
-      suggested_endpoints: ["http://192.168.1.5:11811"],
-      bind_choices: ["127.0.0.1", "::", "192.168.1.5"],
-      permission_modes: ["read-only", "workspace-write", "danger-full-access"],
-      reasoning_efforts: [],
-      peers: [],
-      data_root: "/data",
-      password_set: true,
-      running: true,
-      error: null,
-    }),
-    saveConfig: async (patch) => {
-      calls.push(`saveConfig:${JSON.stringify(patch)}`);
-      return panel.config();
-    },
-    connect: async (peer) => {
-      calls.push(`connect:${peer}`);
-      return panel.config();
-    },
-    reset: async () => {
-      calls.push("reset");
-      return panel.config();
-    },
-    task: async (peer, taskId) => {
-      calls.push(`task:${peer}:${taskId}`);
-      return {
-        task: taskView(taskId, "working"),
-        origin: "node two",
-        dispatch: null,
-        files: [FILE],
-      };
-    },
-    approve: async (peer, taskId) => {
-      calls.push(`approve:${peer}:${taskId}`);
-      return taskView(taskId, "working");
-    },
-    deny: async (peer, taskId, reason) => {
-      calls.push(`deny:${peer}:${taskId}:${reason ?? ""}`);
-      return taskView(taskId, "failed");
-    },
-    cancel: async (peer, taskId) => {
-      calls.push(`cancel:${peer}:${taskId}`);
+      state: "online",
+      workgroup_id: "wg",
+      busy_from: null,
+    } as unknown as PodPeer,
+    config,
+    members: [{ orca_node_id: "NODE02", state: "online", endpoints: [], busy_from: null } as unknown as PodPeer],
+    approvals: [APPROVAL],
+    recent: RECENT,
+    workspace_root: "/data/workgroups/wg",
+  });
+  vi.spyOn(panel, "recent").mockImplementation((limit) => RECENT.slice(0, limit));
+  vi.spyOn(panel, "task").mockImplementation(async (peer, taskId) => {
+    calls.push(`task:${peer}:${taskId}`);
+    return { task: taskView(taskId, "working"), origin: "node two", dispatch: null, files: [FILE] };
+  });
+  vi.spyOn(pod, "reconfigure").mockImplementation(async (patch) => {
+    calls.push(`reconfigure:${JSON.stringify(patch)}`);
+  });
+  vi.spyOn(pod, "addPeer").mockImplementation(async (address) => {
+    calls.push(`connect:${address}`);
+    return address;
+  });
+  vi.spyOn(pod, "reset").mockImplementation(async () => {
+    calls.push("reset");
+  });
+  const node = (ref: string) => ({
+    cancelTask: async (taskId: string) => {
+      calls.push(`cancel:${ref}:${taskId}`);
       return taskView(taskId, "canceled");
     },
-    blob: async (node, blobId) => {
-      calls.push(`blob:${node}/${blobId}`);
+    fetchBlob: async (blobId: string) => {
+      calls.push(`blob:${ref}/${blobId}`);
       return { stream: Readable.from([Buffer.from("file bytes")]), size: 10 };
     },
-    ...overrides,
-  };
-  for (const [name, stub] of Object.entries(stubs)) {
-    vi.spyOn(panel, name as keyof PanelModel).mockImplementation(stub as never);
-  }
-  return Object.assign(panel, { calls });
+  });
+  vi.spyOn(pod, "orca").mockResolvedValue({ mesh: { resolve: node, require: node } } as unknown as Orca);
+  vi.spyOn(tracker, "approve").mockImplementation(async (peer, taskId) => {
+    calls.push(`approve:${peer}:${taskId}`);
+    return taskView(taskId, "working");
+  });
+  vi.spyOn(tracker, "deny").mockImplementation(async (peer, taskId, reason) => {
+    calls.push(`deny:${peer}:${taskId}:${reason ?? ""}`);
+    return taskView(taskId, "failed");
+  });
+  return { panel, pod, tracker, calls };
 }
 
 /** The route the panel registers on the host's web server, the way the host receives it. */
-function registeredRoute(panel: PanelModel): WebRoute {
+function registeredRoute({ pod, tracker }: FakeApi): WebRoute {
   let registered: WebRoute | undefined;
   const ctx = {
     inject: (_services: string[], scope: (inner: unknown) => void) =>
@@ -163,17 +148,17 @@ function registeredRoute(panel: PanelModel): WebRoute {
         webServer: { register: (route: WebRoute) => (registered = route) },
       }),
   };
-  new PanelRoutes(panel).register(ctx as never);
+  new PanelRoutes(pod, tracker, catalogFeed()).register(ctx as never);
   if (registered === undefined) throw new Error("the panel registered no route");
   return registered;
 }
 
 /** The prefix the panel's API lives under, as the host routes it. */
-const POD_API_PREFIX = registeredRoute(new PanelModel(idlePod(), new ApprovalBroker(idlePod()), catalogFeed())).path;
+const POD_API_PREFIX = registeredRoute(fakeApi()).path;
 
-/** The panel routes over a panel model, as the plain function the web server calls. */
-function apiHandler(panel: PanelModel): (request: never, response: never) => Promise<void> {
-  const { handler } = registeredRoute(panel);
+/** The panel routes, as the plain function the web server calls. */
+function apiHandler(api: FakeApi): (request: never, response: never) => Promise<void> {
+  const { handler } = registeredRoute(api);
   return async (request, response) => {
     await handler(request, response);
   };
@@ -242,7 +227,7 @@ function streamResponse() {
 
 describe("panel HTTP bridge", () => {
   it("streams a member's file this node fetched, named by node and sha256", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+    const panel = fakeApi();
     const node = fakeNodeId("publisher");
     const blobId = "c".repeat(64);
     const { response, headers, body } = streamResponse();
@@ -260,12 +245,12 @@ describe("panel HTTP bridge", () => {
   });
 
   it("refuses a blob request that does not name a published file", async () => {
-    const result = await invoke(apiHandler(fakePanel()), { url: `${POD_API_PREFIX}/blob?node=x&blob_id=y` });
+    const result = await invoke(apiHandler(fakeApi()), { url: `${POD_API_PREFIX}/blob?node=x&blob_id=y` });
     expect(result.status).toBe(400);
   });
 
   it("serves one state snapshot with members, recent tasks and pending approvals", async () => {
-    const panel = fakePanel();
+    const panel = fakeApi();
     const result = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);
     expect(result.body.self.orca_node_id).toBe("NODE01");
@@ -274,13 +259,13 @@ describe("panel HTTP bridge", () => {
     expect(result.body.recent[1].files).toEqual([FILE]);
     expect(result.body.approvals).toHaveLength(1);
     expect(result.body.approvals[0]).toMatchObject({ tool: "write_file", from: "node two", agent_id: "session-1" });
-    expect(result.body.workspace).toEqual({ root: "/data/workgroups/wg", state: "/data/state/wg" });
+    expect(result.body.workspace_root).toBe("/data/workgroups/wg");
     expect(result.body).not.toHaveProperty("tasks");
     expect(result.body).not.toHaveProperty("prompts");
   });
 
   it("rejects non-loopback callers and proxied requests", async () => {
-    const handler = apiHandler(fakePanel());
+    const handler = apiHandler(fakeApi());
     const remote = await invoke(handler, { url: `${POD_API_PREFIX}/state`, address: "192.168.1.20" });
     expect(remote.status).toBe(403);
     expect(remote.body.error).toBe("local_only");
@@ -293,7 +278,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("rejects a hostile origin, a foreign Host and a missing panel header", async () => {
-    const handler = apiHandler(fakePanel());
+    const handler = apiHandler(fakeApi());
 
     const rebound = await invoke(handler, {
       url: `${POD_API_PREFIX}/state`,
@@ -317,7 +302,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("requires a JSON content type for panel writes", async () => {
-    const handler = apiHandler(fakePanel());
+    const handler = apiHandler(fakeApi());
     const plain = await invoke(handler, {
       method: "POST",
       url: `${POD_API_PREFIX}/reset`,
@@ -328,7 +313,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("drives approve, deny and cancel without a model round-trip", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+    const panel = fakeApi();
     const handler = apiHandler(panel);
     const approve = await invoke(handler, {
       method: "POST",
@@ -336,7 +321,7 @@ describe("panel HTTP bridge", () => {
       body: { peer: "http://127.0.0.1:11812", task_id: "TASK02" },
     });
     expect(approve.status).toBe(200);
-    expect(approve.body.task.status.state).toBe("working");
+    expect(approve.body).toEqual({});
     expect(panel.calls).toContain("approve:http://127.0.0.1:11812:TASK02");
 
     const deny = await invoke(handler, {
@@ -357,19 +342,14 @@ describe("panel HTTP bridge", () => {
   });
 
   it("validates action bodies and surfaces panel errors", async () => {
-    const handler = apiHandler(fakePanel());
+    const api = fakeApi();
+    const handler = apiHandler(api);
     const missing = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/approve`, body: {} });
     expect(missing.status).toBe(400);
     expect(missing.body.error).toMatch(/peer/);
 
-    const failing = apiHandler(
-      fakePanel({
-        approve: async () => {
-          throw new Error("task has no pending permission request");
-        },
-      }),
-    );
-    const result = await invoke(failing, {
+    vi.spyOn(api.tracker, "approve").mockRejectedValue(new Error("task has no pending permission request"));
+    const result = await invoke(handler, {
       method: "POST",
       url: `${POD_API_PREFIX}/approve`,
       body: { peer: "p", task_id: "t" },
@@ -382,7 +362,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("serves one task with its dispatch and the files its result names in a single call", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+    const panel = fakeApi();
     const result = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
     expect(result.status).toBe(200);
     expect(result.body.task.id).toBe("TASK01");
@@ -393,36 +373,31 @@ describe("panel HTTP bridge", () => {
     expect(missing.status).toBe(400);
   });
 
-  it("serves the merged task rows for the all-tasks view and clamps the limit", async () => {
+  it("serves the merged task rows for the all-tasks view, the newest 500", async () => {
     const limits: number[] = [];
-    const handler = apiHandler(
-      fakePanel({
-        recent: (limit) => {
-          limits.push(limit);
-          return RECENT;
-        },
-      }),
-    );
-    const result = await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=10` });
+    const api = fakeApi();
+    vi.spyOn(api.panel, "recent").mockImplementation((limit) => {
+      limits.push(limit);
+      return RECENT;
+    });
+    const handler = apiHandler(api);
+    const result = await invoke(handler, { url: `${POD_API_PREFIX}/tasks` });
     expect(result.status).toBe(200);
-    expect(result.body.recent.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
-    expect(result.body.recent[0]).toMatchObject({ peer: "NODE02", cancellable: true });
-    await invoke(handler, { url: `${POD_API_PREFIX}/tasks?limit=99999` });
-    await invoke(handler, { url: `${POD_API_PREFIX}/tasks` });
-    expect(limits).toEqual([10, 1000, 500]);
+    expect(result.body.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
+    expect(result.body[0]).toMatchObject({ peer: "NODE02", cancellable: true });
+    expect(limits).toEqual([500]);
   });
 
   it("includes the editable config in the state snapshot", async () => {
-    const result = await invoke(apiHandler(fakePanel()), { url: `${POD_API_PREFIX}/state` });
+    const result = await invoke(apiHandler(fakeApi()), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);
     expect(result.body.config.settings.workgroup_id).toBe("wg");
-    expect(result.body.config.password_set).toBe(true);
     expect(result.body.config.suggested_endpoints).toEqual(["http://192.168.1.5:11811"]);
     expect(result.body.config.bind_choices).toContain("::");
   });
 
-  it("hands the panel body to saveConfig unchanged", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+  it("hands the panel body to the pod unchanged", async () => {
+    const panel = fakeApi();
     const result = await invoke(apiHandler(panel), {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
@@ -432,37 +407,32 @@ describe("panel HTTP bridge", () => {
         display_name: "renamed",
         port: 11812,
         endpoints: ["http://127.0.0.1:11812"],
-        peers: ["http://127.0.0.1:11813"],
       },
     });
     expect(result.status).toBe(200);
     expect(panel.calls).toEqual([
-      'saveConfig:{"workgroup_id":"wg","workgroup_password":"next-password","display_name":"renamed","port":11812,"endpoints":["http://127.0.0.1:11812"],"peers":["http://127.0.0.1:11813"]}',
+      'reconfigure:{"workgroup_id":"wg","workgroup_password":"next-password","display_name":"renamed","port":11812,"endpoints":["http://127.0.0.1:11812"]}',
     ]);
   });
 
   it("forwards the advanced local controls from the panel", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+    const panel = fakeApi();
     const saved = await invoke(apiHandler(panel), {
       method: "POST",
       url: `${POD_API_PREFIX}/config`,
       body: {
         task_timeout_s: 120,
-        approval_timeout_s: 45,
-        result_max_bytes: 4096,
         max_workspace_bytes: 2147483648,
-        max_workspace_files: 1000,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
         default_reasoning_effort: "max",
-        executor: "echo",
       },
     });
     expect(saved.status).toBe(200);
     expect(panel.calls).toEqual([
       // Keys come out in the settings table's order, not the body's.
-      'saveConfig:{"executor":"echo","permission_mode":"workspace-write","task_timeout_s":120,"approval_timeout_s":45,"result_max_bytes":4096,"max_workspace_bytes":2147483648,"max_workspace_files":1000,"allow_public_peers":true,"allow_loopback_peers":false,"default_reasoning_effort":"max"}',
+      'reconfigure:{"permission_mode":"workspace-write","task_timeout_s":120,"max_workspace_bytes":2147483648,"allow_public_peers":true,"allow_loopback_peers":false,"default_reasoning_effort":"max"}',
     ]);
 
     // Clearing a control sends null, so the override (and the persisted config
@@ -475,17 +445,16 @@ describe("panel HTTP bridge", () => {
         allow_public_peers: null,
         permission_mode: null,
         default_reasoning_effort: null,
-        executor: null,
       },
     });
     expect(cleared.status).toBe(200);
     expect(panel.calls[1]).toBe(
-      'saveConfig:{"executor":null,"permission_mode":null,"task_timeout_s":null,"allow_public_peers":null,"default_reasoning_effort":null}',
+      'reconfigure:{"permission_mode":null,"task_timeout_s":null,"allow_public_peers":null,"default_reasoning_effort":null}',
     );
   });
 
   it("connects a peer from the panel", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+    const panel = fakeApi();
     const handler = apiHandler(panel);
     const result = await invoke(handler, {
       method: "POST",
@@ -501,7 +470,7 @@ describe("panel HTTP bridge", () => {
   });
 
   it("resets the panel configuration", async () => {
-    const panel = fakePanel() as PanelModel & { calls: string[] };
+    const panel = fakeApi();
     const handler = apiHandler(panel);
     const result = await invoke(handler, { method: "POST", url: `${POD_API_PREFIX}/reset`, body: {} });
     expect(result.status).toBe(200);
@@ -540,7 +509,8 @@ describe("panel HTTP bridge", () => {
         });
       },
     };
-    new PanelRoutes(fakePanel()).register(ctx as never);
+    const api = fakeApi();
+    new PanelRoutes(api.pod, api.tracker, catalogFeed()).register(ctx as never);
     expect(registered).toHaveLength(1);
     expect(registered[0]).toMatchObject({ kind: "prefix", path: POD_API_PREFIX });
     expect(cleanups).toHaveLength(1);

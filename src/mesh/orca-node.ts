@@ -1,19 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { Readable } from "node:stream";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import type { SessionId } from "@deepseek-ai/dsh-session";
-import { z } from "zod";
 
-import { BLOB_ID_PATTERN, type OpenedBlob } from "../core/blobs.ts";
-import { errorMessage, PodError } from "../core/errors.ts";
-import { parseOrThrow } from "../core/schema.ts";
+import { BlobIdSchema, formatBlobRef, type OpenedBlob, type PublishedFile } from "../core/blobs.ts";
+import { PodError } from "../core/errors.ts";
 import {
-  type Grant,
   type ResumeControl,
   type BusyState,
   RpcResultSchema,
-  controlMessage,
   permissionRequestOf,
   type A2ARequest,
   type SubmitTaskInput,
@@ -31,18 +25,14 @@ import {
   type SelfDescription,
 } from "./wire.ts";
 import type { OrcaNodeId } from "../core/ids.ts";
-import { signGrant } from "../task/grants.ts";
 import type { MeshContext } from "./context.ts";
-import { ErrorReplySchema, remoteError, type Answer } from "./peer-client.ts";
-import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "./timings.ts";
+import type { Answer } from "./peer-client.ts";
+import { CANDIDATE_MAX_FAILURES, recoverDelayMs, type MeshTimings } from "./timings.ts";
 
 type SuspectReason = "quiet" | "unreachable";
 
 /** How this orca node learned about a node (§3.5, §7.7). */
 type PeerOrigin = "explicit" | "candidate";
-
-/** Grant validity is deliberately short: it only has to cover one resume. */
-const GRANT_TTL_S = 300;
 
 /**
  * One row of the node table (§3.1): a node of the mesh, possibly this one. It
@@ -64,8 +54,6 @@ export class OrcaNode {
   private offlineSinceMs: number | null = null;
   /** The address that answered last, tried first next time. */
   private preferred: string | undefined;
-  /** Addresses that reached it which it does not advertise (`localhost` vs its LAN address). */
-  private readonly aliases = new Set<string>();
   /** Whether a refused candidate address was already logged; one line per node is enough. */
   private warned = false;
 
@@ -89,15 +77,9 @@ export class OrcaNode {
   }
 
   /** A node that proved itself by contact (or whose answer to ours we verified), as it described itself. */
-  static explicit(
-    ctx: MeshContext,
-    id: OrcaNodeId,
-    description: SelfDescription,
-    busy: BusyState | null,
-    nowMs: number,
-    wallIso: string,
-  ): OrcaNode {
-    return new OrcaNode(ctx, id, description, "online", busy, wallIso, "explicit", nowMs);
+  static explicit(ctx: MeshContext, id: OrcaNodeId, description: SelfDescription, busy: BusyState | null): OrcaNode {
+    const { clock } = ctx;
+    return new OrcaNode(ctx, id, description, "online", busy, clock.wallIso(), "explicit", clock.monotonicMs());
   }
 
   /** A node only seen in somebody else's list: never reached, so `unknown`. */
@@ -144,8 +126,9 @@ export class OrcaNode {
     return this.described.display_name;
   }
 
+  /** This node is online from the start, and nothing it hears or misses changes that. */
   get state(): PeerState {
-    return this.isSelf ? "online" : this.observed;
+    return this.observed;
   }
 
   /** Online or suspect: a node this one vouches for to others. */
@@ -176,7 +159,8 @@ export class OrcaNode {
       default_model: described.default_model ?? null,
       default_reasoning_effort: described.default_reasoning_effort ?? null,
       state: this.state,
-      busy: this.busy,
+      // This node's slot is the runner's; another node's is what it last said.
+      busy: this.isSelf ? this.ctx.tasks.busy() : this.busy,
       last_recv_at: this.isSelf ? new Date().toISOString() : this.lastRecvAt,
     };
   }
@@ -197,39 +181,25 @@ export class OrcaNode {
     this.origin = "explicit";
   }
 
-  setBusy(busy: BusyState | null): void {
-    this.busy = busy;
-  }
-
   // ---- evidence ----
 
-  /** A signed message from the node arrived. */
-  heard(nowMs: number, wallIso: string): void {
+  /**
+   * A signed message from the node arrived (it greeted us, or answered us), with
+   * what it says about itself: that replaces what was recorded, it is online,
+   * and nothing is owed.
+   */
+  heard(description: SelfDescription, busy: BusyState | null): void {
     if (this.isSelf) return;
+    this.describe(description);
+    this.busy = busy;
     this.observed = "online";
-    this.lastRecvAt = wallIso;
+    this.lastRecvAt = this.ctx.clock.wallIso();
     this.suspectReason = null;
-    this.lastRecvMs = nowMs;
+    this.lastRecvMs = this.ctx.clock.monotonicMs();
     this.fails = 0;
     this.probeFails = 0;
     this.nextProbeMs = 0;
     this.offlineSinceMs = null;
-  }
-
-  /** Our request to the node got an answer. */
-  answered(): void {
-    if (this.isSelf) return;
-    this.fails = 0;
-    this.probeFails = 0;
-    this.nextProbeMs = 0;
-    if (this.observed === "suspect" && this.suspectReason === "unreachable") {
-      this.observed = "online";
-      this.suspectReason = null;
-    }
-    if (this.observed === "offline") {
-      this.observed = "online";
-      this.offlineSinceMs = null;
-    }
   }
 
   /**
@@ -243,8 +213,7 @@ export class OrcaNode {
     if (this.observed === "unknown" && this.fails >= CANDIDATE_MAX_FAILURES) return "drop";
     if (this.observed === "offline" || this.observed === "unknown") {
       this.probeFails += 1;
-      const backoff = timings.recoverProbeMs * 2 ** (this.probeFails - 1);
-      this.nextProbeMs = nowMs + Math.min(backoff, timings.maxRecoverProbeMs);
+      this.nextProbeMs = nowMs + recoverDelayMs(this.probeFails, timings);
       return "kept";
     }
     const recentlyHeard = this.lastRecvMs !== null && nowMs - this.lastRecvMs <= timings.offlineAfterMs;
@@ -298,15 +267,10 @@ export class OrcaNode {
 
   // ---- addresses ----
 
-  /** Whether `url` is an address of this node: one it advertises, or one that reached it. */
+  /** Whether `url` is an address this node advertises; one it was reached at but does not advertise is not. */
   hasUrl(url: string): boolean {
     const key = OrcaNode.trimSlash(url);
-    return this.described.endpoints.some((own) => OrcaNode.trimSlash(own) === key) || this.aliases.has(key);
-  }
-
-  /** Remember that `url` reached this node, though it does not advertise it. */
-  learnUrl(url: string): void {
-    if (!this.hasUrl(url)) this.aliases.add(OrcaNode.trimSlash(url));
+    return this.described.endpoints.some((own) => OrcaNode.trimSlash(own) === key);
   }
 
   /** Addresses this node can be dialed at: screened if it came from a remote list, the last good one first. */
@@ -340,20 +304,32 @@ export class OrcaNode {
    * answered for all of its addresses, so that ends the attempt; one that does not
    * answer at any address is an error for the caller to count.
    */
-  async hello(request: HelloRequest, timeoutMs?: number): Promise<Answer<HelloResponse>> {
-    let failure: unknown;
+  hello(request: HelloRequest, timeoutMs?: number): Promise<Answer<HelloResponse>> {
+    return this.dial(
+      (endpoint) => OrcaNode.contact(this.ctx, endpoint, this.id, request, timeoutMs),
+      // Every address belongs to the same node, so a credential mismatch is final.
+      (error) => OrcaNode.isRejection(error),
+    );
+  }
+
+  /**
+   * Try the node's addresses in order until one answers; that one is tried first
+   * next time. `final` names the failures that end the attempt, because the node
+   * answered for all of its addresses; any other moves on to the next address.
+   */
+  private async dial<T>(attempt: (endpoint: string) => Promise<T>, final: (error: unknown) => boolean): Promise<T> {
+    let unreachable: unknown;
     for (const endpoint of await this.dialOrder()) {
       try {
-        const answer = await OrcaNode.contact(this.ctx, endpoint, this.id, request, timeoutMs);
+        const result = await attempt(endpoint);
         this.preferred = endpoint;
-        return answer;
+        return result;
       } catch (error) {
-        // Every address belongs to the same node, so a credential mismatch is final.
-        if (OrcaNode.isRejection(error)) throw error;
-        failure = error;
+        if (final(error)) throw error;
+        unreachable = error;
       }
     }
-    throw failure ?? new PodError("peer_not_online", `${this.id} has no address to dial`);
+    throw unreachable ?? new PodError("peer_not_online", `${this.id} has no address to dial`);
   }
 
   /** Whether an error is the node saying it no longer shares this node's password (§7.1). */
@@ -385,26 +361,11 @@ export class OrcaNode {
     return this.rpc({ method: "tasks/cancel", params: { id: taskId } }, signal);
   }
 
-  /** This node is the origin: sign a grant for the request the task is parked on and resume it (§7.11). */
-  async approve(view: TaskView): Promise<TaskView> {
+  /** This node is the origin: approve the request the task is parked on and resume it (§7.11). */
+  approve(view: TaskView): Promise<TaskView> {
     const request = permissionRequestOf(view);
     if (request === null) throw new Error("task is not waiting for a permission decision");
-    const issuedAt = Date.now();
-    const { identity, workgroupId } = this.ctx;
-    const grant: Grant = {
-      grant_id: randomUUID(),
-      workgroup_id: workgroupId,
-      origin_orca_node: identity.orcaNodeId,
-      task_id: view.id,
-      target_orca_node: request.requested_by,
-      tool: request.tool,
-      // The task asked for exactly this mode; it keeps it until it ends (§7.12).
-      permission_mode: request.requested_mode,
-      request_id: request.request_id,
-      issued_at: new Date(issuedAt).toISOString(),
-      expires_at: new Date(issuedAt + GRANT_TTL_S * 1000).toISOString(),
-    };
-    return this.resume(view, { grant: signGrant(identity, grant) });
+    return this.resume(view, { permission_granted: true, request_id: request.request_id });
   }
 
   deny(view: TaskView, reason: string): Promise<TaskView> {
@@ -418,73 +379,67 @@ export class OrcaNode {
    * the bytes against the sha256.
    */
   async fetchBlob(blobId: string, signal?: AbortSignal): Promise<OpenedBlob> {
-    if (!BLOB_ID_PATTERN.test(blobId)) throw new PodError("bad_request", "a blob id is a lowercase sha256 hex digest");
+    if (!BlobIdSchema.safeParse(blobId).success)
+      throw new PodError("bad_request", "a blob id is a lowercase sha256 hex digest");
     if (this.isSelf) return this.ctx.blobs.open(blobId);
-    let unreachable: unknown;
-    for (const endpoint of await this.dialOrder()) {
-      try {
-        const { body, size } = await this.ctx.client.download(endpoint, blobId, { target: this.id, signal });
-        return { stream: Readable.fromWeb(body as WebReadableStream<Uint8Array>), size };
-      } catch (error) {
-        // The node answered: its answer stands. Only an address that does not answer moves on to the next.
-        if (OrcaNode.answered(error)) throw error;
-        unreachable = error;
-      }
-    }
-    throw new PodError(
-      "peer_not_online",
-      `${this.id} did not answer at any address${unreachable === undefined ? "" : `: ${errorMessage(unreachable)}`}`,
+    return this.dial(
+      (endpoint) => this.ctx.client.download(endpoint, blobId, { target: this.id, signal }),
+      // The node answered, or the caller gave up: that stands.
+      (error) => OrcaNode.isAnswer(error) || signal?.aborted === true,
     );
   }
 
-  /** Answer a suspended task with a grant or a denial. */
+  /**
+   * Publish a file of this machine (§5.6): the registry copies it in, and its
+   * name is this node's id and the sha256 of its bytes. Only this node publishes.
+   */
+  async publish(path: string, ttlS?: number): Promise<PublishedFile> {
+    if (!this.isSelf) throw new Error(`${this.id} is another node; only this node publishes files`);
+    const blob = await this.ctx.blobs.register(path, ttlS);
+    return {
+      ref: formatBlobRef({ node: this.id, blob_id: blob.blob_id }),
+      size: blob.size,
+      expires_at: blob.expires_at,
+    };
+  }
+
+  /** Answer a suspended task with an approval or a denial: one data part, addressed by task id. */
   private resume(view: TaskView, control: ResumeControl): Promise<TaskView> {
-    return this.rpc({ method: "message/send", params: { message: controlMessage(view.id, control, randomUUID()) } });
+    const parts = [{ kind: "data" as const, data: { ...control } }];
+    return this.rpc({
+      method: "message/send",
+      params: { message: { role: "user", parts, taskId: view.id, messageId: randomUUID() } },
+    });
   }
 
   /**
    * Signed JSON-RPC call to the node's `/a2a` (§4.7); every method answers with a
-   * task view. A node may also answer 200 with an error envelope, which is an
-   * error too. Its addresses are tried in order until one answers.
+   * task view; an answer that is not one is a `peer_error`. Its addresses are tried in
+   * order until one answers.
    */
   private async rpc(request: A2ARequest, signal?: AbortSignal): Promise<TaskView> {
     const { method } = request;
-    let unreachable: unknown;
-    for (const endpoint of await this.dialOrder()) {
-      let json: unknown;
-      try {
-        ({ body: json } = await this.ctx.client.call(
+    const { body } = await this.dial(
+      (endpoint) =>
+        this.ctx.client.call(
           endpoint,
           {
             method: "POST",
             path: "/a2a",
             label: method,
             payload: { jsonrpc: "2.0", id: randomUUID(), ...request },
-            reply: z.unknown(),
+            reply: RpcResultSchema,
           },
           { target: this.id, signal },
-        ));
-      } catch (error) {
-        // The node answered, or the caller gave up: that stands. Only an address that does not answer moves on.
-        if (OrcaNode.answered(error) || signal?.aborted === true) throw error;
-        unreachable = error;
-        continue;
-      }
-      this.preferred = endpoint;
-      const envelope = ErrorReplySchema.safeParse(json);
-      if (envelope.success && envelope.data.error !== undefined) throw remoteError(method, 200, envelope.data);
-      return parseOrThrow(
-        RpcResultSchema,
-        json,
-        (problem) => new PodError("peer_error", `${method} 200: unexpected reply: ${problem}`, 502),
-      ).result;
-    }
-    if (unreachable !== undefined) throw unreachable;
-    throw new PodError("peer_not_online", `${this.id} has no address to dial`);
+        ),
+      // The node answered, or the caller gave up: that stands.
+      (error) => OrcaNode.isAnswer(error) || signal?.aborted === true,
+    );
+    return body.result;
   }
 
   /** Whether an error is the node's own answer; a deadline that ran out is not (by name, not instanceof: errors may cross realms). */
-  private static answered(error: unknown): boolean {
+  private static isAnswer(error: unknown): boolean {
     return error instanceof Error && error.name === "PodError" && (error as PodError).code !== "peer_timeout";
   }
 

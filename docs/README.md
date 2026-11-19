@@ -18,8 +18,8 @@
 | [03-membership.md](03-membership.md)         | 3   | 成员状态判定、加入、心跳与看门狗、收敛、候选端点与墓碑            |
 | [04-transport.md](04-transport.md)           | 4   | 监听与路由、反向代理、A2A 面、任务状态机                          |
 | [05-tasks.md](05-tasks.md)                   | 5   | 任务元数据、回报与唤醒、取消、存储、blob 通道、交接               |
-| [06-execution.md](06-execution.md)           | 6   | LocalExecutor、EchoExecutor、ACP、工作区、单槽、结果与交回的文件  |
-| [07-security.md](07-security.md)             | 7   | workgroup 与签名、TLS、不可信输入、授权、grant、审批回路          |
+| [06-execution.md](06-execution.md)           | 6   | LocalExecutor、脚本执行器（测试用）、ACP、工作区、单槽、结果与交回的文件  |
+| [07-security.md](07-security.md)             | 7   | workgroup 与签名、TLS、不可信输入、授权、批准与拒绝、审批回路          |
 | [08-reliability.md](08-reliability.md)       | 8   | 失联与重启、背压、放大与唤醒、可观测性                            |
 | [09-implementation.md](09-implementation.md) | 9   | 模块划分、面板、进程内多 orca node、DSH 组合入口、依赖            |
 | [10-roadmap.md](10-roadmap.md)               | 10  | Phase 0–4 与验收清单                                              |

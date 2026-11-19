@@ -10,7 +10,7 @@ import { wg } from "./fixtures/ids.ts";
 import type { WorkgroupId } from "../src/core/ids.ts";
 import type { MeshTimings } from "../src/mesh/timings.ts";
 import { waitFor } from "./support/harness.ts";
-import { nodeParts, peersOf } from "./support/node.ts";
+import { identityOf, nodeParts, peersOf } from "./support/node.ts";
 
 const FAST: Partial<MeshTimings> = {
   intervalMs: 40,
@@ -48,7 +48,7 @@ describe("hello admission", () => {
       const first = await b.mesh.probe(a.mesh.self.endpoints[0]!);
       // The same request again is a heartbeat: a node already known answers as itself.
       const again = await b.mesh.probe(a.mesh.self.endpoints[0]!);
-      expect(first.id).toBe(a.orcaNodeId);
+      expect(first.id).toBe(a.mesh.self.id);
       expect(again).toBe(first);
     } finally {
       await a.stop();
@@ -67,7 +67,7 @@ describe("hello admission", () => {
       const oldUrl = a.mesh.self.endpoints[0]!;
       const oldPort = Number(new URL(oldUrl).port);
       await b.mesh.probe(oldUrl);
-      expect(peersOf(b).some((peer) => peer.orca_node_id === a.orcaNodeId)).toBe(true);
+      expect(peersOf(b).some((peer) => peer.orca_node_id === a.mesh.self.id)).toBe(true);
       await a.stop();
 
       // Same identity and port, a different password: the node is the same, the workgroup is not.
@@ -79,7 +79,7 @@ describe("hello admission", () => {
             data_root: rootA,
             port: oldPort,
           },
-          a.identity,
+          identityOf(a),
         ),
         { timings: FAST },
       );
@@ -98,7 +98,7 @@ describe("hello admission", () => {
         // The old mesh forgets the node when its own greeting is rejected, instead of keeping it online.
         await waitFor(
           () => peersOf(b),
-          (peers) => !peers.some((peer) => peer.orca_node_id === a2.orcaNodeId),
+          (peers) => !peers.some((peer) => peer.orca_node_id === a2.mesh.self.id),
           { label: "the old mesh to drop the node that changed its password" },
         );
       } finally {

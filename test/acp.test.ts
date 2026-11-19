@@ -2,26 +2,23 @@ import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { nodeParts } from "./support/node.ts";
 import { permissionRequestOf, type TaskView } from "../src/task/wire.ts";
-import type { AcpExecutorConfig } from "../src/executor/acp/config.ts";
-import { AcpExecutor } from "../src/executor/acp/executor.ts";
+import { AcpExecutor, type AcpExecutorConfig } from "../src/executor/acp/executor.ts";
 import { ModelCatalog } from "../src/executor/model-catalog.ts";
 import type { ExecuteInput, ExecutorEvent } from "../src/executor/executor.ts";
-import { parseEchoScript } from "../src/executor/echo.ts";
 import { Orca } from "../src/node/orca.ts";
 import type { Settings } from "../src/node/settings.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
+import { fakeAcpCommand } from "./support/fake-acp.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
 const acpExecutor = (config: AcpExecutorConfig) =>
   new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { profile: undefined, env: () => ({}) });
 
-const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const LIVE: Orca[] = [];
 
 afterEach(async () => {
@@ -36,15 +33,7 @@ async function configFor(root: string, mode: string, overrides: Partial<Settings
     workgroup_password: "correct horse",
     data_root: root,
     port: 0,
-    executor: "acp",
-    acp: {
-      command: process.execPath,
-      extra_args: [FAKE_ACP, mode, join(root, "acp.log")],
-      mcp_servers: [
-        { name: "probe", command: process.execPath, args: ["-e", ""], env: { PROBE_TOKEN: "t" } },
-        { name: "bare", command: process.execPath },
-      ],
-    },
+    acp: { command: fakeAcpCommand(root, mode, join(root, "acp.log")) },
   });
   return [{ ...settings, ...overrides }, identity, key, dataRoot];
 }
@@ -144,11 +133,8 @@ describe("AcpExecutor", () => {
     expect(initialize?.extraArgs).toEqual(["--profile", "desktop"]);
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);
-    // ACP's McpServerStdio shape: args and env always present, env as name/value pairs.
-    expect(created?.mcpServers).toEqual([
-      { name: "probe", command: process.execPath, args: ["-e", ""], env: [{ name: "PROBE_TOKEN", value: "t" }] },
-      { name: "bare", command: process.execPath, args: [], env: [] },
-    ]);
+    // The session gets no MCP servers of the node's: its tools are the host profile's.
+    expect(created?.mcpServers).toEqual([]);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");
     // The preamble tells the ACP agent how files move, and that it cannot delegate.
@@ -166,7 +152,7 @@ describe("AcpExecutor", () => {
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
     const request = permissionRequestOf(suspended);
     expect(request?.tool).toBe("write file");
-    expect(request?.requested_by).toBe(node.orcaNodeId);
+    expect(request?.requested_by).toBe(node.mesh.self.id);
 
     await node.mesh.resolve(node.mesh.self.endpoints[0]!).approve(suspended);
     const done = await waitForState(node, submitted.id, ["completed"]);
@@ -349,7 +335,6 @@ describe("AcpExecutor", () => {
       permissionCeiling: undefined,
       model: undefined,
       reasoningEffort: undefined,
-      echo: parseEchoScript(undefined),
     };
     await expect(async () => {
       for await (const event of executor.run(input, new AbortController().signal)) events.push(event);

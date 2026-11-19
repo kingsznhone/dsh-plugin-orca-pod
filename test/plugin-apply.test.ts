@@ -8,12 +8,14 @@ import type { Context, Logger } from "@deepseek-ai/cordis";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import type { ToolActivationContext, ToolDefinition, ToolRegistrationOptions } from "@deepseek-ai/dsh-tools";
 import type { Tracker } from "../src/plugin/tracker.ts";
-import type { Config } from "../src/plugin/config.ts";
-import { importIdentity } from "../src/core/identity.ts";
+import type { Config } from "../src/plugin/bundle.ts";
+import { importIdentity } from "../src/plugin/stores.ts";
 
 const trackers: Tracker[] = [];
+/** The pod each captured tracker follows: the one `apply` composed. */
+const pods: ConstructorParameters<typeof Tracker>[0][] = [];
 /** The session lookup each captured tracker was given. */
-const resolvers: ConstructorParameters<typeof Tracker>[3][] = [];
+const resolvers: ConstructorParameters<typeof Tracker>[2][] = [];
 
 // Capture the tracker `apply` composes so the test can observe how it is wired.
 vi.mock("../src/plugin/tracker.ts", async (importOriginal) => {
@@ -22,7 +24,8 @@ vi.mock("../src/plugin/tracker.ts", async (importOriginal) => {
     constructor(...args: ConstructorParameters<typeof original.Tracker>) {
       super(...args);
       trackers.push(this);
-      resolvers.push(args[3]);
+      pods.push(args[0]);
+      resolvers.push(args[2]);
     }
   }
   return { ...original, Tracker: CapturingTracker };
@@ -35,6 +38,7 @@ const roots: string[] = [];
 
 afterEach(async () => {
   trackers.length = 0;
+  pods.length = 0;
   resolvers.length = 0;
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -357,6 +361,28 @@ describe("plugin apply", () => {
     for (const dispose of host.disposers) await dispose();
   });
 
+  it("restarts the node once when the panel changes the password, though the store reports the write back", async () => {
+    const host = await applied({ settings: { workgroup_id: "wg-a", port: 0 }, password: "old" });
+    // Like the host's store, a write is reported to the plugin as a change of that reference.
+    const { set } = host.ctx.credentials;
+    host.ctx.credentials.set = async (ref, value) => {
+      await set(ref, value);
+      host.emitCredentialEvent("credentials/reference-updated", ref);
+    };
+    const pod = pods[0]!;
+    await pod.orca();
+    const { Orca } = await import("../src/node/orca.ts");
+    const starts = vi.spyOn(Orca.prototype, "start");
+    try {
+      await pod.reconfigure({ workgroup_password: "new" });
+      await pod.orca();
+      expect(starts).toHaveBeenCalledTimes(1);
+    } finally {
+      starts.mockRestore();
+      for (const dispose of host.disposers) await dispose();
+    }
+  });
+
   it("listens for changes to the password and the node key, and for nothing else of the credential store", async () => {
     const host = await applied();
     expect(host.credentialEvents().sort()).toEqual(["credentials/record-updated", "credentials/reference-updated"]);
@@ -374,16 +400,14 @@ describe("pod stores on the DSH credential store", () => {
   it("keeps the password under one machine-wide reference", async () => {
     const host = fakeHost("/dsh-home");
     const stores = storesOf(host);
-    expect(await stores.passwordConfigured()).toBe(false);
+    expect(await stores.readPassword()).toBeUndefined();
 
     await stores.writePassword("secret");
     expect(host.secrets.get("ORCA_POD_PASSWORD")).toBe("secret");
     expect(await stores.readPassword()).toBe("secret");
-    expect(await stores.passwordConfigured()).toBe(true);
 
     await stores.clearPassword();
     expect(await stores.readPassword()).toBeUndefined();
-    expect(await stores.passwordConfigured()).toBe(false);
   });
 
   it("makes the node key once, as a base58 Ed25519 seed in a grant record, and returns the same node afterwards", async () => {

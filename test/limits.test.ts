@@ -1,6 +1,6 @@
 /**
  * Budget and summary limits (§6.9): a task's hard TTL is the local cap, the
- * summary is truncated to result_max_bytes, and both the cap and usage are
+ * summary is truncated to 32 KiB, and both the cap and usage are
  * visible/recorded so an origin can size its delegations.
  */
 
@@ -15,20 +15,19 @@ import { Orca } from "../src/node/orca.ts";
 import { isTerminal, type TaskView } from "../src/task/wire.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
 import { wg } from "./fixtures/ids.ts";
+import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 const WORKGROUP = wg("orca-limits");
 
 function hangTask() {
   return {
-    message: { role: "user" as const, parts: [{ kind: "text" as const, text: "wait" }] },
-    metadata: { echo: { final: { state: "hang" as const, text: "" } } },
+    message: scriptMessage({ final: { state: "hang" as const, text: "" } }),
   };
 }
 
 function completedTask(text: string) {
   return {
-    message: { role: "user" as const, parts: [{ kind: "text" as const, text: "go" }] },
-    metadata: { echo: { final: { state: "completed" as const, text } } },
+    message: scriptMessage({ final: { state: "completed" as const, text } }),
   };
 }
 
@@ -54,48 +53,41 @@ async function waitForTerminal(
 }
 
 describe("task hard TTL", () => {
-  it("kills a hung task at the local cap even when the origin asked for longer", async () => {
-    const runner = createTestRunner({ taskTimeoutS: 0.15 });
-    const view = runner.submit({
-      ...hangTask(),
-      metadata: { echo: { final: { state: "hang", text: "" } }, pod: { task_ttl_s: 600 } },
-    });
+  it("kills a hung task at the local cap, whatever the origin's metadata says", async () => {
+    const runner = createTestRunner({ settings: { task_timeout_s: 0.15 } });
+    const view = runner.submit({ ...hangTask(), metadata: { pod: { task_ttl_s: 600 } } });
     const done = await waitForTerminal(runner, view.id);
     expect(done.status.state).toBe("failed");
     expect(done.status.reason).toBe("timeout");
     expect(textOf(done)).toBe("task ttl exceeded");
   });
-
-  it("uses the local cap when the origin sends no ttl", async () => {
-    const runner = createTestRunner({ taskTimeoutS: 0.1 });
-    const view = runner.submit(hangTask());
-    const done = await waitForTerminal(runner, view.id);
-    expect(done.status.reason).toBe("timeout");
-  });
 });
 
 describe("summary limits", () => {
-  it("truncates a summary longer than result_max_bytes", async () => {
-    const runner = createTestRunner({ resultMaxBytes: 64 });
-    const view = runner.submit(completedTask("x".repeat(200)));
+  /** The inline summary cap (§6.11). */
+  const CAP = 32 * 1024;
+
+  it("truncates a summary longer than 32 KiB", async () => {
+    const runner = createTestRunner();
+    const view = runner.submit(completedTask("x".repeat(40_000)));
     const done = await waitForTerminal(runner, view.id);
     expect(done.status.state).toBe("completed");
     const text = textOf(done);
-    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(64);
-    expect(text).toContain("[summary truncated at 64 bytes]");
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(CAP);
+    expect(text).toContain(`[summary truncated at ${CAP} bytes]`);
   });
 
   it("truncates on a character boundary", async () => {
-    const runner = createTestRunner({ resultMaxBytes: 64 });
-    const view = runner.submit(completedTask("é".repeat(200)));
+    const runner = createTestRunner();
+    const view = runner.submit(completedTask("é".repeat(20_000)));
     const text = textOf(await waitForTerminal(runner, view.id));
-    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(64);
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(CAP);
     expect(text).not.toContain("�");
     expect(text.startsWith("éé")).toBe(true);
   });
 
   it("keeps a short summary intact", async () => {
-    const runner = createTestRunner({ resultMaxBytes: 1024 });
+    const runner = createTestRunner();
     const view = runner.submit(completedTask("short and sweet"));
     const done = await waitForTerminal(runner, view.id);
     expect(textOf(done)).toBe("short and sweet");
@@ -105,28 +97,26 @@ describe("summary limits", () => {
 describe("storage failures", () => {
   it("logs a store that cannot save and still ends the task, instead of crashing the node", async () => {
     const warnings: string[] = [];
-    const seen: TaskView[] = [];
     // The task table cannot be written: every save of the runner's table fails.
     const failing = vi.spyOn(JsonTable.prototype, "save").mockImplementation(() => {
       throw new Error("disk full");
     });
     const runner = createTestRunner({ logger: { warn: (text) => warnings.push(text) } });
-    runner.events.subscribe((event) => seen.push(event.view));
     runner.submit(completedTask("fine"));
 
+    // The task ends and gives the slot back although none of its changes could be stored.
     const deadline = Date.now() + 5_000;
-    while (!seen.some((view) => view.status.state === "completed") && Date.now() < deadline) {
+    while (runner.busy() !== null && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(seen.at(-1)?.status.state).toBe("completed");
-    expect(warnings.some((text) => text.includes("disk full"))).toBe(true);
     expect(runner.busy()).toBeNull();
+    expect(warnings.some((text) => text.includes("disk full"))).toBe(true);
     failing.mockRestore();
   });
 });
 
 describe("budget advertisement", () => {
-  it("publishes max_task_ttl_s in the agent card and peer records", async () => {
+  it("publishes max_task_ttl_s in the peer records", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-limits-"));
     const config = nodeParts({
       workgroup_id: WORKGROUP,
@@ -135,13 +125,10 @@ describe("budget advertisement", () => {
       port: 0,
       task_timeout_s: 900,
     });
-    const node = new Orca(...config);
+    const node = new Orca(...config, { executor: new ScriptExecutor() });
     await node.start();
     try {
-      const card = (await (await fetch(`${node.mesh.self.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
-        max_task_ttl_s?: number;
-      };
-      expect(card.max_task_ttl_s).toBe(900);
+      expect(node.mesh.self.view().max_task_ttl_s).toBe(900);
 
       const otherRoot = await mkdtemp(join(tmpdir(), "orca-limits-peer-"));
       const otherConfig = nodeParts({
@@ -150,11 +137,11 @@ describe("budget advertisement", () => {
         data_root: otherRoot,
         port: 0,
       });
-      const other = new Orca(...otherConfig);
+      const other = new Orca(...otherConfig, { executor: new ScriptExecutor() });
       await other.start();
       try {
         await other.mesh.probe(node.mesh.self.endpoints[0]!);
-        const peer = peersOf(node).find((candidate) => candidate.orca_node_id === other.orcaNodeId);
+        const peer = peersOf(node).find((candidate) => candidate.orca_node_id === other.mesh.self.id);
         expect(peer?.max_task_ttl_s).toBe(3600);
       } finally {
         await other.stop();

@@ -5,7 +5,7 @@ import { age, short, stateDot, stateLabel } from "./format.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
 import { Dialog, Empty, Facts, StateText, SubTitle, modelId, modelText } from "./primitives.tsx";
-import type { PodPeer, RuntimeInfo, WorkspaceView } from "./types.ts";
+import type { PodPeer, RuntimeInfo } from "./types.ts";
 import ui from "./ui.module.css";
 
 export function Members({ members, onOpen }: { members: PodPeer[]; onOpen: (member: PodPeer) => void }) {
@@ -94,12 +94,12 @@ export function NodeDetail({ member, onClose }: { member: PodPeer; onClose: () =
   );
 }
 
-export function Workspace({ workspace }: { workspace: WorkspaceView | null }) {
-  if (workspace === null) return <Empty>{t("workspaceUnavailable")}</Empty>;
+export function Workspace({ root }: { root: string | null }) {
+  if (root === null) return <Empty>{t("workspaceUnavailable")}</Empty>;
   return (
     <div className={panel.workspace}>
-      <div className={`${panel.path} ${ui.mono}`} title={workspace.root}>
-        {workspace.root}
+      <div className={`${panel.path} ${ui.mono}`} title={root}>
+        {root}
       </div>
     </div>
   );

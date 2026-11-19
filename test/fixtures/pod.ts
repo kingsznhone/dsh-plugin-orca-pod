@@ -10,7 +10,7 @@ import type { Orca } from "../../src/node/orca.ts";
 import { ModelCatalogFeed } from "../../src/plugin/catalog.ts";
 import { Pod } from "../../src/plugin/pod.ts";
 import { PASSWORD_REF } from "../../src/plugin/stores.ts";
-import { MemoryCredentials, podStores } from "./credentials.ts";
+import { credentialHost, MemoryCredentials } from "./credentials.ts";
 
 export const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
@@ -36,7 +36,7 @@ export function idlePod(
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, "settings.json"), JSON.stringify(rest));
   }
-  return new Pod(logger, podStores(credentials), catalogFeed(), root);
+  return new Pod(logger, credentialHost(credentials), catalogFeed(), root);
 }
 
 /**
@@ -45,6 +45,6 @@ export function idlePod(
  */
 export function podRunning(node: unknown): Pod {
   const pod = idlePod();
-  vi.spyOn(pod, "status", "get").mockReturnValue({ kind: "running", run: { orca: node as Orca, port: 0 } });
+  vi.spyOn(pod, "status", "get").mockReturnValue({ kind: "running", orca: node as Orca });
   return pod;
 }

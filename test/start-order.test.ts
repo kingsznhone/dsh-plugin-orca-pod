@@ -10,10 +10,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SqliteDb } from "../src/core/sqlite.ts";
-import { storeDbPath, type Orca } from "../src/node/orca.ts";
+import type { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
 import { waitFor } from "./support/harness.ts";
 import { newNode } from "./support/node.ts";
+import { scriptMessage } from "./support/script.ts";
 
 let nodes: Orca[] = [];
 const roots: string[] = [];
@@ -36,8 +37,7 @@ describe("starting a node on a data root another process is running on", () => {
 
     // A task of the running process, still working.
     const submitted = await running.mesh.resolve(url).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "hang" }] },
-      metadata: { echo: { final: { state: "hang", text: "" } } },
+      message: scriptMessage({ final: { state: "hang", text: "" } }),
     });
     await waitFor(
       () => running.tasks.get(submitted.id)?.status.state,
@@ -53,11 +53,11 @@ describe("starting a node on a data root another process is running on", () => {
 
     // What the running process keeps in the database is untouched: the task was not
     // failed as "interrupted by a restart", and its dispatch was not marked unknown.
-    const db = new SqliteDb(storeDbPath(root));
+    const db = new SqliteDb(join(root, "tasks.db"));
     db.open();
     try {
       const row = db.db.prepare("SELECT payload FROM tasks WHERE task_id = ?").get(submitted.id) as { payload: string };
-      expect(JSON.parse(row.payload).view.status.state).toBe("working");
+      expect(JSON.parse(row.payload).status.state).toBe("working");
     } finally {
       db.close();
     }

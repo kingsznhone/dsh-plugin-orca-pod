@@ -9,29 +9,29 @@
  * A machine has one node however many DSH profiles it runs (§3.9), so
  * everything the pod keeps is machine-wide:
  * - **settings** are `<data_root>/settings.json` (`SettingsFile`); the panel
- *   writes it and the pod restarts its node in place;
+ *   writes it and the pod restarts its node in place. A peer joined at runtime
+ *   is added to its `peers` without a restart: the node already has it;
  * - **the workgroup password and the node's private key** are DSH credentials
  *   (`PodStores`, §3.6); nothing secret is written to a file, and the workgroup
- *   key derived from the password lives in memory only;
- * - **state** — peers joined at runtime — is a file under `<data_root>`, because
- *   remembering a peer must not restart the node.
+ *   key derived from the password lives in memory only.
  *
  * Two DSH processes on one machine share all of this, and the listen port is the
  * lock: the one that cannot bind reports that a node is already running.
  */
 
+import { scryptSync } from "node:crypto";
+
 import { isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
-import type { Logger } from "@deepseek-ai/cordis";
+import type { Context, Logger } from "@deepseek-ai/cordis";
 
 import { errorMessage } from "../core/errors.ts";
+import { normalizePeerUrl } from "../core/net.ts";
 import type { WorkgroupId } from "../core/ids.ts";
-import { deriveWorkgroupKey } from "../core/signing.ts";
 import { Orca } from "../node/orca.ts";
 import { parseSettings, type PanelPatch, type Settings } from "../node/settings.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
-import { RememberedPeers } from "./peers-file.ts";
 import { SettingsFile } from "./settings-file.ts";
-import type { PodStores } from "./stores.ts";
+import { NODE_KEY, PASSWORD_REF, PodStores } from "./stores.ts";
 
 /**
  * Runs async operations one after another. A failed operation must not poison
@@ -50,6 +50,41 @@ export class SerialQueue {
     );
     return result;
   }
+
+  /** Settles once everything queued so far has; it never rejects. */
+  settled(): Promise<void> {
+    return this.tail;
+  }
+}
+
+const KEY_DERIVATION_SALT = "orca-pod";
+/** scrypt parameters: ~32 MiB, one derivation per start, ~100ms (§7.1). */
+const KEY_DERIVATION_N = 1 << 15;
+const KEY_DERIVATION_R = 8;
+const KEY_DERIVATION_P = 1;
+const KEY_DERIVATION_MAX_MEM = 64 * 1024 * 1024;
+
+/**
+ * scrypt(password, salt="orca-pod\x00<workgroup_id>") -> 32 bytes.
+ *
+ * Memory-hard on purpose: the workgroup key backs the HMAC proof of every
+ * request over plaintext HTTP, so HKDF's cheap output made every sniffed proof
+ * an offline dictionary target. scrypt is paid once per process start; the
+ * salt binds the derivation to the workgroup id so the same password yields a
+ * different key in another group.
+ */
+export function deriveWorkgroupKey(workgroupId: WorkgroupId, password: string): Buffer {
+  const salt = Buffer.concat([
+    Buffer.from(KEY_DERIVATION_SALT, "utf8"),
+    Buffer.from([0]),
+    Buffer.from(workgroupId, "utf8"),
+  ]);
+  return scryptSync(Buffer.from(password, "utf8"), salt, 32, {
+    N: KEY_DERIVATION_N,
+    r: KEY_DERIVATION_R,
+    p: KEY_DERIVATION_P,
+    maxmem: KEY_DERIVATION_MAX_MEM,
+  });
 }
 
 /** True for URLs that dial the local machine only. */
@@ -62,16 +97,14 @@ export function isLoopbackEndpoint(url: string): boolean {
   }
 }
 
-/** One started node; replaced as a whole on every restart, never mutated. */
-export type PodRun = { readonly orca: Orca; readonly port: number };
-
 /** What the pod is doing, as one value. */
 type PodStatus =
   /** No workgroup or no stored password: the panel shows the first-run wizard. */
   | { kind: "unconfigured" }
   /** A (re)start is queued, or running up to the moment the node listens. */
   | { kind: "starting" }
-  | { kind: "running"; run: PodRun }
+  /** A started node; replaced as a whole on every restart. */
+  | { kind: "running"; orca: Orca }
   | { kind: "failed"; error: Error }
   /** The plugin fiber unloaded. */
   | { kind: "stopped" };
@@ -87,9 +120,8 @@ type PodStatus =
  */
 export class Pod {
   private readonly queue = new SerialQueue();
-  private readonly peers: RememberedPeers;
   private readonly file: SettingsFile;
-  /** The settings as the last start read them; the panel's edits are applied to the file and read back by the next start. */
+  /** The settings as the pod last read or wrote them; the panel's edits are applied to the file and read back by the next start. */
   private saved: Settings = parseSettings({});
   /** The stored workgroup password as the last start read it; in memory only. */
   private password: string | undefined;
@@ -97,24 +129,25 @@ export class Pod {
   private outcome: Exclude<PodStatus, { kind: "starting" }> = { kind: "unconfigured" };
   /** Restarts that are queued or have not brought their node up yet. */
   private restarting = 0;
-  /** The last queued restart, rejoin of the peers included; it never rejects. */
-  private booting: Promise<void> = Promise.resolve();
+
+  private readonly stores: PodStores;
 
   constructor(
     private readonly logger: Logger,
-    private readonly stores: PodStores,
+    /** The host's credential store: the workgroup password and the node's private key (§3.6). */
+    host: Pick<Context, "credentials">,
     private readonly catalog: ModelCatalogFeed,
     /** The data directory of this machine's node (§3.9). */
     readonly dataRoot: string,
     /** The DSH profile this plugin was loaded from; the node runs tasks in it (D46). */
     private readonly profile?: string,
   ) {
-    this.peers = new RememberedPeers(dataRoot, logger);
+    this.stores = new PodStores(host);
     this.file = new SettingsFile(dataRoot);
     // The host's model catalog changes while the pod lives: install it on whichever node runs.
     catalog.changes.subscribe(() => {
       const run = this.run;
-      if (run !== null) this.advertise(run.orca);
+      if (run !== null) this.advertise(run);
     });
   }
 
@@ -124,21 +157,22 @@ export class Pod {
   }
 
   /** The current run, or null in every other status. Read-only projections use this. */
-  get run(): PodRun | null {
+  get run(): Orca | null {
     const { status } = this;
-    return status.kind === "running" ? status.run : null;
+    return status.kind === "running" ? status.orca : null;
   }
 
   /**
-   * The running node, once no (re)start is queued or running (the rejoin of the
-   * peers included); an error that names the status when there is none.
+   * The running node, once nothing queued before this call is left (a (re)start,
+   * the rejoin of the peers, a peer being joined); an error that names the status
+   * when there is none.
    */
   async orca(): Promise<Orca> {
-    await this.booting;
-    return Pod.runOf(this.status).orca;
+    await this.queue.settled();
+    return Pod.runOf(this.status);
   }
 
-  /** The settings as the last start read them; they never hold the password. */
+  /** The settings as the pod last read or wrote them; they never hold the password. */
   get settings(): Settings {
     return this.saved;
   }
@@ -148,19 +182,8 @@ export class Pod {
     return Boolean(this.saved.workgroup_id) && this.password !== undefined;
   }
 
-  /** Whether a password is stored right now: asks the credential store, not what the last start read. */
-  passwordConfigured(): Promise<boolean> {
-    return this.stores.passwordConfigured();
-  }
-
-  /** Peers joined at runtime (panel or `connect`), rejoined on the next start. */
-  get rememberedPeers(): readonly string[] {
-    return this.peers.list();
-  }
-
-  /** Begin starting: load the remembered peers and boot the node. Does not wait for it. */
+  /** Begin starting: boot the node. Does not wait for it. */
   start(): void {
-    void this.queue.run(() => this.peers.load());
     void this.restart();
   }
 
@@ -183,100 +206,99 @@ export class Pod {
    * and restart the node with the result.
    */
   async reconfigure(patch: PanelPatch): Promise<void> {
+    // Omit the password to keep the current one (`PanelPatchSchema` refuses a blank one).
     const { workgroup_password: password, ...fields } = patch;
-    // Omit the field to keep the current password; a passwordless mesh is not supported.
-    if (typeof password === "string" && password.trim().length === 0) {
-      throw new Error("a workgroup password is required; a passwordless mesh is not supported");
-    }
-    // Validate the whole result first, so a bad patch changes nothing.
-    const preview = parseSettings(Pod.applyPanelFields(await this.file.read(), fields));
-    if (preview.workgroup_id === undefined) throw new Error("a workgroup id is required");
-    // The password is machine-wide, so it stays when the workgroup changes. It is stored
-    // before the settings are, so whatever starts on them already finds it.
-    if (typeof password === "string") await this.stores.writePassword(password);
-    else if (!(await this.stores.passwordConfigured())) {
-      throw new Error(`a workgroup password is required for ${preview.workgroup_id}`);
-    }
-    await this.commit((raw) => Pod.applyPanelFields(raw, fields));
+    // Everything happens in the restart's own turn, checked before anything is
+    // written, so a bad patch changes nothing. The credential store reports the
+    // password write back as a change (`credentialsChanged`); that report is queued
+    // behind this restart and finds the new run already using it, so the node
+    // restarts once. The password is machine-wide, so it stays when the workgroup
+    // changes; it is stored before the settings are, so whatever starts on them finds it.
+    await this.restart(async () => {
+      const next = Pod.applyPanelFields(await this.file.read(), fields);
+      const { workgroup_id: workgroupId } = parseSettings(next);
+      if (workgroupId === undefined) throw new Error("a workgroup id is required");
+      if (typeof password === "string") await this.stores.writePassword(password);
+      else if ((await this.readPassword()) === undefined) {
+        throw new Error(`a workgroup password is required for ${workgroupId}; a passwordless mesh is not supported`);
+      }
+      await this.file.write(next);
+    });
   }
 
-  /** `join` one peer now and remember it in the peer state file. */
-  addPeer(peer: string): Promise<void> {
+  /**
+   * `join` one peer now and add it to the settings' `peers`, so it is joined on
+   * every start; answers the address in its canonical form. The node already has
+   * it, so nothing restarts.
+   */
+  async addPeer(address: string): Promise<string> {
+    const peer = normalizePeerUrl(address);
     return this.queue.run(async () => {
-      await Pod.runOf(this.outcome).orca.mesh.probe(peer);
-      await this.peers.add(peer);
+      await Pod.runOf(this.outcome).mesh.probe(peer);
+      const raw = await this.file.read();
+      const { peers } = parseSettings(raw);
+      if (!peers.includes(peer)) await this.file.write({ ...raw, peers: [...peers, peer] });
+      return peer;
     });
   }
 
   /**
    * Back to the first-run wizard: delete everything this machine's node has, with
-   * no exceptions (§3.9): the node, its password, its private key, its settings
-   * and its remembered peers.
+   * no exceptions (§3.9): the node, its password, its private key and its
+   * settings. Without a stored password the restart starts nothing.
    */
-  async reset(): Promise<void> {
-    await this.queue.run(async () => {
-      await this.stopNode();
+  reset(): Promise<void> {
+    return this.restart(async () => {
       await this.stores.clearPassword();
       await this.stores.deleteIdentity();
       await this.file.remove();
-      await this.peers.remove();
-      this.password = undefined;
-      this.saved = parseSettings({});
     });
-    // Without a stored password nothing starts.
-    await this.restart();
   }
 
   /**
-   * The credential store changed a name this pod keeps (the password, the node
-   * key): another DSH process, the settings page or an edit of the file did it.
-   * Restart once to use the new value; a change this run already uses (the pod's
-   * own write) restarts nothing.
+   * The credential store changed `name`. When it is one this pod keeps (the
+   * password, the node key), another DSH process, the settings page or an edit
+   * of the file did it: restart once to use the new value. A change this run
+   * already uses (the pod's own write) restarts nothing.
    */
-  credentialsChanged(): void {
-    const done = this.queue.run(async () => {
-      if (this.outcome.kind === "stopped" || !(await this.credentialsDiffer())) return;
-      this.restarting += 1;
-      await this.boot();
-    });
-    this.booting = done.catch(() => {});
-  }
-
-  /** Make a panel action durable, then run the pod on the result: the settings file is written and the node restarts in place. */
-  private async commit(change: (raw: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
-    // The write is not queued: it must not wait for the restart that follows it.
-    const next = change(await this.file.read());
-    // A result the parser refuses is not stored.
-    parseSettings(next);
-    await this.file.write(next);
-    await this.restart();
+  credentialsChanged(name: string): void {
+    if (name !== PASSWORD_REF && name !== NODE_KEY) return;
+    this.queue
+      .run(async () => {
+        if (this.outcome.kind === "stopped" || !(await this.credentialsDiffer())) return;
+        this.restarting += 1;
+        await this.boot();
+      })
+      .catch(() => {});
   }
 
   /**
-   * Queue a (re)start. `status` reads `starting` from this call on, so nobody is
-   * handed the node that is about to go, and `orca()` waits for this restart.
+   * Queue a (re)start, after `change` has made a panel action durable (in the same
+   * turn, so nothing else runs in between). `status` reads `starting` from this
+   * call on, so nobody is handed the node that is about to go, and `orca()` waits
+   * for this restart. A change that fails is the caller's error, and the running
+   * node is left as it was.
    */
-  private restart(): Promise<void> {
+  private restart(change?: () => Promise<void>): Promise<void> {
     this.restarting += 1;
-    const done = this.queue.run(() => this.boot());
-    this.booting = done.catch(() => {});
-    return done;
+    return this.queue.run(() => this.boot(change));
   }
 
   /** (Re)start from the stored settings: bring the node up, then seed it with the peers. Queue only. */
-  private async boot(): Promise<void> {
-    const seeds = await this.bringUp();
-    if (seeds !== null) await this.seed(seeds.orca, seeds.peers);
+  private async boot(change?: () => Promise<void>): Promise<void> {
+    const orca = await this.bringUp(change);
+    if (orca !== null) await this.seed(orca, this.saved.peers);
   }
 
   /**
-   * Stop the old node, read the settings and the password and run a new node if
-   * setup is complete. Settles the restart's `starting` status, so the new run is
-   * visible while its peers are still being joined. Queue only.
+   * Apply `change`, stop the old node, read the settings and the password and run
+   * a new node if setup is complete. Settles the restart's `starting` status, so
+   * the new run is visible while its peers are still being joined. Queue only.
    */
-  private async bringUp(): Promise<{ orca: Orca; peers: Set<string> } | null> {
+  private async bringUp(change?: () => Promise<void>): Promise<Orca | null> {
     try {
       if (this.outcome.kind === "stopped") return null;
+      await change?.();
       await this.stopNode();
       try {
         this.saved = parseSettings(await this.file.read());
@@ -296,11 +318,10 @@ export class Pod {
       }
       try {
         const run = await this.startNode(this.saved.workgroup_id, password);
-        this.outcome = { kind: "running", run };
+        this.outcome = { kind: "running", orca: run };
         // The host's providers may have finished loading since the last read.
         void this.catalog.refresh();
-        // Startup peers from the settings, then the ones joined at runtime.
-        return { orca: run.orca, peers: new Set([...this.saved.peers, ...this.peers.list()]) };
+        return run;
       } catch (error) {
         return this.fail(error);
       }
@@ -334,7 +355,7 @@ export class Pod {
     const { outcome } = this;
     if (outcome.kind !== "running") return false;
     try {
-      return (await this.stores.readIdentity())?.orcaNodeId !== outcome.run.orca.orcaNodeId;
+      return (await this.stores.readIdentity())?.orcaNodeId !== outcome.orca.mesh.self.id;
     } catch {
       // A damaged key record is for the next start to report.
       return true;
@@ -342,13 +363,12 @@ export class Pod {
   }
 
   /** Create, start and equip a node. One that cannot listen is stopped and dropped, and the failure thrown. */
-  private async startNode(workgroupId: WorkgroupId, password: string): Promise<PodRun> {
+  private async startNode(workgroupId: WorkgroupId, password: string): Promise<Orca> {
     const identity = await this.stores.identity();
-    // The plugin runs real DSH sessions by default. A loopback-only advertise list
-    // is useless across machines, so it means "derive from the listen address".
+    // A loopback-only advertise list is useless across machines, so it means
+    // "derive from the listen address".
     const settings: Settings = {
       ...this.saved,
-      executor: this.saved.executor ?? "acp",
       endpoints: this.saved.endpoints.every(isLoopbackEndpoint) ? [] : this.saved.endpoints,
     };
     // One scrypt derivation per start; the key stays in memory (§7.1).
@@ -371,12 +391,12 @@ export class Pod {
           )
         : error;
     }
-    this.logger.info(`orca-pod: orca node ${node.orcaNodeId} listening on ${info.url} (workgroup ${workgroupId})`);
+    this.logger.info(`orca-pod: orca node ${node.mesh.self.id} listening on ${info.url} (workgroup ${workgroupId})`);
 
     // The node carries the catalog from its first join on, so the self record
     // peers receive and every heartbeat advertise it (§6.15).
     this.advertise(node);
-    return { orca: node, port: info.port };
+    return node;
   }
 
   /** Install the host's current model catalog on a node; the one place it is installed. */
@@ -408,7 +428,7 @@ export class Pod {
     if (outcome.kind !== "stopped") this.outcome = { kind: "unconfigured" };
     if (outcome.kind !== "running") return;
     try {
-      await outcome.run.orca.stop();
+      await outcome.orca.stop();
       this.logger.info("orca-pod: orca node stopped");
     } catch (error) {
       this.logger.warn(`orca-pod: orca node stop failed: ${errorMessage(error)}`);
@@ -416,10 +436,10 @@ export class Pod {
   }
 
   /** The run of a status, or the error that says why there is none. */
-  private static runOf(status: PodStatus): PodRun {
+  private static runOf(status: PodStatus): Orca {
     switch (status.kind) {
       case "running":
-        return status.run;
+        return status.orca;
       case "starting":
         throw new Error("orca node is not running: it is still starting");
       case "failed":

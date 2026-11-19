@@ -1,10 +1,9 @@
 import type { SessionId } from "@deepseek-ai/dsh-session";
 
-import { EventBus, type NodeLogger } from "../core/events.ts";
 import { JsonTable } from "./json-table.ts";
 import type { SqliteDb } from "../core/sqlite.ts";
 import type { OrcaNodeId } from "../core/ids.ts";
-import { TERMINAL_STATES, type DispatchEntry, type DispatchEvent, type TaskView } from "./wire.ts";
+import { TERMINAL_STATES, type DispatchEntry, type TaskView } from "./wire.ts";
 
 /** The SQL condition "this entry's task has not ended". */
 const OPEN = `json_extract(payload, '$.state') NOT IN (${TERMINAL_STATES.map((state) => `'${state}'`).join(", ")})`;
@@ -26,12 +25,9 @@ const OPEN = `json_extract(payload, '$.state') NOT IN (${TERMINAL_STATES.map((st
  * marked `unknown`; the tracker's next read replaces that with the real state.
  */
 export class DispatchLog {
-  /** An entry was added or its state changed. */
-  readonly events: EventBus<DispatchEvent>;
   private readonly table: JsonTable<DispatchEntry>;
 
-  constructor(db: SqliteDb, logger: NodeLogger) {
-    this.events = new EventBus(logger);
+  constructor(db: SqliteDb) {
     this.table = new JsonTable<DispatchEntry>(
       db,
       "dispatches",
@@ -61,24 +57,22 @@ export class DispatchLog {
       task_id: view.id,
       node,
       ...(agentId === undefined ? {} : { agent_id: agentId }),
-      context_id: view.contextId,
       state: view.status.state,
       last_error: view.status.reason,
       created_at: now,
       updated_at: now,
     };
     this.table.save(entry);
-    this.events.emit({ type: "dispatch", entry });
   }
 
   /** The tracker read the task: record what it said. Nothing is written when nothing changed. */
   update(view: TaskView): void {
-    this.changed(this.write(view.id, view.status.state, view.status.reason));
+    this.write(view.id, view.status.state, view.status.reason);
   }
 
   /** The tracker could not read the task (gone, refused, or no answer): the origin records it as failed. */
   fail(taskId: string, reason: string): void {
-    this.changed(this.write(taskId, "failed", reason));
+    this.write(taskId, "failed", reason);
   }
 
   /**
@@ -92,16 +86,11 @@ export class DispatchLog {
   /**
    * Set one entry's state in a single statement, only while its task has not
    * ended and when the state or the error differs from what it holds (a merge
-   * patch: a missing error removes the field). The entry as written, or
-   * undefined when nothing was written.
+   * patch: a missing error removes the field).
    */
-  private write(
-    taskId: string,
-    state: DispatchEntry["state"],
-    lastError: string | undefined,
-  ): DispatchEntry | undefined {
+  private write(taskId: string, state: DispatchEntry["state"], lastError: string | undefined): void {
     const now = new Date().toISOString();
-    return this.table.patch(
+    this.table.patch(
       taskId,
       { state, last_error: lastError ?? null, updated_at: now },
       now,
@@ -109,9 +98,5 @@ export class DispatchLog {
       state,
       lastError ?? null,
     );
-  }
-
-  private changed(entry: DispatchEntry | undefined): void {
-    if (entry !== undefined) this.events.emit({ type: "dispatch", entry });
   }
 }

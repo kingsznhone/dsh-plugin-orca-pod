@@ -1,5 +1,6 @@
 import type { NodeIdentity } from "../../src/core/identity.ts";
-import { bodySha256, buildReplyHeader, parseAuthHeader } from "../../src/core/signing.ts";
+import { bodySha256, buildReplyHeader } from "../../src/core/signing.ts";
+import { parseAuthHeader } from "../../src/api/access.ts";
 
 /** The nonce a request carried in its Authorization header: what its reply must be bound to. */
 export function nonceOf(init: RequestInit): string {

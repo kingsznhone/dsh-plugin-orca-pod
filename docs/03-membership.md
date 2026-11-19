@@ -18,7 +18,7 @@
 2. `hello` 的答复里可以携带**目录**（谁存在），但目录条目只是候选端点，永远不提供“它在线上”。
 3. 在线判定的唯一输入是本地的 `last_recv_at`；候选目录不得修改它、不得修补已有记录、不得清除墓碑。
 
-**表里是节点对象。** 成员表是一张 `Map<节点 id, OrcaNode>`（`mesh/mesh.ts`），**本机自己也在表里**：`mesh.self` 与其他行是同一个类，“是不是自己”只看 `node.id === 本机 id`。一个节点的一切状态都在它自己身上（自述、状态机的证据、可拨地址、上次成功的地址、曾经拨通它的别名 URL）；要用哪个节点，就先 `mesh.resolve(引用)` 拿到它再调它的方法（`hello` / `sendTask` / `getTask` / `fetchBlob`……）。引用可以是节点 id、**唯一**的显示名、或它声明过 / 曾拨通过的 URL；显示名重名时报错并列出候选 id，陌生 URL 报 `unknown_peer`。本机这一行恒为 `online`、不被心跳、取文件直接读本机盘，其余与别的行一样。
+**表里是节点对象。** 成员表是一张 `Map<节点 id, OrcaNode>`（`mesh/mesh.ts`），**本机自己也在表里**：`mesh.self` 与其他行是同一个类，“是不是自己”只看 `node.id === 本机 id`。一个节点的一切状态都在它自己身上（自述、状态机的证据、可拨地址、上次成功的地址）；要用哪个节点，就先 `mesh.resolve(引用)` 拿到它再调它的方法（`hello` / `sendTask` / `getTask` / `fetchBlob`……）。引用可以是节点 id、**唯一**的显示名、或它**宣告过**的 URL（`hasUrl` 只看它自述里的 `endpoints`，没有别名：靠没宣告的地址，比如 `localhost:端口`，连上一个只宣告局域网地址的节点之后，仍只能用 id、显示名或它宣告的地址指名它）；显示名重名时报错并列出候选 id，陌生 URL 报 `unknown_peer`（D58）。本机这一行恒为 `online`、不被心跳、取文件直接读本机盘，其余与别的行一样。
 
 ### 3.2 引导与加入
 
@@ -30,7 +30,7 @@
    本进程报“本机的 orca 节点已在另一个 DSH 进程中运行”，且没有动过共用的数据目录
 3. 绑定成功后才打开 SQLite、把被中断的任务标失败、把在途派发标 unknown
 4. 采集 runtime、把监听地址写进自述；开始心跳循环
-5. 配置的 peers 与记住的 peers 作为种子：逐个 `hello`；没应答的由心跳循环按 `recover_probe` 退避继续重试，直到连上或被手动移除
+5. 配置的 peers 与记住的 peers 作为种子：逐个 `hello`；没应答的由心跳循环按 `recover_probe` 退避继续重试（与 offline 节点的探测共用一条退避，`recoverDelayMs`），直到连上或被手动移除
 6. 没有 workgroup_id 或密码：节点保持未配置、不监听（面板向导填完才启动）
 ```
 
@@ -108,7 +108,7 @@ POST /cluster/hello          （请求头同上；body 如下）
 | `interval`      | `N` 秒，夹在 2–10s（±10% 抖动）   | 集群总流量 ≈ `N` req/s，线性增长             |
 | `suspect_after` | `interval × 1.25`（留抖动余量）   | 这么久没收到即可疑                           |
 | `offline_after` | `interval × 3`                    | 累计未收到，移出在线集                       |
-| `recover_probe` | 15s → 30s 退避                    | offline 后的探测                             |
+| `recover_probe` | 15s → 30s 退避                    | offline 后的探测，种子重试同此（`recoverProbeMs × 2^(失败次数-1)`，封顶 `maxRecoverProbeMs`） |
 | `record_ttl`    | 7d                                | offline 记录保留上限，之后修剪               |
 | `tombstone`     | 10 min                            | 被移除/修剪的 id 在这段时间内不再从他人目录登记；本人的 `hello` 会清除墓碑 |
 

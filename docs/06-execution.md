@@ -1,6 +1,6 @@
 # 06 执行与工作区
 
-> 本章描述任务在目标 orca node 上如何执行：执行器接口、Echo 脚本、ACP 的位置、单槽调度，以及工作区的目录约定。
+> 本章描述任务在目标 orca node 上如何执行：执行器接口、测试用脚本执行器、ACP 的位置、单槽调度，以及工作区的目录约定。
 
 ## 6. 执行与工作区
 
@@ -27,7 +27,6 @@ type ExecuteInput = {
   podDir: string;                 // 网关状态目录（sessions.json），agent 不可见
   permissionMode: PermissionMode; // 生效模式 = 较窄者（本机上限, origin 继承值）
   model?; reasoningEffort?;       // 按任务选模型（§6.15）
-  echo: EchoScript;               // 只有 Echo 执行器读
 };
 ```
 
@@ -37,41 +36,36 @@ type ExecuteInput = {
 
 ### 6.2 实现
 
-| 实现           | 适用                  | 优点                                 | 缺点                           |
-| -------------- | --------------------- | ------------------------------------ | ------------------------------ |
-| `EchoExecutor` | 协议联调、测试        | 无 DSH 依赖、确定性                  | 不执行真实任务                 |
-| `AcpExecutor`  | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent          |
+| 实现             | 适用                  | 优点                                 | 缺点                           |
+| ---------------- | --------------------- | ------------------------------------ | ------------------------------ |
+| `AcpExecutor`    | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent          |
+| `ScriptExecutor` | 只在测试与回环脚本里  | 无 DSH 依赖、确定性                  | 不执行真实任务；不随包发布     |
 
-**谁选执行器**：由**被调用 orca node 自己的配置**决定（`config.executor: "echo" | "acp"`），origin 不参与，也不能在任务里指定。核心库在没配置时用 `echo`；DSH 插件默认 `acp`。executor 是本机实现细节，A2A 线协议完全相同。要区分“能不能干这个活”，看 `/cluster/members` 里的 runtime 与模型目录，而不是执行器类型。
+**谁选执行器**：由**被调用 orca node 自己**决定，origin 不参与，也不能在任务里指定，节点设置里也没有执行器的选项。节点总是跑 `AcpExecutor`（[§6.14](06-execution.md#614-acpexecutor)），除非代码在 `new Orca(...)` 的 `options.executor` 里传了别的（测试与回环脚本就是这样传 `ScriptExecutor`）。executor 是本机实现细节，A2A 线协议完全相同。要区分“能不能干这个活”，看 `/cluster/members` 里的 runtime 与模型目录，而不是执行器类型。
 
-### 6.3 EchoExecutor：用脚本模拟任务
+### 6.3 脚本执行器（测试用）
 
-联调不需要真实 agent：用一个**声明式脚本**把“耗时、何时挂起、要什么权限、最终返回什么”写清楚，executor 照着演。它验证的是网络、状态机、审批回路和 blob 回传，不是模型能力。
+联调不需要真实 agent：测试（`test/support/script.ts` 的 `ScriptExecutor`）与回环/跨机器脚本（`npm run harness` = `scripts/harness_run.ts`、`scripts/cross.ts`）用一个**声明式脚本**把“耗时、何时挂起、要什么权限、最终返回什么”写清楚，executor 照着演。它验证的是网络、状态机、审批回路和 blob 回传，不是模型能力。它只在 `test/` 里，不属于产品，节点协议里没有脚本字段。
 
-脚本放在任务元数据里（`metadata.echo`；origin 签名，target 只读）：
+脚本放在任务文本里：文本里有一行 `SCRIPT <json>`，随任务书到达执行器，像任何别的任务文本一样（没有这一行等于空脚本）：
 
 ```json
 {
-  "echo": {
-    "steps": [
-      {
-        "at_ms": 600,
-        "suspend": { "kind": "permission", "tool": "write_file", "requested": { "path": "note.txt" }, "mode": "workspace-write" }
-      }
-    ],
-    "final": { "state": "completed", "text": "echo: done" }
-  }
+  "steps": [
+    { "at_ms": 600, "suspend": { "tool": "write_file", "requested": { "path": "note.txt" }, "mode": "workspace-write" } }
+  ],
+  "final": { "state": "completed", "text": "done" }
 }
 ```
 
 规则：
 
-- `steps` 最多 8 个；每个 `at_ms` 必须是非负整数、严格递增、且 ≤ 60000。`at_ms` 从任务开始计，**挂起等待的时间不计入**（恢复后从上次位置继续），断言不依赖机器速度。
-- `suspend.kind` 只有 `permission`：需要 `tool` 与 `requested` 对象，`mode` 是请求升到的模式（默认 `danger-full-access`），生成 [§4.8](04-transport.md#48-任务状态机) 的 `permission_request`。没有“向 origin 提问”的挂起：要演练阻塞，就用 `final: { state: "completed", text: "BLOCKED: …" }`。恢复需要 origin 发一条带 `message.taskId` 的 `message/send`，内容是签名 grant 或拒绝，且 task 必须处于 `input-required`；纯文本的恢复消息 → `400 bad_request`，任务不变。
-- `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` ≤ 8 KiB（按 UTF-8 字节），**原样返回**，不做模板替换，便于逐字节断言。
-- `final.text` 缺省为空串；`echo` 缺省（或 `null`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
-- 非法脚本（未知字段、`at_ms` 不递增/越界、`suspend` 类型或必填字段错误、`final.state` 非法、`text` 超限）在**建 task 之前**返回 `400 bad_echo_script`；orca node 忙时先回 `429 orca_node_busy`，脚本校验在忙检查之后、建 task 之前。
-- Echo 执行器遇到按任务指定的模型或 effort 时不猜测，直接 `failed(model_unsupported)`。真 executor（ACP）收到 `echo` 字段直接忽略，避免脚本泄漏到生产路径。
+- 每个 `step` 在任务开始后 `at_ms` 毫秒挂起一次，`at_ms` 从任务开始计，**挂起等待的时间不计入**（恢复后从上次位置继续），断言不依赖机器速度。
+- `suspend` 总是权限请求：`tool` 与 `requested` 对象，`mode` 是请求升到的模式（默认 `danger-full-access`），生成 [§4.8](04-transport.md#48-任务状态机) 的 `permission_request`。没有“向 origin 提问”的挂起：要演练阻塞，就用 `final: { state: "completed", text: "BLOCKED: …" }`。恢复规则见 [§7.11](07-security.md#711-批准与拒绝)：纯文本的恢复消息 → `400 bad_request`，任务不变。
+- `final.state` ∈ `completed | failed | hang`；`failed` 时 `text` 作为 `status.message`；`hang` 表示永不完成，用于测 TTL、失联与 `tasks/cancel`（只能被取消或 TTL 收掉）。`text` 缺省为空串，**原样返回**，不做模板替换，便于逐字节断言。
+- 没有脚本（或没有 `final`）等价于 `{ "steps": [], "final": { "state": "completed", "text": "echo" } }`，用于纯连通性探测。
+- 脚本不在网关或 target 侧校验：它只是任务文本，坏脚本只会让这个测试执行器抛错。
+- `scripts/cross.ts` 用 `--script '<json>'` 传入自定义脚本，写进任务文本。
 
 ### 6.4 ACP 的位置
 
@@ -159,7 +153,7 @@ Pod gateway (local)
   "holder": { "task_id": "…", "origin_orca_node": "…", "since": "2026-11-14T05:10:00Z" } }
 ```
 
-- 忙时拒绝发生在**建 task 之前**：不产生 task；模型重试就是一次新的 `message/send`。`submit` 的检查顺序是：槽位 → 元数据/Echo 脚本 → 工作区配额（[§6.13](06-execution.md#613-配额清理跨平台)）。
+- 忙时拒绝发生在**建 task 之前**：不产生 task；模型重试就是一次新的 `message/send`。`submit` 的检查顺序是：槽位 → 工作区配额（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - **`input-required` 的恢复也要重新拿槽**：挂起的任务不占槽，它等 origin 回话时别的任务可以进来；origin 的恢复消息到达时槽若被占，同样回 `429 orca_node_busy`，任务仍停在 `input-required`，**由 origin 自己决定什么时候重试**——不预留、不排队、不替上游重发。
 - **本地硬预算**：`task_timeout_s`（默认 3600s）是本机对单个任务的硬上限，实际 TTL 取 `min(pod.task_ttl_s, task_timeout_s)`；到点先置终态、再 abort 执行器，语义是 `failed("task ttl exceeded", reason="timeout")`，不依赖任务自己配合。`input-required` 期间 TTL 暂停，恢复后重新计时。这个上限随 Agent Card 与 self record 里的 `max_task_ttl_s` 对外公布，origin 据此决定拆多细的任务。
 - **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一 orca node 上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
@@ -194,7 +188,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 - 任务视图里没有 token 用量。
 - 结论文本是 agent 自己的话，origin 一律当不可信输入处理（[§7.5](07-security.md#75-远程任务是不可信输入)）。
 
-任务 `failed` 时 `status.reason` 是机器可读的原因：`timeout`、`node_restart`、`permission_denied`、`permission_timeout`、`grant_invalid` / `grant_expired` / `grant_replayed`、`model_unavailable`、`model_unsupported`、`executor_exited`、`executor_error`，以及执行器自带的原因；`canceled` 的 reason 是 `canceled`。
+任务 `failed` 时 `status.reason` 是机器可读的原因：`timeout`、`node_restart`、`permission_denied`、`permission_timeout`、`model_unavailable`、`executor_exited`、`executor_error`，以及执行器自带的原因；`canceled` 的 reason 是 `canceled`。
 
 ### 6.12 明确不做
 
@@ -245,7 +239,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 | `stopReason: "max_tokens"` / `"refusal"` / `"max_turn_requests"`        | `failed(原因文本)`                                                                                            |
 | 取消                                                                    | 发 `session/cancel`；2s 宽限后该 session 仍是连接上正在跑的那个，才关连接/杀进程树（避免误杀已复用同一连接的下一个任务） |
 
-**grant 与 ACP 的对齐**：[§7.11](07-security.md#711-grant) 的 grant 升级的是任务的模式，不是单次调用：触发它的那次 `session/request_permission` 回 `allow_once`，之后的请求由执行器按新模式自己应答，不再挂起。target 侧只校验 grant（绑定哪个任务、哪个请求、哪个模式、谁签的）。
+**批准与 ACP 的对齐**：[§7.11](07-security.md#711-批准与拒绝) 的批准升级的是任务的模式，不是单次调用：触发它的那次 `session/request_permission` 回 `allow_once`，之后的请求由执行器按新模式（挂起的请求里的 `requested_mode`）自己应答，不再挂起。target 侧只校验恢复消息（谁发的、任务是否在等、批准是否对着这次请求）。
 
 **给 ACP 会话的东西：只管文件的 `orca_pod`**：任务在宿主的 profile 里运行，所以 ACP agent 所在的 `dsh` 进程也加载了本插件。executor 给子进程环境注入三个变量：`ORCA_POD_IN_TASK=1`（这是任务会话：插件见到它就不启动节点、不注册 skill，[§7.9](07-security.md#79-权限跟随发起-orca-node)），以及 `ORCA_POD_NODE_URL` 与 `ORCA_POD_NODE_TOKEN`（本机节点的 loopback 地址与本地路由的令牌，节点开始监听之后、每次启动子进程时读取）。插件据此只注册 `fetch` 与 `publish` 两个方法的 `orca_pod`，经本机节点办事（[§5.6](05-tasks.md#56-文件交换blob-通道)）。任务书的可信前言（[§6.7](06-execution.md#67-工作区一份持久)）教 agent 怎么用：
 
@@ -254,7 +248,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 - **阻塞只有一种表达**：任务不能暂停下来向 origin 提问，只有权限请求会等 origin。缺信息、需要只有 origin 能做的决定、必需的对端离线（先最多重试一次）时，都把**自己的任务按 completed 结束**（不挂在 working），结论首行写 `BLOCKED: <原因>`，随后列出已完成的步骤、被阻步骤，以及 origin 应补充什么或重跑什么，由 origin 决定下一步（包括把哪部分派给别的节点）。tracker 会把它标成 “completed with a blocker report”。
 - 永不自己批准自己的权限请求。
 
-随包发布的标准 skill bundle（`skills/orca-node/`）介绍 `orca_pod` 工具，是给**宿主自己的会话**用的（可以派任务），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认关，是插件配置里唯一的字段；不写用户 skill 目录）；执行器会话看不到宿主的技能注册表，只靠前言。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，传给 `session/new` / `session/resume` 时换成 ACP 的 `McpServerStdio` 形状（`args` 缺省为 `[]`，`env` 由对象换成 `[{name, value}]`）。
+随包发布的标准 skill bundle（`skills/orca-node/`）介绍 `orca_pod` 工具，是给**宿主自己的会话**用的（可以派任务），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认开，`false` 关闭，是插件配置里唯一的字段；不写用户 skill 目录）；执行器会话看不到宿主的技能注册表，只靠前言。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，传给 `session/new` / `session/resume` 时换成 ACP 的 `McpServerStdio` 形状（`args` 缺省为 `[]`，`env` 由对象换成 `[{name, value}]`）。
 
 **不做**：把 ACP 的进度透传到 A2A 流、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、同一 session 上的多个 in-flight prompt。
 
@@ -270,10 +264,10 @@ orca node 的默认模型由本机 profile 决定（`agent-default-model` 插件
 
 **形状用 DSH 的**：模型选择就是 DSH 的 `ModelSelection`（`@deepseek-ai/dsh-agent`：`{provider, model, reasoningEffort?}`），effort 是适配器自有的 `ReasoningEffortId`（`@deepseek-ai/dsh-llm`），目录条目是 `LlmModelInfo` 中对端需要的部分（`{provider, id, name, description?}`）；协议只定义线上 zod schema，不另造类型。
 
-**自述**：自述记录（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）带 `models`（上述目录条目，上限 128 条，去重）、`default_model`（`ModelSelection` 或 `null`）与 `default_reasoning_effort`（`ReasoningEffortId` 或 `null`）。它们随 `hello` 的自述、self record 与 `/cluster/members` 传播；**不进**公开的 Agent Card，模型清单只对同组成员可见。插件启动后通过 DSH Host 的 `llm` 服务枚举 `${provider}×listModels`（单 provider 失败只记日志），默认模型取 `agentDefaultModel.currentSelection()`；纯 CLI 节点没有 Host 服务，可在 `config.json` 手填 `models`/`default_model`/`default_reasoning_effort`，不填就是空目录。本地配置里钉死的默认值优先于 Host 报告的。
+**自述**：自述记录（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）带 `models`（上述目录条目，上限 128 条，去重）、`default_model`（`ModelSelection` 或 `null`）与 `default_reasoning_effort`（`ReasoningEffortId` 或 `null`）。它们随 `hello` 的自述、self record 与 `/cluster/members` 传播；**不进**公开的 Agent Card，模型清单只对同组成员可见。目录与默认模型**不是设置**，节点宣告的恰是 DSH Host 报告的：插件的 `ModelCatalogFeed` 通过 Host 的 `llm` 服务枚举 `${provider}×listModels`（单 provider 失败只记日志），默认模型取 `agentDefaultModel.currentSelection()`，变化时经 `ModelCatalog.update` 装到节点上；Host 报告之前、或没有这些服务的纯 CLI 节点，目录为空（任务照常用执行器自己的默认）。节点设置里模型相关的只剩 `default_reasoning_effort`：它优先于 Host 的 effort，并折进宣告的默认模型的 `reasoningEffort`。
 
-**选择**：任务书 `metadata.pod.model` 可选一个 `ModelSelection`，`metadata.pod.reasoning_effort` 可单独给；与 `pod.permission_mode` 同级校验（非法直接 `400 bad_request`）。工具 `orca_pod` 的 `send` 方法的 `model`、`reasoning_effort` 参数落到这两个字段（effort 可单独给）。**优先级**：任务显式值 > 节点本地默认（`default_model`/`default_reasoning_effort`，面板高级设置可配；面板可选的 effort 来自 Host `llm.resolveModelInfo` 报告的默认模型 `reasoning.efforts`，不维护自己的清单）> ACP/provider 默认。
+**选择**：任务书 `metadata.pod.model` 可选一个 `ModelSelection`，`metadata.pod.reasoning_effort` 可单独给；与 `pod.permission_mode` 同级校验（非法直接 `400 bad_request`）。工具 `orca_pod` 的 `send` 方法的 `model`、`reasoning_effort` 参数落到这两个字段（effort 可单独给）。**优先级**：任务显式值 > 节点本地默认（Host 报告的默认模型，以及 `default_reasoning_effort`——面板高级设置可配；面板可选的 effort 来自 Host `llm.resolveModelInfo` 报告的默认模型 `reasoning.efforts`，不维护自己的清单）> ACP/provider 默认。
 
-**目标侧执行**：只有 ACP 执行器支持按任务选模型。它在 `session/new`/`session/resume` 拿到 `sessionId` 后、发 `session/prompt` 之前，按 ACP 的 `session/set_config_option` 设置会话的配置项。配置项按 ACP 的 `category` 从会话返回的 `configOptions` 里找（`model`、`thought_level`），不写死 id；每次设置后以应答里的 `configOptions` 为准（换了模型，可选的 effort 也会变）。模型的取值是 dsh-acp 的约定 `JSON.stringify([provider, model])`（仅当本次有模型值时）；随后仅在本次有效 effort 存在时再设一次 `thought_level`；没有就保持 provider 默认（DeepSeek 模型自带默认挡位，`dsh-acp` 会拒绝这类模型的空串 provider-default 值）。有效模型/effort = 任务请求值 ?? 节点本地默认。选择失败（值不在该会话的 configuration options 里、或 ACP 拒绝）→ 任务直接 `failed(model_unavailable)`，不会用默认模型偷偷跑。Echo 执行器收到按任务模型或 effort 时 `failed(model_unsupported)`。选择是**提示、不是授权**：目标机仍按本机 `permission_mode`、审批与工作区规则执行；模型目录也不泄露凭据或 provider 配置。
+**目标侧执行**：只有 ACP 执行器支持按任务选模型。它在 `session/new`/`session/resume` 拿到 `sessionId` 后、发 `session/prompt` 之前，按 ACP 的 `session/set_config_option` 设置会话的配置项。配置项按 ACP 的 `category` 从会话返回的 `configOptions` 里找（`model`、`thought_level`），不写死 id；每次设置后以应答里的 `configOptions` 为准（换了模型，可选的 effort 也会变）。模型的取值是 dsh-acp 的约定 `JSON.stringify([provider, model])`（仅当本次有模型值时）；随后仅在本次有效 effort 存在时再设一次 `thought_level`；没有就保持 provider 默认（DeepSeek 模型自带默认挡位，`dsh-acp` 会拒绝这类模型的空串 provider-default 值）。有效模型/effort = 任务请求值 ?? 节点本地默认。选择失败（值不在该会话的 configuration options 里、或 ACP 拒绝）→ 任务直接 `failed(model_unavailable)`，不会用默认模型偷偷跑。选择是**提示、不是授权**：目标机仍按本机 `permission_mode`、审批与工作区规则执行；模型目录也不泄露凭据或 provider 配置。
 
 ---

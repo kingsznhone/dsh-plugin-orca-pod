@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RuntimeInfo } from "../src/mesh/wire.ts";
 import { type NodeInput, newNode } from "./support/node.ts";
@@ -22,7 +22,7 @@ describe("this node as a row of its own table", () => {
   it("shows the node id as the name until a display name is set", () => {
     const unnamed = node();
     expect(unnamed.mesh.self.view().display_name).toBe(
-      unnamed.orcaNodeId.slice(0, 6) + "…" + unnamed.orcaNodeId.slice(-4),
+      unnamed.mesh.self.id.slice(0, 6) + "…" + unnamed.mesh.self.id.slice(-4),
     );
     expect(node({ display_name: "alpha" }).mesh.self.view().display_name).toBe("alpha");
   });
@@ -32,11 +32,11 @@ describe("this node as a row of its own table", () => {
     const { self } = orca.mesh;
     expect(self.isSelf).toBe(true);
     expect(self.state).toBe("online");
-    expect(orca.mesh.get(orca.orcaNodeId)).toBe(self);
+    expect(orca.mesh.get(orca.mesh.self.id)).toBe(self);
     expect(orca.mesh.peers()).toEqual([]);
   });
 
-  it("advertises the endpoints it was told about, and the busy holder pushed to it", () => {
+  it("advertises the endpoints it was told about, and the task holding its slot", () => {
     const orca = node({
       bind_host: "10.0.0.2",
       port: 11811,
@@ -46,9 +46,9 @@ describe("this node as a row of its own table", () => {
     expect(self.endpoints).toEqual(["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
     expect(self.view().busy).toBeNull();
     const busy = { task_id: "t1", origin_orca_node: labelId("OTHER"), since: "2026-01-01T00:00:00.000Z" };
-    self.setBusy(busy);
+    const slot = vi.spyOn(orca.tasks, "busy").mockReturnValue(busy);
     expect(self.view().busy).toEqual(busy);
-    self.setBusy(null);
+    slot.mockReturnValue(null);
     expect(self.selfRecord().busy).toBeNull();
   });
 
@@ -63,7 +63,7 @@ describe("this node as a row of its own table", () => {
   it("answers as a self record with its workgroup", () => {
     const orca = node();
     expect(orca.mesh.self.selfRecord()).toMatchObject({
-      orca_node_id: orca.orcaNodeId,
+      orca_node_id: orca.mesh.self.id,
       workgroup_id: wg("grp"),
       state: "online",
     });

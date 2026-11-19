@@ -1,8 +1,12 @@
+import { Readable } from "node:stream";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
+
 import { z } from "zod";
 
 import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 
 import { POD_ERROR_STATUS, PodError, type PodErrorCode } from "../core/errors.ts";
+import type { OpenedBlob } from "../core/blobs.ts";
 import { readAll } from "../core/stream.ts";
 import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER, verifyReplyHeader } from "../core/signing.ts";
 import { parseOrThrow } from "../core/schema.ts";
@@ -17,9 +21,9 @@ function isPodErrorCode(value: unknown): value is PodErrorCode {
 /**
  * Read a peer's error leniently: a body we cannot make sense of keeps the
  * generic code. The gateway's `{code, message}` and the same inside a JSON-RPC
- * `error.data` both parse, and so does a 200 reply carrying an `error` envelope.
+ * `error.data` both parse.
  */
-export const ErrorReplySchema = z.object({
+const ErrorReplySchema = z.object({
   code: z.string().optional(),
   message: z.string().optional(),
   error: z
@@ -29,7 +33,7 @@ export const ErrorReplySchema = z.object({
     })
     .optional(),
 });
-export type ErrorReply = z.infer<typeof ErrorReplySchema>;
+type ErrorReply = z.infer<typeof ErrorReplySchema>;
 
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
@@ -62,15 +66,12 @@ type JsonRequest<S extends z.ZodType> = {
 /** What an answer to a call is: its parsed body, and the node that signed it. */
 export type Answer<T> = { body: T; from: OrcaNodeId };
 
-/** A file a peer is sending: its bytes as they arrive, and their count when the peer said it. */
-type Download = { body: ReadableStream<Uint8Array>; size: number | undefined };
-
-/** Knobs of the client that are not collaborators. */
-type PeerClientOptions = {
-  fetch: FetchLike;
-  /** Deadline of one call unless the caller names its own (§4.7). */
-  timeoutMs: number;
-};
+/**
+ * Deadline of one call unless the caller names its own (§4.7): a peer that
+ * accepts the connection and then stalls would otherwise hang a tool call or the
+ * tracker.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** A hostile or broken peer must not be able to make us buffer unbounded JSON (§4.7). */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -78,15 +79,6 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const PEER_TIMEOUT = "PEER_TIMEOUT";
 
 type Reply = { status: number; ok: boolean; contentType: string; bytes: Buffer; from: OrcaNodeId };
-
-/** One error for both wire shapes: a peer's code if we know it, else `peer_error`. */
-export function remoteError(label: string, status: number, body: ErrorReply | undefined): PodError {
-  const data = body?.error?.data ?? body;
-  const code = data?.code ?? body?.error?.message;
-  const detail = typeof data?.message === "string" && data.message !== code ? ` (${data.message})` : "";
-  const shown = typeof code === "string" ? code : `http_${status}`;
-  return new PodError(isPodErrorCode(code) ? code : "peer_error", `${label} ${status}: ${shown}${detail}`, status);
-}
 
 /**
  * The outbound client (§4.7): every request carries this node's signature and the
@@ -102,7 +94,8 @@ export class HttpPeerClient {
     /** The workgroup key behind the proof of every request (§7.1). */
     private readonly key: Buffer,
     private readonly workgroupId: WorkgroupId,
-    private readonly options: PeerClientOptions,
+    /** Outbound HTTP; tests inject packet loss, delay and partitions. */
+    private readonly fetch: FetchLike,
   ) {}
 
   /** Signed JSON request; resolves with the 2xx body, parsed by `request.reply`, and who signed it. */
@@ -129,7 +122,7 @@ export class HttpPeerClient {
         redirect: "manual",
         signal,
       };
-      const response = await this.options.fetch(url, init);
+      const response = await this.fetch(url, init);
       const bytes = await HttpPeerClient.readCapped(label, response);
       const from = this.signedBy(label, response, options.target, {
         nonce,
@@ -144,7 +137,7 @@ export class HttpPeerClient {
         from,
       };
     });
-    if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply);
+    if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply.status, reply.bytes);
     // A peer cannot hand us a shape we did not ask for.
     const parsed = parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (problem) => {
       return new PodError("peer_error", `${label} ${reply.status}: unexpected reply: ${problem}`, 502);
@@ -159,37 +152,31 @@ export class HttpPeerClient {
    * before the first one arrives; the caller checks them against the sha256 the
    * file is named by. A failed reply is the same typed error as for `call`.
    */
-  async download(endpoint: string, blobId: string, call: CallOptions): Promise<Download> {
+  async download(endpoint: string, blobId: string, call: CallOptions): Promise<OpenedBlob> {
     const path = `/blobs/${blobId}`;
     const url = new URL(path, endpoint);
     const nonce = newNonce();
     // The deadline covers the answer, not the transfer: a large file may stream for long.
     return this.withDeadline(path, call, async (signal) => {
-      const response = await this.options.fetch(url, {
+      const response = await this.fetch(url, {
         method: "GET",
         headers: { authorization: this.authorization("GET", url, call.target, nonce) },
         redirect: "manual",
         signal,
       });
-      const subject = response.ok ? `blob:${blobId}` : undefined;
+      const { status } = response;
       if (!response.ok || response.body === null) {
         const bytes = await HttpPeerClient.readCapped(path, response);
-        const from = this.signedBy(path, response, call.target, {
-          nonce,
-          status: response.status,
-          subject: subject ?? bodySha256(bytes),
-        });
-        throw HttpPeerClient.unwrapError(path, {
-          status: response.status,
-          ok: false,
-          contentType: (response.headers.get("content-type") ?? "").toLowerCase(),
-          bytes,
-          from,
-        });
+        const subject = response.ok ? `blob:${blobId}` : bodySha256(bytes);
+        this.signedBy(path, response, call.target, { nonce, status, subject });
+        throw HttpPeerClient.unwrapError(path, status, bytes);
       }
-      this.signedBy(path, response, call.target, { nonce, status: response.status, subject: `blob:${blobId}` });
+      this.signedBy(path, response, call.target, { nonce, status, subject: `blob:${blobId}` });
       const length = response.headers.get("content-length");
-      return { body: response.body, size: length === null ? undefined : Number(length) };
+      return {
+        stream: Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
+        size: length === null ? undefined : Number(length),
+      };
     });
   }
 
@@ -223,7 +210,7 @@ export class HttpPeerClient {
     call: CallOptions,
     work: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
-    const limit = deadline(call.signal, call.timeoutMs ?? this.options.timeoutMs, PEER_TIMEOUT);
+    const limit = deadline(call.signal, call.timeoutMs ?? REQUEST_TIMEOUT_MS, PEER_TIMEOUT);
     try {
       return await work(limit.signal);
     } catch (error) {
@@ -278,15 +265,19 @@ export class HttpPeerClient {
     }
   }
 
-  /** The typed error of a failed reply. */
-  private static unwrapError(label: string, reply: Reply): PodError {
+  /** The typed error of a failed reply, for both wire shapes: a peer's code if we know it, else `peer_error`. */
+  private static unwrapError(label: string, status: number, bytes: Buffer): PodError {
     let body: ErrorReply | undefined;
     try {
-      const parsed = ErrorReplySchema.safeParse(JSON.parse(reply.bytes.toString("utf8")));
+      const parsed = ErrorReplySchema.safeParse(JSON.parse(bytes.toString("utf8")));
       body = parsed.success ? parsed.data : undefined;
     } catch {
       // A non-JSON error page keeps the generic code.
     }
-    return remoteError(label, reply.status, body);
+    const data = body?.error?.data ?? body;
+    const code = data?.code ?? body?.error?.message;
+    const detail = typeof data?.message === "string" && data.message !== code ? ` (${data.message})` : "";
+    const shown = typeof code === "string" ? code : `http_${status}`;
+    return new PodError(isPodErrorCode(code) ? code : "peer_error", `${label} ${status}: ${shown}${detail}`, status);
   }
 }

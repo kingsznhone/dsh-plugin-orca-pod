@@ -16,17 +16,16 @@ import { shortenNodeId } from "../src/core/identity.ts";
 import { normalizePeerUrl } from "../src/core/net.ts";
 import { PanelModel } from "../src/plugin/panel.ts";
 import { Pod } from "../src/plugin/pod.ts";
-import { PASSWORD_REF, type PodStores } from "../src/plugin/stores.ts";
-import { MemoryCredentials, podStores } from "./fixtures/credentials.ts";
+import { NODE_KEY, PASSWORD_REF, PodStores } from "../src/plugin/stores.ts";
+import { credentialHost, MemoryCredentials, podStores } from "./fixtures/credentials.ts";
 import { PanelPatchSchema } from "../src/node/settings.ts";
-import { ApprovalBroker } from "../src/plugin/broker.ts";
+import { Tracker } from "../src/plugin/tracker.ts";
 import type { OptionalService } from "../src/plugin/services.ts";
 import { PodTool } from "../src/plugin/tools.ts";
 import { wg } from "./fixtures/ids.ts";
 import { catalogFeed, idlePod, logger } from "./fixtures/pod.ts";
 import { peersOf } from "./support/node.ts";
 
-const peerStatePath = (root: string): string => join(root, "peers.json");
 const settingsPath = (root: string): string => join(root, "settings.json");
 const roots: string[] = [];
 const PASSWORD = "panel-password";
@@ -68,7 +67,7 @@ async function launch(
     await mkdir(root, { recursive: true });
     await writeFile(settingsPath(root), JSON.stringify(settings));
   }
-  const handle = new Pod(logger, stores, catalogFeed(), root);
+  const handle = new Pod(logger, credentialHost(credentials), catalogFeed(), root);
   handle.start();
   return { handle, stores, credentials, root };
 }
@@ -82,10 +81,10 @@ async function started(settings: Record<string, unknown>, root?: string): Promis
 }
 
 /** The URL a running pod listens on. */
-const urlOf = (handle: Pod): string => handle.run!.orca.mesh.self.endpoints[0]!;
+const urlOf = (handle: Pod): string => handle.run!.mesh.self.endpoints[0]!;
 
 function panelFor(handle: Pod): PanelModel {
-  return new PanelModel(handle, new ApprovalBroker(handle), catalogFeed());
+  return new PanelModel(handle, new Tracker(handle, logger, () => undefined), catalogFeed());
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
@@ -110,13 +109,13 @@ describe("panel configuration of the pod", () => {
       expect(handle.status.kind).not.toBe("failed");
       expect(credentials.secrets.get(PASSWORD_REF)).toBe(PASSWORD);
       expect(await readJson(settingsPath(root))).toMatchObject({ display_name: "renamed node" });
-      // Neither the settings file nor the node's settings carry the password.
+      // Neither the settings file nor the settings the node runs with carry the password.
       expect(await readFile(settingsPath(root), "utf8")).not.toContain(PASSWORD);
-      expect(JSON.stringify(handle.run!.orca.settings)).not.toContain(PASSWORD);
+      expect(JSON.stringify(handle.settings)).not.toContain(PASSWORD);
 
-      const firstId = handle.run!.orca.orcaNodeId;
+      const firstId = handle.run!.mesh.self.id;
       await handle.reconfigure({ display_name: "renamed again" });
-      expect(handle.run!.orca.orcaNodeId).toBe(firstId);
+      expect(handle.run!.mesh.self.id).toBe(firstId);
     } finally {
       await handle.stop();
     }
@@ -137,7 +136,7 @@ describe("panel configuration of the pod", () => {
     const { handle, stores } = await launch(bundle(), { password: PASSWORD });
     await handle.orca().catch(() => undefined);
     try {
-      expect((await stores.readIdentity())?.orcaNodeId).toBe(handle.run!.orca.orcaNodeId);
+      expect((await stores.readIdentity())?.orcaNodeId).toBe(handle.run!.mesh.self.id);
     } finally {
       await handle.stop();
     }
@@ -169,7 +168,7 @@ describe("panel configuration of the pod", () => {
 
     await handle.reconfigure({ workgroup_password: PASSWORD });
     expect(handle.status.kind).toBe("running");
-    expect(await handle.orca()).toBe(handle.run!.orca);
+    expect(await handle.orca()).toBe(handle.run!);
     expect(handle.run!.port).toBeGreaterThan(0);
 
     // Another process of this machine (its own data root here) cannot listen on the
@@ -205,18 +204,18 @@ describe("panel configuration of the pod", () => {
   });
 
   it("makes a tool call wait for an in-place restart instead of reporting that nothing runs", async () => {
-    const { handle, stores } = await started(bundle());
+    const { handle } = await started(bundle());
     try {
       // Hold the restart at the point where the old node is gone and the new one is not up yet.
-      const readPassword = stores.readPassword.bind(stores);
+      const { readPassword } = PodStores.prototype;
       let reachedBoot!: () => void;
       const reached = new Promise<void>((resolve) => (reachedBoot = resolve));
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
-      vi.spyOn(stores, "readPassword").mockImplementationOnce(async () => {
+      vi.spyOn(PodStores.prototype, "readPassword").mockImplementationOnce(async function (this: PodStores) {
         reachedBoot();
         await gate;
-        return readPassword();
+        return readPassword.call(this);
       });
       const rotating = handle.reconfigure({ workgroup_password: "rotated" });
       await reached;
@@ -234,7 +233,7 @@ describe("panel configuration of the pod", () => {
       await rotating;
       const outcome = await call;
       expect(outcome).toHaveProperty("value");
-      expect(JSON.stringify((outcome as { value: unknown }).value)).toContain(handle.run!.orca.orcaNodeId);
+      expect(JSON.stringify((outcome as { value: unknown }).value)).toContain(handle.run!.mesh.self.id);
     } finally {
       await handle.stop();
     }
@@ -264,9 +263,10 @@ describe("panel configuration of the pod", () => {
       expect(handle.settings.display_name).toBe("kept");
 
       await handle.reconfigure({ task_timeout_s: null });
-      expect(handle.settings.task_timeout_s).toBeUndefined();
+      expect(handle.settings.task_timeout_s).toBe(3600);
       expect(await readJson(settingsPath(root))).not.toHaveProperty("task_timeout_s");
-      expect(handle.run!.orca.settings.task_timeout_s).toBeUndefined();
+      // The node advertises the budget it now runs with.
+      expect(handle.run!.mesh.self.view().max_task_ttl_s).toBe(3600);
     } finally {
       await handle.stop();
     }
@@ -289,12 +289,13 @@ describe("panel configuration of the pod", () => {
   it("listens on loopback until the panel picks an interface", async () => {
     const { handle, root } = await started(bundle());
     try {
-      expect(handle.run!.orca.settings.bind_host).toBe("127.0.0.1");
+      expect(handle.settings.bind_host).toBe("127.0.0.1");
 
-      const view = await panelFor(handle).saveConfig({ bind_host: "0.0.0.0" });
+      await handle.reconfigure({ bind_host: "0.0.0.0" });
+      const view = await panelFor(handle).config();
       expect(view.settings.bind_host).toBe("0.0.0.0");
       expect((await readJson(settingsPath(root))).bind_host).toBe("0.0.0.0");
-      expect(handle.run!.orca.settings.bind_host).toBe("0.0.0.0");
+      expect(handle.settings.bind_host).toBe("0.0.0.0");
     } finally {
       await handle.stop();
     }
@@ -304,50 +305,39 @@ describe("panel configuration of the pod", () => {
     const { handle, root } = await started(bundle());
     try {
       const panel = panelFor(handle);
-      const view = await panel.saveConfig({
+      await handle.reconfigure({
         task_timeout_s: 120,
-        approval_timeout_s: 45,
-        result_max_bytes: 4096,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
         default_reasoning_effort: ReasoningEffortId("max"),
-        executor: "echo",
       });
+      const view = await panel.config();
 
       expect(view.settings).toMatchObject({
         task_timeout_s: 120,
-        approval_timeout_s: 45,
-        result_max_bytes: 4096,
         max_workspace_bytes: 5 * 1024 ** 3,
-        max_workspace_files: 50_000,
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
         default_reasoning_effort: ReasoningEffortId("max"),
-        executor: "echo",
       });
       expect(handle.status.kind).not.toBe("failed");
 
       expect((await readJson(settingsPath(root))).task_timeout_s).toBe(120);
-      const nodeSettings = handle.run!.orca.settings;
-      expect(nodeSettings.task_timeout_s).toBe(120);
-      expect(nodeSettings.result_max_bytes).toBe(4096);
+      const nodeSettings = handle.settings;
+      expect(handle.run!.mesh.self.view().max_task_ttl_s).toBe(120);
       expect(nodeSettings.permission_mode).toBe("workspace-write");
       expect(nodeSettings.default_reasoning_effort).toBe("max");
-      expect(nodeSettings.executor).toBe("echo");
 
       // Clearing a field removes it from the settings file and the node's settings,
       // so the local default applies again instead of a stale stored value.
-      const cleared = await panel.saveConfig({ task_timeout_s: null, default_reasoning_effort: null, executor: null });
-      expect(cleared.settings.task_timeout_s).toBeUndefined();
+      await handle.reconfigure({ task_timeout_s: null, default_reasoning_effort: null });
+      const cleared = await panel.config();
+      expect(cleared.settings.task_timeout_s).toBe(3600);
       expect(cleared.settings.default_reasoning_effort).toBeUndefined();
-      expect(cleared.settings.executor).toBeUndefined();
-      const clearedSettings = handle.run!.orca.settings;
-      expect(clearedSettings.task_timeout_s).toBeUndefined();
-      expect(clearedSettings.default_reasoning_effort).toBeUndefined();
-      // Clearing the executor falls back to the plugin default (acp).
-      expect(clearedSettings.executor).toBe("acp");
+      expect(handle.run!.mesh.self.view().max_task_ttl_s).toBe(3600);
+      expect(handle.settings.default_reasoning_effort).toBeUndefined();
     } finally {
       await handle.stop();
     }
@@ -358,7 +348,7 @@ describe("panel configuration of the pod", () => {
     const other = await started(bundle());
     try {
       await handle.addPeer(urlOf(other.handle));
-      const before = handle.run!.orca.orcaNodeId;
+      const before = handle.run!.mesh.self.id;
       expect(handle.configured).toBe(true);
       expect(await stores.readIdentity()).toBeDefined();
 
@@ -371,12 +361,12 @@ describe("panel configuration of the pod", () => {
       expect(credentials.secrets.get(PASSWORD_REF)).toBeUndefined();
       expect(await stores.readIdentity()).toBeUndefined();
       await expect(readFile(settingsPath(root), "utf8")).rejects.toThrow();
-      await expect(readFile(peerStatePath(root), "utf8")).rejects.toThrow();
       expect(handle.settings.workgroup_id).toBeUndefined();
+      expect(handle.settings.peers).toEqual([]);
 
-      const view = await panelFor(handle).saveConfig({ workgroup_id: wg("wg-panel"), workgroup_password: PASSWORD });
-      expect(view.running).toBe(true);
-      expect(handle.run!.orca.orcaNodeId).not.toBe(before);
+      await handle.reconfigure({ workgroup_id: wg("wg-panel"), workgroup_password: PASSWORD });
+      expect(handle.run).not.toBeNull();
+      expect(handle.run!.mesh.self.id).not.toBe(before);
     } finally {
       await handle.stop();
       await other.handle.stop();
@@ -385,7 +375,7 @@ describe("panel configuration of the pod", () => {
 
   it("keeps the configuration and the orca node id on the next start", async () => {
     const first = await started(bundle());
-    const firstId = first.handle.run!.orca.orcaNodeId;
+    const firstId = first.handle.run!.mesh.self.id;
     await first.handle.stop();
 
     const second = await launch({}, { root: first.root, credentials: first.credentials });
@@ -393,45 +383,43 @@ describe("panel configuration of the pod", () => {
     try {
       expect(second.handle.configured).toBe(true);
       expect(second.handle.status.kind).not.toBe("failed");
-      expect(second.handle.run!.orca.orcaNodeId).toBe(firstId);
+      expect(second.handle.run!.mesh.self.id).toBe(firstId);
     } finally {
       await second.handle.stop();
     }
   });
 
-  it("remembers a peer joined live as runtime state, not as a setting", async () => {
+  it("adds a peer joined live to the settings' peers, without restarting the node", async () => {
     const a = await started(bundle());
     const b = await started(bundle());
     try {
+      const run = a.handle.run;
       const peerUrl = urlOf(b.handle);
       await a.handle.addPeer(peerUrl);
-      expect(a.handle.rememberedPeers).toEqual([peerUrl]);
-      expect(await readJson(peerStatePath(a.root))).toEqual({ peers: [peerUrl] });
-      expect(await readJson(settingsPath(a.root))).not.toHaveProperty("peers");
-      expect((await panelFor(a.handle).config()).peers).toEqual([peerUrl]);
+      await a.handle.addPeer(peerUrl);
+      expect((await readJson(settingsPath(a.root))).peers).toEqual([peerUrl]);
+      expect(a.handle.run).toBe(run);
     } finally {
       await a.handle.stop();
       await b.handle.stop();
     }
   });
 
-  it("rejoins the remembered peers when the node starts", async () => {
+  it("joins the settings' peers when the node starts", async () => {
     const b = await started(bundle());
     try {
       const peerUrl = urlOf(b.handle);
-      // What an earlier session left behind; startup tries it once without
-      // waiting for the operator to click Connect again.
-      const rootA = await tempRoot("orca-panel-a-");
-      await writeFile(peerStatePath(rootA), JSON.stringify({ peers: [peerUrl] }), "utf8");
-      const a = await started(bundle(), rootA);
+      // What an earlier session joined; startup tries it without waiting for the
+      // operator to click Connect again.
+      const a = await started({ ...bundle(), peers: [peerUrl] });
       try {
-        const want = b.handle.run!.orca.orcaNodeId;
+        const want = b.handle.run!.mesh.self.id;
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
-          if (peersOf(a.handle.run!.orca).some((member) => member.state === "online")) break;
+          if (peersOf(a.handle.run!).some((member) => member.state === "online")) break;
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
         }
-        expect(peersOf(a.handle.run!.orca).map((member) => member.orca_node_id)).toContain(want);
+        expect(peersOf(a.handle.run!).map((member) => member.orca_node_id)).toContain(want);
       } finally {
         await a.handle.stop();
       }
@@ -444,8 +432,8 @@ describe("panel configuration of the pod", () => {
     const { handle, root } = await started(bundle());
     try {
       await expect(handle.addPeer("http://127.0.0.1:1")).rejects.toThrow();
-      expect(handle.rememberedPeers).toEqual([]);
-      await expect(readFile(peerStatePath(root), "utf8")).rejects.toThrow();
+      expect(handle.settings.peers).toEqual([]);
+      expect(await readJson(settingsPath(root))).not.toHaveProperty("peers");
     } finally {
       await handle.stop();
     }
@@ -457,14 +445,14 @@ describe("credentials changed outside the pod", () => {
     const { handle, credentials } = await started(bundle());
     try {
       const run = handle.run;
-      const id = run!.orca.orcaNodeId;
+      const id = run!.mesh.self.id;
 
       credentials.secrets.set(PASSWORD_REF, "changed elsewhere");
-      handle.credentialsChanged();
+      handle.credentialsChanged(PASSWORD_REF);
       await handle.orca().catch(() => undefined);
 
       expect(handle.run).not.toBe(run);
-      expect(handle.run!.orca.orcaNodeId).toBe(id);
+      expect(handle.run!.mesh.self.id).toBe(id);
     } finally {
       await handle.stop();
     }
@@ -477,7 +465,7 @@ describe("credentials changed outside the pod", () => {
       const run = handle.run;
 
       // The host reports the write the pod just made.
-      handle.credentialsChanged();
+      handle.credentialsChanged(PASSWORD_REF);
       await handle.orca().catch(() => undefined);
 
       expect(handle.run).toBe(run);
@@ -489,14 +477,14 @@ describe("credentials changed outside the pod", () => {
   it("takes a new node key as a new node", async () => {
     const { handle, stores } = await started(bundle());
     try {
-      const id = handle.run!.orca.orcaNodeId;
+      const id = handle.run!.mesh.self.id;
 
       await stores.deleteIdentity();
-      handle.credentialsChanged();
+      handle.credentialsChanged(NODE_KEY);
       await handle.orca().catch(() => undefined);
 
-      expect(handle.run!.orca.orcaNodeId).not.toBe(id);
-      expect((await stores.readIdentity())?.orcaNodeId).toBe(handle.run!.orca.orcaNodeId);
+      expect(handle.run!.mesh.self.id).not.toBe(id);
+      expect((await stores.readIdentity())?.orcaNodeId).toBe(handle.run!.mesh.self.id);
     } finally {
       await handle.stop();
     }
@@ -509,7 +497,7 @@ describe("credentials changed outside the pod", () => {
       expect(handle.run).toBeNull();
 
       credentials.secrets.set(PASSWORD_REF, PASSWORD);
-      handle.credentialsChanged();
+      handle.credentialsChanged(PASSWORD_REF);
       await handle.orca().catch(() => undefined);
 
       expect(handle.run).not.toBeNull();
@@ -522,7 +510,7 @@ describe("credentials changed outside the pod", () => {
     const { handle, credentials } = await started(bundle());
     await handle.stop();
     credentials.secrets.set(PASSWORD_REF, "after the stop");
-    handle.credentialsChanged();
+    handle.credentialsChanged(PASSWORD_REF);
     await handle.orca().catch(() => undefined);
     expect(handle.status).toEqual({ kind: "stopped" });
   });
@@ -536,8 +524,6 @@ describe("panel model configuration", () => {
       expect(view).toMatchObject({
         configured: true,
         settings: { workgroup_id: "wg-panel" },
-        password_set: true,
-        running: true,
         error: null,
       });
       expect(JSON.stringify(view)).not.toContain(PASSWORD);
@@ -546,44 +532,27 @@ describe("panel model configuration", () => {
     }
   });
 
-  it("asks the credential store whether a password is set, not what the last start read", async () => {
-    const { handle, credentials } = await started(bundle());
-    try {
-      expect((await panelFor(handle).config()).password_set).toBe(true);
-      credentials.secrets.delete(PASSWORD_REF);
-      expect((await panelFor(handle).config()).password_set).toBe(false);
-    } finally {
-      await handle.stop();
-    }
-  });
-
   it("switches the workgroup and keeps the machine's password", async () => {
     const { handle, credentials } = await started(bundle());
     try {
-      const firstId = handle.run!.orca.orcaNodeId;
+      const firstId = handle.run!.mesh.self.id;
 
-      const view = await panelFor(handle).saveConfig({ workgroup_id: wg("wg-other") });
+      await handle.reconfigure({ workgroup_id: wg("wg-other") });
+      const view = await panelFor(handle).config();
 
       expect(view.settings.workgroup_id).toBe("wg-other");
-      expect(view.password_set).toBe(true);
       expect(credentials.secrets.get(PASSWORD_REF)).toBe(PASSWORD);
-      expect(handle.run!.orca.orcaNodeId).toBe(firstId);
-      expect(handle.run!.orca.settings.workgroup_id).toBe("wg-other");
+      expect(handle.run!.mesh.self.id).toBe(firstId);
+      expect(handle.settings.workgroup_id).toBe("wg-other");
     } finally {
       await handle.stop();
     }
   });
 
   it("normalizes peers before joining them", async () => {
-    const seen: string[] = [];
+    // An address that is not one is refused before anything is joined or remembered.
     const handle = idlePod({ workgroup_id: "wg-panel", workgroup_password: "pw" });
-    vi.spyOn(handle, "addPeer").mockImplementation(async (peer) => {
-      seen.push(peer);
-    });
-    const panel = panelFor(handle);
-    await panel.connect("192.168.1.20:11811");
-    await panel.connect("http://desk.example.com/");
-    expect(seen).toEqual(["http://192.168.1.20:11811", "http://desk.example.com:80"]);
+    await expect(handle.addPeer("http://desk.example.com/a2a")).rejects.toThrow(/without a path/);
     expect(normalizePeerUrl("10.0.0.2")).toBe("http://10.0.0.2:11811");
     expect(normalizePeerUrl("10.0.0.2:11811")).toBe("http://10.0.0.2:11811");
     expect(normalizePeerUrl("http://10.0.0.2:11811/")).toBe("http://10.0.0.2:11811");
@@ -608,36 +577,23 @@ describe("panel model configuration", () => {
       const panel = panelFor(handle);
       const self = (await panel.state()).self!;
       expect(self.display_name).toBe(shortenNodeId(self.orca_node_id));
-      const { display_name, suggested_endpoints: suggested, bind_choices: choices, settings } = await panel.config();
-      expect(display_name).toBe(shortenNodeId(self.orca_node_id));
+      const { suggested_endpoints: suggested, bind_choices: choices, settings } = await panel.config();
       for (const url of suggested) expect(url.startsWith("http://")).toBe(true);
       expect(choices.slice(0, 2)).toEqual(["127.0.0.1", "::"]);
-      expect(settings).toMatchObject({
-        max_workspace_bytes: 5 * 1024 ** 3,
-        max_workspace_files: 50_000,
-      });
+      expect(settings).toMatchObject({ max_workspace_bytes: 5 * 1024 ** 3 });
     } finally {
       await handle.stop();
     }
   });
 
-  it("shows the settings but not the ACP executor's, whose MCP server env may hold secrets", async () => {
-    const acp = { mcp_servers: [{ name: "probe", command: "probe", env: { PROBE_TOKEN: "do-not-show" } }] };
+  it("shows the settings but not the ACP executor's, which only the settings file sets", async () => {
+    const acp = { command: "do-not-show" };
     const { handle } = await started({ ...bundle(), acp });
     try {
       const view = await panelFor(handle).config();
       expect(view.settings.display_name).toBe("panel node");
       expect(view.settings).not.toHaveProperty("acp");
       expect(JSON.stringify(view)).not.toContain("do-not-show");
-    } finally {
-      await handle.stop();
-    }
-  });
-
-  it("shows the data directory the pod was given", async () => {
-    const { handle, root } = await started(bundle());
-    try {
-      expect((await panelFor(handle).config()).data_root).toBe(root);
     } finally {
       await handle.stop();
     }
@@ -651,9 +607,9 @@ describe("panel model configuration", () => {
       expect(handle.run).toBeNull();
       expect(handle.status.kind).not.toBe("failed");
       expect((await panel.config()).configured).toBe(false);
-      expect((await panel.config()).running).toBe(false);
+      expect((await panel.state()).self).toBeNull();
 
-      await panel.saveConfig({ workgroup_id: wg("wg-fresh"), workgroup_password: "pw-fresh" });
+      await handle.reconfigure({ workgroup_id: wg("wg-fresh"), workgroup_password: "pw-fresh" });
 
       expect(handle.run).not.toBeNull();
       expect(handle.status.kind).not.toBe("failed");
@@ -661,7 +617,6 @@ describe("panel model configuration", () => {
       expect(credentials.secrets.get(PASSWORD_REF)).toBe("pw-fresh");
       expect(await panel.config()).toMatchObject({
         configured: true,
-        running: true,
         settings: { workgroup_id: "wg-fresh" },
       });
     } finally {
@@ -674,9 +629,8 @@ describe("panel model configuration", () => {
     await handle.orca().catch(() => undefined);
     try {
       const view = await panelFor(handle).config();
-      expect(view.running).toBe(false);
+      expect(handle.run).toBeNull();
       expect(view.configured).toBe(false);
-      expect(view.password_set).toBe(false);
       expect(view.error).toBeNull();
       expect(handle.run).toBeNull();
       // Saving other settings cannot complete the setup without a password.
@@ -690,11 +644,15 @@ describe("panel model configuration", () => {
     const { handle } = await launch({});
     await handle.orca().catch(() => undefined);
     try {
-      await expect(panelFor(handle).saveConfig({ workgroup_password: "" })).rejects.toThrow(/password is required/);
-      await expect(panelFor(handle).saveConfig({ workgroup_password: "   " })).rejects.toThrow(/password is required/);
-      await expect(panelFor(handle).saveConfig({ workgroup_password: "pw" })).rejects.toThrow(
-        /workgroup id is required/,
-      );
+      // A blank password never reaches the pod: the panel's patch schema refuses it.
+      for (const blank of ["", "   "]) {
+        expect(PanelPatchSchema.safeParse({ workgroup_password: blank }).error?.issues[0]?.message).toMatch(
+          /password is required/,
+        );
+      }
+      await expect(handle.reconfigure({ workgroup_password: "pw" })).rejects.toThrow(/workgroup id is required/);
+      // Nothing was stored on the way.
+      expect(handle.settings.workgroup_id).toBeUndefined();
     } finally {
       await handle.stop();
     }

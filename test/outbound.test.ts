@@ -3,13 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { nodeParts, peersOf } from "./support/node.ts";
+import { identityOf, nodeParts, peersOf } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
-import { generateNodeIdentity } from "../src/core/identity.ts";
 import { wg } from "./fixtures/ids.ts";
 import { replyTo } from "./support/replies.ts";
+import { generateNodeIdentity } from "../src/plugin/stores.ts";
+import { ScriptExecutor } from "./support/script.ts";
 
 const WORKGROUP = wg("orca-outbound");
 const PASSWORD = "outbound-secret";
@@ -30,16 +31,18 @@ function tempRoot(): string {
   return root;
 }
 
-async function makeNode(fetchImpl: FetchLike | undefined, requestTimeoutMs?: number): Promise<Orca> {
+async function makeNode(fetchImpl: FetchLike | undefined): Promise<Orca> {
   const config = nodeParts({
     workgroup_id: WORKGROUP,
     workgroup_password: PASSWORD,
     data_root: tempRoot(),
     bind_host: "127.0.0.1",
     port: 0,
-    request_timeout_ms: requestTimeoutMs,
   });
-  const node = new Orca(...config, { ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) });
+  const node = new Orca(...config, {
+    executor: new ScriptExecutor(),
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+  });
   nodes.push(node);
   return node;
 }
@@ -58,12 +61,18 @@ describe("outbound A2A calls (11)", () => {
               { once: true },
             );
           });
-    const node = await makeNode(stalled, 250);
+    const node = await makeNode(stalled);
     await node.start();
     await node.mesh.probe(peer.mesh.self.endpoints[0]!);
-    const started = Date.now();
-    await expect(node.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toBeDefined();
-    expect(Date.now() - started).toBeLessThan(2000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const read = node.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK");
+      const settled = expect(read).rejects.toMatchObject({ code: "peer_timeout" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not join a stranger to answer a read", async () => {
@@ -144,7 +153,7 @@ describe("outbound A2A calls (11)", () => {
     const peer = await makeNode(undefined);
     await peer.start();
     const origin = await originAnsweredBy(peer, (init) =>
-      replyTo(init, peer.identity, "<html>nope</html>", { contentType: "text/html" }),
+      replyTo(init, identityOf(peer), "<html>nope</html>", { contentType: "text/html" }),
     );
     await expect(origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toThrow(/content type/);
   });
@@ -152,7 +161,7 @@ describe("outbound A2A calls (11)", () => {
   it("accepts a reply the node signed", async () => {
     const peer = await makeNode(undefined);
     await peer.start();
-    const origin = await originAnsweredBy(peer, (init) => replyTo(init, peer.identity, taskReply("01TASK")));
+    const origin = await originAnsweredBy(peer, (init) => replyTo(init, identityOf(peer), taskReply("01TASK")));
     const view = await origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK");
     expect(view.id).toBe("01TASK");
   });
@@ -161,7 +170,7 @@ describe("outbound A2A calls (11)", () => {
     const peer = await makeNode(undefined);
     await peer.start();
     const origin = await originAnsweredBy(peer, (init) =>
-      replyTo(init, peer.identity, taskReply("01TASK"), { sign: false }),
+      replyTo(init, identityOf(peer), taskReply("01TASK"), { sign: false }),
     );
     await expect(origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toMatchObject({
       code: "peer_error",
@@ -183,7 +192,7 @@ describe("outbound A2A calls (11)", () => {
     const peer = await makeNode(undefined);
     await peer.start();
     const origin = await originAnsweredBy(peer, (init) =>
-      replyTo(init, peer.identity, taskReply("01FORGED"), { signedBody: taskReply("01TASK") }),
+      replyTo(init, identityOf(peer), taskReply("01FORGED"), { signedBody: taskReply("01TASK") }),
     );
     await expect(origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toThrow(
       /not signed by its sender/,
@@ -194,7 +203,7 @@ describe("outbound A2A calls (11)", () => {
     const peer = await makeNode(undefined);
     await peer.start();
     const origin = await originAnsweredBy(peer, (init) =>
-      replyTo(init, peer.identity, taskReply("01TASK"), { nonce: "the-nonce-of-another-request" }),
+      replyTo(init, identityOf(peer), taskReply("01TASK"), { nonce: "the-nonce-of-another-request" }),
     );
     await expect(origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toThrow(
       /not signed by its sender/,

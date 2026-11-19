@@ -21,12 +21,11 @@
 ┌───────────────────────────────▼──── DSH host 进程 (Node) ───────────────────────┐
 │ cordis 加载 cordis.patch.yml → lib/index.js → src/plugin/bundle.ts              │
 │                                                                                 │
-│  PodBundle ─┬─ Pod (pod.ts)  生命周期状态机 + SerialQueue                        │
+│  apply() ───┬─ Pod (pod.ts)  生命周期状态机 + SerialQueue                        │
 │             │    └─ Orca (node/orca.ts) 每次启动重建一个，内部装配:               │
 │             │         Gateway(Fastify :11811) · Mesh · TaskRunner · DispatchLog │
 │             ├─ PodTool  (tools.ts)   → ctx.tools 注册 `orca_pod`                │
 │             ├─ Tracker  (tracker.ts) → 轮询远端任务，agent.inject/followup       │
-│             ├─ ApprovalBroker        → 挂起中的权限请求（只能由人来批）            │
 │             ├─ PanelModel + PanelRoutes → webServer 上注册前缀路由 /orca-api      │
 │             └─ ModelCatalogFeed      → 读 llm / agent-default-model             │
 └───────┬─────────────────────────────────────────────────┬───────────────────────┘
@@ -42,13 +41,13 @@
 ```
 DSH 启动
  │ 读 profile 中的 bundle 行（cordis.patch.yml: id/name = orca-pod）
- │ 用 Config 做校验（plugin/config.ts，Standard Schema，只有 skill_injection）
+ │ 用 Config 做校验（plugin/bundle.ts 的 zod schema，只有 skill_injection）
  │ 等待 inject 列出的硬依赖 ["tools","credentials"]   bundle.ts:41
  ▼
 apply(ctx, config)                                     bundle.ts:51
- ├─ new PodBundle()   只做组装，不触碰网络和磁盘
+ ├─ 建：只做组装，不触碰网络和磁盘
  │    dataRoot ← DSH home（一台机器一个节点，多个 profile 共用）
- │    Pod / ApprovalBroker / Tracker / PodTool / PanelModel
+ │    Pod / Tracker / PodTool / PanelModel
  │    OptionalService("agents" | "sandboxPolicy")  ← ctx.inject 围栏跟踪可选服务
  │
  ├─ attach(ctx)                                        bundle.ts:89
@@ -57,7 +56,7 @@ apply(ctx, config)                                     bundle.ts:51
  │    ctx.on("credentials/*")        密码或节点私钥变了 → pod.credentialsChanged() 重启
  │    ctx.tools.register(orca_pod, {when: configured})  bundle.ts:109
  │    PanelRoutes.register  → inject(["webServer"]) → /orca-api   panel-routes.ts:111
- │    inject(["skills"])    → 注册内置的 orca-node skill（可选）
+ │    inject(["skills"])    → 注册内置的 orca-node skill（`skill_injection`，默认开）
  │    inject(["settings"])  → configure({auto:false})，不让 DSH 自动生成设置页
  │
  └─ start()                                            bundle.ts:134
@@ -114,7 +113,7 @@ act("approve",{peer,task_id})
 - GET 路由：`state`、`tasks`、`task`、`blob`（流式下载）。POST 动作：`config`、`connect`、`reset`、`approve`、`deny`、`cancel`。
 - client 不放业务逻辑：名称、标签、能不能取消，这些都由 `PanelModel`（`src/plugin/panel.ts`）在 host 端算好。
 - 轮询只有一个计时器：有订阅者时运行，最后一个订阅者离开就停；payload 不变时不触发重渲染。
-- 审批**不经过模型**：面板直接调 `ApprovalBroker`，因为批准权属于人。
+- 审批**不经过模型**：面板直接调 `Tracker` 的 `approve` / `deny`，因为批准权属于人。
 
 client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `apply(ctx)`，它注册语言包和四类 slot（设置页、侧边栏按钮、overlay 面板与审批弹窗、会话输入框上方的审批 dock）。构建见 `scripts/build-client.ts`：`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives` 由 shell 提供，其余代码打进 bundle。
 
@@ -145,7 +144,7 @@ client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `ap
 2. `src/plugin/pod.ts`：状态机（`unconfigured / starting / running / failed / stopped`）和队列。
 3. `src/node/orca.ts`：节点内部各子系统是怎么接起来的（Gateway、Mesh、Runner、事件汇总）。
 4. `src/plugin/panel-api.ts` → `panel-routes.ts` → `client/store.ts`：host 和 client 之间的通信闭环。
-5. `src/plugin/tools.ts` + `tracker.ts` + `broker.ts`：agent 侧的工作流。
+5. `src/plugin/tools.ts` + `tracker.ts`：agent 侧的工作流。
 6. 跨机器部分：`src/mesh/mesh.ts`、`src/api/gateway.ts`、`src/api/access.ts`（签名和准入）。
 
 相关正文：模块划分与面板见 [09-implementation.md](09-implementation.md)，签名与审批回路见 [07-security.md](07-security.md)，任务回报与唤醒见 [05-tasks.md](05-tasks.md)。

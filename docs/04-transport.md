@@ -64,11 +64,11 @@
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
 | 403  | `not_task_origin`                                                                                                           |
-| 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
+| 400  | `bad_request`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
 | 413  | `body_too_large`、`blob_too_large`                                                                                          |
 | 502  | `peer_error`                                                                                                                 |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
-| 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`grant_replayed`                                                     |
+| 409  | `permission_denied`                                                                                                          |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
 | 413  | `body_too_large`                                                                                                            |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |
@@ -167,7 +167,7 @@ submitted ──► working ──► input-required ──► working
 
 - `submitted`：已接收，未开始（组装任务书）。
 - `working`：LocalExecutor 正在执行。
-- `input-required`：需要发起 orca node **补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷是 task 的 `status.message.parts` 里 data part 的 `permission_request`，不依赖推送；恢复消息必须是签名 grant 或拒绝。没有“补输入”的挂起：任务不能继续时以 `completed` 结束，结论首行写 `BLOCKED: …`（[§6.14](06-execution.md#614-acpexecutor)）。
+- `input-required`：需要发起 orca node **补授权**（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）。载荷是 task 的 `status.message.parts` 里 data part 的 `permission_request`，不依赖推送；恢复消息必须是批准或拒绝（[§7.11](07-security.md#711-批准与拒绝)）。没有“补输入”的挂起：任务不能继续时以 `completed` 结束，结论首行写 `BLOCKED: …`（[§6.14](06-execution.md#614-acpexecutor)）。
 - `input-required` **不占用执行槽**：任务挂起时槽位释放，恢复时重新竞争，不预留、不排队。槽被占就回 `429 orca_node_busy`，由 origin 决定重试还是放弃。
 - 恢复 ACP 任务时复用同一个 ACP session（它没有退出），不是新开会话。
 - 任务只有一跳：执行任务的 agent 不能再派任务（[§7.9](07-security.md#79-权限跟随发起-orca-node)），所以没有调用链，也没有回调祖先的问题。

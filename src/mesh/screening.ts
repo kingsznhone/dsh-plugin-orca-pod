@@ -13,7 +13,7 @@ import { isIPv4, isIPv6 } from "node:net";
  * - Link-local (cloud metadata), multicast and unspecified addresses are never
  *   accepted. Explicit endpoints (config, CLI, a direct join) are not filtered.
  */
-type DialPolicy = {
+export type DialPolicy = {
   /** Public addresses are off by default; private ranges are the normal case. */
   allowPublicPeers?: boolean;
   /** Set false to reject loopback targets; allowed by default for same-host meshes. */

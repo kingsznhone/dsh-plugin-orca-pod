@@ -45,6 +45,15 @@ export type MeshTimings = {
 export const CANDIDATE_MAX_FAILURES = 5;
 
 /**
+ * How long to wait before trying again an address or a node that did not answer
+ * `fails` times in a row (§3.3): `recoverProbeMs`, doubling with every failure,
+ * at most `maxRecoverProbeMs`. Seeds and offline nodes back off alike.
+ */
+export function recoverDelayMs(fails: number, timings: MeshTimings): number {
+  return Math.min(timings.recoverProbeMs * 2 ** (fails - 1), timings.maxRecoverProbeMs);
+}
+
+/**
  * The windows that follow from a cadence (§3.3): one missed tick is suspect and
  * three are offline, with slack for jitter; a heartbeat may take half a tick, at
  * least 100 ms.

@@ -107,7 +107,7 @@ function StatusPage({
   onOpenSettings: () => void;
 }) {
   const { busy } = snap;
-  const { self, config, members, approvals, recent, workspace } = state;
+  const { self, config, members, approvals, recent, workspace_root } = state;
   const [task, setTask] = React.useState<PodTaskRow | null>(null);
   const [node, setNode] = React.useState<PodPeer | null>(null);
   const [allOpen, setAllOpen] = React.useState(false);
@@ -167,7 +167,7 @@ function StatusPage({
           <Members members={members} onOpen={setNode} />
         </Section>
         <Section title={t("workspace")}>
-          <Workspace workspace={workspace} />
+          <Workspace root={workspace_root} />
         </Section>
       </div>
       {allOpen ? <AllTasks onOpen={setTask} onClose={() => setAllOpen(false)} /> : null}
@@ -228,6 +228,7 @@ export function Panel({ overlay = false }: { overlay?: boolean }) {
       <ConfigForm
         key={wizard ? "wizard" : "settings"}
         config={config}
+        self={snap.state.self}
         wizard={wizard}
         onDone={() => setView("status")}
         frame={frameFor(overlay, wizard ? t("nav") : t("settings"))}

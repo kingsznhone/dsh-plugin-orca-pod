@@ -12,7 +12,7 @@ import type { Settings } from "../src/node/settings.ts";
 import { ModelCatalogFeed } from "../src/plugin/catalog.ts";
 import { Pod } from "../src/plugin/pod.ts";
 import { PASSWORD_REF } from "../src/plugin/stores.ts";
-import { MemoryCredentials, podStores } from "./fixtures/credentials.ts";
+import { credentialHost, MemoryCredentials } from "./fixtures/credentials.ts";
 import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
 
@@ -117,54 +117,24 @@ describe("model catalog", () => {
       { provider: "deepseek", id: "deepseek-flash", name: "Flash" },
       { provider: "deepseek", id: "deepseek-v4-pro", name: "Pro" },
     ];
-    const a = await startNode({ models });
-    const b = await startNode({
-      models: [{ provider: "deepseek", id: "deepseek-flash", name: "Flash" }],
-      default_model: { provider: "deepseek", model: "deepseek-flash" },
-      default_reasoning_effort: ReasoningEffortId("max"),
+    // The catalog is what the DSH host reports; only the effort is a setting.
+    const a = await startNode({});
+    a.models.update(models, null);
+    const b = await startNode({ default_reasoning_effort: ReasoningEffortId("max") });
+    b.models.update([{ provider: "deepseek", id: "deepseek-flash", name: "Flash" }], {
+      provider: "deepseek",
+      model: "deepseek-flash",
     });
     await b.mesh.probe(a.mesh.self.endpoints[0]!);
-    const peer = await until(() => peersOf(a).find((member) => member.orca_node_id === b.orcaNodeId) ?? null);
+    const peer = await until(() => peersOf(a).find((member) => member.orca_node_id === b.mesh.self.id) ?? null);
     expect(peer.models).toHaveLength(1);
     expect(peer.models?.[0]).toMatchObject({ provider: "deepseek", id: "deepseek-flash" });
-    expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash" });
+    expect(peer.default_model).toEqual({ provider: "deepseek", model: "deepseek-flash", reasoningEffort: "max" });
     expect(peer.default_reasoning_effort).toBe("max");
     // The join response carries the directory, so b sees a's catalog too.
-    const seenByB = await until(() => peersOf(b).find((member) => member.orca_node_id === a.orcaNodeId) ?? null);
+    const seenByB = await until(() => peersOf(b).find((member) => member.orca_node_id === a.mesh.self.id) ?? null);
     expect(seenByB.models).toHaveLength(2);
     expect(seenByB.default_reasoning_effort).toBeNull();
-  });
-
-  it("fails a task that asks for a model when the executor cannot select one", async () => {
-    const node = await startNode({});
-    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "select a model" }] },
-      metadata: { pod: { model: { provider: "deepseek", model: "deepseek-flash" } } },
-    });
-    const deadline = Date.now() + 5_000;
-    let task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
-    while (task.status.state !== "failed" && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
-    }
-    expect(task.status.state).toBe("failed");
-    expect(task.status.reason).toBe("model_unsupported");
-  });
-
-  it("fails a task that asks for a reasoning effort when the executor cannot select one", async () => {
-    const node = await startNode({});
-    const submitted = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "select an effort" }] },
-      metadata: { pod: { reasoning_effort: ReasoningEffortId("max") } },
-    });
-    const deadline = Date.now() + 5_000;
-    let task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
-    while (task.status.state !== "failed" && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      task = await node.mesh.resolve(node.mesh.self.endpoints[0]!).getTask(submitted.id);
-    }
-    expect(task.status.state).toBe("failed");
-    expect(task.status.reason).toBe("model_unsupported");
   });
 
   it("discovers the catalog from the DSH host services", async () => {
@@ -237,12 +207,11 @@ describe("model catalog", () => {
     const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
     const credentials = new MemoryCredentials();
     credentials.secrets.set(PASSWORD_REF, "pw");
-    const stores = podStores(credentials);
     await mkdir(root, { recursive: true });
     await writeFile(join(root, "settings.json"), JSON.stringify({ workgroup_id: wg("wg-catalog"), port: 0 }));
     const feed = new ModelCatalogFeed(ctx, logger);
     await feed.refresh();
-    const pod = new Pod(logger, stores, feed, root);
+    const pod = new Pod(logger, credentialHost(credentials), feed, root);
     pod.start();
     try {
       const first = await pod.orca();

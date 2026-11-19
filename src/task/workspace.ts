@@ -4,8 +4,6 @@ import { join } from "node:path";
 import type { WorkgroupId } from "../core/ids.ts";
 import { isMissingFile } from "../core/errors.ts";
 
-export type WorkspaceUsage = { bytes: number; files: number };
-
 /**
  * One workspace per (data_root, workgroup) (§6.7). Created when the node starts and kept
  * across tasks, sessions and restarts; its root is the agent's cwd. What the
@@ -34,14 +32,14 @@ export class Workspace {
     }
   }
 
-  /** Size and file count of everything under the root, measured without blocking the event loop (§6.13). */
-  async measure(): Promise<WorkspaceUsage> {
+  /** Bytes of everything under the root, measured without blocking the event loop (§6.13). */
+  async measure(): Promise<number> {
     // A path that vanished meanwhile (an agent may delete files under us) counts as nothing; other errors surface.
     const entries = await readdir(this.root, { withFileTypes: true, recursive: true }).catch((error: unknown) => {
       if (isMissingFile(error)) return [];
       throw error;
     });
-    const usage = { bytes: 0, files: 0 };
+    let bytes = 0;
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       const stat = await lstat(join(entry.parentPath, entry.name)).catch((error: unknown) => {
@@ -49,9 +47,8 @@ export class Workspace {
         throw error;
       });
       if (stat === undefined) continue;
-      usage.bytes += stat.size;
-      usage.files += 1;
+      bytes += stat.size;
     }
-    return usage;
+    return bytes;
   }
 }

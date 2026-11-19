@@ -1,8 +1,10 @@
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { SqliteDb } from "../src/core/sqlite.ts";
-import { storeDbPath } from "../src/node/orca.ts";
 import { createTestRunner, tempDir, type TestRunner } from "./fixtures/runner.ts";
+import { scriptMessage } from "./support/script.ts";
 
 async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -14,14 +16,13 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
 
 /** A runner over the database of `root`, the way a node process opens it. */
 function runnerOn(root: string): { runner: TestRunner; db: SqliteDb } {
-  const db = new SqliteDb(storeDbPath(root));
+  const db = new SqliteDb(join(root, "tasks.db"));
   db.open();
   return { runner: createTestRunner({ db }), db };
 }
 
 const task = (text: string, state: "completed" | "hang") => ({
-  message: { role: "user" as const, parts: [{ kind: "text" as const, text }] },
-  metadata: { echo: { final: { state, text } } },
+  message: scriptMessage({ final: { state, text } }),
 });
 
 describe("the task table", () => {

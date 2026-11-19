@@ -1,48 +1,9 @@
 import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { describe, expect, it } from "vitest";
 
-import { ChangeSignal, EventBus } from "../src/core/events.ts";
+import { ChangeSignal } from "../src/core/events.ts";
 import { ModelCatalog } from "../src/executor/model-catalog.ts";
 import { SerialQueue } from "../src/plugin/pod.ts";
-
-describe("EventBus", () => {
-  it("stamps events, delivers them in order and stops after unsubscribe", () => {
-    const bus = new EventBus<{ type: "tick"; n: number }>();
-    const seen: number[] = [];
-    const stop = bus.subscribe((event) => {
-      expect(Date.parse(event.at)).not.toBeNaN();
-      seen.push(event.n);
-    });
-    bus.emit({ type: "tick", n: 1 });
-    bus.emit({ type: "tick", n: 2 });
-    stop();
-    bus.emit({ type: "tick", n: 3 });
-    expect(seen).toEqual([1, 2]);
-  });
-
-  it("reports a throwing listener to the logger it was given", () => {
-    const warnings: string[] = [];
-    const bus = new EventBus<{ type: "tick" }>({ warn: (message) => warnings.push(message) });
-    bus.subscribe(() => {
-      throw new Error("ui bug");
-    });
-    bus.emit({ type: "tick" });
-    expect(warnings).toEqual(["orca-pod: an event listener threw: ui bug"]);
-  });
-
-  it("keeps delivering when a listener throws", () => {
-    const bus = new EventBus<{ type: "tick" }>();
-    let delivered = 0;
-    bus.subscribe(() => {
-      throw new Error("ui bug");
-    });
-    bus.subscribe(() => {
-      delivered += 1;
-    });
-    expect(() => bus.emit({ type: "tick" })).not.toThrow();
-    expect(delivered).toBe(1);
-  });
-});
 
 describe("ChangeSignal", () => {
   it("notifies every subscriber, survives a throwing one and can be cleared", () => {
@@ -143,10 +104,10 @@ describe("ModelCatalog", () => {
     ...(reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(reasoningEffort) }),
   });
 
-  it("starts from the pins in config", () => {
-    const catalog = new ModelCatalog({ models: [offer("a")], default_model: model("a", "high") });
-    expect(catalog.offers()).toEqual([offer("a")]);
-    expect(catalog.defaults()).toEqual({ model: model("a", "high"), reasoningEffort: "high" });
+  it("starts empty, with only the effort the settings pin", () => {
+    const catalog = new ModelCatalog({ default_reasoning_effort: ReasoningEffortId("high") });
+    expect(catalog.offers()).toEqual([]);
+    expect(catalog.defaults()).toEqual({ model: null, reasoningEffort: "high" });
   });
 
   it("takes the host's list, drops a repeated route and signals the change", () => {
@@ -161,17 +122,15 @@ describe("ModelCatalog", () => {
     expect(changes).toBe(1);
   });
 
-  it("lets a pinned default win over what the host reports", () => {
-    const catalog = new ModelCatalog({
-      default_model: model("pinned"),
-      default_reasoning_effort: ReasoningEffortId("max"),
-    });
+  it("lets the pinned effort win over the one the host reports", () => {
+    const catalog = new ModelCatalog({ default_reasoning_effort: ReasoningEffortId("max") });
     catalog.update([offer("x")], model("reported", "low"));
-    expect(catalog.defaults()).toEqual({ model: model("pinned", "max"), reasoningEffort: "max" });
+    expect(catalog.defaults()).toEqual({ model: model("reported", "max"), reasoningEffort: "max" });
   });
 
   it("hands out copies of its offers", () => {
-    const catalog = new ModelCatalog({ models: [offer("a")] });
+    const catalog = new ModelCatalog();
+    catalog.update([offer("a")], null);
     catalog.offers().pop();
     expect(catalog.offers()).toHaveLength(1);
   });

@@ -7,28 +7,18 @@
 
 import { z } from "zod";
 
-import { normalizePeerUrl, normalizeEndpoints } from "../core/net.ts";
-import { DEFAULT_PORT, EXECUTOR_KINDS } from "../core/constants.ts";
+import { normalizePeerUrl } from "../core/net.ts";
+import { EndpointsSchema } from "../mesh/wire.ts";
+import { DEFAULT_PORT } from "../core/constants.ts";
 import { HarnessError } from "@deepseek-ai/dsh-error";
-import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../executor/model.ts";
-import { SandboxModeSchema } from "../executor/permission.ts";
+import { ModelSettingsSchema } from "../executor/model-catalog.ts";
+import { TaskSettingsSchema } from "../task/record.ts";
 import { WorkgroupIdSchema } from "../core/ids.ts";
 import { errorMessage } from "../core/errors.ts";
 import { isRecord } from "../core/schema.ts";
-import { AcpExecutorConfigSchema } from "../executor/acp/config.ts";
+import { AcpExecutorConfigSchema } from "../executor/acp/executor.ts";
 
 const NonEmpty = z.string().min(1);
-const PositiveNumber = z.number().positive();
-const PositiveInteger = z.number().int().min(1);
-
-/** Advertised endpoints; empty is allowed, they are then derived from the listen address (§3.2). */
-const EndpointsSchema = z.array(z.string()).transform((value, ctx) => {
-  if (value.length === 0) return [];
-  const endpoints = normalizeEndpoints(value);
-  if (endpoints !== null) return endpoints;
-  ctx.addIssue({ code: "custom", message: "must be 1-8 http(s) URLs" });
-  return z.NEVER;
-});
 
 /** Peer addresses in canonical URL form, deduplicated. */
 const PeersSchema = z.array(z.string()).transform((value, ctx) => {
@@ -40,7 +30,12 @@ const PeersSchema = z.array(z.string()).transform((value, ctx) => {
   }
 });
 
-/** Every setting a node has: a field with a default is always present after parsing, the others may be absent. */
+/**
+ * Every setting a node has: a field with a default is always present after
+ * parsing, the others may be absent. The task and model settings are declared
+ * where they are read (`TaskSettingsSchema`, `ModelSettingsSchema`), so the
+ * parsed settings can be handed to those subsystems as they are.
+ */
 const SettingsSchema = z.object({
   /** Unset until the panel wizard picks one. */
   workgroup_id: WorkgroupIdSchema.optional(),
@@ -54,33 +49,13 @@ const SettingsSchema = z.object({
   endpoints: EndpointsSchema.default([]),
   /** Peers joined on startup. */
   peers: PeersSchema.default([]),
-  /** `acp` drives a real DSH ACP session; `echo` is the debugging script machine (§6.2). */
-  executor: z.enum(EXECUTOR_KINDS).optional(),
   acp: AcpExecutorConfigSchema.optional(),
-  /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
-  permission_mode: SandboxModeSchema.optional(),
-  /** Hard cap on a task's lifetime; peers see it as max_task_ttl_s (§6.9). */
-  task_timeout_s: PositiveNumber.optional(),
-  /** Auto-reject parked approvals after this many seconds; unset waits forever (§7.12). */
-  approval_timeout_s: PositiveNumber.optional(),
-  /** Inline result summary cap in bytes (§6.11). */
-  result_max_bytes: PositiveInteger.optional(),
-  /** A new task is refused while the group workspace holds more bytes than this (§6.13). */
-  max_workspace_bytes: PositiveInteger.default(5 * 1024 ** 3),
-  /** ... or more files than this. */
-  max_workspace_files: PositiveInteger.default(50_000),
-  /** Timeout for one outbound A2A/cluster call; default 30s (§4.7). */
-  request_timeout_ms: PositiveNumber.optional(),
+  ...TaskSettingsSchema.shape,
   /** Allow candidate endpoints on public IPs (§7.7). */
   allow_public_peers: z.boolean().optional(),
   /** Reject loopback candidate endpoints; allowed by default for same-host meshes (§7.7). */
   allow_loopback_peers: z.boolean().optional(),
-  /** Model routes an ACP executor may switch to; origins pick one per task (§6.15). */
-  models: ModelOffersSchema.optional(),
-  /** Default ACP session model when a task names none (§6.15). */
-  default_model: ModelSelectionSchema.optional(),
-  /** Default reasoning effort when a task names none; unset means the provider default (§6.15). */
-  default_reasoning_effort: ReasoningEffortSchema.optional(),
+  ...ModelSettingsSchema.shape,
 });
 
 export type Settings = z.output<typeof SettingsSchema>;
@@ -100,42 +75,28 @@ function clearable<T extends z.ZodType>(schema: T) {
  */
 export const PanelPatchSchema = z.object({
   workgroup_id: clearable(shape.workgroup_id.unwrap()),
-  /** Plaintext; it derives the workgroup key. The stored password is a DSH credential (section 3.6 of the plan). */
-  workgroup_password: clearable(z.string()),
+  /**
+   * Plaintext; it derives the workgroup key. The stored password is a DSH credential
+   * (§3.6). Leave it out to keep the stored one; a passwordless mesh is not supported.
+   */
+  workgroup_password: z
+    .string()
+    .trim()
+    .min(1, "a workgroup password is required; a passwordless mesh is not supported")
+    .optional(),
   display_name: clearable(shape.display_name.unwrap()),
   bind_host: clearable(shape.bind_host.unwrap()),
   port: clearable(shape.port.unwrap()),
   endpoints: clearable(shape.endpoints.unwrap()),
-  peers: clearable(shape.peers.unwrap()),
-  executor: clearable(shape.executor.unwrap()),
   permission_mode: clearable(shape.permission_mode.unwrap()),
   task_timeout_s: clearable(shape.task_timeout_s.unwrap()),
-  approval_timeout_s: clearable(shape.approval_timeout_s.unwrap()),
-  result_max_bytes: clearable(shape.result_max_bytes.unwrap()),
   max_workspace_bytes: clearable(shape.max_workspace_bytes.unwrap()),
-  max_workspace_files: clearable(shape.max_workspace_files.unwrap()),
   allow_public_peers: clearable(shape.allow_public_peers.unwrap()),
   allow_loopback_peers: clearable(shape.allow_loopback_peers.unwrap()),
   default_reasoning_effort: clearable(shape.default_reasoning_effort.unwrap()),
 });
 
 export type PanelPatch = z.output<typeof PanelPatchSchema>;
-
-/** Where a setting failed its schema and why. */
-type SettingsIssue = { path: string[]; message: string };
-
-/** Thrown by `parseSettings`, with every problem found. */
-class ConfigValidationError extends HarnessError {
-  readonly issues: SettingsIssue[];
-
-  constructor(issues: SettingsIssue[]) {
-    super(
-      `invalid config: ${issues.map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`).join("; ")}`,
-      "INVALID_CONFIG",
-    );
-    this.issues = issues;
-  }
-}
 
 /**
  * Parse untrusted settings (the settings file, a file a panel patch was applied
@@ -147,7 +108,6 @@ export function parseSettings(input: unknown): Settings {
   const set = isRecord(input) ? Object.fromEntries(Object.entries(input).filter(([, value]) => value !== null)) : input;
   const result = SettingsSchema.safeParse(set);
   if (result.success) return result.data;
-  throw new ConfigValidationError(
-    result.error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message })),
-  );
+  const problems = result.error.issues.map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`);
+  throw new HarnessError(`invalid config: ${problems.join("; ")}`, "INVALID_CONFIG");
 }

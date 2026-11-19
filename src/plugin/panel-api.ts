@@ -9,19 +9,13 @@ import type { LlmReasoningEffortInfo } from "@deepseek-ai/dsh-llm";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { z } from "zod";
 
-import type { PeerView, SelfRecord } from "../mesh/wire.ts";
+import type { BlobRef } from "../core/blobs.ts";
+import type { PeerView } from "../mesh/wire.ts";
 import type { PanelPatch, Settings } from "../node/settings.ts";
 import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
 
-/** A file a task's result names as `<orca node id>/<sha256>` (§5.6), which the panel saves through this node. */
-export interface PodFileRef {
-  /** The node that published it. */
-  node: string;
-  blob_id: string;
-}
-
 /** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
-export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | null };
+export type PodPeer = PeerView & { busy_from: string | null };
 
 /** One permission request waiting for the human. */
 export interface PodApproval {
@@ -52,8 +46,8 @@ export interface PodTaskRow {
   who: string;
   who_title: string;
   at: string;
-  /** The files its result names; a dispatched task's result is not kept here, so it names none. */
-  files: PodFileRef[];
+  /** The files its result names (§5.6); a dispatched task's result is not kept here, so it names none. */
+  files: BlobRef[];
   cancellable: boolean;
 }
 
@@ -62,13 +56,7 @@ export interface PodTaskDetail {
   task: TaskView;
   origin: string;
   dispatch: DispatchEntry | null;
-  files: PodFileRef[];
-}
-
-/** Where this node's workspace and its own state live. */
-export interface WorkspaceView {
-  root: string;
-  state: string;
+  files: BlobRef[];
 }
 
 /** The pod's configuration as the panel sees it: the settings, and what the running node made of them. */
@@ -81,14 +69,8 @@ export interface PodConfigView {
    * its MCP servers may hold secrets, and the panel does not edit them.
    */
   settings: Omit<Settings, "acp">;
-  /** This node's orca node id (also the default display name), null before first start. */
-  node_id: string | null;
-  /** The name the node goes by: its own record's while it runs, else the setting. */
-  display_name: string | null;
   /** The port the node listens on while it runs, else the setting. */
   port: number;
-  /** Currently advertised dial URLs (the node's own list when it is running). */
-  endpoints: string[];
   /** Dial URLs the form starts from: the usable advertised ones, else this machine's detected addresses. */
   suggested_endpoints: string[];
   /** The permission modes this DSH accepts, in rank order (read from DSH itself). */
@@ -97,23 +79,20 @@ export interface PodConfigView {
   reasoning_efforts: readonly LlmReasoningEffortInfo[];
   /** Listen addresses the form offers. */
   bind_choices: string[];
-  /** Peers joined on startup: the configured ones and the ones remembered at runtime. */
-  peers: string[];
-  data_root: string;
-  password_set: boolean;
-  running: boolean;
   error: string | null;
 }
 
 /** Panel state snapshot: everything the status page and the approval cards render in one poll. */
 export interface PodState {
-  self: PodPeer<SelfRecord> | null;
+  /** This node's own record while it runs; null while it does not. */
+  self: PodPeer | null;
   config: PodConfigView;
   /** Reachable members only: offline records are dropped. */
   members: PodPeer[];
   approvals: PodApproval[];
   recent: PodTaskRow[];
-  workspace: WorkspaceView | null;
+  /** The workgroup root tasks run in, while the node runs. */
+  workspace_root: string | null;
 }
 
 const Text = z.string().min(1, "must be a non-empty string");
@@ -130,7 +109,7 @@ type DenyBody = z.infer<typeof DenyBodySchema>;
 export const ConnectBodySchema = z.object({ peer: Text });
 type ConnectBody = z.infer<typeof ConnectBodySchema>;
 
-/** What each POST action of the panel takes; `reset` reads no body. */
+/** What each POST action of the panel takes (`reset` reads no body); every one answers `{}` once it is done. */
 export type PodActions = {
   config: PanelPatch;
   connect: ConnectBody;
@@ -140,14 +119,10 @@ export type PodActions = {
   cancel: PeerTaskBody;
 };
 
-/** `GET /orca-api/tasks`: every task this node knows about, for the "all tasks" view. */
-type PodTasksResponse = { recent: PodTaskRow[] };
-
 /** The GET routes: the query string each reads and the body it answers with. */
 export type PodReads = {
   state: { query: Record<string, never>; response: PodState };
-  tasks: { query: { limit?: number }; response: PodTasksResponse };
+  /** Every task this node knows about, for the "all tasks" view (the newest `TASKS_LIMIT`). */
+  tasks: { query: Record<string, never>; response: PodTaskRow[] };
   task: { query: { peer: string; task: string }; response: PodTaskDetail };
 };
-
-/** What `approve`, `deny` and `cancel` answer with: the task as its peer reports it now. */

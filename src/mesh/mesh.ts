@@ -1,4 +1,3 @@
-import { EventBus } from "../core/events.ts";
 import { PodError } from "../core/errors.ts";
 import { normalizePeerUrl } from "../core/net.ts";
 import {
@@ -7,14 +6,13 @@ import {
   type PeerView,
   SelfDescriptionSchema,
   type HelloRequest,
-  type MembersEvent,
   type SelfDescription,
 } from "./wire.ts";
-import { OrcaNodeIdSchema, type OrcaNodeId, type WorkgroupId } from "../core/ids.ts";
+import { OrcaNodeIdSchema, type OrcaNodeId } from "../core/ids.ts";
+import type { BusyState } from "../task/wire.ts";
 import type { MeshContext } from "./context.ts";
 import { OrcaNode } from "./orca-node.ts";
-import type { EndpointScreen } from "./screening.ts";
-import { heartbeatIntervalMsFor, resolveTimings, windowsFor, type MeshTimings } from "./timings.ts";
+import { heartbeatIntervalMsFor, recoverDelayMs, resolveTimings, windowsFor, type MeshTimings } from "./timings.ts";
 
 /** A seed address that has not answered yet, and when it is tried again. */
 type Seed = { fails: number; nextAtMs: number; trying: boolean };
@@ -28,8 +26,6 @@ type Seed = { fails: number; nextAtMs: number; trying: boolean };
  * making first contact at an address (`probe`).
  */
 export class Mesh {
-  /** Fires when something a panel would render about the roster changed (§9.2). */
-  readonly events: EventBus<MembersEvent>;
   /** This node, as a row of the table like any other. */
   readonly self: OrcaNode;
 
@@ -41,7 +37,6 @@ export class Mesh {
   private readonly adaptive: boolean;
   private timer: NodeJS.Timeout | null = null;
   private stopped = true;
-  private membersSignature = "";
 
   constructor(
     private readonly ctx: MeshContext,
@@ -51,23 +46,8 @@ export class Mesh {
   ) {
     this.current = resolveTimings(options.timings);
     this.adaptive = options.timings?.intervalMs === undefined;
-    this.events = new EventBus(ctx.logger);
     this.self = OrcaNode.self(ctx, description);
     this.nodes.set(this.self.id, this.self);
-  }
-
-  get workgroupId(): WorkgroupId {
-    return this.ctx.workgroupId;
-  }
-
-  /** What this node concluded about endpoints it was told of; the `hello` route screens a sender's declaration with it. */
-  get screening(): EndpointScreen {
-    return this.ctx.screening;
-  }
-
-  /** Retarget the expected cadence, and with it the suspect, offline and timeout windows. */
-  private setIntervalMs(intervalMs: number): void {
-    Object.assign(this.current, windowsFor(intervalMs));
   }
 
   // ---- the table ----
@@ -176,15 +156,6 @@ export class Mesh {
     }
   }
 
-  /** Emit a `members` event if something a panel would render changed (§9.2). */
-  emitMembersIfChanged(): void {
-    const current = this.list().map((node) => node.view());
-    const signature = Mesh.signatureOf(current);
-    if (signature === this.membersSignature) return;
-    this.membersSignature = signature;
-    this.events.emit({ type: "members", members: current, digest: membersDigest(current) });
-  }
-
   // ---- contact ----
 
   /**
@@ -196,33 +167,10 @@ export class Mesh {
   async probe(url: string): Promise<OrcaNode> {
     const known = this.list().find((node) => node.hasUrl(url));
     const answer = await OrcaNode.contact(this.ctx, url, known?.id ?? "", this.helloRequest());
-    const { clock } = this.ctx;
-    const description = SelfDescriptionSchema.parse(answer.body.self);
-    let node = this.nodes.get(answer.from);
-    if (answer.from === this.self.id) {
-      // This node's own address under another name: nothing to learn but the name.
-      this.self.learnUrl(url);
-      return this.self;
-    }
-    if (node === undefined) {
-      this.tombstones.delete(answer.from);
-      node = OrcaNode.explicit(
-        this.ctx,
-        answer.from,
-        description,
-        answer.body.self.busy,
-        clock.monotonicMs(),
-        clock.wallIso(),
-      );
-      this.nodes.set(node.id, node);
-    } else {
-      node.describe(description);
-      node.setBusy(answer.body.self.busy);
-    }
-    node.learnUrl(url);
-    this.hears(node);
+    // This node's own address under another name.
+    if (answer.from === this.self.id) return this.self;
+    const node = this.admit(answer.from, SelfDescriptionSchema.parse(answer.body.self), answer.body.self.busy);
     if (answer.body.members !== null) this.mergeRemote(answer.body.members);
-    this.emitMembersIfChanged();
     return node;
   }
 
@@ -249,28 +197,22 @@ export class Mesh {
   }
 
   /**
-   * A node greeted this one (§3.3): record it (or refresh it) as an explicit
-   * member that was heard just now, and answer with this node's own record and,
-   * when its digest differs, the directory. The route has already checked the
-   * request's proofs and screened the endpoints the sender declared.
+   * A node greeted this one (§3.3); the route has already checked the request's
+   * proofs. What the sender declared about itself is still input: its endpoints
+   * are screened before they are recorded (§7.7). It is recorded (or refreshed)
+   * as an explicit member heard just now, and answered with this node's own
+   * record and, when its digest differs, the directory.
    */
-  answer(caller: OrcaNodeId, request: HelloRequest, endpoints: string[]): HelloResponse {
+  async greeted(caller: OrcaNodeId, request: HelloRequest, overLoopback: boolean): Promise<HelloResponse> {
     if (caller !== this.self.id) {
-      const { clock } = this.ctx;
-      const description = { ...request.self, endpoints };
-      let node = this.nodes.get(caller);
-      if (node === undefined) {
-        // Tombstones only keep stale *remote lists* from reviving a removed id; they
-        // must not lock out a node that comes back on its own with a valid proof.
-        this.tombstones.delete(caller);
-        node = OrcaNode.explicit(this.ctx, caller, description, request.busy, clock.monotonicMs(), clock.wallIso());
-        this.nodes.set(caller, node);
-      } else {
-        node.describe(description);
-        node.setBusy(request.busy);
-        node.heard(clock.monotonicMs(), clock.wallIso());
+      // A node already in the table repeats the same endpoints every few seconds, so its
+      // last verdict may be reused; a first contact is always screened afresh.
+      const declared = request.self.endpoints;
+      const endpoints = await this.ctx.screening.declared(declared, overLoopback, !this.nodes.has(caller));
+      if (endpoints.length === 0) {
+        throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
       }
-      this.emitMembersIfChanged();
+      this.admit(caller, { ...request.self, endpoints }, request.busy);
     }
     const digest = this.digest();
     return {
@@ -286,7 +228,6 @@ export class Mesh {
   start(): void {
     this.stopped = false;
     void this.tick();
-    this.emitMembersIfChanged();
   }
 
   stop(): void {
@@ -313,23 +254,33 @@ export class Mesh {
     if (this.adaptive) this.setIntervalMs(heartbeatIntervalMsFor(this.nodes.size));
     this.evaluate();
     const nowMs = this.ctx.clock.monotonicMs();
-    const greetings = [...this.nodes.values()].filter((node) => node.due(nowMs)).map((node) => this.greet(node));
+    // One request for the whole round: what this node says, and the digest of what it knows.
+    const request = this.helloRequest();
+    const greetings = [...this.nodes.values()]
+      .filter((node) => node.due(nowMs))
+      .map((node) => this.greet(node, request));
     const retries = [...this.seeds.entries()]
       .filter(([, seed]) => !seed.trying && seed.nextAtMs <= nowMs)
       .map(([url]) => this.contactSeed(url));
     await Promise.allSettled([...greetings, ...retries]);
-    this.emitMembersIfChanged();
     this.schedule();
   }
 
+  /** Retarget the expected cadence, and with it the suspect, offline and timeout windows. */
+  private setIntervalMs(intervalMs: number): void {
+    Object.assign(this.current, windowsFor(intervalMs));
+  }
+
   /** One hello to a node already in the table; a failure is counted once per node, not once per address. */
-  private async greet(node: OrcaNode): Promise<void> {
+  private async greet(node: OrcaNode, request: HelloRequest): Promise<void> {
     const { clock } = this.ctx;
     try {
-      const answer = await node.hello(this.helloRequest(), this.current.heartbeatTimeoutMs);
-      node.describe({ ...SelfDescriptionSchema.parse(answer.body.self), endpoints: [...node.endpoints] });
-      node.setBusy(answer.body.self.busy);
-      this.hears(node);
+      const answer = await node.hello(request, this.current.heartbeatTimeoutMs);
+      // Its addresses stay the ones it declared when it greeted us; an answer does not move them.
+      node.heard(
+        { ...SelfDescriptionSchema.parse(answer.body.self), endpoints: [...node.endpoints] },
+        answer.body.self.busy,
+      );
       if (answer.body.members !== null) this.mergeRemote(answer.body.members);
     } catch (error) {
       if (OrcaNode.isRejection(error)) {
@@ -345,14 +296,24 @@ export class Mesh {
         this.remove(node.id);
       }
     }
-    this.emitMembersIfChanged();
   }
 
-  /** A node answered us: it is online, and what we asked of it is no longer owed. */
-  private hears(node: OrcaNode): void {
-    const { clock } = this.ctx;
-    node.heard(clock.monotonicMs(), clock.wallIso());
-    node.answered();
+  /**
+   * A node spoke for itself, signed (it greeted this one, or answered a first
+   * contact): record it as it described itself, heard just now. Tombstones only
+   * keep stale *remote lists* from reviving a removed id; they must not lock out a
+   * node that comes back on its own with a valid proof.
+   */
+  private admit(id: OrcaNodeId, description: SelfDescription, busy: BusyState | null): OrcaNode {
+    let node = this.nodes.get(id);
+    if (node === undefined) {
+      this.tombstones.delete(id);
+      node = OrcaNode.explicit(this.ctx, id, description, busy);
+      this.nodes.set(id, node);
+    } else {
+      node.heard(description, busy);
+    }
+    return node;
   }
 
   /** Contact a seed address; one that does not answer waits for its turn on the backoff. Null when it did not answer. */
@@ -366,8 +327,7 @@ export class Mesh {
       return node;
     } catch (error) {
       seed.fails += 1;
-      const backoff = this.current.recoverProbeMs * 2 ** (seed.fails - 1);
-      seed.nextAtMs = this.ctx.clock.monotonicMs() + Math.min(backoff, this.current.maxRecoverProbeMs);
+      seed.nextAtMs = this.ctx.clock.monotonicMs() + recoverDelayMs(seed.fails, this.current);
       this.ctx.logger.warn(
         `orca-pod: contact with ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -380,19 +340,5 @@ export class Mesh {
   /** What this node says in every hello: who it is, how busy, and the digest of what it knows. */
   private helloRequest(): HelloRequest {
     return { self: this.self.description, busy: this.self.view().busy, digest: this.digest() };
-  }
-
-  /** The roster fields a panel renders; two rosters with the same signature need no event. */
-  private static signatureOf(peers: PeerView[]): string {
-    return peers
-      .map((peer) => {
-        const model = peer.default_model ? `${peer.default_model.provider}/${peer.default_model.model}` : "";
-        return (
-          `${peer.orca_node_id}:${peer.state}:${peer.busy?.task_id ?? ""}:${peer.endpoints.join(",")}` +
-          `:${peer.models?.length ?? 0}:${model}:${peer.default_reasoning_effort ?? ""}`
-        );
-      })
-      .sort()
-      .join("|");
   }
 }

@@ -2,10 +2,13 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import { deriveWorkgroupKey, parseAuthHeader, verifyReplyHeader, bodySha256 } from "../src/core/signing.ts";
+import type { NodeIdentity } from "../src/core/identity.ts";
+import { verifyReplyHeader, bodySha256 } from "../src/core/signing.ts";
+import { parseAuthHeader } from "../src/api/access.ts";
 import { wg } from "./fixtures/ids.ts";
 import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
+import { generateNodeIdentity } from "../src/plugin/stores.ts";
+import { deriveWorkgroupKey } from "../src/plugin/pod.ts";
 
 const WORKGROUP = wg("orca-dev");
 
@@ -14,6 +17,14 @@ async function publish(harness: GatewayHarness, content: Buffer): Promise<string
   const path = join(await mkdtemp(join(tmpdir(), "orca-auth-blob-")), "file.bin");
   await writeFile(path, content);
   return (await harness.blobs.register(path, 60)).blob_id;
+}
+
+/** A member-only route whose answer is JSON: a file nobody published. */
+const MISSING_BLOB = `/blobs/${"0".repeat(64)}`;
+
+/** A member-only route to probe the gate with: a file the harness published. */
+async function probe(harness: GatewayHarness): Promise<string> {
+  return `/blobs/${await publish(harness, Buffer.from("probe"))}`;
 }
 
 /** What a node says in a `hello`. */
@@ -54,15 +65,8 @@ function hello(
 }
 
 describe("workgroup proof gate (C1)", () => {
-  it("lets a node with both proofs read the roster and a published file", async () => {
+  it("lets a node with both proofs read a published file", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const members = await harness.app.inject({
-      method: "GET",
-      url: "/cluster/members",
-      headers: { authorization: harness.sign("GET", "/cluster/members") },
-    });
-    expect(members.statusCode).toBe(200);
-
     const blobId = await publish(harness, Buffer.from("member bytes"));
     const read = await harness.app.inject({
       method: "GET",
@@ -85,11 +89,6 @@ describe("workgroup proof gate (C1)", () => {
     });
 
     const calls = [
-      {
-        method: "GET",
-        url: "/cluster/members",
-        authorization: harness.signAs(stranger, "GET", "/cluster/members", { key: wrongKey }),
-      },
       {
         method: "POST",
         url: "/a2a",
@@ -123,6 +122,7 @@ describe("workgroup proof gate (C1)", () => {
 
   it("refuses a node whose password changed on its very next request, without waiting for a heartbeat", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const path = await probe(harness);
     const node = generateNodeIdentity();
     const before = await hello(harness, node, helloBody(["http://node.test"]));
     expect(before.statusCode).toBe(200);
@@ -131,8 +131,8 @@ describe("workgroup proof gate (C1)", () => {
     const changed = deriveWorkgroupKey(WORKGROUP, "a new password");
     const after = await harness.app.inject({
       method: "GET",
-      url: "/cluster/members",
-      headers: { authorization: harness.signAs(node, "GET", "/cluster/members", { key: changed }) },
+      url: path,
+      headers: { authorization: harness.signAs(node, "GET", path, { key: changed }) },
     });
     expect(after.statusCode).toBe(401);
     expect(after.json()).toMatchObject({ code: "bad_proof" });
@@ -140,12 +140,13 @@ describe("workgroup proof gate (C1)", () => {
 
   it("does not gate on the member table: both proofs are what admit, in the table or not", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const path = await probe(harness);
     const node = generateNodeIdentity();
     const members = (): Promise<{ statusCode: number }> =>
       harness.app.inject({
         method: "GET",
-        url: "/cluster/members",
-        headers: { authorization: harness.signAs(node, "GET", "/cluster/members") },
+        url: path,
+        headers: { authorization: harness.signAs(node, "GET", path) },
       });
 
     // Never greeted: not in the table, and served all the same.
@@ -160,11 +161,12 @@ describe("workgroup proof gate (C1)", () => {
 
   it("refuses a request for another workgroup", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const path = await probe(harness);
     const response = await harness.app.inject({
       method: "GET",
-      url: "/cluster/members",
+      url: path,
       headers: {
-        authorization: harness.signAs(generateNodeIdentity(), "GET", "/cluster/members", {
+        authorization: harness.signAs(generateNodeIdentity(), "GET", path, {
           workgroup: wg("orca-other"),
         }),
       },
@@ -175,6 +177,7 @@ describe("workgroup proof gate (C1)", () => {
 
   it("keeps /cluster/hello open for a first contact, which cannot name the receiver", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const path = await probe(harness);
     const stranger = generateNodeIdentity();
     const joined = await hello(harness, stranger, helloBody(["http://stranger.test"]));
     expect(joined.statusCode).toBe(200);
@@ -183,8 +186,8 @@ describe("workgroup proof gate (C1)", () => {
     // Every other route insists on being addressed to this node.
     const members = await harness.app.inject({
       method: "GET",
-      url: "/cluster/members",
-      headers: { authorization: harness.signAs(stranger, "GET", "/cluster/members", { target: "" }) },
+      url: path,
+      headers: { authorization: harness.signAs(stranger, "GET", path, { target: "" }) },
     });
     expect(members.statusCode).toBe(401);
     expect(members.json()).toMatchObject({ code: "wrong_target" });
@@ -278,8 +281,10 @@ describe("signed replies (§7.1)", () => {
 
   it("signs the answer to a request: its nonce, its status and its body", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const authorization = harness.sign("GET", "/cluster/members");
-    const response = await harness.app.inject({ method: "GET", url: "/cluster/members", headers: { authorization } });
+    // A JSON answer (a file that is not there), whose body the signature covers.
+    const path = MISSING_BLOB;
+    const authorization = harness.sign("GET", path);
+    const response = await harness.app.inject({ method: "GET", url: path, headers: { authorization } });
 
     const signer = verifyReplyHeader(response.headers["pod-reply"] as string, {
       nonce: nonceOf(authorization),
@@ -291,25 +296,35 @@ describe("signed replies (§7.1)", () => {
 
   it("cannot be moved to answer another request, nor reused for another body", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const authorization = harness.sign("GET", "/cluster/members");
-    const response = await harness.app.inject({ method: "GET", url: "/cluster/members", headers: { authorization } });
+    const path = MISSING_BLOB;
+    const authorization = harness.sign("GET", path);
+    const response = await harness.app.inject({ method: "GET", url: path, headers: { authorization } });
     const reply = response.headers["pod-reply"] as string;
 
     expect(
-      verifyReplyHeader(reply, { nonce: "another-nonce", status: 200, subject: bodySha256(response.rawPayload) }),
+      verifyReplyHeader(reply, {
+        nonce: "another-nonce",
+        status: response.statusCode,
+        subject: bodySha256(response.rawPayload),
+      }),
     ).toBeNull();
     expect(
-      verifyReplyHeader(reply, { nonce: nonceOf(authorization), status: 200, subject: bodySha256("{}") }),
+      verifyReplyHeader(reply, {
+        nonce: nonceOf(authorization),
+        status: response.statusCode,
+        subject: bodySha256("{}"),
+      }),
     ).toBeNull();
   });
 
   it("signs errors too, whatever stopped the request", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
+    const path = await probe(harness);
     const stranger = generateNodeIdentity();
-    const authorization = harness.signAs(stranger, "GET", "/cluster/members", {
+    const authorization = harness.signAs(stranger, "GET", path, {
       key: deriveWorkgroupKey(WORKGROUP, "wrong"),
     });
-    const response = await harness.app.inject({ method: "GET", url: "/cluster/members", headers: { authorization } });
+    const response = await harness.app.inject({ method: "GET", url: path, headers: { authorization } });
     expect(response.statusCode).toBe(401);
     expect(
       verifyReplyHeader(response.headers["pod-reply"] as string, {

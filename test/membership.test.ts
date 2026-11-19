@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { OrcaNodeId } from "../src/core/ids.ts";
 import type { Mesh } from "../src/mesh/mesh.ts";
+import type { OrcaNode } from "../src/mesh/orca-node.ts";
 import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "../src/mesh/timings.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 import { listed, TestNet, type NetNode } from "./support/net.ts";
@@ -40,9 +41,14 @@ async function vouchedBy(net: TestNet, node: NetNode): Promise<OrcaNodeId[]> {
   return ids(stranger.mesh).filter((id) => id !== stranger.id);
 }
 
-/** `node` greets `viewer` with this description, as the hello route hands it over (proofs checked, endpoints screened). */
-function greet(viewer: NetNode, id: OrcaNodeId, endpoints = ["http://10.9.9.9:11811"], display_name = `node-${id}`) {
-  viewer.mesh.answer(id, { self: { display_name, endpoints }, busy: null, digest: "" }, endpoints);
+/** `node` greets `viewer` with this description, as the hello route hands it over (proofs checked), over loopback. */
+async function greet(
+  viewer: NetNode,
+  id: OrcaNodeId,
+  endpoints = ["http://10.9.9.9:11811"],
+  display_name = `node-${id}`,
+): Promise<OrcaNode> {
+  await viewer.mesh.greeted(id, { self: { display_name, endpoints }, busy: null, digest: "" }, true);
   return viewer.mesh.require(id);
 }
 
@@ -88,9 +94,9 @@ describe("the node table", () => {
     const c = net.node();
     const hostile = net.node();
     await b.mesh.probe(c.url);
-    const honest = hostile.mesh.answer.bind(hostile.mesh);
-    vi.spyOn(hostile.mesh, "answer").mockImplementation((caller, request, endpoints) => ({
-      ...honest(caller, request, endpoints),
+    const honest = hostile.mesh.greeted.bind(hostile.mesh);
+    vi.spyOn(hostile.mesh, "greeted").mockImplementation(async (caller, request, overLoopback) => ({
+      ...(await honest(caller, request, overLoopback)),
       members: [listed(c.id, "http://192.0.2.9:11811", { display_name: "mallory" })],
     }));
     await b.mesh.probe(hostile.url);
@@ -249,46 +255,38 @@ const NODE_B = fakeNodeId("row-b");
 const NODE_C = fakeNodeId("row-c");
 
 describe("a node as the table's row", () => {
-  it("is found by id, by a unique display name, and by an address it advertises or answered at", () => {
+  it("is found by id, by a unique display name, and by an address it advertises", async () => {
     const a = new TestNet(TIMINGS).node();
-    const node = greet(a, NODE_B, ["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
+    const node = await greet(a, NODE_B, ["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
 
     expect(a.mesh.resolve(NODE_B)).toBe(node);
     expect(a.mesh.resolve(`node-${NODE_B}`)).toBe(node);
     expect(a.mesh.resolve("10.0.0.2:11811")).toBe(node);
     expect(a.mesh.resolve("http://127.0.0.1:11811/")).toBe(node);
-    // Another address that reached it, though it does not advertise it.
-    node.learnUrl("http://localhost:11811");
-    expect(a.mesh.resolve("http://localhost:11811")).toBe(node);
+    // An address it does not advertise does not name it, even one that would reach it.
+    expect(() => a.mesh.resolve("http://localhost:11811")).toThrow(/not a known node/);
     // This node is found like any other.
     expect(a.mesh.resolve(a.mesh.self.displayName)).toBe(a.mesh.self);
     expect(a.mesh.resolve(a.id)).toBe(a.mesh.self);
   });
 
-  it("refuses a stranger, and a name that two nodes have", () => {
+  it("refuses a stranger, and a name that two nodes have", async () => {
     const a = new TestNet(TIMINGS).node();
     expect(() => a.mesh.resolve("http://203.0.113.9:11811")).toThrow(/not a known node/);
     expect(() => a.mesh.resolve("nobody")).toThrow(/not a known node/);
 
-    greet(a, NODE_B, ["http://127.0.0.1:11811"], "twin");
-    greet(a, NODE_C, ["http://127.0.0.1:11812"], "twin");
+    await greet(a, NODE_B, ["http://127.0.0.1:11811"], "twin");
+    await greet(a, NODE_C, ["http://127.0.0.1:11812"], "twin");
     expect(() => a.mesh.resolve("twin")).toThrow(
       new RegExp(`several nodes.*${NODE_B}.*${NODE_C}|several nodes.*${NODE_C}.*${NODE_B}`),
     );
-  });
-
-  it("forgets what it learned about a node that is forgotten", () => {
-    const a = new TestNet(TIMINGS).node();
-    greet(a, NODE_B).learnUrl("http://localhost:11811");
-    a.mesh.remove(NODE_B);
-    expect(() => a.mesh.resolve("http://localhost:11811")).toThrow(/not a known node/);
   });
 
   it("is not handed a task while it is not online", async () => {
     const net = new TestNet(TIMINGS);
     const a = net.node();
     // Nothing answers at the address it declared.
-    const node = greet(a, NODE_B);
+    const node = await greet(a, NODE_B);
     a.mesh.start();
     await net.advance(TIMINGS.offlineAfterMs + 2 * ROUND_MS);
     expect(node.state).toBe("offline");
@@ -297,9 +295,9 @@ describe("a node as the table's row", () => {
     });
   });
 
-  it("takes its own latest description, and no one else's", () => {
+  it("takes its own latest description, and no one else's", async () => {
     const a = new TestNet(TIMINGS).node();
-    const node = greet(a, NODE_B);
+    const node = await greet(a, NODE_B);
     node.describe({
       display_name: "renamed",
       endpoints: ["http://10.0.0.9:11811"],

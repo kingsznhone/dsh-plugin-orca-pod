@@ -86,7 +86,7 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
       const joined = await a.mesh.probe(live);
       expect(joined.endpoints).toEqual([dead, live]);
 
-      const peer = (): PeerView | undefined => peersOf(a).find((view) => view.orca_node_id === b.orcaNodeId);
+      const peer = (): PeerView | undefined => peersOf(a).find((view) => view.orca_node_id === b.mesh.self.id);
       await waitFor(() => peer() !== undefined);
       expect(peer()?.endpoints).toEqual([dead, live]);
 

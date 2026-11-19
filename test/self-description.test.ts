@@ -40,7 +40,7 @@ async function pair(): Promise<[Orca, Orca]> {
 }
 
 function seenBy(observer: Orca, subject: Orca) {
-  return peersOf(observer).find((peer) => peer.orca_node_id === subject.orcaNodeId);
+  return peersOf(observer).find((peer) => peer.orca_node_id === subject.mesh.self.id);
 }
 
 describe("self-description after join (G13)", () => {

@@ -11,11 +11,20 @@
 
 import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { Readable } from "node:stream";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import { z } from "zod";
 
-import { formatBlobRef, parseBlobRef, saveBlob } from "../core/blobs.ts";
-import { normalizePeerUrl } from "../core/net.ts";
+import { LOCAL_TOKEN_HEADER } from "../api/access.ts";
+import {
+  parseBlobRef,
+  PublishedFileSchema,
+  saveBlob,
+  type BlobRef,
+  type OpenedBlob,
+  type PublishedFile,
+} from "../core/blobs.ts";
 import { DEFAULT_PORT } from "../core/constants.ts";
 import { isTerminal, type SubmitTaskInput, type TaskState } from "../task/wire.ts";
 import { parseModelSpec, ReasoningEffortSchema } from "../executor/model.ts";
@@ -23,7 +32,7 @@ import { narrowPermissionMode, SandboxModeSchema } from "../executor/permission.
 import { parseOrThrow } from "../core/schema.ts";
 import type { PeerView } from "../mesh/wire.ts";
 import { abortError, errorMessage, PodError } from "../core/errors.ts";
-import type { Orca } from "../node/orca.ts";
+import { NODE_TOKEN_ENV, NODE_URL_ENV, type Orca } from "../node/orca.ts";
 
 import { canonicalPath, writableRoots, type SandboxExecutionPolicy, type SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
@@ -36,7 +45,6 @@ import {
   type ToolExecution,
   type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
-import type { LocalNode, PublishedFile } from "./local-node.ts";
 import type { Pod } from "./pod.ts";
 import type { OptionalService } from "./services.ts";
 
@@ -50,7 +58,7 @@ const FILES_HELP =
 
 const METHODS_HELP =
   "Methods: " +
-  "send (peer, text; optional echo, permission_mode, model, reasoning_effort) dispatches a task to a node; " +
+  "send (peer, text; optional permission_mode, model, reasoning_effort) dispatches a task to a node; " +
   FILES_HELP +
   "status (peer, task_id) reads one task; " +
   "cancel (peer, task_id) requests cancellation; " +
@@ -91,13 +99,6 @@ const PARAMETERS = {
     description: "publish: optional seconds the file stays downloadable; 0 never expires. Default 7 days.",
   },
   task_id: { type: "string", description: 'status/cancel: task id returned by method "send".' },
-  echo: {
-    type: "object",
-    additionalProperties: true,
-    description:
-      "send: optional deterministic echo script forwarded as metadata.echo for tests: " +
-      "{steps:[{at_ms,suspend:{kind,reason|tool,...}}],final:{state,text}}.",
-  },
   permission_mode: {
     type: "string",
     enum: SANDBOX_MODES,
@@ -141,7 +142,6 @@ const SendCall = z.object({
   method: z.literal("send"),
   peer: Text,
   text: Text,
-  echo: z.unknown().optional(),
   permission_mode: SandboxModeSchema.optional(),
   model: z.string().optional(),
   reasoning_effort: ReasoningEffortSchema.optional(),
@@ -164,13 +164,75 @@ const PodCallSchema = z.discriminatedUnion("method", [
 
 type SendResult = { task_id: string; state: TaskState; peer: string; node: string };
 type FetchResult = { path: string; size: number };
-type ConnectResult = { peer: string; members: PeerView[]; members_digest: string };
+/** The nodes this one knows, and the digest of what it vouches for. */
+type Roster = { members: PeerView[]; members_digest: string };
+type ConnectResult = Roster & { peer: string };
 
 /**
  * The machine's node as the tool reaches it: the pod of this process (the host),
  * or, inside a task, the node's local routes.
  */
 type ToolNode = { kind: "host"; pod: Pod } | { kind: "task"; local: LocalNode };
+
+/**
+ * This machine's node as a task session reaches it (§5.6). The plugin inside a
+ * task runs in another `dsh` process and has no node of its own, so its file
+ * methods go through the node's local routes, at the address and with the token
+ * the executor put into the task's environment.
+ */
+export class LocalNode {
+  constructor(
+    private readonly url: string,
+    private readonly token: string,
+  ) {}
+
+  /** The node the executor named; null when it named none (a task an older node started). */
+  static fromEnv(): LocalNode | null {
+    const url = process.env[NODE_URL_ENV];
+    const token = process.env[NODE_TOKEN_ENV];
+    return url && token ? new LocalNode(url, token) : null;
+  }
+
+  /** Have the node copy a file of this machine into its registry. */
+  async publish(path: string, ttlS: number | undefined, signal: AbortSignal): Promise<PublishedFile> {
+    const response = await this.call("/local/blobs", signal, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(ttlS === undefined ? { path } : { path, ttl_s: ttlS }),
+    });
+    return parseOrThrow(
+      PublishedFileSchema,
+      await response.json(),
+      (problem) => new Error(`this machine's node answered an unexpected publish reply: ${problem}`),
+    );
+  }
+
+  /** A file any member published, as the node fetches it; the caller checks the bytes against the sha256. */
+  async open(ref: BlobRef, signal: AbortSignal): Promise<OpenedBlob> {
+    const response = await this.call(`/local/blobs/${ref.node}/${ref.blob_id}`, signal);
+    if (response.body === null) throw new Error("this machine's node answered without the file");
+    const length = response.headers.get("content-length");
+    return {
+      stream: Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
+      size: length === null ? undefined : Number(length),
+    };
+  }
+
+  private async call(
+    path: string,
+    signal: AbortSignal,
+    init: { method?: string; headers?: Record<string, string>; body?: string } = {},
+  ): Promise<Response> {
+    const response = await fetch(new URL(path, this.url), {
+      ...init,
+      headers: { ...init.headers, [LOCAL_TOKEN_HEADER]: this.token },
+      signal,
+    });
+    if (response.ok) return response;
+    const answer = (await response.json().catch(() => undefined)) as { message?: string } | undefined;
+    throw new Error(`this machine's node answered ${response.status}${answer?.message ? `: ${answer.message}` : ""}`);
+  }
+}
 
 /** The single `orca_pod` tool, bound to this machine's node. */
 export class PodTool {
@@ -236,12 +298,12 @@ export class PodTool {
     if (args.model !== undefined && model === undefined) {
       throw new Error("model must be a provider/model string");
     }
-    const orca = await PodTool.awaitOrca(pod, signal);
+    const orca = await PodTool.orca(pod, signal);
     const node = orca.mesh.resolve(args.peer);
+    // `orca` rejected if the turn was cancelled while it waited; from here on the request observes the signal.
     const input: SubmitTaskInput = {
       message: { role: "user", parts: [{ kind: "text", text: args.text }] },
       metadata: {
-        echo: args.echo,
         pod: {
           permission_mode: permissionMode,
           model,
@@ -249,7 +311,6 @@ export class PodTool {
         },
       },
     };
-    PodTool.throwIfAborted(signal);
     const view = await node.sendTask(input, { signal, agentId: exec.agent?.id });
     if (signal.aborted) {
       // The remote accepted the task after the caller's turn was cancelled: the
@@ -287,9 +348,7 @@ export class PodTool {
     const opened =
       node.kind === "task"
         ? await node.local.open(ref, exec.signal)
-        : await (await PodTool.awaitOrca(node.pod, exec.signal)).mesh
-            .require(ref.node)
-            .fetchBlob(ref.blob_id, exec.signal);
+        : await (await PodTool.orca(node.pod, exec.signal)).mesh.require(ref.node).fetchBlob(ref.blob_id, exec.signal);
     await mkdir(dirname(output), { recursive: true });
     const { size } = await saveBlob(opened, output, ref.blob_id);
     return { path: output, size };
@@ -300,15 +359,9 @@ export class PodTool {
     const path = resolve(this.sessionPolicy(exec)?.workspaceRoot ?? process.cwd(), args.path);
     const { node } = this;
     if (node.kind === "task") return node.local.publish(path, args.ttl_s, exec.signal);
-    const orca = await PodTool.awaitOrca(node.pod, exec.signal);
-    // Publishing copies the file: do not start it for a turn that is already gone.
-    PodTool.throwIfAborted(exec.signal);
-    const blob = await orca.blobs.register(path, args.ttl_s);
-    return {
-      ref: formatBlobRef({ node: orca.orcaNodeId, blob_id: blob.blob_id }),
-      size: blob.size,
-      expires_at: blob.expires_at,
-    };
+    // Publishing copies the file: `orca` rejects for a turn that is already gone, so it does not start.
+    const { mesh } = await PodTool.orca(node.pod, exec.signal);
+    return mesh.self.publish(path, args.ttl_s);
   }
 
   /**
@@ -322,18 +375,12 @@ export class PodTool {
     return policy === undefined || session === undefined ? undefined : policy.resolve({ session });
   }
 
-  private async connect(pod: Pod, peerRef: string, signal: AbortSignal): Promise<ConnectResult> {
-    const peer = normalizePeerUrl(peerRef);
-    await PodTool.awaitOrca(pod, signal);
-    // Connecting persists the peer; do not start it for a turn that is already gone.
+  private async connect(pod: Pod, address: string, signal: AbortSignal): Promise<ConnectResult> {
+    // Connecting persists the peer; do not start it for a turn that is already gone. The pod
+    // joins it after any (re)start in progress, which is queued before it.
     PodTool.throwIfAborted(signal);
-    await pod.addPeer(peer);
-    const { mesh } = await PodTool.awaitOrca(pod, signal);
-    return {
-      peer,
-      members: mesh.peers().map((node) => node.view()),
-      members_digest: mesh.digest(),
-    };
+    const peer = await pod.addPeer(address);
+    return { peer, ...PodTool.roster(await PodTool.orca(pod, signal)) };
   }
 
   /** Dispatch one call of the host's tool against the running node. */
@@ -345,23 +392,18 @@ export class PodTool {
       case "fetch":
       case "publish":
         return this.runFile(call, exec);
-      case "status": {
-        const view = await (await PodTool.awaitOrca(pod, signal)).mesh.resolve(call.peer).getTask(call.task_id, signal);
-        return { ...view, terminal: isTerminal(view.status.state) };
-      }
+      case "status":
       case "cancel": {
-        const view = await (await PodTool.awaitOrca(pod, signal)).mesh
-          .resolve(call.peer)
-          .cancelTask(call.task_id, signal);
+        const node = (await PodTool.orca(pod, signal)).mesh.resolve(call.peer);
+        const view =
+          call.method === "status"
+            ? await node.getTask(call.task_id, signal)
+            : await node.cancelTask(call.task_id, signal);
         return { ...view, terminal: isTerminal(view.status.state) };
       }
       case "members": {
-        const { mesh } = await PodTool.awaitOrca(pod, signal);
-        return {
-          self: mesh.self.selfRecord(),
-          members: mesh.peers().map((node) => node.view()),
-          members_digest: mesh.digest(),
-        };
+        const orca = await PodTool.orca(pod, signal);
+        return { self: orca.mesh.self.selfRecord(), ...PodTool.roster(orca) };
       }
       case "connect":
         return this.connect(pod, call.peer, signal);
@@ -372,13 +414,9 @@ export class PodTool {
     return call.method === "fetch" ? this.fetch(call, exec) : this.publish(call, exec);
   }
 
-  /**
-   * Wait for any (re)start in progress, then fail the tool call when the orca
-   * node is not usable. A restart is the host's work, not this call's, so a
-   * cancelled turn may stop waiting for it right away.
-   */
-  private static awaitOrca(pod: Pod, signal: AbortSignal): Promise<Orca> {
-    return PodTool.waitUnlessAborted(pod.orca(), signal);
+  /** The nodes `orca` knows besides itself, and the digest of what it vouches for. */
+  private static roster(orca: Orca): Roster {
+    return { members: orca.mesh.peers().map((node) => node.view()), members_digest: orca.mesh.digest() };
   }
 
   /** Parse a call; an error names the argument and what is wrong with it. */
@@ -408,14 +446,17 @@ export class PodTool {
   }
 
   /**
-   * Wait for something this call does not own (startup), or stop waiting when
-   * the caller's turn is cancelled. Never wrap the call's own work in this: a
-   * tool settles only after its work has stopped (dsh-tools `execute`), so the
-   * methods forward the signal to their requests and finish on their own.
+   * The pod's running node, once any (re)start in progress is over; the tool call
+   * fails when the node is not usable. A restart is the host's work, not this
+   * call's, so a cancelled turn stops waiting for it right away. Only this wait is
+   * cut short: a tool settles only after its own work has stopped (dsh-tools
+   * `execute`), so the methods forward the signal to their requests and finish on
+   * their own.
    */
-  private static waitUnlessAborted<T>(wait: Promise<T>, signal: AbortSignal): Promise<T> {
+  private static orca(pod: Pod, signal: AbortSignal): Promise<Orca> {
     if (signal.aborted) return Promise.reject(abortError("cancelled by the caller"));
-    return new Promise<T>((resolve, reject) => {
+    const wait = pod.orca();
+    return new Promise<Orca>((resolve, reject) => {
       const onAbort = (): void => reject(abortError("cancelled by the caller"));
       signal.addEventListener("abort", onAbort, { once: true });
       wait.then(

@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PodError } from "../src/core/errors.ts";
 import type { SubmitTaskInput } from "../src/task/wire.ts";
-import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
+import type { NodeIdentity } from "../src/core/identity.ts";
 import { wg } from "./fixtures/ids.ts";
 import { createGatewayHarness } from "./fixtures/gateway.ts";
 import { createTestRunner } from "./fixtures/runner.ts";
+import { generateNodeIdentity } from "../src/plugin/stores.ts";
 
 const WORKGROUP = wg("orca-schema");
 
@@ -80,7 +81,7 @@ describe("gateway body schemas", () => {
     const { self, post } = harness();
     submitted.length = 0;
     const message = { role: "user", messageId: "m-1", contextId: "c-1", parts: [{ kind: "text", text: "hi" }] };
-    const metadata = { pod: { task_ttl_s: 30 }, echo: { final: { text: "x" } } };
+    const metadata = { pod: { permission_mode: "read-only" }, trace: { final: { text: "x" } } };
     await post(self, "/a2a", { method: "message/send", params: { message, metadata } });
     expect(submitted).toHaveLength(1);
     expect(submitted[0]?.message).toEqual(message);

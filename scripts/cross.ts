@@ -4,7 +4,10 @@
  *
  *   node --import tsx scripts/cross.ts serve --workgroup <id> --password <secret> [--port 11811] [--host 0.0.0.0]
  *   node --import tsx scripts/cross.ts join  --peer <url> --workgroup <id> --password <secret> [--name guest]
- *   node --import tsx scripts/cross.ts task  --peer <url> --workgroup <id> --password <secret> [--text hello] [--echo '<json>']
+ *   node --import tsx scripts/cross.ts task  --peer <url> --workgroup <id> --password <secret> [--text hello] [--script '<json>']
+ *
+ * Both sides run the scripted test executor (`test/support/script.ts`), so no
+ * model credentials are needed: the task's text is a script that says how it ends.
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
@@ -15,6 +18,7 @@ import { WorkgroupIdSchema } from "../src/core/ids.ts";
 import type { Orca } from "../src/node/orca.ts";
 import { isTerminal } from "../src/task/wire.ts";
 import { newNode } from "../test/support/node.ts";
+import { scriptMessage, type Script } from "../test/support/script.ts";
 
 const OPTIONS = {
   peer: { type: "string" },
@@ -25,7 +29,7 @@ const OPTIONS = {
   port: { type: "string" },
   endpoint: { type: "string" },
   text: { type: "string" },
-  echo: { type: "string" },
+  script: { type: "string" },
 } as const;
 
 type Args = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>["values"];
@@ -70,7 +74,7 @@ async function watch(node: Orca): Promise<void> {
 async function serve(args: Args): Promise<void> {
   const node = nodeFor(args, { name: `host-${process.pid}`, port: DEFAULT_PORT });
   const { url } = await node.start();
-  console.log(`serving on ${url} node=${node.orcaNodeId}`);
+  console.log(`serving on ${url} node=${node.mesh.self.id}`);
   await watch(node);
 }
 
@@ -79,7 +83,7 @@ async function join(args: Args): Promise<void> {
   const node = nodeFor(args, { name: `guest-${process.pid}`, port: 0 });
   const { url } = await node.start();
   const contacted = await node.mesh.probe(peer);
-  console.log(`contacted ${contacted.displayName} (${contacted.id}) at ${peer} as ${node.orcaNodeId} on ${url}`);
+  console.log(`contacted ${contacted.displayName} (${contacted.id}) at ${peer} as ${node.mesh.self.id} on ${url}`);
   console.log(
     `members=${node.mesh
       .peers()
@@ -97,13 +101,10 @@ async function task(args: Args): Promise<void> {
   try {
     // Peer calls only reach members, so admit this node at the target first.
     const target = await node.mesh.probe(peer);
-    const echo = args.echo
-      ? (JSON.parse(args.echo) as Record<string, unknown>)
-      : { final: { state: "completed", text: args.text ?? "echo from host" } };
-    const submitted = await target.sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: args.text ?? "run echo" }] },
-      metadata: { echo },
-    });
+    const script: Script = args.script
+      ? (JSON.parse(args.script) as Script)
+      : { final: { state: "completed", text: args.text ?? "hello from host" } };
+    const submitted = await target.sendTask({ message: scriptMessage(script) });
     console.log(`submitted task=${submitted.id} state=${submitted.status.state}`);
     for (let attempt = 0; attempt < 300; attempt += 1) {
       const view = await target.getTask(submitted.id);

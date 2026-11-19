@@ -54,7 +54,7 @@ Hard constraints that must not be undone:
   session's permission mode (none inherited => read-only); the local
   permission_mode only narrows it. The target auto-answers ACP permission
   requests by mode and parks the rest as input-required for the origin; it never
-  opens a local approval dialog. There is one ApprovalBroker and the UI (chat
+  opens a local approval dialog. The tracker holds the request and the UI (chat
   card, popup, panel) is the only answer channel: the orca_pod tool has no
   approve method, and a permission request produces no chat notice.
 - Execution dir is the persistent per-workgroup workspace; there is no
@@ -121,6 +121,6 @@ Hard constraints that must not be undone:
 - 威胁模型与攻击面清单：07 的附录。
 - 密码分发与轮换 runbook：07.3（[§7.3](07-security.md#73-密钥与密码的分发)）的附录。
 - Windows 路径 / 保留名 / 长路径测试矩阵：[§11](11-open-questions.md#11-未决问题) 第 5 项的展开。
-- EchoExecutor 场景脚本样例集：[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务) 的附录。
+- 脚本执行器场景脚本样例集：[§6.3](06-execution.md#63-脚本执行器测试用) 的附录。
 
 ---

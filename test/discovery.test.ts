@@ -61,8 +61,8 @@ describe("lazy discovery", () => {
     await c.mesh.probe(a.mesh.self.endpoints[0]!);
 
     // join 的目录里已经有 B，但 B 还不认识 C
-    expect(peersOf(c).some((member) => member.orca_node_id === b.orcaNodeId)).toBe(true);
-    expect(peersOf(b).some((member) => member.orca_node_id === c.orcaNodeId)).toBe(false);
+    expect(peersOf(c).some((member) => member.orca_node_id === b.mesh.self.id)).toBe(true);
+    expect(peersOf(b).some((member) => member.orca_node_id === c.mesh.self.id)).toBe(false);
 
     // C 心跳 B 撞 404 → 自动重新 join B；拿到目录后 B 也认识 C
     await waitFor(

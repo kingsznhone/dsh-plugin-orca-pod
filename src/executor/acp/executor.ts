@@ -1,28 +1,54 @@
 /**
- * AcpExecutor (§6.14): one `dsh --profile acp` child process per orca node,
- * driven over ACP v1. One ACP session per (origin orca node, context);
- * permission prompts suspend the task exactly like the Echo executor, and the
- * task's resume message answers the prompt.
+ * AcpExecutor (§6.14): one `dsh` child process per orca node, driven over ACP
+ * v1. One ACP session per (origin orca node, context), resumed from the
+ * persisted binding when the child still knows it; a permission prompt
+ * suspends the task, and the task's resume message answers the prompt.
  */
 
-import type {
-  PromptResponse,
-  RequestPermissionRequest,
-  RequestPermissionResponse,
-  StopReason,
-  ToolCallUpdate,
-} from "@agentclientprotocol/sdk";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
-import { IN_TASK_ENV } from "../../core/entry.ts";
-import { abortError } from "../../core/errors.ts";
+import { writeFileAtomic } from "@deepseek-ai/dsh-atomic-write";
+import {
+  RequestError,
+  type ErrorCode,
+  type PromptResponse,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
+  type SessionConfigOption,
+  type StopReason,
+  type ToolCallUpdate,
+} from "@agentclientprotocol/sdk";
+import { z } from "zod";
+
+import { abortError, errorMessage, isMissingFile } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
+import { parseOrThrow } from "../../core/schema.ts";
 import type { ModelCatalog } from "../model-catalog.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
-import { KILL_GRACE_MS, type SessionRoute } from "./connection.ts";
+import { AcpConnection, HANDSHAKE_TIMEOUT_MS, KILL_GRACE_MS, type SessionRoute } from "./connection.ts";
 import { CANCELLED, escalationFor, modeAllows, outcomeFor } from "./permissions.ts";
-import type { AcpExecutorConfig } from "./config.ts";
-import { AcpSessionPool, type AcpSession } from "./session.ts";
+import { AcpSession } from "./session.ts";
+
+/** JSON-RPC code ACP agents use for a session they do not know. */
+const RESOURCE_NOT_FOUND: ErrorCode = -32002;
+
+/**
+ * Executor session bindings persisted under `<data_root>/state/<workgroup>/sessions.json`
+ * (the task's `podDir`): session key → ACP session id.
+ */
+const SessionBindingsSchema = z.record(z.string(), z.string());
+type SessionBindings = z.infer<typeof SessionBindingsSchema>;
+
+/**
+ * Environment variable the task executor sets to "1" in every session it
+ * spawns. An agent running a task must not start another one: tasks are
+ * single-hop (§7.9), so the plugin's `send` refuses while it is set. This keeps
+ * a well-behaved agent from cascading; it is not a security boundary, since the
+ * agent runs as the same OS user as the node.
+ */
+export const IN_TASK_ENV = "ORCA_POD_IN_TASK";
 
 /** Stop reasons that end a prompt without an answer (§6.14); anything else completes the task. */
 const FAILED_STOP_REASONS: Partial<Record<StopReason, string>> = {
@@ -65,7 +91,7 @@ class AcpRun {
   private readonly open = new Set<(outcome: RequestPermissionResponse) => void>();
   private readonly route: SessionRoute;
   private transcript = "";
-  /** The run's effective mode; a grant from the origin widens it for the rest of the task (§7.12). */
+  /** The run's effective mode; the origin's approval widens it for the rest of the task (§7.12). */
   private mode: SandboxMode;
   private aborted = false;
 
@@ -78,7 +104,7 @@ class AcpRun {
   }
 
   /** Drive the prompt to its end; a suspension is yielded and answered with the granted mode. */
-  async *drive(signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+  async *drive(signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, void> {
     const detach = this.session.connection.attach(this.session.id, this.route);
     const disarm = this.armAbort(signal);
 
@@ -106,7 +132,7 @@ class AcpRun {
         }
         const { request, reply } = event;
         const { toolCall, options } = request;
-        // A grant for an earlier request may already cover one queued behind it.
+        // An approval of an earlier request may already cover one queued behind it.
         if (modeAllows(this.mode, toolCall.kind)) {
           reply(outcomeFor(options, "allow"));
           continue;
@@ -117,10 +143,10 @@ class AcpRun {
           continue;
         }
         // Suspending sets the task to input-required; coming back means the
-        // origin granted the mode (a denial aborts the run instead), and the
-        // rest of the task runs under it.
-        this.mode =
-          (yield { type: "suspend", suspend: AcpRun.suspensionFor(toolCall, requestedMode) }) ?? requestedMode;
+        // origin granted exactly the mode asked for (a denial aborts the run
+        // instead), and the rest of the task runs under it.
+        yield AcpRun.suspensionFor(toolCall, requestedMode);
+        this.mode = requestedMode;
         reply(outcomeFor(options, "allow"));
       }
     } finally {
@@ -193,7 +219,7 @@ class AcpRun {
   /** Suspending sets the task to input-required; coming back means the origin granted the mode (a denial aborts the run). */
   private static suspensionFor(toolCall: ToolCallUpdate, requestedMode: SandboxMode): Suspension {
     return {
-      kind: "permission",
+      type: "suspend",
       tool: toolCall.title ?? "tool",
       requested: {
         tool_call_id: toolCall.toolCallId,
@@ -204,14 +230,27 @@ class AcpRun {
   }
 }
 
+/**
+ * ACP executor options (§6.14): the `dsh` stdio server to start. It runs in the
+ * host's own profile, which the plugin passes in; there is no profile to
+ * configure (D46). Part of the node's settings (`node/settings.ts`).
+ */
+export const AcpExecutorConfigSchema = z.object({ command: z.string().min(1).optional() });
+export type AcpExecutorConfig = z.infer<typeof AcpExecutorConfigSchema>;
+
 export class AcpExecutor implements LocalExecutor {
-  private readonly sessions: AcpSessionPool;
+  private readonly command: string;
+  private readonly args: string[];
+  /** What the task's plugin needs to reach this machine's node, read when the child starts. */
+  private readonly childEnv: () => Record<string, string>;
+  /** Session ids belong to one connection: a fresh child cannot resume ids cached for the old one. */
+  private current: { connection: AcpConnection; sessions: Map<string, AcpSession> } | null = null;
 
   constructor(
     config: AcpExecutorConfig,
     /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (§6.15). */
     private readonly models: ModelCatalog,
-    logger: NodeLogger,
+    private readonly logger: NodeLogger,
     child: {
       /** The host's own DSH profile, so the task has this plugin; unset passes no `--profile` (D46). */
       profile: string | undefined;
@@ -219,25 +258,20 @@ export class AcpExecutor implements LocalExecutor {
       env: () => Record<string, string>;
     },
   ) {
-    this.sessions = new AcpSessionPool(
-      {
-        command: config.command ?? "dsh",
-        args: [...(config.extra_args ?? []), ...(child.profile === undefined ? [] : ["--profile", child.profile])],
-        // Sessions spawned by this executor carry the in-task marker: the plugin there
-        // starts no node and offers only the file methods, through this node (§7.9, §5.6).
-        env: () => ({ ...process.env, ...child.env(), [IN_TASK_ENV]: "1" }),
-      },
-      config.mcp_servers ?? [],
-      logger,
-    );
+    this.command = config.command ?? "dsh";
+    this.args = child.profile === undefined ? [] : ["--profile", child.profile];
+    this.childEnv = child.env;
   }
 
-  close(): Promise<void> {
-    return this.sessions.close();
+  /** Close the connection; resolves once its child has exited. */
+  async close(): Promise<void> {
+    const closing = this.current?.connection.close();
+    this.current = null;
+    await closing;
   }
 
-  async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
-    const session = await this.sessions.open(input);
+  async *run(input: ExecuteInput, signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, void> {
+    const session = await this.open(input);
     const defaults = this.models.defaults();
     const failure = await session.selectModel(
       input.model ?? defaults.model ?? undefined,
@@ -248,5 +282,81 @@ export class AcpExecutor implements LocalExecutor {
       return;
     }
     yield* new AcpRun(input, session).drive(signal);
+  }
+
+  /** The session of the task's (origin, context): the live one, the persisted one if the child still knows it, or a new one. */
+  private async open(input: ExecuteInput): Promise<AcpSession> {
+    const cwd = input.workspaceDir;
+    const { connection, sessions } = await this.connect(cwd);
+    const key = `acp|${input.originOrcaNode}|${input.contextId}`;
+    const active = sessions.get(key);
+    if (active !== undefined) return active;
+
+    const bindingsPath = join(input.podDir, "sessions.json");
+    const bindings = await AcpExecutor.loadBindings(bindingsPath);
+    const bound = bindings[key];
+    const resumed = bound === undefined ? null : await this.resume(connection, bound, cwd);
+    if (bound !== undefined && resumed !== null) {
+      const session = new AcpSession(connection, bound, resumed);
+      sessions.set(key, session);
+      return session;
+    }
+    const created = await connection.request("session/new", { cwd, mcpServers: [] }, HANDSHAKE_TIMEOUT_MS);
+    // Responses are typed, not validated: a broken server must not bind `undefined`.
+    if (typeof created?.sessionId !== "string") throw new Error("acp server returned no session id");
+    const session = new AcpSession(connection, created.sessionId, created.configOptions ?? []);
+    sessions.set(key, session);
+    bindings[key] = created.sessionId;
+    await writeFileAtomic(bindingsPath, `${JSON.stringify(bindings, null, 2)}\n`, { mode: 0o600 });
+    return session;
+  }
+
+  private async connect(cwd: string): Promise<{ connection: AcpConnection; sessions: Map<string, AcpSession> }> {
+    if (this.current === null || this.current.connection.isClosed()) {
+      // Sessions spawned by this executor carry the in-task marker: the plugin there
+      // starts no node and offers only the file methods, through this node (§7.9, §5.6).
+      const env = { ...process.env, ...this.childEnv(), [IN_TASK_ENV]: "1" };
+      this.current = { connection: AcpConnection.spawn(this.command, this.args, cwd, env), sessions: new Map() };
+    }
+    const joined = this.current;
+    await joined.connection.ready;
+    return joined;
+  }
+
+  /** The session's config options after a resume; null when the agent no longer knows it. */
+  private async resume(
+    connection: AcpConnection,
+    sessionId: string,
+    cwd: string,
+  ): Promise<SessionConfigOption[] | null> {
+    try {
+      const resumed = await connection.request(
+        "session/resume",
+        { sessionId, cwd, mcpServers: [] },
+        HANDSHAKE_TIMEOUT_MS,
+      );
+      return resumed?.configOptions ?? [];
+    } catch (error) {
+      if (!(error instanceof RequestError && error.code === RESOURCE_NOT_FOUND)) {
+        this.logger.warn(`acp session/resume failed, starting a new session: ${errorMessage(error)}`);
+      }
+      return null;
+    }
+  }
+
+  /** Missing file means no bindings yet; a corrupt one throws instead of being overwritten by the next write. */
+  private static async loadBindings(path: string): Promise<SessionBindings> {
+    let text: string;
+    try {
+      text = await readFile(path, "utf8");
+    } catch (error) {
+      if (isMissingFile(error)) return {};
+      throw error;
+    }
+    return parseOrThrow(
+      SessionBindingsSchema,
+      JSON.parse(text),
+      (problem) => new Error(`${path} is not a map of session ids: ${problem}`),
+    );
   }
 }

@@ -7,7 +7,7 @@
 ### 7.1 workgroup 与密码
 
 - `workgroup_id`：`[a-z0-9][a-z0-9-]{1,31}`，创建时指定，之后不可改（改名 = 新建 workgroup）。
-- 密码：**必填，不可为空**；没有最短长度检查，建议至少 12 字符。面板向导强制填写，保存空密码会被拒绝；没有 workgroup 或密码时节点保持未配置、不启动、不监听——`scrypt(password = "")` 是公开常量，等于没有准入控制。**密码用来证明“此刻在组内”**：每个节点间请求的头里都带一个由它派生的 HMAC 证明（[§7.2](07-security.md#72-请求签名没有-session-token)）；请求签名与 grant 用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
+- 密码：**必填，不可为空**；没有最短长度检查，建议至少 12 字符。面板向导强制填写，保存空密码会被拒绝；没有 workgroup 或密码时节点保持未配置、不启动、不监听——`scrypt(password = "")` 是公开常量，等于没有准入控制。**密码用来证明“此刻在组内”**：每个节点间请求的头里都带一个由它派生的 HMAC 证明（[§7.2](07-security.md#72-请求签名没有-session-token)）；请求与答复的签名用节点自己的 Ed25519 私钥（[§2.4](02-model.md#24-orca-node-身份ed25519-公钥)）。
 - **密钥派生**（内存困难，每次启动付一次代价，只在内存里）：
 
 ```text
@@ -22,7 +22,7 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
   | workgroup 密码 | `ctx.credentials` 的引用 **`ORCA_POD_PASSWORD`**（固定名字，整台机器一份；凭据库里没有值时依次回落到启动环境变量与 `.env`，无头宿主可以直接导出同名变量） | `Pod` 启动时读一次，派生出 workgroup key 交给 `Orca`；**key 只在内存里，不写进任何文件** |
   | 节点私钥（Ed25519） | `ctx.credentials` 的记录 **`credentialKey('orca-pod', 'node')`** → `{ kind: 'grant', payload: { ed25519: <base58 私钥种子> } }` | 启动时读出；不存在就用 `modifyRecord` 生成并写入（写入时独占，同时启动的两个进程得到同一把钥匙）。公钥由私钥推导；记录损坏时启动失败并点名，**不会**悄悄生成新身份 |
 
-  `<data_root>`（固定为 `$DSH_HOME/orca-pod`）里没有任何机密：只有设置文件 `settings.json`、SQLite、工作区、`state/` 与 `peers.json`。插件配置（profile 的 `cordis.patch.yml`）只有一个字段 `skill_injection`，设置也不在里面（[§9.2](09-implementation.md#92-dsh-插件)）。面板读到的配置视图永不返回密码，只给 `password_set`（向凭据库的 `describe` 问，不读值）。外部改了这两个名字（DSH 设置页、`.credentials.yaml`、另一个 DSH 进程）会触发 `credentials/reference-updated` / `credentials/record-updated`，节点排队重启一次用上新值。
+  `<data_root>`（固定为 `$DSH_HOME/orca-pod`）里没有任何机密：只有设置文件 `settings.json`、SQLite、工作区与 `state/`。插件配置（profile 的 `cordis.patch.yml`）只有一个字段 `skill_injection`，设置也不在里面（[§9.2](09-implementation.md#92-dsh-插件)）。面板读到的配置视图永不返回密码（也没有 `password_set` 之类的标志）。外部改了这两个名字（DSH 设置页、`.credentials.yaml`、另一个 DSH 进程）会触发 `credentials/reference-updated` / `credentials/record-updated`，节点排队重启一次用上新值。
   执行任务的 agent 与节点是同一个 OS 用户，**不做密钥隔离**；“任务里不能再派任务”是非对抗性约束（[§7.9](07-security.md#79-权限跟随发起-orca-node)），防的是守规矩的 agent 走偏，不防有意绕过。
 - DSH 插件默认 `bind_host: "127.0.0.1"`，bundle 不携带任何 workgroup/密码：首次启动必须先在面板向导里完成 setup（workgroup、密码、监听地址）。向导默认仍选 loopback，只有显式选择 LAN 地址或 `::` 才接受 peer——同网段访问是运维的显式决定，不是默认。认证靠两样证明；不支持无密码的开放 mesh。需要更严格时保持 loopback 并让流量只走代理。
 - **换密码**：**改过的 orca node 用新密码重启组成新 group**（节点私钥在凭据库，节点 id 不变）；没改的 orca node 留在旧 mesh 里，**下一个请求**的 workgroup 证明就对不上（`401 bad_proof`），双方互相丢弃，等于被移出（[§7.3](07-security.md#73-密钥与密码的分发)）。没有“过渡期双密码”，也不需要集中式踢人。
@@ -49,7 +49,7 @@ sig   = Ed25519(identity.private_key, 输入)
 proof = HMAC-SHA256(k, 输入)            // k 是上面的 scrypt 密钥
 ```
 
-`ts` 是毫秒时间戳。`target` 是**接收方**的 `orca_node_id`，`url_with_query` 是请求路径连同查询串。目标是让请求不能被“换一个收件人重放”、也不能被代理在查询串上做小动作。域分离标签 `orca-pod/request` 把这种签名和 grant、答复的签名隔开。答复的签名见 [§7.1](07-security.md#71-workgroup-与密码)：`Pod-Reply: id=<应答方>; sig=<Ed25519("orca-pod/reply|" + 请求 nonce + "|" + status + "|" + sha256_hex(body))>`。
+`ts` 是毫秒时间戳。`target` 是**接收方**的 `orca_node_id`，`url_with_query` 是请求路径连同查询串。目标是让请求不能被“换一个收件人重放”、也不能被代理在查询串上做小动作。域分离标签 `orca-pod/request` 把这种签名和答复的签名隔开。答复的签名见 [§7.1](07-security.md#71-workgroup-与密码)：`Pod-Reply: id=<应答方>; sig=<Ed25519("orca-pod/reply|" + 请求 nonce + "|" + status + "|" + sha256_hex(body))>`。
 
 校验顺序（`preValidation` 钩子里，先于 schema 校验）：
 
@@ -151,11 +151,11 @@ proof = HMAC-SHA256(k, 输入)            // k 是上面的 scrypt 密钥
 
 | 谁发起的任务                                    | 谁批           | 行为                                                                                                                                         |
 | ----------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| 桌面 DSH 里的交互式会话（`orca_pod` 的 `send`） | 这台机器上的人 | tracker 把权限请求交给 `ApprovalBroker`，UI 作答：当前会话聊天卡、后台会话弹窗、或面板列表（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
+| 桌面 DSH 里的交互式会话（`orca_pod` 的 `send`） | 这台机器上的人 | tracker 留着权限请求等 UI 作答：当前会话聊天卡、后台会话弹窗、或面板列表（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
 
 **任务只有一跳**：target 上执行任务的 agent 不能再派任务。ACP 执行器拉起 `dsh` 子进程时注入 `ORCA_POD_IN_TASK=1`，任务在宿主的 profile 里运行，插件也在任务进程里，见到它就不启动节点，`orca_pod` 只有 `fetch` 与 `publish` 两个方法（经本机节点收发文件，[§5.6](05-tasks.md#56-文件交换blob-通道)），没有 `send`；做不完用 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）。所以审批面永远是派发任务的那个会话，不存在“替下游上交”的中间节点。
 
-这是**非对抗性约束**：agent 与节点同一个 OS 用户、读得到私钥（[§7.1](07-security.md#71-workgroup-与密码)），存心绕过的 agent 可以去掉环境变量、自己签请求，或拿环境里的本地路由令牌直接调本机节点。它挡住的是守规矩的 agent 因为任务难就转手、以及因此带来的协议复杂度（祖先链、grant 转发、逐跳上交）。要硬边界，得在部署层把执行器放到另一个 OS 用户或沙箱里。
+这是**非对抗性约束**：agent 与节点同一个 OS 用户、读得到私钥（[§7.1](07-security.md#71-workgroup-与密码)），存心绕过的 agent 可以去掉环境变量、自己签请求，或拿环境里的本地路由令牌直接调本机节点。它挡住的是守规矩的 agent 因为任务难就转手、以及因此带来的协议复杂度（祖先链、批准转发、逐跳上交）。要硬边界，得在部署层把执行器放到另一个 OS 用户或沙箱里。
 
 ### 7.10 权限模式继承
 
@@ -173,45 +173,35 @@ origin 发起任务时携带会话的 permission mode（`metadata.pod.permission
 | `workspace-write`    | 自动放行读写类请求：`edit`/`delete`/`move`/`execute`；**不校验路径是否在工作区内**；其它类型请求升级到 `danger-full-access` |
 | `danger-full-access` | 全部自动放行，没有额外限制                                                                   |
 
-起始 mode 随任务元数据一起签名传递，target 校验签名后再执行，中间人改不了；升级后的 mode 由 grant 携带并签名。两者都只对这一个任务有效，任务结束即失效，下一个任务重新从继承的 mode 开始。
+起始 mode 随任务元数据一起签名传递，target 校验签名后再执行，中间人改不了；升级后的 mode 是 target 自己挂起的请求里的 `requested_mode`，origin 的批准只是对那次请求的答复（[§7.11](07-security.md#711-批准与拒绝)）。两者都只对这一个任务有效，任务结束即失效，下一个任务重新从继承的 mode 开始。
 
-### 7.11 Grant
+### 7.11 批准与拒绝
 
-grant 是 origin 对一次升级请求的答复：允许这个任务从此用 `permission_mode` 跑到结束。它由 origin 节点的 Ed25519 私钥签名，随恢复消息（`message/send` 的 data part）下发：
+origin 对一次升级请求的答复，是对**同一 task** 的一条恢复 `message/send`（`message.taskId` 为该 task）。消息只有一个 data part，是下面两者之一（`resumeControlOf`，`task/wire.ts`）：
 
 ```json
-{
-  "grant_id": "<uuid>",
-  "workgroup_id": "orca-dev",
-  "origin_orca_node": "<A 的 id>",
-  "task_id": "<被授权的 task>",
-  "target_orca_node": "<请求者的 id>",
-  "tool": "write_file",
-  "permission_mode": "danger-full-access",
-  "request_id": "<被批准的请求 id>",
-  "issued_at": "2026-11-14T04:40:00Z",
-  "expires_at": "2026-11-14T04:45:00Z",
-  "sig": "<base64url>"
-}
+{ "permission_granted": true, "request_id": "<被批准的请求 id>" }
+{ "permission_denied": true, "reason": "<拒绝原因>" }
 ```
 
-- 签名输入是 `orca-pod/grant\n` + 固定键序的规范 JSON（上面除 `sig` 外的全部字段），所以 `origin_orca_node`、`request_id`、`permission_mode` 都在签名保护内，grant 不能被改标成另一个 origin、拿去回应另一个请求或改成别的模式；
-- `permission_mode` 就是请求里的 `requested_mode`，人批的是“这个任务升到这一档”；grant 的有效期只需覆盖一次恢复（默认 300 秒），升级本身持续到任务结束。
+两者同时出现时拒绝优先；`reason` 不是文本时按 `denied by origin`。批准没有单独的签名记录：恢复请求本身就是 [§7.2](07-security.md#72-请求签名没有-session-token) 的 Ed25519 + HMAC 签名请求（绑定 target、路径、body 与 nonce），origin 的身份与消息的完整性由它担保。人批的是“这个任务升到这一档”：档就是挂起的请求里的 `requested_mode`（target 发请求时已按本机上限算过），批准不带别的字段，origin 改不了档。
 
-target 收到恢复消息后按顺序校验（`checkGrant`，全部通过才放行，任一不符即终止任务并以对应 reason `failed`）：
+target 收到恢复消息后按顺序校验（`SingleSlotTaskRunner.resume`），任一不符就拒绝这条消息：
 
-1. 签名能用 `origin_orca_node` 的公钥验过；
-2. `origin_orca_node` 就是该任务的 origin（`message/send` 的签名者）——别的成员签的 grant 不算数；
-3. `workgroup_id` 一致、`tool` 与挂起的请求一致、`permission_mode` 等于请求的 `requested_mode`（target 发请求时已按本机上限算过）；
-4. 未过期（`grant_expired`）；
-5. `request_id` 等于挂起请求的 `request_id`；
-6. 未被用过：target 在进程内按 `grant_id` 记已消费集合（到 `expires_at` 为止，容量 1024），重复使用 `grant_replayed`；
-7. `task_id` 与 `target_orca_node` 就是本任务与本节点。
+1. 任务存在（否则 `404 task_not_found`），且还在运行、没有终态（否则 `400 bad_request`）；
+2. 调用者就是该任务的 origin（`403 not_task_origin`）——别的成员的恢复消息不算数；
+3. 任务处于 `input-required`（否则 `400 bad_request`）；
+4. 槽位空闲（`429 orca_node_busy`）：挂起的任务让出了槽，恢复时重新竞争（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）；
+5. data part 是批准或拒绝（纯文本等其它内容 → `400 bad_request`，任务不变）；
+6. 批准的 `request_id` 等于任务挂起的那次请求的 id（否则 `400 bad_request`，**任务不失败、继续等**）。
+
+通过后：批准 → 任务用 `requested_mode` 跑到结束，只对这一个任务有效；拒绝 → 任务 `failed(permission_denied)`，`status.message` 为 `permission denied: <reason>`。
 
 其他：
 
-- 已消费集合与 grant 都不持久化（重启时任务本来就都失败了）；没有“取消时吊销 grant”这一步：grant 只能用一次且很快过期，升级随任务结束而失效；
-- 签发见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用)：只有 origin 节点的 `approveTask` 签 grant。
+- **重放**：靠每个请求都有的 nonce 缓存、时间窗与 `stale_request`（重启前签的请求不再被接受，[§7.2](07-security.md#72-请求签名没有-session-token)）挡住原样重发；对同一次请求的第二次批准会发现任务已不是 `input-required`，或已停在新的请求 id 上（旧 id → `400 bad_request`），不会放行第二次。没有单独的“已用批准”集合；
+- 批准与拒绝都不持久化，也没有“取消时吊销”这一步：升级随任务结束而失效（重启时任务本来就都失败了）；
+- 答复见 [§7.12](07-security.md#712-升级回路任务状态不是反向调用)：只有 origin 节点的 `approve` / `deny`（`OrcaNode`）发出它。
 
 ### 7.12 升级回路：任务状态，不是反向调用
 
@@ -234,11 +224,11 @@ target: 执行器收到一次生效模式之外的权限请求
     }
 
 origin: tracker 的下一次 tasks/get 看到 input-required
-  → 交给 ApprovalBroker（不往 agent 对话里塞原始文本）
+  → tracker 留着等 UI 作答（不往 agent 对话里塞原始文本）
   → UI 三落点：正在看的会话里贴聊天卡；后台会话弹窗；面板 Pending approvals 列表
-  → 批准：origin 节点签 grant（permission_mode = requested_mode），作为同一 task 的后续 message 发给 target；
-    target 校验后把这个任务的模式升上去、放行这次调用，之后同类操作按新模式自动应答，不再询问
-  → 拒绝：发 message `permission_denied`，target 把 task 置 failed(reason=permission_denied)
+  → 批准：origin 发同一 task 的后续 message，data part 为 { permission_granted: true, request_id }；
+    target 校验后把这个任务的模式升到 requested_mode、放行这次调用，之后同类操作按新模式自动应答，不再询问
+  → 拒绝：发后续 message，data part 为 { permission_denied: true, reason }，target 把 task 置 failed(reason=permission_denied)
   → 默认不超时（人可能不在）；target 配置了 approval_timeout_s 才在到点后 failed(permission_timeout)
 ```
 
@@ -246,19 +236,19 @@ origin: tracker 的下一次 tasks/get 看到 input-required
 
 - **这不是反向调用。** 全设计只有 origin → target 一个方向；target 没有 origin 的地址，也不需要。所谓“送回 origin”只是把请求写进 task 状态，等 origin 来读。
 - **任务记录是唯一权威载体**：`permission_request` 必须能只靠 `tasks/get` 拿到；origin 重启、停轮询后恢复，都读得到同一份。
-- 补发的授权是**同一 task 的后续 message**（带 `taskId` + grant），不是第二个任务，也不是独立的 grant 端点；只有 origin 能发。
-- **只有一个 `ApprovalBroker`，UI 是唯一的答复通道**：`orca_pod` 工具没有 approve 方法（方法只有 `send`/`status`/`cancel`/`members`/`connect`），所以模型无法替用户批准。批准/拒绝按钮直接调 `OrcaNode.approveTask/denyTask`，不经过模型与工具轮次。
+- 补发的答复是**同一 task 的后续 message**（带 `taskId` + 批准或拒绝的 data part），不是第二个任务，也不是独立的审批端点；只有 origin 能发。
+- **权限请求只在 tracker 一处，UI 是唯一的答复通道**：`orca_pod` 工具没有 approve 方法（方法只有 `send`/`status`/`cancel`/`members`/`connect`），所以模型无法替用户批准。批准/拒绝按钮直接调 `OrcaNode.approve/deny`，不经过模型与工具轮次。
 - **权限请求不产生聊天 notice**，也不唤醒 agent；UI 三个落点共用同一个 broker 与同一条决议通道：**当前正在看的会话**里贴一张聊天卡（`conversation.input.dock`，按发起任务的会话 id 匹配）；**后台会话**的请求在框内弹窗（`shell.overlay`）；**面板** Pending approvals 列表可随时签发。任务终态或不再挂起时，卡片自动收回。
 - 卡片显示：需要权限的节点、触发升级的工具与 `requested` 的预览、以及“本任务改用 X 运行到结束（当前 Y）”；远端文本当纯文本渲染，不当 HTML。
 - `decided_by` 必须来自 UI 的人类动作，不能由模型自批；origin 端是唯一能产生“用户同意”的地方。
 
 - **agent 这一侧不做任何事**：权限请求来自 ACP 的 `session/request_permission`，由执行器与任务运行器挂起任务、等待、恢复，agent 只是这次工具调用暂时没有返回；批准后同一个任务、同一轮从卡住的地方继续，拒绝则任务以 `permission_denied` 结束。没有 agent 可调用的“上交”命令。
 - **升级只对这一个任务有效**：中断、授权、继续都发生在同一个任务上，所以升级随任务结束失效；同一会话上下文的下一个任务重新从继承的模式开始。挂起期间 target 重启，任务以 `node_restart` 失败，升级随之作废。
-- **只有一跳**：任务里的 agent 不能再派任务（[§7.9](07-security.md#79-权限跟随发起-orca-node)），所以请求总是直接挂在 origin 派出的那个任务上，grant 也总是 origin 对这个任务签的；没有中间节点转发 grant，也没有逐跳上交。
+- **只有一跳**：任务里的 agent 不能再派任务（[§7.9](07-security.md#79-权限跟随发起-orca-node)），所以请求总是直接挂在 origin 派出的那个任务上，批准也总是 origin 对这个任务发的；没有中间节点转发批准，也没有逐跳上交。
 
 ### 7.13 目标侧硬拒绝清单
 
-没有。权限请求要么落在 [§7.14](07-security.md#714-acp-request_permission-映射) 的自动应答规则里，要么请求 origin 升级模式；节点不维护与模式、grant 无关的“永远拒绝”清单，也不保护自己的配置与凭据目录不被 agent 读写（见 [§7.1](07-security.md#71-workgroup-与密码)）。要限制一台机器能做什么，把本机 `permission_mode` 设成 `read-only` 或 `workspace-write`。
+没有。权限请求要么落在 [§7.14](07-security.md#714-acp-request_permission-映射) 的自动应答规则里，要么请求 origin 升级模式；节点不维护与模式、批准无关的“永远拒绝”清单，也不保护自己的配置与凭据目录不被 agent 读写（见 [§7.1](07-security.md#71-workgroup-与密码)）。要限制一台机器能做什么，把本机 `permission_mode` 设成 `read-only` 或 `workspace-write`。
 
 ### 7.14 ACP `request_permission` 映射
 
@@ -277,7 +267,7 @@ AcpExecutor 收到 `session/request_permission` 时，用任务当前的生效�
 
 - 自动应答选 `allow_once`/`reject_once` 选项，没有就选第一个同类选项，都没有则回 `cancelled`。
 - 升级请求等 origin 的后续 message：批准 → 回 `allow`，任务改用新模式，排在后面的同类请求直接按新模式放行；拒绝/取消/TTL/超时 → 任务终止，所有未答复的请求回 `cancelled`，避免 ACP 侧永久悬挂。挂起本身没有超时，除非配置 `approval_timeout_s`。
-- 没有“无 grant 即拒绝”这一条：模式覆盖的请求不需要 grant，grant 只对升级请求有意义。
+- 没有“无批准即拒绝”这一条：模式覆盖的请求不需要批准，批准只对升级请求有意义。
 
 ### 7.15 凭据回传与注入防护
 

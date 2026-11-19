@@ -23,7 +23,7 @@
 5. 任务异步执行：提交后返回 task id，进度和结果通过 task 状态取回。
 6. orca node 上下线可被观测；某个 orca node 掉线后，其余 orca node 不再给它派任务。
 7. 跨 workgroup 隔离；不同 workgroup 的 orca node 互不可见、互不可调。
-8. 本地执行器可替换：Echo / ACP 不改变集群协议。
+8. 本地执行器可替换：执行器是本机实现细节（默认 ACP，测试用脚本执行器），不改变集群协议。
 9. 设计可跨 Windows/Linux 移植；不依赖某台机器的本地路径或 DSH profile。
 10. orca node 信息可发现：OS 与版本、CPU、内存、Node 版本、可用模型，以及当前是否忙。
 11. 长程协作连贯：同一个 workgroup 里，后续任务能在同一工作区接着上次的上下文继续，而不是每次从零开始。
@@ -60,7 +60,7 @@
 | **workspace**             | orca node 上自动分配的持久目录，跨任务、跨 session 保留上下文；每个 workgroup 一份，也叫 group workspace。                                                           |
 | **session**               | ACP 会话状态，绑定 `(origin_orca_node, context_id)`，存在 `<data_root>/state/<workgroup_id>/sessions.json`。                                                         |
 | **context_id**            | A2A 的逻辑会话 id，把多个 task 归到同一串工作里。                                                                                                                    |
-| **grant**                 | origin 对一次升级请求的签名答复：允许这个任务改用某个权限模式跑到结束；绑定 origin/target/task/tool/request/模式，用掉即作废。                                                             |
+| **批准 / approval**       | origin 对一次升级请求的答复：允许这个任务改用请求的权限模式跑到结束；是对同一 task 的一条恢复 `message/send`，带 `permission_granted` 与请求的 `request_id`；拒绝是带 `permission_denied` 的恢复消息（[§7.11](07-security.md#711-批准与拒绝)）。 |
 
 **命名注意：** `workgroup_id`、`workspace`、`session` 三者不能混用。DSH GUI 里把项目目录叫“工作区”，本文的 `workspace` 指的是被调用 orca node 上自动分配的那份执行目录；代码与日志里不允许用裸的 `workspace` 表示命名空间。同理，mesh 成员一律写 **orca node**，不写裸的 `node`——那是 Node.js。
 

@@ -42,7 +42,7 @@ describe("heartbeat loop and watchdog", () => {
 
       await waitFor(() =>
         survivors.every((orcaNode) =>
-          peersOf(orcaNode).some((peer) => peer.orca_node_id === victim.orcaNodeId && peer.state === "offline"),
+          peersOf(orcaNode).some((peer) => peer.orca_node_id === victim.mesh.self.id && peer.state === "offline"),
         ),
       );
 
@@ -53,7 +53,7 @@ describe("heartbeat loop and watchdog", () => {
       ).rejects.toMatchObject({ code: "peer_not_online" });
 
       await waitFor(() =>
-        survivors.every((orcaNode) => peersOf(orcaNode).every((peer) => peer.orca_node_id !== victim.orcaNodeId)),
+        survivors.every((orcaNode) => peersOf(orcaNode).every((peer) => peer.orca_node_id !== victim.mesh.self.id)),
       );
     } finally {
       await Promise.allSettled(survivors.map((orcaNode) => orcaNode.stop()));

@@ -38,8 +38,8 @@ describe("settings", () => {
       port: 11811,
       endpoints: [],
       peers: [],
+      task_timeout_s: 3600,
       max_workspace_bytes: 5 * 1024 ** 3,
-      max_workspace_files: 50_000,
     });
   });
 
@@ -64,8 +64,8 @@ describe("settings", () => {
       port: 11811,
       endpoints: [],
       peers: [],
+      task_timeout_s: 3600,
       max_workspace_bytes: 5 * 1024 ** 3,
-      max_workspace_files: 50_000,
     });
   });
 
@@ -87,10 +87,11 @@ describe("settings", () => {
 describe("plugin config", () => {
   const validate = (input: unknown) => plugin.Config["~standard"].validate(input);
 
-  it("is the skill switch and nothing else, off by default", () => {
-    expect(validate({})).toEqual({ value: { skill_injection: false } });
-    expect(validate(undefined)).toEqual({ value: { skill_injection: false } });
-    expect(validate({ skill_injection: true })).toEqual({ value: { skill_injection: true } });
+  it("is the skill switch and nothing else, on by default", () => {
+    expect(validate({})).toEqual({ value: { skill_injection: true } });
+    expect(validate(undefined)).toEqual({ value: { skill_injection: true } });
+    expect(validate({ skill_injection: null })).toEqual({ value: { skill_injection: true } });
+    expect(validate({ skill_injection: false })).toEqual({ value: { skill_injection: false } });
     expect(validate({ skill_injection: "yes" })).toMatchObject({ issues: [{ path: ["skill_injection"] }] });
   });
 
@@ -380,12 +381,14 @@ describe("orca_pod tool", () => {
       mesh: { peers: () => [], digest: () => "digest" },
     } as unknown as import("../src/node/orca.ts").Orca;
     const handleForConnect = podRunning(fakeNode);
-    vi.spyOn(handleForConnect, "addPeer").mockImplementation(async (peer: string) => {
-      seen.push(peer);
+    vi.spyOn(handleForConnect, "addPeer").mockImplementation(async (address: string) => {
+      seen.push(address);
+      return "http://192.168.1.20:11811";
     });
     const connectTools = createPodTools(handleForConnect);
     const result = await run(connectTools, { method: "connect", peer: "192.168.1.20" });
-    expect(seen).toEqual(["http://192.168.1.20:11811"]);
+    // The pod makes the address canonical; the tool answers with what the pod joined.
+    expect(seen).toEqual(["192.168.1.20"]);
     expect(result).toEqual({
       peer: "http://192.168.1.20:11811",
       members: [],

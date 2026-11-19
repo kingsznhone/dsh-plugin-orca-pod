@@ -28,7 +28,7 @@ async function submitUntilRefused(submit: () => unknown): Promise<unknown> {
 
 describe("workspace quota", () => {
   it("refuses a new task while the workspace holds more bytes than its quota", async () => {
-    const deps = runnerSetup({ maxWorkspaceBytes: 100 });
+    const deps = runnerSetup({ settings: { max_workspace_bytes: 100 } });
     writeFileSync(join(deps.workspace.root, "big.bin"), Buffer.alloc(500));
     const runner = createTestRunner(deps);
     runner.start();
@@ -38,21 +38,12 @@ describe("workspace quota", () => {
     expect(runner.busy()).toBeNull();
   });
 
-  it("refuses a new task while the workspace holds more files than its quota", async () => {
-    const deps = runnerSetup({ maxWorkspaceFiles: 2 });
-    for (const name of ["a", "b", "c"]) writeFileSync(join(deps.workspace.root, name), "x");
-    const runner = createTestRunner(deps);
-    runner.start();
-
-    expect(await submitUntilRefused(() => runner.submit({ message }))).toMatchObject({ code: "quota_exceeded" });
-  });
-
   it("measures again after a refusal, so cleaning up lifts it", async () => {
-    const deps = runnerSetup({ maxWorkspaceFiles: 2 });
+    const deps = runnerSetup({ settings: { max_workspace_bytes: 100 } });
     const runner = createTestRunner(deps);
     runner.start();
     const files = ["a", "b", "c"].map((name) => join(deps.workspace.root, name));
-    for (const file of files) writeFileSync(file, "x");
+    for (const file of files) writeFileSync(file, Buffer.alloc(50));
     await submitUntilRefused(() => runner.submit({ message }));
 
     for (const file of files) rmSync(file);
@@ -72,10 +63,10 @@ describe("workspace quota", () => {
 
   it("counts what a finished task left behind", async () => {
     const runner = createTestRunner({
-      maxWorkspaceFiles: 2,
+      settings: { max_workspace_bytes: 100 },
       executor: {
         async *run(input) {
-          for (const name of ["a", "b", "c"]) writeFileSync(join(input.workspaceDir, name), "x");
+          for (const name of ["a", "b", "c"]) writeFileSync(join(input.workspaceDir, name), Buffer.alloc(50));
           yield { type: "completed", text: "wrote" };
         },
       },
@@ -87,7 +78,7 @@ describe("workspace quota", () => {
   });
 
   it("admits tasks while the workspace is within its quota", async () => {
-    const deps = runnerSetup({ maxWorkspaceBytes: 1000, maxWorkspaceFiles: 10 });
+    const deps = runnerSetup({ settings: { max_workspace_bytes: 1000 } });
     writeFileSync(join(deps.workspace.root, "small.txt"), "x");
     const runner = createTestRunner(deps);
     runner.start();

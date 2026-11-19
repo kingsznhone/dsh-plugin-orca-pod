@@ -6,11 +6,11 @@
 
 ## 10. 路线图与验收
 
-### 10.1 Phase 0：两台机器，静态 peer，EchoExecutor
+### 10.1 Phase 0：两台机器，静态 peer，脚本执行器
 
 - 单端口：`/health`、Agent Card、`/a2a`、`/cluster/join|heartbeat|members`。
 - Ed25519 身份生成 + `identity.json` 持久化；workgroup_id + 非空密码（空 = 未配置、节点不启动）；密码派生 join/心跳准入证明 + 请求用节点私钥签名。
-- EchoExecutor（[§6.3](06-execution.md#63-echoexecutor用脚本模拟任务)）：按脚本模拟耗时、权限挂起（`permission`）、最终文本与产物。
+- 脚本执行器（测试用 `ScriptExecutor`，[§6.3](06-execution.md#63-脚本执行器测试用)）：按任务文本里的脚本模拟耗时、权限挂起（`permission`）、最终文本。
 - `message/send` + `tasks/get` + `tasks/cancel`；SQLite task store。
 - 验收：`/health` OK；Agent Card 公开可读；join 成功；两个 orca node 双向心跳；kill 一方 3 拍内从在线集消失；重启后 task store 仍可查。
 
@@ -34,9 +34,9 @@
 
 ### 10.4 Phase 3：权限模型 + 审批回路
 
-- grant 签发/校验（[§7.11](07-security.md#711-grant)）：答复一次升级请求，绑定请求与升到的模式，升级只对该任务有效。
-- `input-required` 升级回路（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询看到 → **UI 卡片/弹窗/面板作答** → 批准发 grant 作为同一 task 的后续 message / 拒绝置 `failed(permission_denied)`。
-- 任务只有一跳：执行器会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 拒绝；越界请求只在 origin 派出的那个任务上挂起，grant 由 origin 对该任务签发（D39）。
+- 批准与拒绝（[§7.11](07-security.md#711-批准与拒绝)）：origin 用同一 task 的恢复消息答复一次升级请求，批准绑定挂起请求的 id，升级只对该任务有效。
+- `input-required` 升级回路（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）：**task 置 input-required 并把 `permission_request` 写进 task 记录**（不是 target 拨 origin）→ origin 轮询看到 → **UI 卡片/弹窗/面板作答** → 批准作为同一 task 的后续 message 发出 / 拒绝置 `failed(permission_denied)`。
+- 任务只有一跳：执行器会话带 `ORCA_POD_IN_TASK=1`，CLI 与插件的 `send` 拒绝；越界请求只在 origin 派出的那个任务上挂起，批准由 origin 对该任务发出（D39）。
 - 验收：权限模式继承正确（origin 只读 → target 写被拒）；升级请求只在 origin 弹卡片、target 无本地弹窗；无人值守 orca node 不会被阻塞。
 
 ### 10.5 Phase 4：规模化与部署
@@ -58,16 +58,15 @@
 - [x] 两个 orca node 双向心跳；kill 一方 3 拍内从在线集消失（测试用缩短间隔的等价看门狗）
 - [x] orca node 重启后 task store 与工作区仍在（非终态标 `failed(node_restart)`，`tasks/get` 可查，`workgroups/` 目录不删）
 
-#### Echo 脚本
+#### 脚本执行器
 
-- [x] `echo.final.text` 原样出现在 `tasks/get` 的 `status.message.text`，逐字节相等
+- [x] 脚本的 `final.text` 原样出现在 `tasks/get` 的 `status.message.text`，逐字节相等
 - [x] 到 `at_ms` 时任务变 `input-required`，`permission_request` 可读，槽位释放
-- [x] 权限挂起只接受签名 grant 或拒绝：纯文本恢复回 `400 bad_request`，任务不变
+- [x] 权限挂起只接受批准或拒绝：纯文本恢复回 `400 bad_request`，任务不变；批准的请求 id 不符回 `400 bad_request`，任务继续等
 - [x] 恢复后从上次位置继续，不重放已过去的 step；总时长约等于各 step 间隔之和（不含挂起时间）
 - [x] `artifacts[].artifactId == sha256(content)`，artifact 元数据与字节数正确
 - [x] 产物 blob 可被另一 orca node GET（artifact id = sha256，与跨 orca node blob GET 同通道）
 - [x] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
-- [x] 非法脚本（`at_ms` 递减、未知字段、`state` 非法）在建 task 前 `400 bad_echo_script`
 
 #### AcpExecutor
 
@@ -93,7 +92,7 @@
 - [x] origin 只读会话 → target 写文件时请求升级到 `workspace-write`；本机上限为 `read-only` 时直接拒绝
 - [x] 没带模式的任务按 `read-only` 执行；本机上限收窄继承值
 - [x] `workspace-write` 之外的请求类型请求升级到 `danger-full-access`，由人决定；批准后同一任务的同类操作不再询问
-- [x] 升级请求只在 origin 由人决定，target 无本地弹窗（权限请求 park 在 `ApprovalBroker`，由会话聊天卡/后台弹窗/面板作答；`orca_pod` 没有 approve 方法）
+- [x] 升级请求只在 origin 由人决定，target 无本地弹窗（权限请求留在 tracker，由会话聊天卡/后台弹窗/面板作答；`orca_pod` 没有 approve 方法）
 - [x] 权限请求不产生聊天 notice
 - [x] 审批卡片显示需要权限的节点（`requested_by`）
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
@@ -123,7 +122,7 @@
 - [x] 派发后本轮结束、任务才完成 → `followup()` 只唤醒一次，新一轮读到结果并继续；同一轮内完成的任务不触发唤醒
 - [x] 2s 内三个任务完成只产生一次 `followup()`；连续第 4 次后台唤醒被拦下并留 inbox
 - [x] 用户给 agent 发消息后，唤醒预算重置
-- [x] 标准 skill bundle：`skills/orca-node/` 随包发布；可选 `skill_injection` 经 `ctx.skills.register` 注册进 Host（默认关，不写用户 skill 目录）
+- [x] 标准 skill bundle：`skills/orca-node/` 随包发布；可选 `skill_injection` 经 `ctx.skills.register` 注册进 Host（默认开，`false` 关闭，不写用户 skill 目录）
 
 #### 安全
 
@@ -146,12 +145,12 @@
 > 上面的阶段回答“做到什么程度”，这一节回答“先写哪一块”。原则：每一层都能脱离下一层单独验证，不通过就不往上堆。
 
 1. **仓库骨架**：单包（根 `src/` + `test/`）、tsconfig/vitest/biome；`npm run check` 只跑进程内测试。
-2. **node core（无 UI）**：protocol/crypto/storage/gateway/node + EchoExecutor；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单 orca node。
+2. **node core（无 UI）**：protocol/crypto/storage/gateway/node + 脚本执行器；`/health`、join、heartbeat、members、`/a2a`、task store；harness 能起单 orca node。
 3. **本地集群测试**：先进程内 `createMesh`（可注入时钟、端口 0），再 `npm run harness` 起两个真实进程和 socket；覆盖 10.1–10.2 验收。这一层完全不碰 DSH。
-4. **Echo 行为**：按 10.6 的“Echo 脚本”“三台 orca node”逐条跑；挂起/恢复/取消/TTL/blob 在这一层定死，后面的执行器只换实现、不换协议。
+4. **脚本执行器行为**：按 10.6 的“脚本执行器”“三台 orca node”逐条跑；挂起/恢复/取消/TTL/blob 在这一层定死，后面的执行器只换实现、不换协议。
 5. **真实执行器**：AcpExecutor；cwd 是工作区、context→session 绑定、取消、`input-required` 映射。放在插件之前，是为了让“协议正确”和“DSH 集成正确”分两次验证，不同时调两个未知量。
 6. **DSH 插件**：`apply` 启动 orca node、注册工具、后台 tracker、inject/followup、审批卡片与面板。先在单机两个 DSH 实例之间跑通（不同端口、不同 profile）。
-7. **跨机器**：Windows 主机 + Hyper-V Linux guest。分两次做：core 完成后先跑 2 个 orca node smoke（join/心跳/echo），尽早暴露路径、时钟、编码问题；全部组件完成后再做完整 E2E（真实任务、权限、blob、可选 TLS）。
+7. **跨机器**：Windows 主机 + Hyper-V Linux guest。分两次做：core 完成后先跑 2 个 orca node smoke（join/心跳/脚本任务），尽早暴露路径、时钟、编码问题；全部组件完成后再做完整 E2E（真实任务、权限、blob、可选 TLS）。
 8. **加固**：10 个 orca node 压测、安全验收、Phase 4。
 
 ---

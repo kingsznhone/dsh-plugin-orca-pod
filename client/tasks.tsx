@@ -145,7 +145,7 @@ export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: st
 export function AllTasks({ onOpen, onClose }: { onOpen: (row: PodTaskRow) => void; onClose: () => void }) {
   const { busy } = useStore();
   const [version, setVersion] = React.useState(0);
-  const result = useRead("tasks", { limit: 500 }, version);
+  const result = useRead("tasks", {}, version);
   async function cancel(row: PodTaskRow) {
     if (await store.act("cancel", { peer: row.peer, task_id: row.id })) setVersion(version + 1);
   }
@@ -153,9 +153,7 @@ export function AllTasks({ onOpen, onClose }: { onOpen: (row: PodTaskRow) => voi
     <Dialog title={t("allTasks")} wide={true} onClose={onClose}>
       <Loaded
         result={result}
-        render={({ recent }) => (
-          <TaskTable rows={recent} showFiles={true} busy={busy} onOpen={onOpen} onCancel={cancel} />
-        )}
+        render={(rows) => <TaskTable rows={rows} showFiles={true} busy={busy} onOpen={onOpen} onCancel={cancel} />}
       />
     </Dialog>
   );

@@ -19,7 +19,6 @@ export const POD_ERROR_STATUS = {
   not_task_origin: 403,
   // Malformed or unsupported requests.
   bad_request: 400,
-  bad_echo_script: 400,
   unsupported: 400,
   workgroup_mismatch: 400,
   /** A hello whose declared endpoints are all forbidden by the screening policy (§7.7). */
@@ -30,9 +29,6 @@ export const POD_ERROR_STATUS = {
   unknown_orca_node: 404,
   // State conflicts.
   permission_denied: 409,
-  grant_invalid: 409,
-  grant_expired: 409,
-  grant_replayed: 409,
   // Gone.
   blob_expired: 410,
   blob_file_missing: 410,

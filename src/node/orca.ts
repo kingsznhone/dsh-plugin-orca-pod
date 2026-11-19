@@ -1,57 +1,73 @@
-import { isWildcardHost } from "@deepseek-ai/dsh-host-webserver";
+import { bindUrlHost, isWildcardHost } from "@deepseek-ai/dsh-host-webserver";
 import { randomBytes } from "node:crypto";
-import { cpus, platform as osPlatform, release as osRelease, totalmem } from "node:os";
+import {
+  cpus,
+  networkInterfaces,
+  platform as osPlatform,
+  release as osRelease,
+  totalmem,
+  type NetworkInterfaceInfo,
+} from "node:os";
 import { join } from "node:path";
 
 import { Gateway } from "../api/gateway.ts";
 import { FileBlobRegistry } from "../core/blobs.ts";
 
-import { NODE_TOKEN_ENV, NODE_URL_ENV } from "../core/entry.ts";
-import { EventBus, type NodeLogger } from "../core/events.ts";
+import type { NodeLogger } from "../core/events.ts";
 import { shortenNodeId, type NodeIdentity } from "../core/identity.ts";
 import { ModelCatalog } from "../executor/model-catalog.ts";
-import { bindUrl, detectLocalEndpoints } from "../core/net.ts";
 import { SqliteDb } from "../core/sqlite.ts";
-import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
-import type { RuntimeInfo, MembersEvent, SelfDescription } from "../mesh/wire.ts";
+import type { RuntimeInfo, SelfDescription } from "../mesh/wire.ts";
 import { AcpExecutor } from "../executor/acp/executor.ts";
-import { EchoExecutor } from "../executor/echo.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
-import { MeshContext } from "../mesh/context.ts";
+import { MeshContext, type MeshContextOptions } from "../mesh/context.ts";
 import { Mesh } from "../mesh/mesh.ts";
-import { HttpPeerClient, type FetchLike } from "../mesh/peer-client.ts";
-import { EndpointScreen } from "../mesh/screening.ts";
-import { resolveClock, type MeshClock, type MeshTimings } from "../mesh/timings.ts";
+import type { MeshTimings } from "../mesh/timings.ts";
 import { DispatchLog } from "../task/dispatch-log.ts";
 import { SingleSlotTaskRunner } from "../task/runner.ts";
-import type { DispatchEvent, TaskEvent } from "../task/wire.ts";
 import { Workspace } from "../task/workspace.ts";
 import type { Settings } from "./settings.ts";
 
-/** Deadline of one outbound call to a peer unless `request_timeout_ms` says otherwise (§4.7). */
-export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Where a task session reaches this machine's node, and the token the node's
+ * local routes take (§5.6). The node hands both to the executor for the task's
+ * environment; the plugin inside the task uses them for the `orca_pod` file methods.
+ */
+export const NODE_URL_ENV = "ORCA_POD_NODE_URL";
+export const NODE_TOKEN_ENV = "ORCA_POD_NODE_TOKEN";
 
-/** Hard cap on one task's lifetime unless `task_timeout_s` says otherwise; peers see it as `max_task_ttl_s` (§6.9). */
-export const DEFAULT_TASK_TIMEOUT_S = 3600;
-
-/** Inline result summary cap unless `result_max_bytes` says otherwise; longer summaries are truncated (§6.11). */
-export const DEFAULT_RESULT_MAX_BYTES = 32 * 1024;
-
-/** The one SQLite file of a data root: tasks, published files and the dispatch log share it. */
-export function storeDbPath(dataRoot: string): string {
-  return join(dataRoot, "tasks.db");
+/**
+ * The URL a node bound to `host` is dialed at, by DSH's rule for bind literals
+ * (`bindUrlHost`: IPv6 bracketed, mapped loopback canonical, host names as
+ * they are); undefined when the address has no URL form (an interface zone id).
+ */
+export function bindUrl(host: string, port: number): string | undefined {
+  const urlHost = bindUrlHost(host);
+  return urlHost === undefined ? undefined : `http://${urlHost}:${port}`;
 }
 
-/** What an orca node tells an in-process listener (the UI panel) it may want to re-render (§9.2). */
-export type PodEventInput = TaskEvent | MembersEvent | DispatchEvent;
+/**
+ * Advertised-URL suggestions for the panel wizard and for nodes that listen on
+ * a wildcard address: every non-internal IPv4/IPv6 address of this machine on
+ * the given port. IPv4 comes first (the reliable LAN path); link-local IPv6
+ * (`fe80:` prefix, needs a zone id) is skipped.
+ */
+export function detectLocalEndpoints(port: number): string[] {
+  const external = Object.values(networkInterfaces())
+    .flat()
+    .filter((address): address is NetworkInterfaceInfo => address !== undefined && !address.internal);
+  const ipv4 = external.filter((address) => address.family !== "IPv6");
+  const ipv6 = external.filter((address) => address.family === "IPv6" && !/^fe80:/i.test(address.address));
+  const urls = [...ipv4, ...ipv6].map((address) => bindUrl(address.address, port));
+  return [...new Set(urls.filter((url): url is string => url !== undefined))];
+}
 
 type OrcaNodeOptions = {
   runtime?: RuntimeInfo;
   timings?: Partial<MeshTimings>;
-  clock?: Partial<MeshClock>;
   /** Outbound HTTP for peer calls; tests inject packet loss / delay / partitions. */
-  fetch?: FetchLike;
-  /** Executor override; defaults to `settings.executor` (echo when unset). */
+  fetch?: MeshContextOptions["fetch"];
+  /** Executor override (tests run scripted ones); defaults to the ACP executor (§6.14). */
   executor?: LocalExecutor;
   /** The DSH profile the ACP executor runs tasks in: the host's own (D46). Unset passes none. */
   profile?: string;
@@ -72,8 +88,6 @@ const SILENT: NodeLogger = { warn() {} };
  * until `start()`.
  */
 export class Orca {
-  /** Everything a UI panel may re-render: task, member and dispatch changes of all subsystems (§9.2). */
-  readonly events: EventBus<PodEventInput>;
   /** The model routes this node offers and the default a task gets (§6.15). */
   readonly models: ModelCatalog;
   /** The node table; this node is a row of it. */
@@ -85,7 +99,7 @@ export class Orca {
   /** Workspace directories, for UI browsing. */
   readonly workspace: Workspace;
   /** The files this node published (§5.6): the `orca_pod` tool publishes into it, members fetch from the gateway. */
-  readonly blobs: FileBlobRegistry;
+  private readonly blobs: FileBlobRegistry;
 
   private readonly executor: LocalExecutor;
 
@@ -93,99 +107,68 @@ export class Orca {
   private readonly localToken = randomBytes(32).toString("base64url");
   /** Where a process on this machine dials this node; known once it listens. */
   private localUrl: string | null = null;
-  /** The per-task budget peers see as `max_task_ttl_s`, and the hard cap the task runner enforces (§6.9). */
-  private readonly taskTimeoutS: number;
+  /** The port the node listens on; known once it listens (a configured 0 picks one). */
+  private listening: number | null = null;
   /** The one database of the data root (§5.5): tasks, published files and dispatches; `start()` opens it. */
   private readonly db: SqliteDb;
   private readonly gateway: Gateway;
   private readonly runtime: RuntimeInfo;
-  private readonly workgroupId: WorkgroupId;
 
   constructor(
     /** What the node runs with; the settings must name a workgroup. */
-    readonly settings: Settings,
+    private readonly settings: Settings,
     /** Who this node is: its private key signs every request (§7.1). */
-    readonly identity: NodeIdentity,
+    private readonly identity: NodeIdentity,
     /** The workgroup key, derived from the password; it lives in memory only (§7.1). */
     key: Buffer,
     /** Where the node keeps its database, workspaces and published files (§3.9). */
     dataRoot: string,
     options: OrcaNodeOptions = {},
   ) {
-    if (settings.workgroup_id === undefined) throw new Error("workgroup_id is required");
-    this.workgroupId = settings.workgroup_id;
+    const workgroupId = settings.workgroup_id;
+    if (workgroupId === undefined) throw new Error("workgroup_id is required");
     const logger = options.logger ?? SILENT;
-    this.events = new EventBus(logger);
-    this.db = new SqliteDb(storeDbPath(dataRoot));
+    this.db = new SqliteDb(join(dataRoot, "tasks.db"));
     this.blobs = new FileBlobRegistry(this.db, join(dataRoot, "blobs"));
-    this.workspace = new Workspace(dataRoot, this.workgroupId);
+    this.workspace = new Workspace(dataRoot, workgroupId);
     this.runtime = options.runtime ?? Orca.collectRuntime();
-    this.taskTimeoutS = settings.task_timeout_s ?? DEFAULT_TASK_TIMEOUT_S;
 
     this.models = new ModelCatalog(settings, logger);
-    this.dispatches = new DispatchLog(this.db, logger);
+    this.dispatches = new DispatchLog(this.db);
+    this.executor =
+      options.executor ??
+      new AcpExecutor(settings.acp ?? {}, this.models, logger, {
+        profile: options.profile,
+        // The task's plugin reaches this node through its local routes (§5.6).
+        env: (): Record<string, string> =>
+          this.localUrl === null ? {} : { [NODE_URL_ENV]: this.localUrl, [NODE_TOKEN_ENV]: this.localToken },
+      });
+    this.tasks = new SingleSlotTaskRunner(
+      this.executor,
+      this.db,
+      this.workspace,
+      settings,
+      identity.orcaNodeId,
+      logger,
+    );
     const context = new MeshContext(
       identity,
-      this.workgroupId,
-      new HttpPeerClient(identity, key, this.workgroupId, {
-        fetch: options.fetch ?? ((url, init) => fetch(url, init)),
-        // Every outbound call needs a deadline (§4.7): a peer that accepts the
-        // connection and then stalls would otherwise hang a tool call or the tracker.
-        timeoutMs: settings.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS,
-      }),
+      workgroupId,
+      key,
       this.dispatches,
       this.blobs,
-      new EndpointScreen({
-        allowPublicPeers: settings.allow_public_peers,
-        allowLoopbackPeers: settings.allow_loopback_peers,
-      }),
-      resolveClock(options.clock),
+      this.tasks,
+      { allowPublicPeers: settings.allow_public_peers, allowLoopbackPeers: settings.allow_loopback_peers },
       logger,
+      { fetch: options.fetch },
     );
     this.mesh = new Mesh(context, this.describeSelf(Orca.endpointsFrom(settings, settings.port)), {
       timings: options.timings,
     });
-    this.executor =
-      options.executor ??
-      (settings.executor === "acp"
-        ? new AcpExecutor(settings.acp ?? {}, this.models, logger, {
-            profile: options.profile,
-            // The task's plugin reaches this node through its local routes (§5.6).
-            env: (): Record<string, string> =>
-              this.localUrl === null ? {} : { [NODE_URL_ENV]: this.localUrl, [NODE_TOKEN_ENV]: this.localToken },
-          })
-        : new EchoExecutor());
-    this.tasks = new SingleSlotTaskRunner(this.executor, this.db, this.workspace, {
-      logger,
-      selfOrcaNodeId: identity.orcaNodeId,
-      workgroupId: this.workgroupId,
-      permissionCeiling: settings.permission_mode,
-      permissionTtlS: settings.approval_timeout_s,
-      resultMaxBytes: settings.result_max_bytes ?? DEFAULT_RESULT_MAX_BYTES,
-      maxWorkspaceBytes: settings.max_workspace_bytes,
-      maxWorkspaceFiles: settings.max_workspace_files,
-      taskTimeoutS: this.taskTimeoutS,
-    });
-    this.gateway = new Gateway(this.mesh, this.tasks, key, identity, { token: this.localToken, blobs: this.blobs });
+    this.gateway = new Gateway(this.mesh, this.tasks, workgroupId, key, identity, this.localToken);
 
-    // The subsystems tell, the instance decides who needs to know.
-    this.tasks.events.subscribe((event) => {
-      this.events.emit(event);
-      // The busy holder is part of every member record; re-render it too.
-      this.mesh.self.setBusy(this.tasks.busy());
-      this.mesh.emitMembersIfChanged();
-    });
-    this.mesh.events.subscribe((event) => this.events.emit(event));
-    this.dispatches.events.subscribe((event) => this.events.emit(event));
     // A new catalog changes what this node announces about itself (§6.15).
-    this.models.changes.subscribe(() => {
-      this.mesh.self.describe(this.describeSelf(this.mesh.self.endpoints));
-      this.mesh.emitMembersIfChanged();
-    });
-  }
-
-  get orcaNodeId(): OrcaNodeId {
-    return this.identity.orcaNodeId;
+    this.models.changes.subscribe(() => this.mesh.self.describe(this.describeSelf(this.mesh.self.endpoints)));
   }
 
   /**
@@ -206,11 +189,17 @@ export class Orca {
     this.tasks.start();
     this.dispatches.markInFlightUnknown();
     const port = Number(new URL(address).port);
+    this.listening = port;
     this.localUrl = Orca.localUrlOf(this.settings.bind_host, port);
     const urls = Orca.endpointsFrom(this.settings, port);
     this.mesh.self.describe(this.describeSelf(urls));
     this.mesh.start();
     return { url: urls[0], port };
+  }
+
+  /** The port the node listens on, or the configured one before it does. */
+  get port(): number {
+    return this.listening ?? this.settings.port;
   }
 
   async stop(): Promise<void> {
@@ -235,7 +224,7 @@ export class Orca {
       display_name: this.settings.display_name ?? shortenNodeId(this.identity.orcaNodeId),
       endpoints: [...endpoints],
       runtime: this.runtime,
-      max_task_ttl_s: this.taskTimeoutS,
+      max_task_ttl_s: this.settings.task_timeout_s,
       ...(offers.length > 0 ? { models: offers } : {}),
       default_model: defaults.model,
       default_reasoning_effort: defaults.reasoningEffort,

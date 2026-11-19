@@ -1,4 +1,3 @@
-import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 /**
  * The task prompt (§6.7, §6.14): the node's trusted preamble first and the
  * origin's text last inside an untrusted block. Notes are the agent's own
@@ -15,6 +14,7 @@ import type { ExecuteInput, ExecutorEvent, LocalExecutor } from "../src/executor
 import { isTerminal, type TaskView } from "../src/task/wire.ts";
 import type { SingleSlotTaskRunner } from "../src/task/runner.ts";
 import { runnerSetup, createTestRunner } from "./fixtures/runner.ts";
+import { scriptMessage } from "./support/script.ts";
 
 function message(text = "do the work") {
   return { role: "user" as const, parts: [{ kind: "text" as const, text }] };
@@ -23,7 +23,7 @@ function message(text = "do the work") {
 /** Executor that records the prompt it was given. */
 function promptRecorder(prompts: string[]): LocalExecutor {
   return {
-    async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+    async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
       prompts.push(input.prompt);
       yield { type: "completed", text: "ok" };
     },
@@ -68,7 +68,7 @@ describe("task prompt", () => {
     const runner = createTestRunner({
       ...deps,
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },
@@ -89,7 +89,7 @@ describe("task prompt", () => {
     const prompts: string[] = [];
     const runner = createTestRunner({
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },
@@ -107,7 +107,7 @@ describe("task prompt", () => {
     const prompts: string[] = [];
     const runner = createTestRunner({
       executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
+        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, void> {
           prompts.push(input.prompt);
           yield { type: "completed", text: "ok" };
         },
@@ -124,7 +124,7 @@ describe("task prompt", () => {
 
   it("forgets the live record of a task canceled mid-run", async () => {
     const runner = createTestRunner();
-    const view = runner.submit({ message: message(), metadata: { echo: { final: { state: "hang", text: "" } } } });
+    const view = runner.submit({ message: scriptMessage({ final: { state: "hang", text: "" } }) });
     await waitFor(() => runner.get(view.id)?.status.state === "working");
 
     runner.cancel(view.id);
