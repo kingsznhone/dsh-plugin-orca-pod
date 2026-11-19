@@ -14,17 +14,14 @@ import { newNode } from "../test/support/node.ts";
 
 const prompt = process.argv[2] ?? "Reply with exactly the word pong";
 const root = await mkdtemp(join(tmpdir(), "orca-e2e-acp-"));
-const node = newNode(
-  {
-    workgroup_id: WorkgroupIdSchema.parse("e2e-acp"),
-    workgroup_password: "e2e-password",
-    data_root: root,
-    port: 0,
-    executor: "acp",
-    acp: {},
-  },
-  { persistent: true },
-);
+const node = newNode({
+  workgroup_id: WorkgroupIdSchema.parse("e2e-acp"),
+  workgroup_password: "e2e-password",
+  data_root: root,
+  port: 0,
+  executor: "acp",
+  acp: {},
+});
 await node.start();
 
 const endpoint = node.mesh.self.endpoints[0] ?? "";

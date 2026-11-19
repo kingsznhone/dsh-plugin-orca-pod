@@ -6,22 +6,20 @@
  * writes the task through to the store and tells its listeners.
  */
 
-import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
-
-import type { FetchBlob, FileBlobRegistry } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
-import { EventBus, type NodeLogger } from "../core/events.ts";
+import { JsonTable, type SqliteDb } from "../core/sqlite.ts";
+import { EventBus } from "../core/events.ts";
 import type { BusyState, OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
+import { ulid } from "ulid";
+
 import { GrantLedger } from "./grants.ts";
 import { parsePodMetadata, parseResume } from "./meta.ts";
 import { WorkspaceQuota } from "./quota.ts";
 import { TaskRecord, type TaskSettings } from "./record.ts";
-import type { TaskStore } from "./task-store.ts";
 import {
   isTerminal,
   messageText,
-  newTaskId,
   type A2AMessage,
   type SubmitTaskInput,
   type TaskEvent,
@@ -29,21 +27,22 @@ import {
 } from "./wire.ts";
 import type { Workspace } from "./workspace.ts";
 
-/** What the runner is configured with besides its collaborators. */
-export type TaskRunnerOptions = {
-  logger: NodeLogger;
-  selfOrcaNodeId: OrcaNodeId;
+/**
+ * A task as the `tasks` table keeps it (§5.5): the A2A view the gateway serves,
+ * plus what only this node needs. One process writes it, one reads it.
+ */
+type PersistedTask = {
+  view: TaskView;
+  origin_orca_node: OrcaNodeId;
+  created_at: string;
+  updated_at: string;
+};
+
+/** What the runner is configured with besides its collaborators: what each record needs, and the runner's own limits. */
+type TaskRunnerOptions = TaskSettings & {
   workgroupId: WorkgroupId;
-  /** Fetches the files an origin attaches to a task from the member that published them (§3.8). */
-  fetchBlob: FetchBlob;
-  /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
-  permissionMode?: SandboxMode;
-  /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
-  permissionTtlS?: number;
   /** Hard cap on task lifetime; peers see it as max_task_ttl_s (§6.9). */
   taskTimeoutS: number;
-  /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). Default 32 KiB. */
-  resultMaxBytes?: number;
   /** A new task is refused while the workspace holds more than this (§6.13). */
   maxWorkspaceBytes: number;
   maxWorkspaceFiles: number;
@@ -54,31 +53,26 @@ export class SingleSlotTaskRunner {
   readonly events: EventBus<TaskEvent>;
   private readonly ledger = new GrantLedger();
   private readonly quota: WorkspaceQuota;
-  private readonly settings: TaskSettings;
+  private readonly store: JsonTable<PersistedTask>;
   private readonly live = new Map<string, TaskRecord>();
   /** The task holding the single slot (§6.9); null when idle. A task that waits for a permission decision gives it up and takes it again when it resumes. */
   private holder: string | null = null;
 
   constructor(
     private readonly executor: LocalExecutor,
-    /** Where the files a task produces are published (§5.6). */
-    private readonly blobs: FileBlobRegistry,
-    /** Durable store (§5.5); every task change is written through it. */
-    private readonly store: TaskStore,
+    /** The node's database: every task change is written through to its `tasks` table (§5.5). */
+    db: SqliteDb,
     /** Group workspace: the executor's cwd (§6.7). */
     private readonly workspace: Workspace,
     private readonly options: TaskRunnerOptions,
   ) {
     this.events = new EventBus(options.logger);
-    this.settings = {
-      logger: options.logger,
-      selfOrcaNodeId: options.selfOrcaNodeId,
-      fetchBlob: options.fetchBlob,
-      maxFileBytes: options.maxWorkspaceBytes,
-      permissionCeiling: options.permissionMode,
-      permissionTtlS: options.permissionTtlS,
-      resultMaxBytes: options.resultMaxBytes ?? 32 * 1024,
-    };
+    this.store = new JsonTable<PersistedTask>(
+      db,
+      "tasks",
+      (task) => task.view.id,
+      (task) => task.updated_at,
+    );
     this.quota = new WorkspaceQuota(
       workspace,
       { maxBytes: options.maxWorkspaceBytes, maxFiles: options.maxWorkspaceFiles },
@@ -97,7 +91,9 @@ export class SingleSlotTaskRunner {
     if (this.holder !== null) throw SingleSlotTaskRunner.busyError();
     const meta = parsePodMetadata(input.metadata);
     this.quota.assertWithin();
-    const id = newTaskId();
+    // A ULID (48-bit millisecond timestamp + 80 random bits from `crypto.getRandomValues`,
+    // Crockford base32): time-ordered, 26 chars, unguessable enough to act as a capability handle (§5.5).
+    const id = ulid();
     const view: TaskView = {
       kind: "task",
       id,
@@ -116,9 +112,8 @@ export class SingleSlotTaskRunner {
         text: messageText(input.message),
       },
       this.executor,
-      this.blobs,
       this.workspace,
-      this.settings,
+      this.options,
     );
     this.live.set(id, record);
     const unsubscribe = record.changes.subscribe(() => {
@@ -129,24 +124,26 @@ export class SingleSlotTaskRunner {
         this.quota.measure();
       }
     });
+    // The answer is the task as accepted: it starts working right after.
+    const accepted = record.snapshot();
     record.begin();
-    return record.snapshot();
+    return accepted;
   }
 
   get(taskId: string): TaskView | null {
-    return this.live.get(taskId)?.snapshot() ?? this.store.load(taskId)?.view ?? null;
+    return this.live.get(taskId)?.snapshot() ?? this.store.get(taskId)?.view ?? null;
   }
 
   /** Origin of a known task, used by the gateway to authorize cancellation (§5.3). */
   originOf(taskId: string): OrcaNodeId | null {
-    return this.live.get(taskId)?.origin ?? this.store.load(taskId)?.origin_orca_node ?? null;
+    return this.live.get(taskId)?.origin ?? this.store.get(taskId)?.origin_orca_node ?? null;
   }
 
   /**
    * Local tasks for the UI task panel (§9.2): tasks still running first, then
    * the persisted store fills the remaining budget, newest update first.
    */
-  list(limit = 200): TaskView[] {
+  list(limit: number): TaskView[] {
     const running = [...this.live.values()]
       .sort((left, right) => right.id.localeCompare(left.id))
       .map((record) => record.snapshot());
@@ -159,14 +156,14 @@ export class SingleSlotTaskRunner {
     return [...running, ...stored].slice(0, limit);
   }
 
-  resume(taskId: string, message: A2AMessage, callerOrcaNode?: string): TaskView {
+  resume(taskId: string, message: A2AMessage, callerOrcaNode: string): TaskView {
     const record = this.live.get(taskId);
     if (record === undefined) {
-      if (this.store.load(taskId) === undefined) throw new PodError("task_not_found", `unknown task ${taskId}`);
+      if (this.store.get(taskId) === undefined) throw new PodError("task_not_found", `unknown task ${taskId}`);
       throw new PodError("bad_request", "task is not input-required");
     }
     // Only the task's origin drives it; other workgroup members may read it (§5.3).
-    if (callerOrcaNode !== undefined && callerOrcaNode !== record.origin) {
+    if (callerOrcaNode !== record.origin) {
       throw new PodError("not_task_origin", `task ${taskId} belongs to another origin`);
     }
     if (record.state !== "input-required") throw new PodError("bad_request", "task is not input-required");
@@ -197,7 +194,7 @@ export class SingleSlotTaskRunner {
   cancel(taskId: string): TaskView {
     const record = this.live.get(taskId);
     if (record === undefined) {
-      const stored = this.store.load(taskId);
+      const stored = this.store.get(taskId);
       if (stored === undefined) throw new PodError("task_not_found", `unknown task ${taskId}`);
       return stored.view;
     }

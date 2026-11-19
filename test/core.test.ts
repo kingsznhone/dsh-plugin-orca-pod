@@ -59,12 +59,6 @@ describe("ChangeSignal", () => {
     stop();
     signal.notify();
     expect(calls).toBe(1);
-    signal.subscribe(() => {
-      calls += 10;
-    });
-    signal.clear();
-    signal.notify();
-    expect(calls).toBe(1);
   });
 
   it("reports a throwing subscriber to the logger it was given", () => {
@@ -132,11 +126,11 @@ describe("SerialQueue", () => {
         throw new Error("boom");
       })
       .catch(() => {});
-    void queue.run(async () => {
+    // A failed operation does not stop the queue: the next one still runs.
+    await queue.run(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       done = true;
     });
-    await queue.drain();
     expect(done).toBe(true);
   });
 });

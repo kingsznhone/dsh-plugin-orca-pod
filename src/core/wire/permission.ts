@@ -3,7 +3,7 @@ import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
 import { z } from "zod";
 
 /** The permission modes this DSH accepts, read from DSH's own sandbox policy. */
-export const SandboxModeSchema = z.enum(SANDBOX_MODES as readonly [SandboxMode, ...SandboxMode[]]);
+export const SandboxModeSchema = z.enum(SANDBOX_MODES);
 
 /** The modes strictly wider than `mode`, narrowest first: DSH's escalation ladder (`WIDER_MODES`). */
 export function widerModes(mode: SandboxMode): readonly SandboxMode[] {

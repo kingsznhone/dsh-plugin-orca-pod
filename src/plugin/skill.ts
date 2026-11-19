@@ -9,9 +9,9 @@
  * root, so there is no second copy to keep in sync.
  *
  * The skill is for sessions that may dispatch (this host's own). Sessions the
- * ACP executor spawns run a task: they cannot see this host's registry, find
- * their files in the inbox/outbox directories the task preamble names, and carry
- * `ORCA_POD_IN_TASK=1`, which makes `send` refuse (§7.9).
+ * ACP executor spawns run a task: they carry `ORCA_POD_IN_TASK=1`, so the plugin
+ * there registers no skill and offers only the file methods (§5.6, §7.9); the
+ * task preamble tells that agent what it needs.
  */
 
 import { readFileSync } from "node:fs";
@@ -24,10 +24,10 @@ import { isSkillName, type SkillRegistration } from "@deepseek-ai/dsh-skill";
 const SKILL_NAME = "orca-node";
 
 /** Canonical skill bundle shipped with the bundle (and this repository). */
-export const SKILL_SOURCE_DIR = fileURLToPath(new URL("../../skills/orca-node/", import.meta.url));
+const SKILL_SOURCE_DIR = fileURLToPath(new URL("../../skills/orca-node/", import.meta.url));
 
 /** Canonical `SKILL.md` entry of the bundle. */
-export const SKILL_ENTRY = join(SKILL_SOURCE_DIR, "SKILL.md");
+const SKILL_ENTRY = join(SKILL_SOURCE_DIR, "SKILL.md");
 
 /** What the bundle's `SKILL.md` contributes to DSH's `SkillRegistration`: its frontmatter and body. */
 type SkillDocument = Pick<SkillRegistration, "name" | "description" | "whenToUse" | "content">;
@@ -38,7 +38,7 @@ type SkillDocument = Pick<SkillRegistration, "name" | "description" | "whenToUse
  * Agent Skill frontmatter is a flat `key: value` block between `---` fences, so
  * this reads exactly that subset instead of adding a YAML dependency.
  */
-export function parseSkillDocument(source: string): SkillDocument {
+function parseSkillDocument(source: string): SkillDocument {
   const normalized = source.replaceAll("\r\n", "\n");
   if (!normalized.startsWith("---\n")) throw new Error("SKILL.md must start with a frontmatter fence");
   const end = normalized.indexOf("\n---", 4);

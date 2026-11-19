@@ -4,18 +4,7 @@ import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
 import { age, short } from "./format.ts";
 import { t } from "./i18n.ts";
-import {
-  ArtifactLinks,
-  Dialog,
-  Empty,
-  Facts,
-  Row,
-  StateText,
-  SubTitle,
-  Table,
-  modelText,
-  stop,
-} from "./primitives.tsx";
+import { FileLinks, Dialog, Empty, Facts, Row, StateText, SubTitle, Table, modelText, stop } from "./primitives.tsx";
 import { store, useRead, useStore } from "./store.ts";
 import type { PodTaskDetail, PodTaskRow } from "./types.ts";
 import ui from "./ui.module.css";
@@ -23,26 +12,19 @@ import ui from "./ui.module.css";
 /** Recent or all tasks: rows arrive merged, sorted and labelled by the host. */
 export function TaskTable({
   rows,
-  showArtifacts,
+  showFiles,
   busy,
   onOpen,
   onCancel,
 }: {
   rows: PodTaskRow[];
-  showArtifacts?: boolean;
+  showFiles?: boolean;
   busy: boolean;
   onOpen: (row: PodTaskRow) => void;
   onCancel: (row: PodTaskRow) => void;
 }) {
   if (rows.length === 0) return <Empty>{t("noTasks")}</Empty>;
-  const columns = [
-    t("colTask"),
-    t("colState"),
-    t("colOrigin"),
-    t("colAge"),
-    ...(showArtifacts ? [t("colArtifacts")] : []),
-    "",
-  ];
+  const columns = [t("colTask"), t("colState"), t("colOrigin"), t("colAge"), ...(showFiles ? [t("colFiles")] : []), ""];
   return (
     <Table columns={columns}>
       {rows.map((row) => (
@@ -64,10 +46,10 @@ export function TaskTable({
             {row.who}
           </td>
           <td className={ui.tertiary}>{age(row.at)}</td>
-          {showArtifacts ? (
+          {showFiles ? (
             // biome-ignore lint/a11y/useKeyWithClickEvents: only keeps a link click from also opening the row.
             <td onClick={(event) => event.stopPropagation()}>
-              <ArtifactLinks artifacts={row.artifacts} />
+              <FileLinks files={row.files} />
             </td>
           ) : null}
           <td className={ui.end}>
@@ -91,7 +73,7 @@ export function TaskTable({
 
 /** What the detail dialog shows once the task is loaded. */
 function TaskFacts({ data }: { data: PodTaskDetail }) {
-  const { task, origin, dispatch, artifacts } = data;
+  const { task, origin, dispatch, files } = data;
   const pod = task.metadata?.pod ?? {};
   const message = (task.status.message?.parts ?? [])
     .map((part) => (part.kind === "text" ? part.text : ""))
@@ -116,7 +98,7 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
       ) : (
         <Facts
           rows={[
-            [t("dtPeer"), dispatch.peer],
+            [t("dtPeer"), dispatch.node],
             [t("colState"), <StateText key={"state"} state={dispatch.state} />],
             [t("dtCreated"), dispatch.created_at],
             [t("dtUpdated"), dispatch.updated_at],
@@ -124,12 +106,12 @@ function TaskFacts({ data }: { data: PodTaskDetail }) {
           ]}
         />
       )}
-      <SubTitle>{t("dtArtifacts")}</SubTitle>
-      {artifacts.length === 0 ? (
-        <Empty>{t("dtArtifactsNone")}</Empty>
+      <SubTitle>{t("dtFiles")}</SubTitle>
+      {files.length === 0 ? (
+        <Empty>{t("dtFilesNone")}</Empty>
       ) : (
         <div className={ui.chips}>
-          <ArtifactLinks artifacts={artifacts} />
+          <FileLinks files={files} />
         </div>
       )}
     </>
@@ -149,7 +131,7 @@ function Loaded<T>({
   return render(result.data);
 }
 
-/** Task detail: one `/task` call returns the task, its dispatch record, artifacts and inputs. */
+/** Task detail: one `/task` call returns the task, its dispatch record and the files its result names. */
 export function TaskDetail({ peer, taskId, onClose }: { peer: string; taskId: string; onClose: () => void }) {
   const result = useRead("task", { peer, task: taskId });
   return (
@@ -172,7 +154,7 @@ export function AllTasks({ onOpen, onClose }: { onOpen: (row: PodTaskRow) => voi
       <Loaded
         result={result}
         render={({ recent }) => (
-          <TaskTable rows={recent} showArtifacts={true} busy={busy} onOpen={onOpen} onCancel={cancel} />
+          <TaskTable rows={recent} showFiles={true} busy={busy} onOpen={onOpen} onCancel={cancel} />
         )}
       />
     </Dialog>

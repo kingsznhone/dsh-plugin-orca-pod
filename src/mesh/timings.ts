@@ -10,8 +10,8 @@
  * is the number of orca nodes in the workgroup. Cluster-wide traffic is then ~N
  * requests/second (linear) instead of the quadratic cost of a fixed tick.
  */
-export const HEARTBEAT_INTERVAL_MIN_MS = 2000;
-export const HEARTBEAT_INTERVAL_MAX_MS = 10_000;
+const HEARTBEAT_INTERVAL_MIN_MS = 2000;
+const HEARTBEAT_INTERVAL_MAX_MS = 10_000;
 
 /** One second per orca node, clamped so detection stays bounded on large meshes. */
 export function heartbeatIntervalMsFor(orcaNodeCount: number): number {
@@ -44,23 +44,37 @@ export type MeshTimings = {
  */
 export const CANDIDATE_MAX_FAILURES = 5;
 
-const DEFAULT_TIMINGS: MeshTimings = {
-  intervalMs: 2000,
-  suspectAfterMs: 6000,
-  offlineAfterMs: 12000,
-  recoverProbeMs: 15000,
-  maxRecoverProbeMs: 30000,
-  recordTtlMs: 7 * 24 * 60 * 60 * 1000,
-  tombstoneMs: 10 * 60 * 1000,
-  heartbeatTimeoutMs: 1000,
-};
+/**
+ * The windows that follow from a cadence (§3.3): one missed tick is suspect and
+ * three are offline, with slack for jitter; a heartbeat may take half a tick, at
+ * least 100 ms.
+ */
+export function windowsFor(intervalMs: number): {
+  intervalMs: number;
+  suspectAfterMs: number;
+  offlineAfterMs: number;
+  heartbeatTimeoutMs: number;
+} {
+  const interval = Math.round(intervalMs);
+  return {
+    intervalMs: interval,
+    suspectAfterMs: Math.round(interval * 1.25),
+    offlineAfterMs: interval * 3,
+    heartbeatTimeoutMs: Math.max(100, Math.round(interval / 2)),
+  };
+}
 
+/** The timings of a mesh: the windows of its cadence, then whatever the caller fixes. */
 export function resolveTimings(overrides: Partial<MeshTimings> = {}): MeshTimings {
-  const merged = { ...DEFAULT_TIMINGS, ...overrides };
-  if (overrides.intervalMs !== undefined && overrides.heartbeatTimeoutMs === undefined) {
-    merged.heartbeatTimeoutMs = Math.max(100, Math.round(overrides.intervalMs / 2));
-  }
-  return merged;
+  return {
+    recoverProbeMs: 15000,
+    maxRecoverProbeMs: 30000,
+    recordTtlMs: 7 * 24 * 60 * 60 * 1000,
+    tombstoneMs: 10 * 60 * 1000,
+    // A lone node starts at the shortest cadence; the adaptive tick retargets it (§3.3).
+    ...windowsFor(overrides.intervalMs ?? HEARTBEAT_INTERVAL_MIN_MS),
+    ...overrides,
+  };
 }
 
 /** Where the mesh reads the time; tests inject their own. */

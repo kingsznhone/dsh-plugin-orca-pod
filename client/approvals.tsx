@@ -18,15 +18,7 @@ export const answer = (kind: "approve" | "deny", approval: PodApproval) =>
   store.act(kind, { peer: approval.peer, task_id: approval.task_id });
 
 /** One waiting permission request as a card; the dock and the popup share it. */
-export function PromptCard({
-  approval,
-  background,
-  busy,
-}: {
-  approval: PodApproval;
-  background?: boolean;
-  busy: boolean;
-}) {
+function PromptCard({ approval, background, busy }: { approval: PodApproval; background?: boolean; busy: boolean }) {
   const title = background ? t("apBackground") : t("apTitleTask").replace("{task}", short(approval.task_id));
   return (
     // biome-ignore lint/a11y/useSemanticElements: a card, not a form; <fieldset> would bring form semantics and borders.
@@ -65,7 +57,7 @@ export function PromptCard({
 }
 
 /** Approvals the human can answer from chat: one card each, plus the last action error. */
-export function PromptGroup({
+function PromptGroup({
   approvals,
   background,
   className,

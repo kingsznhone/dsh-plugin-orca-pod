@@ -18,8 +18,6 @@ export class MeshContext {
     /** Who this node is: its private key signs every request (§7.1). */
     readonly identity: NodeIdentity,
     readonly workgroupId: WorkgroupId,
-    /** The workgroup key derived from the password; in memory only (§7.1). */
-    readonly key: Buffer,
     /** Signs and sends; it knows no node, the target is always named. */
     readonly client: HttpPeerClient,
     /** What this node handed to others, and what it last heard of it (§8.3). */

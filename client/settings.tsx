@@ -9,8 +9,7 @@ import {
   StateDot,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import { EXECUTOR_KINDS } from "../src/executor/kinds.ts";
-import { DEFAULT_PORT } from "../src/core/constants.ts";
+import { DEFAULT_PORT, EXECUTOR_KINDS } from "../src/core/constants.ts";
 import { DEFAULT_WORKGROUP, GIB } from "./constants.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
@@ -58,19 +57,19 @@ type Bind = (key: TextKey) => {
 };
 
 /** Numeric limits; `unit` converts the displayed MiB/GiB to the bytes the host stores. */
-export const LIMITS: Limit[] = [
+const LIMITS: Limit[] = [
   { key: "task_timeout_s", label: "cfgTaskTimeout", hint: "cfgTaskTimeoutHint" },
   { key: "approval_timeout_s", label: "cfgApprovalTimeout", hint: "cfgApprovalTimeoutHint" },
   { key: "result_max_bytes", label: "cfgResultMaxBytes", integer: true },
   { key: "max_workspace_bytes", label: "cfgMaxWorkspaceGiB", hint: "cfgMaxWorkspaceHint", unit: GIB },
   { key: "max_workspace_files", label: "cfgMaxWorkspaceFiles", integer: true },
 ];
-export const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
+const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
 
 /** What the choices are built from: the host's mode list, its default model's efforts, the current values. */
 type ChoiceSource = Pick<PodConfigView, "permission_modes" | "reasoning_efforts" | "advanced">;
 
-export function selectFields(config: ChoiceSource): SelectField[] {
+function selectFields(config: ChoiceSource): SelectField[] {
   const tri: Array<[string, string]> = [
     ["", t("cfgDefaultOption")],
     ["allow", t("cfgAllowOption")],
@@ -93,8 +92,7 @@ export function selectFields(config: ChoiceSource): SelectField[] {
   ];
 }
 
-export const unitText = (value: number | null, unit = 1): string =>
-  value === null ? "" : String(+(value / unit).toFixed(3));
+const unitText = (value: number | null, unit = 1): string => (value === null ? "" : String(+(value / unit).toFixed(3)));
 
 /** The numeric limits as form text, in their display units (MiB/GiB); unset is blank. */
 function limitTexts(advanced: PodAdvancedConfig): Record<LimitKey, string> {
@@ -115,7 +113,7 @@ function choiceTexts(config: ChoiceSource): Record<SelectKey, string> {
   return Object.fromEntries(selectFields(config).map(([key]) => [key, text(key)])) as Record<SelectKey, string>;
 }
 
-export function initialForm(config: PodConfigView, wizard: boolean): FormState {
+function initialForm(config: PodConfigView, wizard: boolean): FormState {
   return {
     workgroup_id: config.workgroup_id || DEFAULT_WORKGROUP,
     password: "",
@@ -165,7 +163,7 @@ function choiceValues(form: FormState, config: ChoiceSource): Partial<Record<Sel
 }
 
 /** Form text to the patch the host validates; `null` clears a field. Returns `{ error }` for input it cannot convert. */
-export function buildPatch(
+function buildPatch(
   form: FormState,
   config: PodConfigView,
   wizard: boolean,
@@ -258,7 +256,7 @@ function Select({ options, ...props }: ReturnType<Bind> & { options: Array<[stri
   );
 }
 
-export function IdentitySection({ bind, wizard, config }: { bind: Bind; wizard: boolean; config: PodConfigView }) {
+function IdentitySection({ bind, wizard, config }: { bind: Bind; wizard: boolean; config: PodConfigView }) {
   const placeholder = wizard || !config.password_set ? t("cfgPasswordOpen") : t("cfgPasswordKeep");
   const hint = wizard
     ? t("cfgPasswordHintWizard")
@@ -280,7 +278,7 @@ export function IdentitySection({ bind, wizard, config }: { bind: Bind; wizard: 
   );
 }
 
-export function NetworkSection({
+function NetworkSection({
   form,
   set,
   bind,
@@ -349,7 +347,7 @@ export function NetworkSection({
   );
 }
 
-export function AdvancedSection({ bind, config }: { bind: Bind; config: ChoiceSource }) {
+function AdvancedSection({ bind, config }: { bind: Bind; config: ChoiceSource }) {
   const [open, setOpen] = React.useState(false);
   return (
     <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>

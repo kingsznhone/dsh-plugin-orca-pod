@@ -20,7 +20,7 @@ export type {
   PodActions,
   PodAdvancedConfig,
   PodApproval,
-  PodArtifact,
+  PodFileRef,
   PodConfigView,
   PodPeer,
   PodReads,
@@ -36,7 +36,7 @@ export type { PeerState, PeerView, RuntimeInfo } from "../src/core/wire/peer.ts"
 export type { TaskState } from "../src/task/wire.ts";
 
 /** One namespace's strings for one language. */
-export type LocaleDict = Record<string, string>;
+type LocaleDict = Record<string, string>;
 
 /** Translate a key of a bound namespace; `params` fill `{name}` placeholders. */
 export type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -50,7 +50,7 @@ export interface LocaleService {
 }
 
 /** One slot contribution. */
-export interface SlotRegistration {
+interface SlotRegistration {
   name: string;
   id: string;
   order: number;
@@ -58,7 +58,7 @@ export interface SlotRegistration {
 }
 
 /** Client slot registry (`ctx.slots`). */
-export interface SlotsService {
+interface SlotsService {
   /** Run `callback` once the named slot exists (and again when it is replaced). */
   inject(name: string, callback: () => void): unknown;
   // biome-ignore lint/suspicious/noExplicitAny: each slot passes its own props to the component.

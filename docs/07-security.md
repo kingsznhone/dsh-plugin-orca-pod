@@ -98,8 +98,8 @@ proof = HMAC-SHA256(k, 输入)            // k 是上面的 scrypt 密钥
 
 - 任务 prompt、结论文本、`permission_request` 文本都是不可信输入；
 - 不把远端文本拼进 shell 命令；不把远端文本当 HTML 渲染；不自动执行回传内容；
-- **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义），notes 清单在块外、notes 文件名 JSON 转义（`src/task/prompt.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；正文里的文件名只是数据，取不取由 agent 在本任务的权限模式下决定；
-- **origin 侧**：tracker 通知只给状态/原因/产物名，远端结论放进 `<untrusted-remote-result>` 块并截断到 800 字符（结束标签转义），并提示 agent 用 `orca_pod` 的 `status` 自己拉全文；权限请求不进对话，面板卡片只显示 `requested` 的 160 字符预览（`src/plugin/tracker.ts`、`panel.ts`）；
+- **目标侧**：任务书里节点自己的前言永远在最前，远端任务正文放进显式的 `<untrusted-task-input>` 块并排在最后（正文里伪造的结束标签会被转义；`src/task/prompt.ts` 的 `composePrompt`，[§6.7](06-execution.md#67-工作区一份持久)）；正文里的文件名只是数据，取不取由 agent 在本任务的权限模式下决定；
+- **origin 侧**：tracker 通知只给状态/原因，远端结论放进 `<untrusted-remote-result>` 块并截断到 800 字符（结束标签转义），并提示 agent 用 `orca_pod` 的 `status` 自己拉全文；权限请求不进对话，面板卡片只显示 `requested` 的 160 字符预览（`src/plugin/tracker.ts`、`panel.ts`）；
 - 任务内容按 workgroup 隔离，不跨 workgroup 复用 session 或工作区；
 - 可观测：谁（origin_orca_node）、何时、对哪个任务、用了什么 mode——留在任务记录与派发日志里（`tasks/get`、面板的“全部任务”），不另落一份审计文件。
 
@@ -115,7 +115,7 @@ proof = HMAC-SHA256(k, 输入)            // k 是上面的 scrypt 密钥
 | 面板 API（`/orca-api`）                | 只有本机（回环 + 无转发头 + 同源闸门，不验节点签名）       | `403 local_only` / `403 cross_origin` / `403 json_required` |
 | 权限上限                               | 继承 origin 会话的 mode，本机 `permission_mode` 可再降一档 | [§7.10](07-security.md#710-权限模式继承) |
 | 工作区                                 | 整个 workgroup 共用一份                                    | [§6.7](06-execution.md#67-工作区一份持久) |
-| 登记本机文件为 blob                    | 只有本节点自己的代码（`orca_pod` 的 `send`、任务的 outbox）直写 SQLite | 没有 HTTP 路由                        |
+| 登记本机文件为 blob                    | 只有本机：宿主的 `orca_pod` 在进程内登记；任务里的 `orca_pod` 经本地路由（`local`：本节点的令牌，D46） | 没有成员可用的路由 |
 
 不做按节点的派发白名单：同组即可派任务。权限请求改为请求升级权限模式的方案见 [§11](11-open-questions.md#11-未决问题)。
 
@@ -153,9 +153,9 @@ proof = HMAC-SHA256(k, 输入)            // k 是上面的 scrypt 密钥
 | ----------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | 桌面 DSH 里的交互式会话（`orca_pod` 的 `send`） | 这台机器上的人 | tracker 把权限请求交给 `ApprovalBroker`，UI 作答：当前会话聊天卡、后台会话弹窗、或面板列表（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)） |
 
-**任务只有一跳**：target 上执行任务的 agent 不能再派任务。ACP 执行器拉起 `dsh` 子进程时注入 `ORCA_POD_IN_TASK=1`，插件 `orca_pod` 的 `send` 看到它就拒绝（执行器会话若也加载了本插件，插件见到它就不启动节点），提示用 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）；`fetch`、`status`、`members` 照常可用。所以审批面永远是派发任务的那个会话，不存在“替下游上交”的中间节点。
+**任务只有一跳**：target 上执行任务的 agent 不能再派任务。ACP 执行器拉起 `dsh` 子进程时注入 `ORCA_POD_IN_TASK=1`，任务在宿主的 profile 里运行，插件也在任务进程里，见到它就不启动节点，`orca_pod` 只有 `fetch` 与 `publish` 两个方法（经本机节点收发文件，[§5.6](05-tasks.md#56-文件交换blob-通道)），没有 `send`；做不完用 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）。所以审批面永远是派发任务的那个会话，不存在“替下游上交”的中间节点。
 
-这是**非对抗性约束**：agent 与节点同一个 OS 用户、读得到私钥（[§7.1](07-security.md#71-workgroup-与密码)），存心绕过的 agent 可以去掉环境变量或自己签请求。它挡住的是守规矩的 agent 因为任务难就转手、以及因此带来的协议复杂度（祖先链、grant 转发、逐跳上交）。要硬边界，得在部署层把执行器放到另一个 OS 用户或沙箱里。
+这是**非对抗性约束**：agent 与节点同一个 OS 用户、读得到私钥（[§7.1](07-security.md#71-workgroup-与密码)），存心绕过的 agent 可以去掉环境变量、自己签请求，或拿环境里的本地路由令牌直接调本机节点。它挡住的是守规矩的 agent 因为任务难就转手、以及因此带来的协议复杂度（祖先链、grant 转发、逐跳上交）。要硬边界，得在部署层把执行器放到另一个 OS 用户或沙箱里。
 
 ### 7.10 权限模式继承
 

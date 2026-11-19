@@ -11,11 +11,11 @@
  */
 
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
-import type { OpenedBlob } from "../core/blobs.ts";
+import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
 import type { DispatchEntry, PodTaskMetadata, TaskView } from "../task/wire.ts";
 import { shortenNodeId } from "../core/identity.ts";
 import { bindChoices, detectLocalEndpoints, isLoopbackEndpoint, normalizePeerUrl } from "../core/net.ts";
-import { isTerminal } from "../task/wire.ts";
+import { isTerminal, messageText } from "../task/wire.ts";
 import type { OrcaNodeId, PeerView, SelfRecord } from "../core/wire/peer.ts";
 import type { PanelPatch } from "../node/settings.ts";
 import type { Orca } from "../node/orca.ts";
@@ -24,7 +24,7 @@ import type { Pod } from "./pod.ts";
 import { taskKey, type ApprovalBroker } from "./broker.ts";
 import type {
   PodApproval,
-  PodArtifact,
+  PodFileRef,
   PodConfigView,
   PodPeer,
   PodState,
@@ -35,6 +35,8 @@ import type {
 
 const REQUESTED_PREVIEW_CHARS = 160;
 
+/** A file name in a task's text: an orca node id (43 base64url chars), a slash, a sha256 (§5.6). */
+const FILE_NAME = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}\/[0-9a-f]{64}(?![0-9a-f])/g;
 /** Rows of the status page's recent-tasks table. */
 const RECENT_LIMIT = 5;
 
@@ -66,32 +68,6 @@ export class PanelModel {
     private readonly catalog: ModelCatalogFeed,
   ) {}
 
-  /** This node's own advertised record, or null while it is not running. */
-  self(): PodPeer<SelfRecord> | null {
-    const current = this.pod.run?.orca;
-    if (current === undefined) return null;
-    const self = current.mesh.self.selfRecord();
-    return {
-      ...self,
-      busy_from: self.busy === null ? null : new RosterLabels(current).label(self.busy.origin_orca_node),
-    };
-  }
-
-  /** Reachable members only: offline records are dropped. */
-  members(): PodPeer[] {
-    const current = this.pod.run?.orca;
-    if (current === undefined) return [];
-    const labels = new RosterLabels(current);
-    return current.mesh
-      .peers()
-      .map((node) => node.view())
-      .filter((member) => member.state !== "offline")
-      .map((member) => ({
-        ...member,
-        busy_from: member.busy === null ? null : labels.label(member.busy.origin_orca_node),
-      }));
-  }
-
   /** Local tasks and dispatched tasks merged, newest first. */
   recent(limit: number): PodTaskRow[] {
     const current = this.pod.run?.orca;
@@ -112,46 +88,25 @@ export class PanelModel {
 
   /** Everything the status page and the approval cards render, in one poll. */
   async state(): Promise<PodState> {
-    const members = this.members();
-    const approvals = this.approvals();
     return {
       self: this.self(),
       config: await this.config(),
-      members,
-      mesh: { reachable: members.length },
-      approvals,
-      approval_count: approvals.length,
+      members: this.members(),
+      approvals: this.approvals(),
       recent: this.recent(RECENT_LIMIT),
       workspace: this.workspace(),
     };
   }
 
-  /** Permission requests waiting for the human, one per task. */
-  approvals(): PodApproval[] {
-    const labels = new RosterLabels(this.pod.run?.orca ?? null);
-    return this.broker.list().map(({ node, task_id, request, agent_id }) => ({
-      id: taskKey(node, task_id),
-      peer: node,
-      node,
-      task_id,
-      tool: request.tool,
-      requested: PanelModel.preview(request.requested),
-      from: labels.label(request.requested_by),
-      current_mode: request.current_mode,
-      requested_mode: request.requested_mode,
-      agent_id,
-    }));
-  }
-
   async task(ref: string, taskId: string): Promise<PodTaskDetail> {
-    const current = await this.node();
+    const current = await this.pod.orca();
     const node = current.mesh.resolve(ref);
     const task = await node.getTask(taskId);
     return {
       task,
       origin: new RosterLabels(current).label(PanelModel.podOf(task).origin_orca_node),
       dispatch: current.dispatches.list().find((entry) => entry.task_id === task.id) ?? null,
-      artifacts: PanelModel.artifactsOf(task, node.id),
+      files: PanelModel.filesOf(task),
     };
   }
 
@@ -164,18 +119,12 @@ export class PanelModel {
   }
 
   async cancel(ref: string, taskId: string): Promise<TaskView> {
-    return (await this.node()).mesh.resolve(ref).cancelTask(taskId);
-  }
-
-  workspace(): WorkspaceView | null {
-    const workspace = this.pod.run?.orca.workspace;
-    if (workspace === undefined) return null;
-    return { root: workspace.root, notes: workspace.notes, state: workspace.state, notes_files: workspace.noteFiles() };
+    return (await this.pod.orca()).mesh.resolve(ref).cancelTask(taskId);
   }
 
   /** A file a member published, fetched by this node for the panel (§5.6). */
   async blob(node: OrcaNodeId, blobId: string): Promise<OpenedBlob> {
-    return (await this.node()).mesh.require(node).fetchBlob(blobId);
+    return (await this.pod.orca()).mesh.require(node).fetchBlob(blobId);
   }
 
   /** Effective config plus setup state; the password itself is never returned. */
@@ -246,10 +195,52 @@ export class PanelModel {
     return this.config();
   }
 
-  /** The node of the current run, once any restart in progress has finished; fails when there is none. */
-  private async node(): Promise<Orca> {
-    await this.pod.settled();
-    return this.pod.requireRun().orca;
+  /** This node's own advertised record, or null while it is not running. */
+  private self(): PodPeer<SelfRecord> | null {
+    const current = this.pod.run?.orca;
+    if (current === undefined) return null;
+    const self = current.mesh.self.selfRecord();
+    return {
+      ...self,
+      busy_from: self.busy === null ? null : new RosterLabels(current).label(self.busy.origin_orca_node),
+    };
+  }
+
+  /** Reachable members only: offline records are dropped. */
+  private members(): PodPeer[] {
+    const current = this.pod.run?.orca;
+    if (current === undefined) return [];
+    const labels = new RosterLabels(current);
+    return current.mesh
+      .peers()
+      .map((node) => node.view())
+      .filter((member) => member.state !== "offline")
+      .map((member) => ({
+        ...member,
+        busy_from: member.busy === null ? null : labels.label(member.busy.origin_orca_node),
+      }));
+  }
+
+  /** Permission requests waiting for the human, one per task. */
+  private approvals(): PodApproval[] {
+    const labels = new RosterLabels(this.pod.run?.orca ?? null);
+    return this.broker.list().map(({ node, task_id, request, agent_id }) => ({
+      id: taskKey(node, task_id),
+      peer: node,
+      task_id,
+      tool: request.tool,
+      requested: PanelModel.preview(request.requested),
+      from: labels.label(request.requested_by),
+      current_mode: request.current_mode,
+      requested_mode: request.requested_mode,
+      agent_id,
+    }));
+  }
+
+  private workspace(): WorkspaceView | null {
+    const workspace = this.pod.run?.orca.workspace;
+    if (workspace === undefined) return null;
+    return { root: workspace.root, state: workspace.state };
   }
 
   private static podOf(view: TaskView): PodTaskMetadata {
@@ -265,28 +256,30 @@ export class PanelModel {
     return text.length > REQUESTED_PREVIEW_CHARS ? `${text.slice(0, REQUESTED_PREVIEW_CHARS - 1)}…` : text;
   }
 
-  private static artifactsOf(view: TaskView, node: OrcaNodeId | undefined): PodArtifact[] {
-    return (view.artifacts ?? []).map((artifact) => ({
-      name: artifact.name,
-      blob_id: artifact.artifactId,
-      bytes: artifact.bytes,
-      node: node ?? null,
-    }));
+  /**
+   * The files a task's result names (§5.6). Files are not part of a task: the
+   * agent writes their names into its text, and the panel offers each as a link.
+   */
+  private static filesOf(view: TaskView): PodFileRef[] {
+    const text = view.status.message === undefined ? "" : messageText(view.status.message);
+    const found = new Map<string, PodFileRef>();
+    for (const [name] of text.matchAll(FILE_NAME)) {
+      const ref = parseBlobRef(name);
+      if (ref !== null) found.set(name, { node: ref.node, blob_id: ref.blob });
+    }
+    return [...found.values()];
   }
 
   /** A task this node dispatched: its who is the target. */
   private static dispatchRow(labels: RosterLabels, entry: DispatchEntry): PodTaskRow {
-    // An entry an older version wrote knows an address, not a node.
-    const target = entry.node ?? entry.peer ?? "";
     return {
       id: entry.task_id,
-      peer: target,
-      node: entry.node,
+      peer: entry.node,
       state: entry.state,
-      who: labels.label(target),
-      who_title: target,
+      who: labels.label(entry.node),
+      who_title: entry.node,
       at: entry.updated_at,
-      artifacts: [],
+      files: [],
       cancellable: PanelModel.isActive(entry.state),
     };
   }
@@ -297,12 +290,11 @@ export class PanelModel {
     return {
       id: view.id,
       peer: current.mesh.self.id,
-      node: current.mesh.self.id,
       state: view.status.state,
       who: labels.label(origin),
       who_title: origin ?? "",
       at: view.status.timestamp,
-      artifacts: PanelModel.artifactsOf(view, current.orcaNodeId),
+      files: PanelModel.filesOf(view),
       cancellable: PanelModel.isActive(view.status.state),
     };
   }

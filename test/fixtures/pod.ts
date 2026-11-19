@@ -9,7 +9,8 @@ import { vi } from "vitest";
 import type { Orca } from "../../src/node/orca.ts";
 import { ModelCatalogFeed } from "../../src/plugin/catalog.ts";
 import { Pod } from "../../src/plugin/pod.ts";
-import { MemoryPodStores } from "../../src/plugin/stores.ts";
+import { PASSWORD_REF } from "../../src/plugin/stores.ts";
+import { MemoryCredentials, podStores } from "./credentials.ts";
 
 export const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
@@ -22,19 +23,20 @@ export function catalogFeed(): ModelCatalogFeed {
  * A real pod that was never started: no node, nothing configured. `settings`
  * are what the settings file holds; a `workgroup_password` among them is stored
  * as the password instead, the way the panel would, because the file never holds it.
+ * `credentials` is the host's credential store the pod's stores read.
  */
 export function idlePod(
   settings: Record<string, unknown> = {},
-  stores = new MemoryPodStores(),
+  credentials = new MemoryCredentials(),
   root = join(tmpdir(), `orca-pod-idle-${randomBytes(6).toString("hex")}`),
 ): Pod {
   const { workgroup_password: password, ...rest } = settings;
-  if (typeof password === "string") stores.password = password;
+  if (typeof password === "string" && password.length > 0) credentials.secrets.set(PASSWORD_REF, password);
   if (Object.keys(rest).length > 0) {
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, "settings.json"), JSON.stringify(rest));
   }
-  return new Pod(logger, stores, catalogFeed(), root);
+  return new Pod(logger, podStores(credentials), catalogFeed(), root);
 }
 
 /**

@@ -8,27 +8,20 @@
  * drops the prompt when the task settles.
  */
 
-import { randomUUID } from "node:crypto";
-
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import type { OrcaNode } from "../mesh/orca-node.ts";
 import type { TaskView } from "../task/wire.ts";
 import type { Pod } from "./pod.ts";
 
-/** One approval the UI may answer; `agent_id` is the session that dispatched the task. */
-export interface ApprovalPrompt {
-  id: string;
+/** One approval the UI may answer; `agent_id` is the session that dispatched the task, null for a send without one. */
+interface ApprovalPrompt {
   /** The node the task runs on. */
   node: OrcaNodeId;
   task_id: string;
-  request_id: string;
-  tool: string;
-  requested: unknown;
-  /** Full request, so the UI can show who asks and the request it previews. */
+  /** What is asked, by whom, and what the UI previews. */
   request: PermissionRequest;
-  agent_id: string;
-  created_at: string;
+  agent_id: string | null;
 }
 
 interface Parked {
@@ -48,7 +41,7 @@ export class ApprovalBroker {
 
   /**
    * Park a request seen on a tracked task. The tracker polls while the task stays
-   * suspended, so the same request id keeps its prompt (stable id and created_at).
+   * suspended; the same request id keeps the prompt it has.
    */
   park({
     node,
@@ -59,22 +52,11 @@ export class ApprovalBroker {
     node: OrcaNodeId;
     view: TaskView;
     request: PermissionRequest;
-    agentId: string;
+    agentId: string | null;
   }): void {
     const key = taskKey(node, view.id);
-    if (this.parked.get(key)?.prompt.request_id === request.request_id) return;
-    const prompt: ApprovalPrompt = {
-      id: randomUUID(),
-      node,
-      task_id: view.id,
-      request_id: request.request_id,
-      tool: request.tool,
-      requested: request.requested,
-      request,
-      agent_id: agentId,
-      created_at: new Date().toISOString(),
-    };
-    this.parked.set(key, { prompt, view });
+    if (this.parked.get(key)?.prompt.request.request_id === request.request_id) return;
+    this.parked.set(key, { prompt: { node, task_id: view.id, request, agent_id: agentId }, view });
   }
 
   /** Pending prompts, oldest first. */
@@ -108,8 +90,7 @@ export class ApprovalBroker {
     taskId: string,
     act: (node: OrcaNode, view: TaskView) => Promise<TaskView>,
   ): Promise<TaskView> {
-    await this.pod.settled();
-    const node = this.pod.requireRun().orca.mesh.resolve(ref);
+    const node = (await this.pod.orca()).mesh.resolve(ref);
     const key = taskKey(node.id, taskId);
     const entry = this.parked.get(key);
     if (entry === undefined) throw new Error("task has no pending permission request");

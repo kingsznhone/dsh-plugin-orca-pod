@@ -3,7 +3,7 @@ import type { z } from "zod";
 import { deadline, timeoutOf } from "@deepseek-ai/dsh-timeout";
 
 import { readAll } from "../core/stream.ts";
-import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER_NAME, verifyReplyHeader } from "../core/signing.ts";
+import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER, verifyReplyHeader } from "../core/signing.ts";
 import { describeIssue, parseOrThrow } from "../core/schema.ts";
 import { isPodErrorCode, PodError } from "../core/errors.ts";
 import type { NodeIdentity } from "../core/identity.ts";
@@ -13,9 +13,9 @@ import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 /** Same shape as the global `fetch`, so a test can wrap it without a library. */
 export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
 
-export type HttpMethod = "GET" | "POST";
+type HttpMethod = "GET" | "POST";
 
-export type CallOptions = {
+type CallOptions = {
   /**
    * The node the request is addressed to; the signature is bound to it and the
    * reply must come from it (§7.1). `""` is a first contact, where the reply's
@@ -29,7 +29,7 @@ export type CallOptions = {
 };
 
 /** A signed JSON request and the schema its 2xx reply must satisfy. */
-export type JsonRequest<S extends z.ZodType> = {
+type JsonRequest<S extends z.ZodType> = {
   method: HttpMethod;
   path: string;
   payload?: unknown;
@@ -42,10 +42,10 @@ export type JsonRequest<S extends z.ZodType> = {
 export type Answer<T> = { body: T; from: OrcaNodeId };
 
 /** A file a peer is sending: its bytes as they arrive, and their count when the peer said it. */
-export type Download = { body: ReadableStream<Uint8Array>; size: number | undefined };
+type Download = { body: ReadableStream<Uint8Array>; size: number | undefined };
 
 /** Knobs of the client that are not collaborators. */
-export type PeerClientOptions = {
+type PeerClientOptions = {
   fetch: FetchLike;
   /** Deadline of one call unless the caller names its own (§4.7). */
   timeoutMs: number;
@@ -182,7 +182,7 @@ export class HttpPeerClient {
     target: string,
     fields: { nonce: string; status: number; subject: string },
   ): OrcaNodeId {
-    const signer = verifyReplyHeader(response.headers.get(REPLY_HEADER_NAME), fields);
+    const signer = verifyReplyHeader(response.headers.get(REPLY_HEADER), fields);
     if (signer === null) {
       throw new PodError("peer_error", `${label} ${response.status}: the reply is not signed by its sender`, 502);
     }

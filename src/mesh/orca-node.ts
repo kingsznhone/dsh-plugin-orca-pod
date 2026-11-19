@@ -139,7 +139,7 @@ export class OrcaNode {
     return this.id === this.ctx.identity.orcaNodeId;
   }
 
-  get isCandidate(): boolean {
+  private get isCandidate(): boolean {
     return this.origin === "candidate";
   }
 
@@ -361,7 +361,7 @@ export class OrcaNode {
   /**
    * Hand this node a task. A node that is not online is not handed one. `agentId`
    * is the DSH session that dispatches it; it goes into the dispatch log with the
-   * entry, so tracking can resume after a host restart (§8.3).
+   * entry, so the tracker knows whom to tell when the task ends (§8.3).
    */
   async sendTask(
     input: SubmitTaskInput,
@@ -375,11 +375,11 @@ export class OrcaNode {
   }
 
   getTask(taskId: string, signal?: AbortSignal): Promise<TaskView> {
-    return this.taskCall("tasks/get", { id: taskId }, signal);
+    return this.rpc("tasks/get", { id: taskId }, signal);
   }
 
   cancelTask(taskId: string, signal?: AbortSignal): Promise<TaskView> {
-    return this.taskCall("tasks/cancel", { id: taskId }, signal);
+    return this.rpc("tasks/cancel", { id: taskId }, signal);
   }
 
   /** This node is the origin: sign a grant for the request the task is parked on and resume it (§7.11). */
@@ -404,7 +404,7 @@ export class OrcaNode {
     return this.resume(view, { grant: signGrant(identity, grant) });
   }
 
-  deny(view: TaskView, reason = "denied by origin"): Promise<TaskView> {
+  deny(view: TaskView, reason: string): Promise<TaskView> {
     return this.resume(view, { permission_denied: true, reason });
   }
 
@@ -434,20 +434,9 @@ export class OrcaNode {
     );
   }
 
-  /** One read or control call on a task; the answer refreshes the dispatch log. */
-  private async taskCall<M extends A2AMethod>(
-    method: M,
-    params: A2AParams<M>,
-    signal?: AbortSignal,
-  ): Promise<TaskView> {
-    const view = await this.rpc(method, params, signal);
-    this.ctx.dispatches.refresh(view);
-    return view;
-  }
-
   /** Answer a suspended task with a grant or a denial. */
   private resume(view: TaskView, control: ResumeControl): Promise<TaskView> {
-    return this.taskCall("message/send", { message: controlMessage(view.id, control, randomUUID()) });
+    return this.rpc("message/send", { message: controlMessage(view.id, control, randomUUID()) });
   }
 
   /**

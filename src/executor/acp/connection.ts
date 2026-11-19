@@ -20,7 +20,6 @@ import {
   type ClientConnection,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
-  type SendRequestOptions,
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
@@ -42,7 +41,7 @@ export type SessionRoute = {
 
 type ConnectionState = { status: "starting" } | { status: "ready" } | { status: "closed"; error: Error };
 
-export type AcpSpawnSpec = { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
+type AcpSpawnSpec = { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 
 /** The code DSH's `deadline` stamps on a request the child did not answer in time. */
 const ACP_TIMEOUT = "ACP_TIMEOUT";
@@ -145,14 +144,12 @@ export class AcpConnection {
     method: Method,
     params: AgentRequestParamsByMethod[Method],
     timeoutMs?: number,
-    options?: SendRequestOptions,
   ): Promise<AgentRequestResponsesByMethod[Method]> {
     if (this.state.status === "closed") throw this.state.error;
-    if (timeoutMs === undefined) return this.rpc.agent.request(method, params, options);
-    const limit = deadline(options?.cancellationSignal, timeoutMs, ACP_TIMEOUT);
+    if (timeoutMs === undefined) return this.rpc.agent.request(method, params);
+    const limit = deadline(undefined, timeoutMs, ACP_TIMEOUT);
     try {
       return await this.rpc.agent.request(method, params, {
-        ...options,
         cancellationSignal: limit.signal,
         stopWaitingOnCancel: true,
       });

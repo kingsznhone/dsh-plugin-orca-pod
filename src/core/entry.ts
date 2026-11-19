@@ -7,7 +7,15 @@
  */
 export const IN_TASK_ENV = "ORCA_POD_IN_TASK";
 
+/**
+ * Where a task session reaches this machine's node, and the token the node's
+ * local routes take (§5.6). The executor sets both next to `IN_TASK_ENV`; the
+ * plugin inside the task uses them for the `orca_pod` file methods.
+ */
+export const NODE_URL_ENV = "ORCA_POD_NODE_URL";
+export const NODE_TOKEN_ENV = "ORCA_POD_NODE_TOKEN";
+
 /** True inside a session the task executor spawned (see `IN_TASK_ENV`). */
-export function runningInTask(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[IN_TASK_ENV] === "1";
+export function runningInTask(): boolean {
+  return process.env[IN_TASK_ENV] === "1";
 }

@@ -1,42 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 
-import { afterEach, describe, expect, it } from "vitest";
-
-import { SqliteDb } from "../src/core/sqlite.ts";
-import { SqliteTaskStore } from "../src/task/task-store.ts";
-import type { PersistedTask } from "../src/task/task-store.ts";
-import { createTestRunner } from "./fixtures/runner.ts";
-import { labelId } from "./fixtures/ids.ts";
-
-const dirs: string[] = [];
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "orca-sqlite-"));
-  dirs.push(dir);
-  return dir;
-}
-
-afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-function storedTask(state: PersistedTask["view"]["status"]["state"], id = "TASK0001"): PersistedTask {
-  const at = new Date().toISOString();
-  return {
-    view: {
-      kind: "task",
-      id,
-      contextId: "CTX1",
-      status: { state, timestamp: at },
-      metadata: {},
-    },
-    origin_orca_node: labelId("ORIGIN"),
-    created_at: at,
-    updated_at: at,
-  };
-}
+import { SqliteDb, storeDbPath } from "../src/core/sqlite.ts";
+import { createTestRunner, tempDir, type TestRunner } from "./fixtures/runner.ts";
 
 async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -46,61 +11,46 @@ async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
   }
 }
 
-describe("sqlite task store", () => {
-  it("persists records across close and reopen", () => {
-    const path = join(tempDir(), "tasks.db");
-    const firstDb = new SqliteDb(path);
-    firstDb.open();
-    const first = new SqliteTaskStore(firstDb);
-    first.save(storedTask("completed"));
-    firstDb.close();
+/** A runner over the database of `root`, the way a node process opens it. */
+function runnerOn(root: string): { runner: TestRunner; db: SqliteDb } {
+  const db = new SqliteDb(storeDbPath(root));
+  db.open();
+  return { runner: createTestRunner({ db }), db };
+}
 
-    const secondDb = new SqliteDb(path);
+const task = (text: string, state: "completed" | "hang") => ({
+  message: { role: "user" as const, parts: [{ kind: "text" as const, text }] },
+  metadata: { echo: { final: { state, text } } },
+});
 
-    secondDb.open();
-    const second = new SqliteTaskStore(secondDb);
-    expect(second.load("TASK0001")?.view.status.state).toBe("completed");
-    expect(second.list()).toHaveLength(1);
-    secondDb.close();
+describe("the task table", () => {
+  it("keeps a finished task readable from the next process", async () => {
+    const root = tempDir("orca-sqlite-");
+    const first = runnerOn(root);
+    const view = first.runner.submit(task("persist me", "completed"));
+    await waitFor(() => first.runner.get(view.id)?.status.state === "completed");
+    first.db.close();
+
+    const second = runnerOn(root);
+    expect(second.runner.get(view.id)?.status.state).toBe("completed");
+    expect(second.runner.list(10).map((stored) => stored.id)).toEqual([view.id]);
+    second.db.close();
   });
 
-  it("keeps a completed task readable from a new runner", async () => {
-    const path = join(tempDir(), "tasks.db");
-    const db = new SqliteDb(path);
-    db.open();
-    const store = new SqliteTaskStore(db);
-    const runner = createTestRunner({ store });
-    const view = runner.submit({
-      message: { role: "user", parts: [{ kind: "text", text: "persist me" }] },
-      metadata: { echo: { final: { state: "completed", text: "persisted" } } },
-    });
-    await waitFor(() => runner.get(view.id)?.status.state === "completed");
+  it("fails what the last process left unfinished as node_restart, and leaves what ended", async () => {
+    const root = tempDir("orca-sqlite-");
+    const first = runnerOn(root);
+    const done = first.runner.submit(task("done", "completed"));
+    await waitFor(() => first.runner.get(done.id)?.status.state === "completed");
+    const working = first.runner.submit(task("never ends", "hang"));
+    await waitFor(() => first.runner.get(working.id)?.status.state === "working");
+    // The process goes away with the task still working.
+    first.db.close();
 
-    const reopenedDb = new SqliteDb(path);
-
-    reopenedDb.open();
-    const reopenedStore = new SqliteTaskStore(reopenedDb);
-    const reopened = createTestRunner({ store: reopenedStore });
-    expect(reopened.get(view.id)?.status.state).toBe("completed");
-    reopenedDb.close();
-    db.close();
-  });
-
-  it("fails unfinished tasks as node_restart on recover", () => {
-    const path = join(tempDir(), "tasks.db");
-    const db = new SqliteDb(path);
-    db.open();
-    const store = new SqliteTaskStore(db);
-    store.save(storedTask("working", "WORKING1"));
-    store.save(storedTask("completed", "DONE1"));
-
-    const runner = createTestRunner({ store });
-    runner.start();
-
-    const failed = runner.get("WORKING1");
-    expect(failed?.status.state).toBe("failed");
-    expect(failed?.status.reason).toBe("node_restart");
-    expect(runner.get("DONE1")?.status.state).toBe("completed");
-    db.close();
+    const second = runnerOn(root);
+    second.runner.start();
+    expect(second.runner.get(working.id)?.status).toMatchObject({ state: "failed", reason: "node_restart" });
+    expect(second.runner.get(done.id)?.status.state).toBe("completed");
+    second.db.close();
   });
 });

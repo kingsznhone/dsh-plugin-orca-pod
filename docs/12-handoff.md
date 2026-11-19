@@ -47,8 +47,9 @@ Hard constraints that must not be undone:
 - Files are named `<orca node id>/<sha256>`, never by URL. Task conclusions come
   back inline as text; large outputs are published by the child and fetched
   explicitly (the orca_pod fetch method), the fetching node dialing the publisher
-  itself. Inside a task the executor moves files: inputs into inbox/<task_id>/
-  before the agent starts, outbox/<task_id>/ published as artifacts when it ends.
+  itself. Files are not part of a task: they are published and named
+  <node id>/<sha256> in the texts; tasks run in the host's profile, so the agent
+  there has orca_pod with fetch/publish only, through this machine's node.
 - Approval happens on the ORIGIN orca node. A task inherits the dispatching
   session's permission mode (none inherited => read-only); the local
   permission_mode only narrows it. The target auto-answers ACP permission
@@ -75,8 +76,10 @@ Hard constraints that must not be undone:
   second with backoff, and completion reaches the session as a compact
   source.kind "orca-pod" notice: inject() if the agent is running, followup() if
   it is idle (batch completions within 2s, cap 3 consecutive background turns,
-  then inject only; a user message resets the budget). When transient failures
-  persist the tracker gives up and tells the agent that tracking was interrupted.
+  then inject only; a user message resets the budget). The tracker polls what
+  the dispatch log holds as unfinished, whichever sessions are open; a notice for
+  a session that is not open is dropped. A task it cannot read (404, refused, or
+  five failed reads in a row) is recorded as failed and the agent is told.
   Never implement waiting with bash sleep loops, and provide no blocking wait tool
   at all: dispatch returns immediately, completion arrives by inject/wake, and a
   busy target answers 429 orca_node_busy which the agent reports to the user
@@ -87,7 +90,8 @@ Hard constraints that must not be undone:
   boundary. One shared password means orca-node-level checks are policy, not
   cryptographic isolation.
 - Handoff uses the shared group workspace: a later task reads the workgroup root
-  (the agent's cwd) and `notes/` left by earlier ones. There is no protocol-level
+  (the agent's cwd) and whatever earlier ones left there; whether to keep notes,
+  and where, is the agent's own decision. There is no protocol-level
   continuation flag; whether to continue, and from where, is the agent's call.
 - Password rotation rebuilds the whole group: a node whose password changed is refused on its very next request. There is no per-orca-node revocation
   and no transition window with two passwords.
@@ -97,7 +101,7 @@ Hard constraints that must not be undone:
   as failed.
 - Quotas are settings (max_workspace_bytes, max_workspace_files); over quota
   is 507 quota_exceeded.
-- Files move by name only: a node publishes its own files (orca_pod send, task outbox)
+- Files move by name only: a node publishes its own files (orca_pod publish, in the host or a task)
   and whoever needs one has its own node pull it; there is no upload route and
   no unsigned download link.
 - `npm run check` (biome + tsc + vitest) is the single acceptance command.

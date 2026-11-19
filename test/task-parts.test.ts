@@ -2,9 +2,8 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { describe, expect, it } from "vitest";
 
 import { fakeNodeId } from "./fixtures/ids.ts";
-import { EventBus } from "../src/core/events.ts";
 import { DispatchLog } from "../src/task/dispatch-log.ts";
-import { MemoryDispatchStore } from "../src/task/dispatch-store.ts";
+import { openDb } from "./fixtures/runner.ts";
 import type { DispatchEvent, TaskView } from "../src/task/wire.ts";
 
 const NODE_A = fakeNodeId("node-a");
@@ -14,49 +13,68 @@ function view(id: string, state: TaskView["status"]["state"], reason?: string): 
 }
 
 function log() {
-  const store = new MemoryDispatchStore();
-  const events = new EventBus<DispatchEvent>();
+  const dispatches = new DispatchLog(openDb(), { warn() {} });
   const seen: DispatchEvent[] = [];
-  events.subscribe((event) => seen.push(event));
-  return { log: new DispatchLog(store, events), store, seen };
+  dispatches.events.subscribe((event) => seen.push(event));
+  const entry = (taskId: string) => dispatches.list().find((item) => item.task_id === taskId);
+  return { dispatches, entry, seen };
 }
 
 describe("DispatchLog", () => {
-  it("records a send once and keeps its creation time on the next one", () => {
-    const { log: dispatches, store, seen } = log();
+  it("records a send with the node it went to and what it answered", () => {
+    const { dispatches, entry, seen } = log();
     dispatches.recordSend(NODE_A, view("t1", "submitted"));
-    const first = store.get("t1");
-    expect(first).toMatchObject({ task_id: "t1", node: NODE_A, context_id: "ctx-t1", state: "submitted" });
-
-    dispatches.recordSend(NODE_A, view("t1", "working"));
-    expect(store.get("t1")?.created_at).toBe(first?.created_at);
-    expect(store.get("t1")?.state).toBe("working");
-    expect(seen.map((event) => event.type)).toEqual(["dispatch", "dispatch"]);
+    expect(entry("t1")).toMatchObject({ task_id: "t1", node: NODE_A, context_id: "ctx-t1", state: "submitted" });
+    expect(seen.map((event) => event.type)).toEqual(["dispatch"]);
   });
 
-  it("never creates an entry from a read, and only writes when something changed", () => {
-    const { log: dispatches, store, seen } = log();
-    dispatches.refresh(view("ghost", "working"));
-    expect(store.list()).toEqual([]);
+  it("never creates an entry from an update, and only writes when something changed", () => {
+    const { dispatches, entry, seen } = log();
+    dispatches.update(view("ghost", "working"));
+    expect(dispatches.list()).toEqual([]);
 
     dispatches.recordSend(NODE_A, view("t1", "working"));
     seen.length = 0;
-    dispatches.refresh(view("t1", "working"));
+    dispatches.update(view("t1", "working"));
     expect(seen).toEqual([]);
-    dispatches.refresh(view("t1", "failed", "timeout"));
-    expect(store.get("t1")).toMatchObject({ state: "failed", last_error: "timeout" });
+    dispatches.update(view("t1", "failed", "timeout"));
+    expect(entry("t1")).toMatchObject({ state: "failed", last_error: "timeout" });
     expect(seen).toHaveLength(1);
   });
 
-  it("stores the dispatching session with the entry and keeps it through later reads", () => {
-    const { log: dispatches, store } = log();
+  it("leaves an entry that ended as it is, lists only the open ones, and drops an error that is gone", () => {
+    const { dispatches, entry } = log();
+    dispatches.recordSend(NODE_A, view("done", "working"));
+    dispatches.recordSend(NODE_A, view("open", "input-required", "asked"));
+    dispatches.update(view("done", "completed"));
+    dispatches.fail("done", "too late");
+    dispatches.update(view("done", "working"));
+    expect(entry("done")).toMatchObject({ state: "completed" });
+    expect(entry("done")).not.toHaveProperty("last_error");
+    expect(dispatches.open().map((item) => item.task_id)).toEqual(["open"]);
+
+    dispatches.update(view("open", "working"));
+    expect(entry("open")).toMatchObject({ state: "working" });
+    expect(entry("open")).not.toHaveProperty("last_error");
+  });
+
+  it("records a task the tracker could not read as failed, with the reason", () => {
+    const { dispatches, entry } = log();
+    dispatches.recordSend(NODE_A, view("t1", "working"));
+    dispatches.fail("t1", "no answer");
+    expect(entry("t1")).toMatchObject({ state: "failed", last_error: "no answer" });
+    expect(dispatches.open()).toEqual([]);
+  });
+
+  it("stores the dispatching session with the entry and keeps it through later updates", () => {
+    const { dispatches, entry } = log();
     dispatches.recordSend(NODE_A, view("t1", "working"), SessionId("session-1"));
-    expect(store.get("t1")?.agent_id).toBe("session-1");
-    dispatches.refresh(view("t1", "completed"));
-    expect(store.get("t1")).toMatchObject({ state: "completed", agent_id: "session-1" });
+    expect(entry("t1")?.agent_id).toBe("session-1");
+    dispatches.update(view("t1", "completed"));
+    expect(entry("t1")).toMatchObject({ state: "completed", agent_id: "session-1" });
 
     // A dispatch without a session (the CLI, a host without sessions) records none.
     dispatches.recordSend(NODE_A, view("t2", "working"));
-    expect(store.get("t2")).not.toHaveProperty("agent_id");
+    expect(entry("t2")).not.toHaveProperty("agent_id");
   });
 });

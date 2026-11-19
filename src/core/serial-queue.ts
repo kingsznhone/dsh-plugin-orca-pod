@@ -15,9 +15,4 @@ export class SerialQueue {
     );
     return result;
   }
-
-  /** Resolves once every operation queued before this call has settled, whether it succeeded or not. */
-  drain(): Promise<void> {
-    return this.tail;
-  }
 }

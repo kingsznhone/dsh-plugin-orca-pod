@@ -21,7 +21,7 @@ export type ModelOffer = Pick<LlmModelInfo, "provider" | "id" | "name" | "descri
  * One advertised model route (§6.15). Unknown keys are dropped: a peer's
  * catalog is stored and re-broadcast, so they are not carried along.
  */
-export const ModelOfferSchema = z.object({
+const ModelOfferSchema = z.object({
   provider: NonEmptyString,
   id: NonEmptyString,
   name: z.string(),

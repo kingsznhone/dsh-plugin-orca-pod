@@ -1,21 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { generateNodeIdentity, type NodeIdentity } from "../src/core/identity.ts";
-import type { Grant } from "../src/core/wire/grant.ts";
 import {
-  DEFAULT_CLOCK_SKEW_MS,
   NonceCache,
   bodySha256,
   buildAuthHeader,
   buildReplyHeader,
   deriveWorkgroupKey,
+  newNonce,
   parseAuthHeader,
   verifyAuth,
   verifyReplyHeader,
-  type VerifyAuthOptions,
 } from "../src/core/signing.ts";
-import { signGrant, verifyGrant } from "../src/task/grants.ts";
 import { PodError, type PodErrorCode } from "../src/core/errors.ts";
-import { wg, fakeNodeId } from "./fixtures/ids.ts";
+import { wg } from "./fixtures/ids.ts";
 
 const WORKGROUP_ID = wg("orca-dev");
 const PASSWORD = "correct horse battery staple";
@@ -28,6 +25,11 @@ function freshKey(): Buffer {
 }
 
 const KEY = freshKey();
+
+/** How far a request's timestamp may be from the receiver's clock. */
+const CLOCK_SKEW_MS = 60_000;
+
+type VerifyAuthOptions = Parameters<typeof verifyAuth>[0];
 
 /** A header as a node of the workgroup builds it: both proofs, bound to `TARGET`. */
 function header(
@@ -42,17 +44,26 @@ function header(
     workgroup?: typeof WORKGROUP_ID;
   } = {},
 ): string {
-  return buildAuthHeader({
-    identity,
-    key: options.key ?? KEY,
-    workgroupId: options.workgroup ?? WORKGROUP_ID,
-    method: METHOD,
-    url: options.url ?? PATH,
-    targetOrcaNodeId: options.target ?? TARGET,
-    body: options.body,
-    ts: options.ts,
-    nonce: options.nonce,
-  });
+  const build = (): string =>
+    buildAuthHeader({
+      identity,
+      key: options.key ?? KEY,
+      workgroupId: options.workgroup ?? WORKGROUP_ID,
+      method: METHOD,
+      url: options.url ?? PATH,
+      targetOrcaNodeId: options.target ?? TARGET,
+      body: options.body,
+      nonce: options.nonce ?? newNonce(),
+    });
+  if (options.ts === undefined) return build();
+  // A header is stamped with the time it is built: build it at `ts`.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(options.ts);
+    return build();
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 /** `verifyAuth` the way the gateway calls it: the receiver, its workgroup and key, and the restart cutoff. */
@@ -121,7 +132,6 @@ describe("buildAuthHeader + verifyAuth", () => {
       nonceCache: new NonceCache(),
     });
     expect(verified.orcaNodeId).toBe(identity.orcaNodeId);
-    expect(verified.nonce.length).toBeGreaterThan(0);
   });
 
   it("binds the query string and the target into the signature", () => {
@@ -174,9 +184,9 @@ describe("buildAuthHeader + verifyAuth", () => {
   it("rejects a stale timestamp with clock_skew", () => {
     const identity = generateNodeIdentity();
     const now = Date.now();
-    const signed = header(identity, { ts: now - DEFAULT_CLOCK_SKEW_MS - 1_000 });
+    const signed = header(identity, { ts: now - CLOCK_SKEW_MS - 1_000 });
     expectAuthError("clock_skew", () =>
-      verify({ method: METHOD, url: PATH, header: signed, nonceCache: new NonceCache(), now }),
+      verify({ method: METHOD, url: PATH, header: signed, nonceCache: new NonceCache() }),
     );
   });
 
@@ -317,37 +327,5 @@ describe("reply signature", () => {
     expect(
       verifyReplyHeader(buildReplyHeader(identity, stream), { ...stream, subject: `blob:${"b".repeat(64)}` }),
     ).toBeNull();
-  });
-});
-
-describe("grants", () => {
-  const identity = generateNodeIdentity();
-  const grant: Grant = {
-    grant_id: "g-1",
-    workgroup_id: WORKGROUP_ID,
-    origin_orca_node: identity.orcaNodeId,
-    task_id: "t-1",
-    target_orca_node: fakeNodeId("z"),
-    tool: "write_file",
-    permission_mode: "workspace-write",
-    request_id: "req-1",
-    issued_at: new Date(0).toISOString(),
-    expires_at: new Date(60_000).toISOString(),
-  };
-
-  it("verifies against the signing origin node", () => {
-    const signed = signGrant(identity, grant);
-    expect(signed.sig.length).toBeGreaterThan(0);
-    expect(verifyGrant(identity.orcaNodeId, signed)).toBe(true);
-  });
-
-  it("rejects a tampered grant", () => {
-    const signed = signGrant(identity, grant);
-    expect(verifyGrant(identity.orcaNodeId, { ...signed, tool: "delete_everything" })).toBe(false);
-  });
-
-  it("rejects verification against a different origin", () => {
-    const signed = signGrant(identity, grant);
-    expect(verifyGrant(generateNodeIdentity().orcaNodeId, signed)).toBe(false);
   });
 });

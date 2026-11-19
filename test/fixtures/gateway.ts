@@ -1,10 +1,11 @@
 import { randomBytes } from "node:crypto";
 
-import { DiskBlobRegistry, MemoryFileBlobStore, type FileBlobRegistry } from "../../src/core/blobs.ts";
+import { afterEach } from "vitest";
+
+import { FileBlobRegistry } from "../../src/core/blobs.ts";
 import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
-import { EventBus } from "../../src/core/events.ts";
 import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
-import { buildAuthHeader } from "../../src/core/signing.ts";
+import { buildAuthHeader, newNonce } from "../../src/core/signing.ts";
 import type { RuntimeInfo, WorkgroupId } from "../../src/core/wire/peer.ts";
 import { Gateway } from "../../src/api/gateway.ts";
 import { MeshContext } from "../../src/mesh/context.ts";
@@ -13,11 +14,9 @@ import { HttpPeerClient } from "../../src/mesh/peer-client.ts";
 import { EndpointScreen } from "../../src/mesh/screening.ts";
 import { resolveClock } from "../../src/mesh/timings.ts";
 import { DispatchLog } from "../../src/task/dispatch-log.ts";
-import { MemoryDispatchStore } from "../../src/task/dispatch-store.ts";
 import type { SingleSlotTaskRunner } from "../../src/task/runner.ts";
-import type { DispatchEvent } from "../../src/task/wire.ts";
 import { wg } from "./ids.ts";
-import { createTestRunner } from "./runner.ts";
+import { createTestRunner, openDb, tempDir } from "./runner.ts";
 
 export const GATEWAY_ENDPOINT = "http://orca-node.test";
 
@@ -30,9 +29,18 @@ const RUNTIME: RuntimeInfo = {
   captured_at: "2026-01-01T00:00:00.000Z",
 };
 
+/** Gateways listening during a test; closed after it. */
+const listening: Gateway[] = [];
+
+afterEach(async () => {
+  for (const gateway of listening.splice(0)) await gateway.close();
+});
+
 export type GatewayHarness = {
   gateway: Gateway;
   app: Gateway["app"];
+  /** Where the gateway listens on loopback; it starts listening on the first call. */
+  url(): Promise<string>;
   key: Buffer;
   identity: NodeIdentity;
   orcaNodeId: string;
@@ -40,6 +48,8 @@ export type GatewayHarness = {
   mesh: Mesh;
   tasks: SingleSlotTaskRunner;
   blobs: FileBlobRegistry;
+  /** What the local routes take (`x-orca-local`). */
+  localToken: string;
   /** The header a caller holding `identity` and the workgroup key signs a request to this gateway with. */
   sign(method: string, path: string, body?: Uint8Array | string): string;
   /** The same for any other caller: its own key pair, and a workgroup key and id the test may get wrong on purpose. */
@@ -63,18 +73,19 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
   const key = randomBytes(32);
   const identity = generateNodeIdentity();
   const workgroup = options.workgroup ?? wg("orca-dev");
-  const blobs = options.blobs ?? new DiskBlobRegistry(new MemoryFileBlobStore());
+  const db = openDb();
+  const blobs = options.blobs ?? new FileBlobRegistry(db, tempDir("orca-blobs-"));
+  const localToken = randomBytes(16).toString("base64url");
   const context = new MeshContext(
     identity,
     workgroup,
-    key,
     new HttpPeerClient(identity, key, workgroup, {
       fetch: async () => {
         throw new Error("no outbound calls in a gateway test");
       },
       timeoutMs: 1000,
     }),
-    new DispatchLog(new MemoryDispatchStore(), new EventBus<DispatchEvent>()),
+    new DispatchLog(db, { warn() {} }),
     blobs,
     new EndpointScreen({}),
     resolveClock(),
@@ -87,7 +98,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     max_task_ttl_s: DEFAULT_TASK_TIMEOUT_S,
   });
   const tasks = options.tasks ?? createTestRunner();
-  const gateway = new Gateway(mesh, tasks, key, identity);
+  const gateway = new Gateway(mesh, tasks, key, identity, { token: localToken, blobs });
   const signAs: GatewayHarness["signAs"] = (caller, method, path, extra = {}) =>
     buildAuthHeader({
       identity: caller,
@@ -97,10 +108,20 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
       url: path,
       targetOrcaNodeId: extra.target ?? identity.orcaNodeId,
       body: extra.body,
+      nonce: newNonce(),
     });
+  let base: Promise<string> | undefined;
+  const listen = (): Promise<string> => {
+    if (base === undefined) {
+      listening.push(gateway);
+      base = gateway.listen("127.0.0.1", 0);
+    }
+    return base;
+  };
   return {
     gateway,
     app: gateway.app,
+    url: listen,
     key,
     identity,
     orcaNodeId: identity.orcaNodeId,
@@ -108,6 +129,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     mesh,
     tasks,
     blobs,
+    localToken,
     sign: (method, path, body) => signAs(identity, method, path, { body }),
     signAs,
   };

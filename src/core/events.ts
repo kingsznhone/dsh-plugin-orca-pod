@@ -12,7 +12,7 @@ import { errorMessage } from "./errors.ts";
  * bug would otherwise break task execution.
  *
  * `EventBus` carries events; `ChangeSignal` only says "something changed, read
- * again". Neither knows what an event holds; `node/events.ts` names the events
+ * again". Neither knows what an event holds; `node/orca.ts` names the events
  * of an orca node.
  */
 
@@ -75,10 +75,5 @@ export class ChangeSignal {
         this.logger?.warn(`orca-pod: a change listener threw: ${errorMessage(error)}`);
       }
     }
-  }
-
-  /** Drop every subscriber (the owner is shutting down). */
-  clear(): void {
-    this.listeners.clear();
   }
 }

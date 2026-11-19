@@ -1,50 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { parseSettings } from "../src/node/settings.ts";
-import type { DispatchEntry, TaskView } from "../src/task/wire.ts";
-import { ApprovalBroker } from "../src/plugin/broker.ts";
-import type { Orca } from "../src/node/orca.ts";
-import { SessionId } from "@deepseek-ai/dsh-session";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Pod } from "../src/plugin/pod.ts";
-import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import type { OptionalService } from "../src/plugin/services.ts";
 import { PodTool } from "../src/plugin/tools.ts";
-import { Tracker } from "../src/plugin/tracker.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
-import { idlePod, podRunning, logger } from "./fixtures/pod.ts";
+import { idlePod, podRunning } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
-/** A real tracker whose pod answers with a node that can only read tasks. */
-function createTracker(
-  getNode: () => { getTask(taskId: string): Promise<TaskView> } | null,
-  options: { intervalMs?: number; coalesceMs?: number },
-) {
-  const pod = idlePod();
-  vi.spyOn(pod, "status", "get").mockImplementation(() => {
-    const node = getNode();
-    return node === null
-      ? { kind: "unconfigured" }
-      : {
-          kind: "running",
-          run: {
-            orca: {
-              mesh: { get: () => ({ displayName: "node-a", getTask: node.getTask }) },
-            } as unknown as Orca,
-            port: 0,
-          },
-        };
-  });
-  return new Tracker(pod, new ApprovalBroker(pod), logger, options);
-}
-
 /** The `orca_pod` tool of a pod; `policy` is the host's sandbox policy, when it has one. */
-function createPodTools(pod: Pod, tracker: Tracker, policy?: () => SandboxPolicyService | undefined): ToolDefinition[] {
-  // The host's optional service, reduced to the one read the tool makes.
-  const sandbox =
-    policy === undefined ? undefined : ({ current: policy } as unknown as OptionalService<"sandboxPolicy">);
-  return [new PodTool(pod, tracker, sandbox).definition()];
+function createPodTools(pod: Pod, policy?: () => SandboxPolicyService | undefined): ToolDefinition[] {
+  // The host's optional service, reduced to the one read the tool makes; a host without it has none.
+  const sandbox = { current: policy ?? (() => undefined) } as unknown as OptionalService<"sandboxPolicy">;
+  return [new PodTool({ kind: "host", pod }, sandbox).definition()];
 }
 
 function tool(result: ReturnType<typeof createPodTools>) {
@@ -141,8 +111,7 @@ describe("plugin config", () => {
 
 describe("orca_pod tool", () => {
   const handle = idlePod({ workgroup_id: "wg-a", workgroup_password: "pw" });
-  const tracker = createTracker(() => null, { intervalMs: 60_000 });
-  const tools = createPodTools(handle, tracker);
+  const tools = createPodTools(handle);
 
   it("registers exactly one orca_pod tool", () => {
     expect(tools.map((candidate) => candidate.name)).toEqual(["orca_pod"]);
@@ -193,19 +162,6 @@ describe("orca_pod tool", () => {
     );
   });
 
-  it("refuses to send from a session the task executor spawned (tasks are single-hop)", async () => {
-    vi.stubEnv("ORCA_POD_IN_TASK", "1");
-    try {
-      await expect(run(tools, { method: "send", peer: "http://127.0.0.1:1", text: "hi" })).rejects.toThrow(
-        /single-hop/,
-      );
-      // Reads stay available.
-      await expect(run(tools, { method: "members" })).rejects.toThrow(/orca node is not running/);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
   it("inherits the dispatching session's permission mode when send omits one", async () => {
     const sent: unknown[] = [];
     const fakeNode = {
@@ -223,7 +179,7 @@ describe("orca_pod tool", () => {
     const handleForSend = podRunning(fakeNode);
     const session = {};
     const sandbox = { resolve: () => ({ mode: "workspace-write" }) } as unknown as SandboxPolicyService;
-    const sendTools = createPodTools(handleForSend, tracker, () => sandbox);
+    const sendTools = createPodTools(handleForSend, () => sandbox);
     const agent = {
       id: "session-1",
       status: "running" as const,
@@ -254,7 +210,7 @@ describe("orca_pod tool", () => {
     expect(sent).toHaveLength(2);
 
     // A session whose mode cannot be read counts as read-only.
-    const blind = createPodTools(handleForSend, tracker);
+    const blind = createPodTools(handleForSend);
     await run(blind, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
     expect((sent[2] as { metadata?: { pod?: Record<string, unknown> } }).metadata?.pod?.permission_mode).toBe(
       "read-only",
@@ -275,19 +231,15 @@ describe("orca_pod tool", () => {
         }),
       },
     } as unknown as import("../src/node/orca.ts").Orca;
-    const watched: Array<[unknown, string]> = [];
-    const recorder = { track: (agent: unknown, _peer: string, taskId: string) => watched.push([agent, taskId]) > 0 };
-    const sendTools = createPodTools(podRunning(fakeNode), recorder as unknown as typeof tracker);
+    const sendTools = createPodTools(podRunning(fakeNode));
     const agent = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
 
     await run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { agent });
     expect(options[0]).toMatchObject({ agentId: "session-1" });
-    expect(watched).toEqual([[agent, "task-1"]]);
 
-    // A call without a session (the CLI, a host without sessions) dispatches without one, and tracks nothing.
+    // A call without a session (the CLI, a host without sessions) dispatches without one.
     await run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, {});
     expect((options[1] as { agentId?: string }).agentId).toBeUndefined();
-    expect(watched).toHaveLength(1);
   });
 
   it("forwards the caller's abort signal and cancels a task accepted after the turn was cancelled", async () => {
@@ -313,9 +265,7 @@ describe("orca_pod tool", () => {
       },
     } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
-    const watched: string[] = [];
-    const recorder = { track: (_agent: unknown, _peer: string, taskId: string) => watched.push(taskId) > 0 };
-    const sendTools = createPodTools(handleForSend, recorder as unknown as typeof tracker);
+    const sendTools = createPodTools(handleForSend);
     const agent = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
     await expect(
       run(
@@ -327,7 +277,6 @@ describe("orca_pod tool", () => {
     expect(signals[0]).toBe(controller.signal);
     await new Promise((resolve) => setImmediate(resolve));
     expect(cancelled).toEqual(["task-late"]);
-    expect(watched).toEqual([]);
   });
 
   it("settles a cancelled call only after its own work has stopped (B20)", async () => {
@@ -354,7 +303,7 @@ describe("orca_pod tool", () => {
       },
     } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
-    const sendTools = createPodTools(handleForSend, tracker);
+    const sendTools = createPodTools(handleForSend);
     let settled = false;
     const call = run(
       sendTools,
@@ -389,7 +338,7 @@ describe("orca_pod tool", () => {
       },
     } as unknown as import("../src/node/orca.ts").Orca;
     const handleForSend = podRunning(fakeNode);
-    const sendTools = createPodTools(handleForSend, tracker);
+    const sendTools = createPodTools(handleForSend);
     await expect(
       run(sendTools, { method: "send", peer: "http://127.0.0.1:11811", text: "hi" }, { signal: AbortSignal.abort() }),
     ).rejects.toThrow(/cancelled by the caller/);
@@ -412,7 +361,7 @@ describe("orca_pod tool", () => {
     } as unknown as import("../src/node/orca.ts").Orca;
     /** The policy service the host exposes as `ctx.sandboxPolicy`. */
     const policy = { resolve: () => ({ mode: "danger-full-access" }) } as unknown as SandboxPolicyService;
-    const sendTools = createPodTools(podRunning(fakeNode), tracker, () => policy);
+    const sendTools = createPodTools(podRunning(fakeNode), () => policy);
     const call = { method: "send", peer: "http://127.0.0.1:11811", text: "hi" } as const;
     const agentWithout = { id: "session-1", status: "running" as const, inject: () => {}, followup: () => {} };
 
@@ -436,7 +385,7 @@ describe("orca_pod tool", () => {
     vi.spyOn(handleForConnect, "addPeer").mockImplementation(async (peer: string) => {
       seen.push(peer);
     });
-    const connectTools = createPodTools(handleForConnect, tracker);
+    const connectTools = createPodTools(handleForConnect);
     const result = await run(connectTools, { method: "connect", peer: "192.168.1.20" });
     expect(seen).toEqual(["http://192.168.1.20:11811"]);
     expect(result).toEqual({
@@ -444,86 +393,5 @@ describe("orca_pod tool", () => {
       members: [],
       members_digest: "digest",
     });
-  });
-});
-
-describe("tracker recovery (8.3)", () => {
-  function dispatch(taskId: string, state: DispatchEntry["state"], agentId?: SessionId): DispatchEntry {
-    const now = new Date().toISOString();
-    return {
-      task_id: taskId,
-      node: fakeNodeId("dispatch-target"),
-      state,
-      created_at: now,
-      updated_at: now,
-      ...(agentId === undefined ? {} : { agent_id: agentId }),
-    };
-  }
-
-  function view(taskId: string): TaskView {
-    return {
-      kind: "task",
-      id: taskId,
-      contextId: taskId,
-      status: { state: "working", timestamp: new Date().toISOString() },
-    };
-  }
-
-  it("resumes only non-terminal dispatches with a live dispatching agent", async () => {
-    const agent = {
-      id: SessionId("live-session"),
-      status: "idle",
-      inject: () => {},
-      followup: () => {},
-    } as unknown as Agent;
-    const polled = new Set<string>();
-    const tracker = createTracker(
-      () => ({
-        async getTask(taskId: string): Promise<TaskView> {
-          polled.add(taskId);
-          return view(taskId);
-        },
-      }),
-      { intervalMs: 1000, coalesceMs: 1000 },
-    );
-    try {
-      const restored = tracker.restore(
-        [
-          dispatch("running", "working", SessionId("live-session")),
-          dispatch("parked", "input-required", SessionId("live-session")),
-          dispatch("done", "completed", SessionId("live-session")),
-          dispatch("unattributed", "working"),
-          dispatch("orphaned", "working", SessionId("gone-session")),
-        ],
-        (agentId) => (agentId === "live-session" ? agent : undefined),
-      );
-      expect(restored).toBe(2);
-      await vi.waitFor(() => expect(polled).toEqual(new Set(["running", "parked"])));
-      // The ones that are over, unattributed or without a live session are never read.
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(polled).toEqual(new Set(["running", "parked"]));
-    } finally {
-      tracker.stop();
-    }
-  });
-
-  it("does not follow an entry an older version wrote, which names an address and no node", () => {
-    const agent = {
-      id: SessionId("live-session"),
-      status: "idle" as const,
-      inject() {},
-      followup() {},
-    } as unknown as Agent;
-    const tracker = createTracker(() => null, { intervalMs: 1000, coalesceMs: 1000 });
-    try {
-      const old = {
-        ...dispatch("legacy", "working", SessionId("live-session")),
-        node: null,
-        peer: "http://127.0.0.1:9",
-      };
-      expect(tracker.restore([old], () => agent)).toBe(0);
-    } finally {
-      tracker.stop();
-    }
   });
 });

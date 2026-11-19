@@ -38,12 +38,9 @@ export const POD_ERROR_STATUS = {
   blob_file_missing: 410,
   // Limits.
   body_too_large: 413,
-  blob_too_large: 413,
   orca_node_busy: 429,
   quota_exceeded: 507,
   internal: 500,
-  /** A task's input file could not be fetched before it started (§3.8). */
-  input_unavailable: 502,
   // Outbound calls (see mesh/peer-client.ts): raised on this node, never sent over the wire.
   unknown_peer: 404,
   peer_not_online: 503,

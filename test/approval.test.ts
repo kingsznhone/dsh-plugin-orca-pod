@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildAuthHeader, deriveWorkgroupKey } from "../src/core/signing.ts";
+import { buildAuthHeader, deriveWorkgroupKey, newNonce } from "../src/core/signing.ts";
 import { signGrant } from "../src/task/grants.ts";
 import type { NodeIdentity } from "../src/core/identity.ts";
 import { createMesh, type Mesh } from "./support/harness.ts";
@@ -104,6 +104,7 @@ async function signedResume(
         url: `${url.pathname}${url.search}`,
         targetOrcaNodeId: health.orca_node_id,
         body,
+        nonce: newNonce(),
       }),
     },
     body,

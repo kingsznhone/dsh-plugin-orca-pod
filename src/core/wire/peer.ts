@@ -37,7 +37,7 @@ export function isWorkgroupId(value: unknown): value is WorkgroupId {
   return WorkgroupIdSchema.safeParse(value).success;
 }
 
-export const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
+const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
 export type PeerState = z.infer<typeof PeerStateSchema>;
 
 /** Host facts a node advertises in its hello (§3.3); `runtime_digest` covers them. */
@@ -80,7 +80,7 @@ export const PeerViewSchema = z.object({
 });
 export type PeerView = z.infer<typeof PeerViewSchema>;
 
-export const SelfRecordSchema = PeerViewSchema.extend({ workgroup_id: WorkgroupIdSchema });
+const SelfRecordSchema = PeerViewSchema.extend({ workgroup_id: WorkgroupIdSchema });
 export type SelfRecord = z.infer<typeof SelfRecordSchema>;
 
 /**
@@ -96,7 +96,7 @@ export const HelloResponseSchema = z.object({
 });
 export type HelloResponse = z.infer<typeof HelloResponseSchema>;
 
-export const MembersResponseSchema = z.object({ members_digest: z.string(), members: z.array(PeerViewSchema) });
+const MembersResponseSchema = z.object({ members_digest: z.string(), members: z.array(PeerViewSchema) });
 export type MembersResponse = z.infer<typeof MembersResponseSchema>;
 
 export function runtimeDigest(runtime: RuntimeInfo | null): string {

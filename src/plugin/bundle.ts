@@ -12,8 +12,6 @@
  */
 
 import type { Context, Inject, Logger } from "@deepseek-ai/cordis";
-import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { SessionId } from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-app-boot";
 import { DSH_HOME_ENV } from "@deepseek-ai/dsh-home-paths";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
@@ -27,8 +25,10 @@ import { Pod } from "./pod.ts";
 import { OptionalService } from "./services.ts";
 import { skillRegistration } from "./skill.ts";
 import type { Config } from "./config.ts";
-import { HostPodStores, NODE_KEY, PASSWORD_REF } from "./stores.ts";
+import { NODE_KEY, PASSWORD_REF, PodStores } from "./stores.ts";
+import { LocalNode } from "./local-node.ts";
 import { PodTool } from "./tools.ts";
+import { runningInTask } from "../core/entry.ts";
 import { Tracker } from "./tracker.ts";
 import { PanelRoutes } from "./panel-routes.ts";
 import { defaultDataRoot } from "../node/config.ts";
@@ -49,8 +49,21 @@ export const inject: Inject<Context> = ["tools", "credentials"];
  * Startup is asynchronous and never throws into the host: a failed orca node start
  * is logged and surfaced through the tools (they report "orca node is not
  * running"), while `apply` returns immediately.
+ *
+ * A session the task executor spawned loads this plugin too, since tasks run in
+ * the host's profile (D46). There it starts no node and offers `orca_pod` with
+ * the file methods only, which go through this machine's node (§5.6, §7.9).
  */
 export function apply(ctx: Context, config: Config): void {
+  if (runningInTask()) {
+    const local = LocalNode.fromEnv();
+    // A node that named none has nothing to offer the task.
+    if (local !== null) {
+      const sandbox = new OptionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy");
+      ctx.tools.register(new PodTool({ kind: "task", local }, sandbox).definition());
+    }
+    return;
+  }
   const bundle = new PodBundle(ctx, config);
   bundle.attach(ctx);
   bundle.start();
@@ -76,15 +89,15 @@ class PodBundle {
     const launch = launchEnvironmentOf(ctx);
     const dataRoot = defaultDataRoot(ctx.dshHomePath?.(), { [DSH_HOME_ENV]: launch.get(DSH_HOME_ENV)?.value });
     this.feed = new ModelCatalogFeed(ctx, this.logger);
-    this.pod = new Pod(this.logger, new HostPodStores(ctx), this.feed, dataRoot);
+    // Tasks run in the profile this plugin was loaded from, present only when dsh launched it (D46).
+    this.pod = new Pod(this.logger, new PodStores(ctx), this.feed, dataRoot, ctx.profileContext?.name);
     this.broker = new ApprovalBroker(this.pod);
-    this.tracker = new Tracker(this.pod, this.broker, this.logger);
-    this.agents = new OptionalService(ctx, "agents", "orca-pod.agents", (service) => {
-      if (service !== undefined) void this.pod.settled().then(() => this.restoreRunningSessions());
-    });
+    this.agents = new OptionalService(ctx, "agents", "orca-pod.agents");
+    // The tracker polls whatever the dispatch log holds; the host's sessions only
+    // decide who hears about a task when it ends.
+    this.tracker = new Tracker(this.pod, this.broker, this.logger, (id) => this.agents.current()?.get(id));
     this.tool = new PodTool(
-      this.pod,
-      this.tracker,
+      { kind: "host", pod: this.pod },
       new OptionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy"),
     );
     this.panel = new PanelModel(this.pod, this.broker, this.feed);
@@ -97,15 +110,9 @@ class PodBundle {
     // reload, or the bundle being disabled). It awaits the orca node shutdown.
     ctx.effect(() => () => this.dispose(), "orca-pod.orca-node");
 
-    // Per-agent bookkeeping belongs to the agent's own fiber: the tracker forgets
-    // the session when it is disposed, and a session created while the host runs
-    // (including one resumed after a restart) picks up its own dispatches.
-    ctx.on("agent/created", ({ agent }) => {
-      this.onAgentCreated(agent);
-    });
     // A new user message gives the agent a fresh budget of tracker wake-ups.
     ctx.on("agent/inbox/claimed", ({ agent, message }) => {
-      this.onInboxClaimed(agent, message);
+      if (message.source?.kind === "user") this.tracker.resetWakes(agent.id);
     });
     // Another DSH process, the settings page or an edit of the credential file may change the
     // password or the node key: the pod restarts once to use it.
@@ -123,8 +130,8 @@ class PodBundle {
     new PanelRoutes(this.panel).register(ctx);
 
     // The skill ships inside the package and is registered in memory; no copy is
-    // written to a user skill root. The ACP executor's `dsh` subprocess cannot see
-    // this host's registry; it finds its files in the inbox/outbox the task preamble names.
+    // written to a user skill root. A task session never registers it: the task
+    // preamble tells that agent what it needs.
     if (this.injectsSkill) {
       ctx.inject(["skills"], (scope) => {
         scope.effect(() => scope.skills.register(skillRegistration()), "orca-pod.skill");
@@ -139,37 +146,13 @@ class PodBundle {
   }
 
   /**
-   * Boot the pod in the background; the host is not kept waiting. Sessions the
-   * host already runs pick up their dispatches once the node is up.
+   * Boot the pod in the background; the host is not kept waiting. The tracker
+   * polls from now on: its rounds read nothing until a node runs, then follow
+   * every dispatch the log holds as not ended, restart or not.
    */
   start(): void {
     this.pod.start();
-    void this.pod.settled().then(() => this.restoreRunningSessions());
-  }
-
-  /**
-   * Resume tracking from the dispatch log (§8.3) for the sessions `resolveAgent`
-   * knows: every one the host already runs (startup, or the agent registry
-   * appearing), or just the one that was created. Repeating it is harmless:
-   * watched or abandoned tasks are left alone.
-   */
-  private restore(resolveAgent: (id: SessionId) => Agent | undefined): void {
-    const run = this.pod.run;
-    if (run === null) return;
-    this.tracker.restore(run.orca.dispatches.list(), resolveAgent);
-  }
-
-  private restoreRunningSessions(): void {
-    this.restore((id) => this.agents.current()?.get(id));
-  }
-
-  private onAgentCreated(agent: Agent): void {
-    agent.ctx.effect(() => () => this.tracker.forget(agent.id), "orca-pod.track");
-    void this.pod.settled().then(() => this.restore((id) => (id === agent.id ? agent : undefined)));
-  }
-
-  private onInboxClaimed(agent: Agent, message: { source?: { kind?: string } }): void {
-    if (message.source?.kind === "user") this.tracker.resetWakes(agent.id);
+    this.tracker.start();
   }
 
   private async dispose(): Promise<void> {

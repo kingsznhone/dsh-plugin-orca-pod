@@ -1,12 +1,13 @@
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 /**
- * The task prompt (§6.7, §6.14): the node's trusted preamble first, notes from
- * earlier tasks, and the origin's text last inside an untrusted block. Files
+ * The task prompt (§6.7, §6.14): the node's trusted preamble first and the
+ * origin's text last inside an untrusted block. Notes are the agent's own
+ * business: the node neither asks for them nor lists them. Files
  * the origin shares are links in that text; nothing is materialized for the
  * agent (§5.6).
  */
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -40,25 +41,29 @@ async function waitForTerminal(runner: SingleSlotTaskRunner, taskId: string, tim
 }
 
 describe("task prompt", () => {
-  it("tells the agent where files are handed over and handed back, and that it cannot delegate", async () => {
+  it("tells the agent how files move (by name, with orca_pod), and that it cannot delegate", async () => {
     const prompts: string[] = [];
     const runner = createTestRunner({ executor: promptRecorder(prompts) });
     const view = runner.submit({ message: message("summarize the report") });
     await waitForTerminal(runner, view.id);
 
     const preamble = prompts[0]!.slice(0, prompts[0]!.indexOf("<untrusted-task-input>"));
-    expect(preamble).toContain(`inbox/${view.id}/`);
-    expect(preamble).toContain(`outbox/${view.id}/`);
-    expect(preamble).toContain("this node publishes them when you finish");
+    expect(preamble).toContain("<orca node id>/<sha256>");
+    expect(preamble).toContain('method "fetch"');
+    expect(preamble).toContain('method "publish"');
+    expect(preamble).toContain("put the name it returns in your final message");
+    // Files are not part of a task: no directory is set up for them.
+    expect(preamble).not.toContain("inbox/");
+    expect(preamble).not.toContain("outbox/");
     expect(preamble).toContain("single-hop");
     expect(preamble).not.toContain("ORCA_POD_CLI");
     expect(preamble).not.toContain("send --peer");
   });
 
-  it("lists workspace notes from earlier tasks in the prompt appendix", async () => {
+  it("says nothing of notes, whatever the agent left in the workspace", async () => {
     const deps = runnerSetup();
-    const { workspace } = deps;
-    writeFileSync(join(workspace.notes, "STATUS.md"), "where the last task stopped\n");
+    mkdirSync(join(deps.workspace.root, "notes"));
+    writeFileSync(join(deps.workspace.root, "notes", "STATUS.md"), "where the last task stopped\n");
     const prompts: string[] = [];
     const runner = createTestRunner({
       ...deps,
@@ -73,8 +78,8 @@ describe("task prompt", () => {
     const view = runner.submit({ message: message("continue the work") });
     await waitForTerminal(runner, view.id);
 
-    expect(prompts[0]).toContain("Notes from earlier tasks in this workgroup");
-    expect(prompts[0]).toContain('- "notes/STATUS.md"');
+    expect(prompts[0]).not.toContain("notes");
+    expect(prompts[0]).not.toContain("STATUS.md");
     // The remote task text is explicitly marked as untrusted data.
     expect(prompts[0]).toContain("<untrusted-task-input>");
     expect(prompts[0]).toContain("continue the work");
@@ -115,27 +120,6 @@ describe("task prompt", () => {
     expect(prompt.startsWith(`[orca-pod] You are executing task ${view.id}`)).toBe(true);
     expect(prompt.indexOf("<untrusted-task-input>")).toBeGreaterThan(prompt.indexOf("Never approve your own"));
     expect(prompt.trimEnd().endsWith("</untrusted-task-input>")).toBe(true);
-  });
-
-  it("leaves note names that are not plain text out of the prompt", async () => {
-    const deps = runnerSetup();
-    writeFileSync(join(deps.workspace.notes, "ok.md"), "x");
-    writeFileSync(join(deps.workspace.notes, "evil‮.md"), "x");
-    const prompts: string[] = [];
-    const runner = createTestRunner({
-      ...deps,
-      executor: {
-        async *run(input: ExecuteInput): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
-          prompts.push(input.prompt);
-          yield { type: "completed", text: "ok" };
-        },
-      },
-    });
-    const view = runner.submit({ message: message() });
-    await waitForTerminal(runner, view.id);
-
-    expect(prompts[0]).toContain("notes/ok.md");
-    expect(prompts[0]).not.toContain("evil");
   });
 
   it("forgets the live record of a task canceled mid-run", async () => {

@@ -13,7 +13,7 @@ import { AckSchema } from "../core/wire/reply.ts";
 import type { MeshContext } from "./context.ts";
 import { OrcaNode } from "./orca-node.ts";
 import type { EndpointScreen } from "./screening.ts";
-import { heartbeatIntervalMsFor, resolveTimings, type MeshTimings } from "./timings.ts";
+import { heartbeatIntervalMsFor, resolveTimings, windowsFor, type MeshTimings } from "./timings.ts";
 import type { HelloRequest, MembersEvent, SelfDescription } from "./wire.ts";
 
 /** A seed address that has not answered yet, and when it is tried again. */
@@ -65,21 +65,9 @@ export class Mesh {
     return this.ctx.screening;
   }
 
-  get timings(): Readonly<MeshTimings> {
-    return this.current;
-  }
-
-  /**
-   * Retarget the expected cadence; also rederives the suspect, offline and
-   * timeout windows. One missed tick is suspect, three is offline; jitter means
-   * a tick needs slack.
-   */
-  setIntervalMs(intervalMs: number): void {
-    const timings = this.current;
-    timings.intervalMs = Math.round(intervalMs);
-    timings.suspectAfterMs = Math.round(timings.intervalMs * 1.25);
-    timings.offlineAfterMs = timings.intervalMs * 3;
-    timings.heartbeatTimeoutMs = Math.max(100, Math.round(timings.intervalMs / 2));
+  /** Retarget the expected cadence, and with it the suspect, offline and timeout windows. */
+  private setIntervalMs(intervalMs: number): void {
+    Object.assign(this.current, windowsFor(intervalMs));
   }
 
   // ---- the table ----
@@ -150,7 +138,7 @@ export class Mesh {
   }
 
   /** Whether a node was forgotten recently enough that a stale list must not bring it back. */
-  isTombstoned(id: OrcaNodeId): boolean {
+  private isTombstoned(id: OrcaNodeId): boolean {
     const until = this.tombstones.get(id);
     if (until === undefined) return false;
     if (this.ctx.clock.monotonicMs() < until) return true;

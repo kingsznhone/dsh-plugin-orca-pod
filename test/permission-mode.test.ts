@@ -20,7 +20,8 @@ import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
-const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
+const acpExecutor = (config: AcpExecutorConfig) =>
+  new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { profile: undefined, env: () => ({}) });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 
@@ -46,10 +47,8 @@ function input(root: string, overrides: Partial<ExecuteInput> = {}): ExecuteInpu
   return {
     permissionMode: "read-only",
     permissionCeiling: undefined,
-    taskId: "task-1",
     contextId: "context-1",
     originOrcaNode: labelId("ORIGIN"),
-    selfOrcaNodeId: labelId("SELF"),
     prompt: "do it",
     workspaceDir: root,
     podDir: join(root, ".state"),
@@ -165,7 +164,7 @@ describe("permission mode execution", () => {
       executor: "acp",
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
     });
-    const node = new Orca(...config, { persistent: true });
+    const node = new Orca(...config);
     await node.start();
     try {
       const view = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({
@@ -199,7 +198,7 @@ describe("permission mode execution", () => {
       acp: { command: process.execPath, extra_args: [FAKE_ACP, "permission", join(root, "acp.log")] },
       permission_mode: "read-only",
     });
-    const node = new Orca(...config, { persistent: true });
+    const node = new Orca(...config);
     await node.start();
     try {
       const view = await node.mesh.resolve(node.mesh.self.endpoints[0]!).sendTask({

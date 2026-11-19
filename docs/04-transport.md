@@ -50,7 +50,7 @@
 | GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲），给对端检查用              | member                          |
 | POST   | `/cluster/leave`               | 主动离开（不是安全操作）                                   | member                          |
 
-文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点登记的文件；取别的成员的文件由本机节点对象（`mesh.get(id).fetchBlob`）按对方宣告的地址去拨，所以发布方在反代后面也照样取得到。登记没有 HTTP 路由，由本节点自己的代码（`orca_pod` 的 `send`、任务的 outbox 发布）直写本机 SQLite；节点之间不推送文件。
+文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点登记的文件；取别的成员的文件由本机节点对象（`mesh.get(id).fetchBlob`）按对方宣告的地址去拨，所以发布方在反代后面也照样取得到。登记没有成员可用的路由，只在本机发生：宿主的 `orca_pod` 在进程内登记，任务里的 `orca_pod` 走只认本节点令牌的本地路由 `/local/blobs`（[§5.6](05-tasks.md#56-文件交换blob-通道)）；节点之间不推送文件。
 
 约定：
 
@@ -67,7 +67,7 @@
 | 403  | `not_task_origin`                                                                                                           |
 | 400  | `bad_request`、`bad_echo_script`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
 | 413  | `body_too_large`、`blob_too_large`                                                                                          |
-| 502  | `peer_error`、`input_unavailable`（本节点取不到任务的输入文件；只在本机产生）                                                |
+| 502  | `peer_error`                                                                                                                 |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
 | 409  | `permission_denied`、`grant_invalid`、`grant_expired`、`grant_replayed`                                                     |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
@@ -135,7 +135,7 @@
 `/a2a` 是 JSON-RPC 2.0，方法集：
 
 - `message/send`：提交消息，始终返回 `Task`。`message.taskId` 为空时新建 task（`submitted` → `working`）；非空时是对挂起任务的恢复：task 必须处于 `input-required`（否则 `400 bad_request`），调用者必须是 task 的 origin（否则 `403 not_task_origin`），恢复时要重新拿到执行槽——槽被别的任务占着就回 `429 orca_node_busy`，**由上游自己决定什么时候重试**，不预留、不排队（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
-- `tasks/get`：按 task id 取状态与 artifact；未知 id 返回 `404 task_not_found`。任何成员都可读。
+- `tasks/get`：按 task id 取状态与结论；未知 id 返回 `404 task_not_found`。任何成员都可读。
 - `tasks/cancel`：只有 origin（或本机自己）可取消，否则 `403 not_task_origin`；对终态 task 原样返回，不报错。
 
 用 A2A 而不是自造 RPC：有规范、有 SDK，task 生命周期与失败模式都被规范讨论过；自造只会把同样的坑再走一遍。方法面只取其中必要的子集。

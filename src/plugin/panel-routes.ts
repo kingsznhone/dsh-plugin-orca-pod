@@ -29,7 +29,7 @@ import { errorMessage } from "../core/errors.ts";
 import { parseBlobRef, type OpenedBlob } from "../core/blobs.ts";
 
 /** Prefix the client polls; keep in sync with `client/store.ts`. */
-export const POD_API_PREFIX = "/orca-api";
+const POD_API_PREFIX = "/orca-api";
 
 /** Largest JSON body accepted for one approval action. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -80,7 +80,7 @@ export class PanelRoutes {
   constructor(private readonly panel: PanelModel) {}
 
   /** Route handler for `/orca-api`. */
-  async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const refused = PanelRoutes.rejection(request);
     if (refused !== null) {
       PanelRoutes.sendJson(response, refused.status, refused.body);
@@ -216,10 +216,6 @@ export class PanelRoutes {
     return PanelRoutes.headerOf(request, PANEL_HEADER) === "1";
   }
 
-  private static hasJsonContentType(request: IncomingMessage): boolean {
-    return (PanelRoutes.headerOf(request, "content-type") ?? "").toLowerCase().startsWith("application/json");
-  }
-
   private static sendJson(response: ServerResponse, status: number, body: unknown): void {
     const payload = JSON.stringify(body);
     response.writeHead(status, {
@@ -244,7 +240,8 @@ export class PanelRoutes {
   private static rejection(request: IncomingMessage): Reply | null {
     if (!isDirectLoopbackRequest(request)) return { status: 403, body: { error: "local_only" } };
     if (!PanelRoutes.isSameOriginPanelRequest(request)) return { status: 403, body: { error: "cross_origin" } };
-    if (request.method !== "GET" && !PanelRoutes.hasJsonContentType(request))
+    const contentType = (PanelRoutes.headerOf(request, "content-type") ?? "").toLowerCase();
+    if (request.method !== "GET" && !contentType.startsWith("application/json"))
       return { status: 403, body: { error: "json_required" } };
     return null;
   }

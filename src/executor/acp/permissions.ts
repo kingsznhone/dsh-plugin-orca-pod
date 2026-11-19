@@ -1,11 +1,9 @@
-/** Permission requests from the ACP child: the fields a task needs, the auto-answer policy and the reply. */
+/** Permission requests from the ACP child: the auto-answer policy and the reply. */
 
 import type {
   PermissionOption,
   PermissionOptionKind,
-  RequestPermissionRequest,
   RequestPermissionResponse,
-  ToolCallUpdate,
   ToolKind,
 } from "@agentclientprotocol/sdk";
 
@@ -13,34 +11,13 @@ import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 
 import { narrowPermissionMode, widerModes } from "../../core/wire/permission.ts";
 
-/**
- * What an ACP child asks permission for, as the executor reads it (not the
- * protocol's `PermissionRequest`): the SDK's tool call with its optional
- * fields settled, plus the options it offers.
- */
-export type AcpPermissionAsk = Pick<ToolCallUpdate, "toolCallId"> & {
-  title: string;
-  kind: ToolKind | undefined;
-  options: RequestPermissionRequest["options"];
-};
-
 export const CANCELLED: RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 
 /** The answer to an ask: let the tool run, or refuse it. */
-export type PermissionDecision = "allow" | "reject";
+type PermissionDecision = "allow" | "reject";
 
-export function parsePermissionRequest(params: RequestPermissionRequest): AcpPermissionAsk {
-  const call = params.toolCall;
-  return {
-    toolCallId: call.toolCallId,
-    title: call.title ?? "tool",
-    kind: call.kind ?? undefined,
-    options: params.options,
-  };
-}
-
-/** Whether `mode` lets a tool call of `kind` run without asking (§7.14). */
-export function modeAllows(mode: SandboxMode, kind: ToolKind | undefined): boolean {
+/** Whether `mode` lets a tool call of `kind` run without asking (§7.14); a call of no kind only under full access. */
+export function modeAllows(mode: SandboxMode, kind: ToolKind | null | undefined): boolean {
   if (mode === "danger-full-access") return true;
   const readable = kind === "read" || kind === "search" || kind === "think";
   if (mode === "read-only") return readable;
@@ -56,7 +33,7 @@ export function modeAllows(mode: SandboxMode, kind: ToolKind | undefined): boole
 export function escalationFor(
   mode: SandboxMode,
   ceiling: SandboxMode | undefined,
-  kind: ToolKind | undefined,
+  kind: ToolKind | null | undefined,
 ): SandboxMode | null {
   for (const wider of widerModes(mode)) {
     if (ceiling !== undefined && narrowPermissionMode(ceiling, wider) !== wider) return null;

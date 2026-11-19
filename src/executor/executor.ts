@@ -9,7 +9,6 @@ import { z } from "zod";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { RequestedAccessSchema, type RequestedAccess } from "../core/wire/grant.ts";
-import { MAX_TASK_FILES } from "../core/constants.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
 
@@ -17,8 +16,6 @@ const ECHO_LIMITS = {
   max_steps: 8,
   max_total_ms: 60_000,
   max_text_bytes: 8 * 1024,
-  max_artifacts: MAX_TASK_FILES,
-  max_artifact_bytes: 4 * 1024,
 } as const;
 
 /** A string that is at most `max` bytes in UTF-8. */
@@ -47,17 +44,9 @@ const EchoFinalSchema = z.strictObject({
   text: boundedText(ECHO_LIMITS.max_text_bytes).default(""),
 });
 
-const EchoArtifactSchema = z.strictObject({
-  name: z
-    .string()
-    .min(1, "must be a plain file name")
-    .regex(/^[^\\/]+$/, "must be a plain file name"),
-  content: boundedText(ECHO_LIMITS.max_artifact_bytes),
-});
-
 /**
- * An echo script: when to suspend for a permission, how the task ends, which
- * artifacts it leaves. It rides in `metadata.echo`, so it is a wire shape:
+ * An echo script: when to suspend for a permission and how the task ends. It
+ * rides in `metadata.echo`, so it is a wire shape:
  * anything unknown, out of order or over a limit is refused (§6.3).
  */
 export const EchoScriptSchema = z.strictObject({
@@ -70,10 +59,6 @@ export const EchoScriptSchema = z.strictObject({
     )
     .default([]),
   final: EchoFinalSchema.default({ state: "completed", text: "echo" }),
-  artifacts: z
-    .array(EchoArtifactSchema)
-    .max(ECHO_LIMITS.max_artifacts, `must be <= ${ECHO_LIMITS.max_artifacts}`)
-    .default([]),
 });
 export type EchoScript = z.output<typeof EchoScriptSchema>;
 
@@ -93,22 +78,18 @@ export type Suspension = {
 
 export type ExecutorEvent =
   | { type: "suspend"; suspend: Suspension }
-  | { type: "artifact"; name: string; content: string }
   | { type: "completed"; text: string }
   | { type: "failed"; text: string; reason?: string };
 
 export type ExecuteInput = {
-  taskId: string;
   contextId: string;
-  /** The full prompt: trusted preamble, input and notes lists, then the origin's text as untrusted data. */
+  /** The full prompt: trusted preamble, then the origin's text as untrusted data. */
   prompt: string;
   /** Origin orca node; part of the session binding key (§6.10). */
   originOrcaNode: OrcaNodeId;
-  /** This orca node (the executor's host). */
-  selfOrcaNodeId: OrcaNodeId;
   /** Group workspace root `<data_root>/workgroups/<workgroup_id>`; the executor's cwd (§6.7). */
   workspaceDir: string;
-  /** Gateway state dir `<data_root>/state/<workgroup_id>` (session bindings, artifacts); outside the cwd (§6.7). */
+  /** Gateway state dir `<data_root>/state/<workgroup_id>` (session bindings); outside the cwd (§6.7). */
   podDir: string;
   /** Effective permission mode after origin inheritance and local ceiling (§7.10). */
   permissionMode: SandboxMode;

@@ -18,7 +18,8 @@ import { Orca } from "../src/node/orca.ts";
 import { labelId, wg } from "./fixtures/ids.ts";
 
 /** An ACP executor with the defaults of an empty model catalog and a silent logger. */
-const acpExecutor = (config: AcpExecutorConfig) => new AcpExecutor(config, new ModelCatalog(), { warn() {} });
+const acpExecutor = (config: AcpExecutorConfig) =>
+  new AcpExecutor(config, new ModelCatalog(), { warn() {} }, { profile: undefined, env: () => ({}) });
 
 const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const LIVE: Orca[] = [];
@@ -48,8 +49,8 @@ async function configFor(root: string, mode: string, overrides: Partial<OrcaNode
   return [{ ...config, ...overrides }, identity, key];
 }
 
-async function startNode(parts: NodeParts): Promise<Orca> {
-  const node = new Orca(...parts, { persistent: true });
+async function startNode(parts: NodeParts, profile?: string): Promise<Orca> {
+  const node = new Orca(...parts, { profile });
   await node.start();
   LIVE.push(node);
   return node;
@@ -91,6 +92,9 @@ async function waitForRemoteState(
 type LogEntry = {
   method?: string;
   inTask?: string;
+  nodeUrl?: string;
+  hasNodeToken?: boolean;
+  extraArgs?: string[];
   text?: string;
   cwd?: string;
   mcpServers?: unknown[];
@@ -125,13 +129,19 @@ function taskText(view: TaskView): string {
 describe("AcpExecutor", () => {
   it("completes a task with the accumulated assistant text and runs in the workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const node = await startNode(await configFor(root, "ok"));
+    const node = await startNode(await configFor(root, "ok"), "desktop");
     const submitted = await send(node, "say hi");
     const view = await waitForState(node, submitted.id, ["completed"]);
     expect(taskText(view)).toBe("acp done");
     const entries = await logEntries(join(root, "acp.log"));
-    // The agent runs inside a task: the CLI and the plugin refuse to send from it (§7.9).
-    expect(entries.find((entry) => entry.method === "initialize")?.inTask).toBe("1");
+    const initialize = entries.find((entry) => entry.method === "initialize");
+    // The agent runs inside a task: the plugin there refuses to send (§7.9) and moves
+    // files through this node, which it reaches at its loopback address with a token (§5.6).
+    expect(initialize?.inTask).toBe("1");
+    expect(initialize?.nodeUrl).toBe(`http://127.0.0.1:${new URL(node.mesh.self.endpoints[0]!).port}`);
+    expect(initialize?.hasNodeToken).toBe(true);
+    // It runs in the host's own profile (D46).
+    expect(initialize?.extraArgs).toEqual(["--profile", "desktop"]);
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);
     // ACP's McpServerStdio shape: args and env always present, env as name/value pairs.
@@ -141,8 +151,8 @@ describe("AcpExecutor", () => {
     ]);
     const promptText = entries.find((entry) => entry.method === "session/prompt")?.text ?? "";
     expect(promptText).toContain("say hi");
-    // The preamble tells the ACP agent where its files are handed over, and that it cannot delegate.
-    expect(promptText).toContain("outbox/");
+    // The preamble tells the ACP agent how files move, and that it cannot delegate.
+    expect(promptText).toContain('orca_pod method "publish"');
     expect(promptText).toContain("single-hop");
     expect(promptText).not.toContain("ORCA_POD_CLI");
     // A task that cannot finish alone ends with a blocker report.
@@ -169,7 +179,7 @@ describe("AcpExecutor", () => {
     const submitted = await send(node, "write a file", "ctx-1", "workspace-write");
     const suspended = await waitForState(node, submitted.id, ["input-required"]);
 
-    const denied = await node.mesh.resolve(node.mesh.self.endpoints[0]!).deny(suspended);
+    const denied = await node.mesh.resolve(node.mesh.self.endpoints[0]!).deny(suspended, "denied by origin");
     expect(denied.status.state).toBe("failed");
     expect(denied.status.reason).toBe("permission_denied");
 
@@ -327,14 +337,12 @@ describe("AcpExecutor", () => {
 
   it("reports a spawn failure instead of hanging", async () => {
     const pod = await mkdtemp(join(tmpdir(), "orca-acp-"));
-    const executor = acpExecutor({ command: join(pod, "missing-acp"), profile: "acp" });
+    const executor = acpExecutor({ command: join(pod, "missing-acp") });
     const events: ExecutorEvent[] = [];
     const input: ExecuteInput = {
-      taskId: "t1",
       contextId: "c1",
       prompt: "hi",
       originOrcaNode: labelId("ORIGIN"),
-      selfOrcaNodeId: labelId("SELF"),
       workspaceDir: pod,
       podDir: join(pod, ".state"),
       permissionMode: "read-only",

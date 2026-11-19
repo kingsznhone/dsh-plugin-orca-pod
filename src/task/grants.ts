@@ -12,7 +12,7 @@ import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 const GRANT_DOMAIN = "orca-pod/grant";
 
 /** What a grant has to match: the task that waits and the request it is parked on. */
-export type GrantExpectation = {
+type GrantExpectation = {
   taskId: string;
   selfOrcaNodeId: OrcaNodeId;
   workgroupId: WorkgroupId;
@@ -98,7 +98,7 @@ export function signGrant(identity: NodeIdentity, grant: Grant): SignedGrant {
 }
 
 /** Verify a grant against the origin node that signed it. */
-export function verifyGrant(originOrcaNodeId: OrcaNodeId, grant: SignedGrant): boolean {
+function verifyGrant(originOrcaNodeId: OrcaNodeId, grant: SignedGrant): boolean {
   if (typeof grant.sig !== "string" || grant.sig.length === 0) return false;
   return verifyWithNodeId(originOrcaNodeId, grantSignatureInput(grant), grant.sig);
 }

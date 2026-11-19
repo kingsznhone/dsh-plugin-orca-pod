@@ -1,4 +1,7 @@
-/** The `orca_pod` tool's file handling (§3.8): `send` with `files`, and `fetch`. */
+/**
+ * The `orca_pod` file methods (§5.6): `publish` and `fetch`, in the host (through the
+ * pod of this process) and inside a task (through this machine's node, `LocalNode`).
+ */
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,20 +15,20 @@ import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 
 import { blobRefText } from "../src/core/blobs.ts";
 import type { Orca } from "../src/node/orca.ts";
+import { LocalNode } from "../src/plugin/local-node.ts";
 import { PodTool } from "../src/plugin/tools.ts";
 import type { OptionalService } from "../src/plugin/services.ts";
-import type { Tracker } from "../src/plugin/tracker.ts";
+import { createGatewayHarness } from "./fixtures/gateway.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 import { podRunning } from "./fixtures/pod.ts";
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 const OWN = fakeNodeId("own");
 const PEER = fakeNodeId("peer");
-const PEER_URL = "http://127.0.0.1:11811";
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 function tempRoot(): string {
@@ -40,76 +43,48 @@ const agent = { id: "session-1", status: "running" as const, session: {}, inject
 const policyOf = (mode: string, workspaceRoot: string) =>
   ({ resolve: () => ({ mode, workspaceRoot }) }) as unknown as SandboxPolicyService;
 
-/** The tool of a pod running `node`; `policy` is the host's sandbox policy, when it has one. */
-function toolOf(node: unknown, policy?: SandboxPolicyService) {
-  const sandbox =
-    policy === undefined ? undefined : ({ current: () => policy } as unknown as OptionalService<"sandboxPolicy">);
-  const tracker = { track: () => true } as unknown as Tracker;
-  const { execute } = new PodTool(podRunning(node), tracker, sandbox).definition();
+/** The tool over `node`; `policy` is the session's sandbox policy, when there is one. */
+function toolOver(node: ConstructorParameters<typeof PodTool>[0], policy?: SandboxPolicyService) {
+  const sandbox = { current: () => policy } as unknown as OptionalService<"sandboxPolicy">;
+  const { execute } = new PodTool(node, sandbox).definition();
   return (args: Record<string, unknown>) =>
     execute(args, { signal: new AbortController().signal, agent } as unknown as ToolRunContext);
 }
 
-type Sent = { metadata?: { pod?: Record<string, unknown> } };
+/** The host's tool, over a pod running `node`. */
+const toolOf = (node: unknown, policy?: SandboxPolicyService) =>
+  toolOver({ kind: "host", pod: podRunning(node) }, policy);
 
-/** A node that records what `send` hands to the delegation and what the tool publishes. */
-function sendingNode(publish: (path: string) => Promise<unknown>) {
-  const sent: Sent[] = [];
-  const node = {
-    orcaNodeId: OWN,
-    publish,
-    mesh: {
-      // Whatever the call names is the one node the task goes to.
-      resolve: () => ({
-        id: PEER,
-        displayName: "peer",
-        sendTask: async (input: Sent) => {
-          sent.push(input);
-          return { id: "task-1", status: { state: "submitted" } };
-        },
-        cancelTask: async () => ({}),
-      }),
-    },
-  } as unknown as Orca;
-  return { node, sent };
-}
-
-describe("orca_pod send with files", () => {
-  it("publishes a local path first, then names it in metadata.pod.files next to a file a member published", async () => {
+describe("orca_pod publish", () => {
+  it("copies a file of the session into the node and answers with its name", async () => {
     const root = tempRoot();
     writeFileSync(join(root, "plan.md"), "the plan");
-    const published: string[] = [];
-    const { node, sent } = sendingNode(async (path) => {
-      published.push(path);
-      return { blob_id: sha256("the plan"), path, size: 8, expires_at: null };
-    });
-    const theirs = blobRefText({ node: PEER, blob: sha256("theirs") });
+    const published: Array<[string, number | undefined]> = [];
+    const node = {
+      orcaNodeId: OWN,
+      blobs: {
+        register: async (path: string, ttlS?: number) => {
+          published.push([path, ttlS]);
+          return { blob_id: sha256("the plan"), path: "copy", size: 8, expires_at: null };
+        },
+      },
+    } as unknown as Orca;
 
-    await toolOf(
+    const result = await toolOf(
       node,
       policyOf("workspace-write", root),
-    )({ method: "send", peer: PEER_URL, text: "review", files: ["plan.md", theirs] });
+    )({ method: "publish", path: "plan.md", ttl_s: 0 });
 
-    expect(published).toEqual([join(root, "plan.md")]);
-    expect(sent[0]?.metadata?.pod?.files).toEqual([
-      { ref: blobRefText({ node: OWN, blob: sha256("the plan") }), name: "plan.md" },
-      { ref: theirs, name: sha256("theirs") },
-    ]);
+    expect(published).toEqual([[join(root, "plan.md"), 0]]);
+    expect(result).toEqual({ ref: blobRefText({ node: OWN, blob: sha256("the plan") }), size: 8, expires_at: null });
   });
 
-  it("sends no files block when none are given, and names the path it could not publish", async () => {
-    const { node, sent } = sendingNode(async () => {
-      throw new Error("ENOENT: no such file");
-    });
-    const send = toolOf(node);
-
-    await send({ method: "send", peer: PEER_URL, text: "hi" });
-    expect(sent[0]?.metadata?.pod).not.toHaveProperty("files");
-
-    await expect(send({ method: "send", peer: PEER_URL, text: "hi", files: ["missing.txt"] })).rejects.toThrow(
-      /cannot hand over missing.txt: ENOENT/,
+  it("needs a path, and a ttl_s that is a whole number of seconds", async () => {
+    const publish = toolOf({} as Orca);
+    await expect(publish({ method: "publish" })).rejects.toThrow(/path must be a non-empty string/);
+    await expect(publish({ method: "publish", path: "x", ttl_s: -1 })).rejects.toThrow(
+      /ttl_s must be a non-negative integer/,
     );
-    expect(sent).toHaveLength(1);
   });
 });
 
@@ -186,5 +161,39 @@ describe("orca_pod fetch", () => {
     await expect(toolOf(fetchingNode("x").node)({ method: "fetch", ref: "not-a-ref", output: "x" })).rejects.toThrow(
       /ref must be <orca node id>\/<sha256>/,
     );
+  });
+});
+
+describe("orca_pod inside a task", () => {
+  /** A gateway listening on loopback, and the tool of a task session that reaches it as `LocalNode`. */
+  async function taskTool(root: string, token?: string) {
+    const harness = createGatewayHarness();
+    const url = await harness.url();
+    const local = new LocalNode(url, token ?? harness.localToken);
+    return { harness, call: toolOver({ kind: "task", local }, policyOf("workspace-write", root)) };
+  }
+
+  it("publishes through this machine's node and fetches back by the name it answered", async () => {
+    const root = tempRoot();
+    writeFileSync(join(root, "result.md"), "handed back");
+    const { harness, call } = await taskTool(root);
+
+    const published = (await call({ method: "publish", path: "result.md" })) as { ref: string; size: number };
+    expect(published.ref).toBe(blobRefText({ node: harness.mesh.self.id, blob: sha256("handed back") }));
+    expect(published.size).toBe(11);
+
+    await call({ method: "fetch", ref: published.ref, output: "again.md" });
+    expect(readFileSync(join(root, "again.md"), "utf8")).toBe("handed back");
+  });
+
+  it("has no method but the file ones, and is refused without the node's token", async () => {
+    const root = tempRoot();
+    writeFileSync(join(root, "x.txt"), "x");
+    const { call } = await taskTool(root);
+    // The tool's schema offers only these two: DSH refuses any other before it runs.
+    await expect(call({ method: "members" })).rejects.toThrow(/"method" must be one of/);
+
+    const { call: stranger } = await taskTool(root, "not-the-token");
+    await expect(stranger({ method: "publish", path: "x.txt" })).rejects.toThrow(/answered 401/);
   });
 });

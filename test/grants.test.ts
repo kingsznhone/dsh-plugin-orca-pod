@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { signGrant, GrantLedger, type GrantExpectation } from "../src/task/grants.ts";
+import { signGrant, GrantLedger } from "../src/task/grants.ts";
 import { parseResume } from "../src/task/meta.ts";
 import { generateNodeIdentity } from "../src/core/identity.ts";
 import type { Grant, PermissionRequest } from "../src/core/wire/grant.ts";
@@ -20,7 +20,7 @@ const pending: PermissionRequest = {
   requested_mode: "workspace-write",
 };
 
-const expected: GrantExpectation = {
+const expected: Parameters<GrantLedger["accept"]>[1] = {
   taskId: "task-1",
   selfOrcaNodeId: SELF,
   workgroupId: wg("wg"),
@@ -45,6 +45,15 @@ function grant(overrides: Partial<Grant> = {}) {
 }
 
 describe("GrantLedger.accept", () => {
+  it("refuses a grant whose signature does not hold: changed after signing, or signed by another node", () => {
+    const ledger = new GrantLedger();
+    // Only the signature covers the grant id: a changed one is caught by nothing else.
+    expect(ledger.accept({ ...grant(), grant_id: "g-other" }, expected)).toBe("grant_invalid");
+    // Another node signing in the origin's name.
+    const { sig: _sig, ...fields } = grant();
+    expect(ledger.accept(signGrant(generateNodeIdentity(), fields), expected)).toBe("grant_invalid");
+  });
+
   it("accepts a grant once: the first use is remembered, a second one is a replay", () => {
     const ledger = new GrantLedger();
     const signed = grant();

@@ -45,7 +45,7 @@ export type PermissionRequest = z.infer<typeof PermissionRequestSchema>;
  * origin node's Ed25519 key: the transport is already authenticated, but a
  * grant is also the durable record of who allowed what.
  */
-export const GrantSchema = z.object({
+const GrantSchema = z.object({
   grant_id: Text,
   workgroup_id: WorkgroupIdSchema,
   /** Orca node whose signature authorizes this grant (the deciding origin). */

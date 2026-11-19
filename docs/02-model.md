@@ -13,7 +13,7 @@ Origin
   → POST target /a2a  message/send          （带继承的权限模式；审批后带 grant）
   → target task store (SQLite): submitted → working
   → origin 轮询 tasks/get
-  → completed（结论文本内联；产物以 `<节点 id>/<sha256>` 命名，按需 `fetch`）
+  → completed（结论文本内联；交回的文件以 `<节点 id>/<sha256>` 写在结论里，按需 `fetch`）
 ```
 
 **控制面（cluster）**

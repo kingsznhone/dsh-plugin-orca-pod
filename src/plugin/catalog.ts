@@ -23,7 +23,7 @@ import { ChangeSignal } from "../core/events.ts";
 import { MAX_MODEL_OFFERS, type ModelOffer } from "../core/wire/model.ts";
 import { OptionalService } from "./services.ts";
 
-export type HostModelCatalog = {
+type HostModelCatalog = {
   models: ModelOffer[];
   defaultModel: ModelSelection | null;
   /** The efforts the default model offers, least to most; the panel picks the node default from them. */
@@ -75,21 +75,14 @@ export class ModelCatalogFeed {
   /** Read the catalog from the host again; a slower, older read never overwrites a newer one. */
   async refresh(): Promise<void> {
     const generation = ++this.generation;
-    const next = await this.discover();
+    // Failures per provider stay local: one broken adapter must not hide the models that other providers report.
+    const models = this.llm === undefined ? [] : await this.discoverOffers(this.llm);
+    const defaultModel = this.defaultSelection();
+    const next = { models, defaultModel, reasoningEfforts: await this.defaultEfforts(defaultModel) };
     if (generation !== this.generation) return;
     this.catalog = next;
     if (next.models.length > 0) this.logger.info(`orca-pod: advertising ${next.models.length} models`);
     this.changes.notify();
-  }
-
-  /**
-   * Read the catalog from the host. Failures per provider stay local: one broken
-   * adapter must not hide the models that other providers report.
-   */
-  private async discover(): Promise<HostModelCatalog> {
-    const models = this.llm === undefined ? [] : await this.discoverOffers(this.llm);
-    const defaultModel = this.defaultSelection();
-    return { models, defaultModel, reasoningEfforts: await this.defaultEfforts(defaultModel) };
   }
 
   private listProviders(llm: LlmRuntime): LlmProviderInfo[] {

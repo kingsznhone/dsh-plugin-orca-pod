@@ -8,14 +8,13 @@
 import { z } from "zod";
 
 import { normalizePeerUrl } from "../core/net.ts";
-import { DEFAULT_PORT } from "../core/constants.ts";
+import { DEFAULT_PORT, EXECUTOR_KINDS } from "../core/constants.ts";
 import { HarnessError } from "@deepseek-ai/dsh-error";
 import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../core/wire/model.ts";
 import { SandboxModeSchema } from "../core/wire/permission.ts";
 import { WorkgroupIdSchema, normalizeEndpoints } from "../core/wire/peer.ts";
 import { errorMessage } from "../core/errors.ts";
 import { isRecord, parseSchema, type SchemaIssue } from "../core/schema.ts";
-import { EXECUTOR_KINDS } from "../executor/kinds.ts";
 import { AcpExecutorConfigSchema } from "../executor/acp/config.ts";
 
 const NonEmpty = z.string().min(1);
@@ -163,7 +162,7 @@ export const PanelPatchSchema = z.object(
 ) satisfies z.ZodType<PanelPatch>;
 
 /** Thrown by `parseSettings`; the plugin schema reports the same issues instead. */
-export class ConfigValidationError extends HarnessError {
+class ConfigValidationError extends HarnessError {
   readonly issues: SchemaIssue[];
 
   constructor(issues: SchemaIssue[]) {
@@ -180,7 +179,7 @@ export class ConfigValidationError extends HarnessError {
  * `undefined` and `null` both mean "unset": the default applies, so a panel
  * patch clears a field by sending `null`. Unknown keys are ignored.
  */
-export function safeParseSettings(input: unknown): { value: Settings } | { issues: SchemaIssue[] } {
+function safeParseSettings(input: unknown): { value: Settings } | { issues: SchemaIssue[] } {
   if (!isRecord(input)) return { issues: [{ path: [], message: "expected an object" }] };
   const values: [FieldKey, unknown][] = [];
   const issues: SchemaIssue[] = [];

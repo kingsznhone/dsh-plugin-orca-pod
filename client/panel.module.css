@@ -190,12 +190,6 @@
   color: var(--dsw-alias-state-warn-primary);
 }
 
-.statTotal {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 13px;
-  font-weight: 400;
-}
-
 /* ---- Members and workspace, side by side when there is room ---- */
 
 .split {
@@ -285,23 +279,6 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
-  overflow-wrap: anywhere;
-}
-
-.kv {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 4px 12px;
-  margin: 0;
-}
-
-.kv dt {
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.kv dd {
-  margin: 0;
-  color: var(--dsw-alias-label-secondary);
   overflow-wrap: anywhere;
 }
 

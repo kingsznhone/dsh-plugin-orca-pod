@@ -10,17 +10,15 @@ import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { z } from "zod";
 
 import type { PeerView, SelfRecord } from "../core/wire/peer.ts";
-import type { ExecutorKind } from "../executor/kinds.ts";
+import type { ExecutorKind } from "../core/constants.ts";
 import type { PanelPatch } from "../node/settings.ts";
 import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
 
-/** One artifact attached to a task: a file its node published (§5.6). */
-export interface PodArtifact {
-  name: string;
+/** A file a task's result names as `<orca node id>/<sha256>` (§5.6), which the panel saves through this node. */
+export interface PodFileRef {
+  /** The node that published it. */
+  node: string;
   blob_id: string;
-  bytes: number;
-  /** The node that published it; null when this node cannot tell which member runs the task. */
-  node: string | null;
 }
 
 /** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
@@ -30,10 +28,8 @@ export type PodPeer<T extends PeerView = PeerView> = T & { busy_from: string | n
 export interface PodApproval {
   /** `node|task_id`: stable across polls. */
   id: string;
-  /** What the panel posts back to approve or deny: the id of the node the task runs on. */
+  /** The node the task runs on: what the panel posts back to approve or deny. */
   peer: string;
-  /** The node the task runs on. */
-  node: string;
   task_id: string;
   tool: string;
   /** Short preview of the requested arguments. */
@@ -43,23 +39,22 @@ export interface PodApproval {
   /** The task's mode now, and the mode it asks to continue with until it ends. */
   current_mode: SandboxMode;
   requested_mode: SandboxMode;
-  /** DSH session that dispatched the task. */
-  agent_id: string;
+  /** DSH session that dispatched the task; null for a send without one. */
+  agent_id: string | null;
 }
 
 /** One row of the task tables: a task this node runs, or one it dispatched. */
 export interface PodTaskRow {
   id: string;
-  /** What details and cancel address: this node's id for local tasks, the target's for dispatched ones (an old log entry keeps the address it recorded). */
+  /** The node the task runs on, which details and cancel address: this node for local tasks, the target for dispatched ones. */
   peer: string;
-  /** The node the task runs on; null for an old log entry that only knew an address. */
-  node: string | null;
   state: TaskState | "unknown";
   /** Origin of a local task, target of a dispatched one, as a display label. */
   who: string;
   who_title: string;
   at: string;
-  artifacts: PodArtifact[];
+  /** The files its result names; a dispatched task's result is not kept here, so it names none. */
+  files: PodFileRef[];
   cancellable: boolean;
 }
 
@@ -68,16 +63,13 @@ export interface PodTaskDetail {
   task: TaskView;
   origin: string;
   dispatch: DispatchEntry | null;
-  artifacts: PodArtifact[];
+  files: PodFileRef[];
 }
 
-/** Workspace directories plus a shallow listing for the UI browser. */
+/** Where this node's workspace and its own state live. */
 export interface WorkspaceView {
   root: string;
-  notes: string;
   state: string;
-  /** Top-level files a later task will see in its appendix (`notes/<name>`). */
-  notes_files: string[];
 }
 
 /** Advanced local controls the panel may edit; null means "not overridden". */
@@ -128,10 +120,9 @@ export interface PodConfigView {
 export interface PodState {
   self: PodPeer<SelfRecord> | null;
   config: PodConfigView;
+  /** Reachable members only: offline records are dropped. */
   members: PodPeer[];
-  mesh: { reachable: number };
   approvals: PodApproval[];
-  approval_count: number;
   recent: PodTaskRow[];
   workspace: WorkspaceView | null;
 }
@@ -140,15 +131,15 @@ const Text = z.string().min(1, "must be a non-empty string");
 
 /** `approve`, `cancel`: one task on one peer. */
 export const PeerTaskBodySchema = z.object({ peer: Text, task_id: Text });
-export type PeerTaskBody = z.infer<typeof PeerTaskBodySchema>;
+type PeerTaskBody = z.infer<typeof PeerTaskBodySchema>;
 
 /** `deny`: the same, and why. A reason that is not text is dropped, not an error. */
 export const DenyBodySchema = PeerTaskBodySchema.extend({ reason: z.string().optional().catch(undefined) });
-export type DenyBody = z.infer<typeof DenyBodySchema>;
+type DenyBody = z.infer<typeof DenyBodySchema>;
 
 /** `connect`: the peer address to join. */
 export const ConnectBodySchema = z.object({ peer: Text });
-export type ConnectBody = z.infer<typeof ConnectBodySchema>;
+type ConnectBody = z.infer<typeof ConnectBodySchema>;
 
 /** What each POST action of the panel takes; `disconnect` and `reset` read no body. */
 export type PodActions = {
@@ -162,7 +153,7 @@ export type PodActions = {
 };
 
 /** `GET /orca-api/tasks`: every task this node knows about, for the "all tasks" view. */
-export type PodTasksResponse = { recent: PodTaskRow[] };
+type PodTasksResponse = { recent: PodTaskRow[] };
 
 /** The GET routes: the query string each reads and the body it answers with. */
 export type PodReads = {
@@ -172,4 +163,3 @@ export type PodReads = {
 };
 
 /** What `approve`, `deny` and `cancel` answer with: the task as its peer reports it now. */
-export type PodTaskResponse = { task: TaskView };

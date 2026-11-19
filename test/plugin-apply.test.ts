@@ -12,26 +12,30 @@ import type { Config } from "../src/plugin/config.ts";
 import { importIdentity } from "../src/core/identity.ts";
 
 const trackers: Tracker[] = [];
+/** The session lookup each captured tracker was given. */
+const resolvers: ConstructorParameters<typeof Tracker>[3][] = [];
 
-// Capture the tracker `apply` composes so the test can observe wake-budget resets.
+// Capture the tracker `apply` composes so the test can observe how it is wired.
 vi.mock("../src/plugin/tracker.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/plugin/tracker.ts")>();
   class CapturingTracker extends original.Tracker {
     constructor(...args: ConstructorParameters<typeof original.Tracker>) {
       super(...args);
       trackers.push(this);
+      resolvers.push(args[3]);
     }
   }
   return { ...original, Tracker: CapturingTracker };
 });
 
 const { apply } = await import("../src/plugin/bundle.ts");
-const { HostPodStores, NODE_KEY, PASSWORD_REF } = await import("../src/plugin/stores.ts");
+const { PodStores, NODE_KEY, PASSWORD_REF } = await import("../src/plugin/stores.ts");
 
 const roots: string[] = [];
 
 afterEach(async () => {
   trackers.length = 0;
+  resolvers.length = 0;
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -42,16 +46,6 @@ interface FakeClaim {
   agent: { id: string };
   message: { source?: { kind?: string } };
   turn: number;
-}
-
-interface FakeCreated {
-  agent: {
-    id: string;
-    status: "idle" | "running";
-    inject(message: unknown): void;
-    followup(message: unknown): void;
-    ctx: { effect(execute: () => Cleanup): unknown };
-  };
 }
 
 interface RegisteredTool {
@@ -110,7 +104,6 @@ function fakeHost(dshHome: string) {
   const routes: WebRoute[] = [];
   const disposers: Cleanup[] = [];
   const claims: Array<(payload: FakeClaim) => void> = [];
-  const created: Array<(payload: FakeCreated) => void> = [];
   const credentialListeners: Array<{ event: string; listener: (subject: string) => void }> = [];
   const skills: string[] = [];
   const configured: Array<{ auto?: boolean }> = [];
@@ -199,8 +192,7 @@ function fakeHost(dshHome: string) {
       return undefined;
     },
     on(event, listener) {
-      if (event === "agent/created") created.push(listener as unknown as (payload: FakeCreated) => void);
-      else if (event === "agent/inbox/claimed") claims.push(listener as unknown as (payload: FakeClaim) => void);
+      if (event === "agent/inbox/claimed") claims.push(listener as unknown as (payload: FakeClaim) => void);
       else credentialListeners.push({ event, listener: listener as unknown as (subject: string) => void });
       return undefined;
     },
@@ -233,7 +225,6 @@ function fakeHost(dshHome: string) {
     routes,
     disposers,
     claims,
-    created,
     skills,
     configured,
     scopes,
@@ -274,7 +265,6 @@ describe("plugin apply", () => {
     expect(host.tools.map((entry) => entry.definition.name)).toEqual(["orca_pod"]);
     expect(host.routes).toHaveLength(1);
     expect(host.claims).toHaveLength(1);
-    expect(host.created).toHaveLength(1);
     expect(host.configured).toEqual([{ auto: false }]);
     // The plugin itself owns only the pod; the panel route and the
     // settings-page policy live in their own inject scopes.
@@ -284,21 +274,18 @@ describe("plugin apply", () => {
     for (const dispose of host.disposers) await dispose();
   });
 
-  it("resumes tracking for the sessions the host already runs once the node is up", async () => {
-    // The workgroup password is stored, so the pod really starts a node.
-    const host = await applied({ settings: { workgroup_id: "wg-resume", port: 0 }, password: "pw" });
-    const agent = { id: "live-session", status: "idle" as const, inject: () => {}, followup: () => {} };
-    host.services.agents.get = (id) => (id === "live-session" ? agent : undefined);
-    const restore = vi.spyOn(trackers[0]!, "restore");
+  it("starts the tracker at once, and finds sessions through the host's registry", async () => {
+    const start = vi.spyOn((await import("../src/plugin/tracker.ts")).Tracker.prototype, "start");
     try {
-      await vi.waitFor(() => expect(restore).toHaveBeenCalled());
-      const [dispatches, resolveAgent] = restore.mock.calls[0]!;
-      // It read the dispatch log of the running node, and resolves sessions through the host's registry.
-      expect(dispatches).toEqual([]);
-      expect(resolveAgent(agent.id as never)).toBe(agent);
-      expect(resolveAgent("other" as never)).toBeUndefined();
-    } finally {
+      const host = await applied();
+      expect(start).toHaveBeenCalledOnce();
+      const agent = { id: "live-session" };
+      host.services.agents.get = (id) => (id === "live-session" ? agent : undefined);
+      expect(resolvers[0]!("live-session" as never)).toBe(agent);
+      expect(resolvers[0]!("other" as never)).toBeUndefined();
       for (const dispose of host.disposers) await dispose();
+    } finally {
+      start.mockRestore();
     }
   });
 
@@ -321,29 +308,6 @@ describe("plugin apply", () => {
 
     claim({ agent, message: { source: { kind: "user" } }, turn: 2 });
     expect(reset).toHaveBeenCalledExactlyOnceWith("agent-1");
-    for (const dispose of host.disposers) await dispose();
-  });
-
-  it("forgets a disposed agent's tracked tasks", async () => {
-    const host = await applied();
-    const forget = vi.spyOn(trackers[0]!, "forget");
-    let disposal: Cleanup | undefined;
-    const agent = {
-      id: "agent-9",
-      status: "idle" as const,
-      inject: () => {},
-      followup: () => {},
-      ctx: {
-        effect: (execute: () => Cleanup) => {
-          disposal = execute();
-        },
-      },
-    };
-
-    host.created[0]?.({ agent });
-    expect(disposal).toBeTypeOf("function");
-    disposal?.();
-    expect(forget).toHaveBeenCalledExactlyOnceWith("agent-9");
     for (const dispose of host.disposers) await dispose();
   });
 
@@ -405,7 +369,7 @@ describe("plugin apply", () => {
 
 describe("pod stores on the DSH credential store", () => {
   const storesOf = (host: ReturnType<typeof fakeHost>) =>
-    new HostPodStores(host.ctx as unknown as ConstructorParameters<typeof HostPodStores>[0]);
+    new PodStores(host.ctx as unknown as ConstructorParameters<typeof PodStores>[0]);
 
   it("keeps the password under one machine-wide reference", async () => {
     const host = fakeHost("/dsh-home");

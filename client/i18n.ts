@@ -34,8 +34,6 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     noPeers: "no peers yet",
     workspace: "Workspace",
     workspaceUnavailable: "workspace unavailable",
-    notes: "notes",
-    empty: "empty",
     updated: "updated ",
     updatedSuffix: " ago",
     ageNow: "now",
@@ -61,7 +59,6 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     colEndpoints: "endpoints",
     colOs: "os",
     ndTitle: "Node details",
-    ndId: "node id",
     ndLastSeen: "last seen",
     ndRuntime: "runtime",
     ndDefaultModel: "default model",
@@ -73,7 +70,7 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     colTask: "task",
     colOrigin: "origin",
     colAge: "age",
-    colArtifacts: "artifacts",
+    colFiles: "files",
     busy: "busy",
     idle: "idle",
     busyOrigin: "from ",
@@ -82,8 +79,8 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     dtDispatchNone: "no dispatch record",
     dtPeer: "peer",
     dtLastError: "error",
-    dtArtifacts: "artifacts",
-    dtArtifactsNone: "no artifacts",
+    dtFiles: "files named in the result",
+    dtFilesNone: "none",
     dtReason: "reason",
     dtMessage: "message",
     dtOrigin: "origin",
@@ -193,8 +190,6 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     noPeers: "还没有 peer",
     workspace: "工作区",
     workspaceUnavailable: "工作区不可用",
-    notes: "笔记",
-    empty: "空",
     updated: "更新于 ",
     updatedSuffix: " 前",
     ageNow: "刚刚",
@@ -220,7 +215,6 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     colEndpoints: "地址",
     colOs: "系统",
     ndTitle: "节点详情",
-    ndId: "节点 ID",
     ndLastSeen: "最近心跳",
     ndRuntime: "运行环境",
     ndDefaultModel: "默认模型",
@@ -232,7 +226,7 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     colTask: "任务",
     colOrigin: "来源",
     colAge: "时间",
-    colArtifacts: "产物",
+    colFiles: "文件",
     busy: "忙碌",
     idle: "空闲",
     busyOrigin: "来自 ",
@@ -241,8 +235,8 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     dtDispatchNone: "无派发记录",
     dtPeer: "对端",
     dtLastError: "错误",
-    dtArtifacts: "产物",
-    dtArtifactsNone: "无产物",
+    dtFiles: "结论里提到的文件",
+    dtFilesNone: "无",
     dtReason: "原因",
     dtMessage: "消息",
     dtOrigin: "来源",
@@ -339,7 +333,7 @@ export function t(key: string, params?: Record<string, string | number>): string
   return dict[key] ?? key;
 }
 /** Re-render on locale switches while mounted; call it in every slot root. */
-export const subscribeLocale = (listener: () => void): (() => void) =>
+const subscribeLocale = (listener: () => void): (() => void) =>
   store.locale === null ? () => {} : store.locale.subscribe(listener);
-export const activeLocale = (): string => store.locale?.getLocale().active ?? "en";
+const activeLocale = (): string => store.locale?.getLocale().active ?? "en";
 export const useLocale = () => React.useSyncExternalStore(subscribeLocale, activeLocale);

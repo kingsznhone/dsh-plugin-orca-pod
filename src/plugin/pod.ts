@@ -39,7 +39,7 @@ import type { PodStores } from "./stores.ts";
 export type PodRun = { readonly orca: Orca; readonly port: number };
 
 /** What the pod is doing, as one value. */
-export type PodStatus =
+type PodStatus =
   /** No workgroup or no stored password: the panel shows the first-run wizard. */
   | { kind: "unconfigured" }
   /** A (re)start is queued, or running up to the moment the node listens. */
@@ -56,7 +56,7 @@ export type PodStatus =
  *
  * The pod lives as long as the plugin fiber; a node lives for one run and is
  * replaced as a whole on every restart. Consumers read the current run through
- * `run` (display, background work) or `settled()` and `requireRun()` (actions).
+ * `run` (display, background work) or `orca()` (actions).
  */
 export class Pod {
   private readonly queue = new SerialQueue();
@@ -79,6 +79,8 @@ export class Pod {
     private readonly catalog: ModelCatalogFeed,
     /** The data directory of this machine's node (§3.9). */
     readonly dataRoot: string,
+    /** The DSH profile this plugin was loaded from; the node runs tasks in it (D46). */
+    private readonly profile?: string,
   ) {
     this.peers = new RememberedPeers(dataRoot, logger);
     this.file = new SettingsFile(dataRoot);
@@ -100,14 +102,13 @@ export class Pod {
     return status.kind === "running" ? status.run : null;
   }
 
-  /** Settles when no (re)start is queued or running, the rejoin of the peers included; it never rejects. */
-  settled(): Promise<void> {
-    return this.booting;
-  }
-
-  /** The current run, or an error that names the status. */
-  requireRun(): PodRun {
-    return Pod.runOf(this.status);
+  /**
+   * The running node, once no (re)start is queued or running (the rejoin of the
+   * peers included); an error that names the status when there is none.
+   */
+  async orca(): Promise<Orca> {
+    await this.booting;
+    return Pod.runOf(this.status).orca;
   }
 
   /** The settings as the last start read them; they never hold the password. */
@@ -242,7 +243,7 @@ export class Pod {
 
   /**
    * Queue a (re)start. `status` reads `starting` from this call on, so nobody is
-   * handed the node that is about to go, and `settled()` waits for this restart.
+   * handed the node that is about to go, and `orca()` waits for this restart.
    */
   private restart(): Promise<void> {
     this.restarting += 1;
@@ -271,8 +272,7 @@ export class Pod {
       } catch (error) {
         return this.fail(error);
       }
-      // An empty password counts as none.
-      const password = (await this.readPassword()) || undefined;
+      const password = await this.readPassword();
       this.password = password;
       // A node needs both a workgroup and a password. Empty values mean "not
       // configured yet" and keep the node idle instead of opening a passwordless
@@ -300,7 +300,7 @@ export class Pod {
 
   /** The restart ended in `failed`; nothing is running. */
   private fail(error: unknown): null {
-    const failure = Pod.toError(error);
+    const failure = error instanceof Error ? error : new Error(String(error));
     this.outcome = { kind: "failed", error: failure };
     this.logger.error(`orca-pod: orca node failed to start: ${errorMessage(failure)}`);
     return null;
@@ -318,7 +318,7 @@ export class Pod {
 
   /** Whether the credential store now holds a password or a node key other than the ones the current run started with. */
   private async credentialsDiffer(): Promise<boolean> {
-    const password = (await this.readPassword()) || undefined;
+    const password = await this.readPassword();
     if (password !== this.password) return true;
     const { outcome } = this;
     if (outcome.kind !== "running") return false;
@@ -346,7 +346,7 @@ export class Pod {
     );
     // One scrypt derivation per start; the key stays in memory (§7.1).
     const key = deriveWorkgroupKey(config.workgroup_id, password);
-    const node = new Orca(config, identity, key, { persistent: true, logger: this.logger });
+    const node = new Orca(config, identity, key, { logger: this.logger, profile: this.profile });
 
     let info: { url: string; port: number };
     try {
@@ -357,7 +357,8 @@ export class Pod {
       } catch {
         // The node never finished starting; nothing useful to report here.
       }
-      throw Pod.isAddressInUse(error)
+      // Another process holding the port is another DSH running this machine's node (§3.9).
+      throw (error as { code?: unknown } | null)?.code === "EADDRINUSE"
         ? new Error(
             `an orca node is already running on this machine, in another DSH process (port ${config.port} is in use)`,
           )
@@ -426,15 +427,6 @@ export class Pod {
   }
 
   /** Anything thrown, as an `Error`. */
-  private static toError(error: unknown): Error {
-    return error instanceof Error ? error : new Error(String(error));
-  }
-
-  /** Whether a failed bind is another process holding the port. */
-  private static isAddressInUse(error: unknown): boolean {
-    return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "EADDRINUSE";
-  }
-
   /** Apply settings to a raw settings object: a value sets the key, `null` removes it; other keys stay. */
   private static applyPanelFields(raw: RawSettings, fields: ConfigFields): RawSettings {
     const next: Record<string, unknown> = { ...raw };

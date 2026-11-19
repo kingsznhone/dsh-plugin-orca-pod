@@ -1,7 +1,7 @@
-import { EventBus } from "../../src/core/events.ts";
 import { generateNodeIdentity } from "../../src/core/identity.ts";
 import { DEFAULT_TASK_TIMEOUT_S } from "../../src/core/constants.ts";
-import { DiskBlobRegistry, MemoryFileBlobStore } from "../../src/core/blobs.ts";
+import { FileBlobRegistry } from "../../src/core/blobs.ts";
+import { openDb, tempDir } from "../fixtures/runner.ts";
 import type { OrcaNodeId, PeerView } from "../../src/core/wire/peer.ts";
 import { MeshContext } from "../../src/mesh/context.ts";
 import { Mesh } from "../../src/mesh/mesh.ts";
@@ -10,8 +10,6 @@ import { HttpPeerClient } from "../../src/mesh/peer-client.ts";
 import { EndpointScreen } from "../../src/mesh/screening.ts";
 import { resolveClock, type MeshTimings } from "../../src/mesh/timings.ts";
 import { DispatchLog } from "../../src/task/dispatch-log.ts";
-import { MemoryDispatchStore } from "../../src/task/dispatch-store.ts";
-import type { DispatchEvent } from "../../src/task/wire.ts";
 import { wg } from "../fixtures/ids.ts";
 
 /**
@@ -25,18 +23,18 @@ export function testMesh(timings: Partial<MeshTimings> = {}) {
   const workgroup = wg("mesh-test");
   const key = Buffer.alloc(32, 7);
   const clock = resolveClock({ monotonicMs: () => now, wallIso: () => new Date(now).toISOString() });
+  const db = openDb();
   const ctx = new MeshContext(
     identity,
     workgroup,
-    key,
     new HttpPeerClient(identity, key, workgroup, {
       fetch: async () => {
         throw new Error("no outbound calls in a table test");
       },
       timeoutMs: 100,
     }),
-    new DispatchLog(new MemoryDispatchStore(), new EventBus<DispatchEvent>()),
-    new DiskBlobRegistry(new MemoryFileBlobStore()),
+    new DispatchLog(db, { warn() {} }),
+    new FileBlobRegistry(db, tempDir("orca-blobs-")),
     new EndpointScreen({}),
     clock,
     { warn() {} },

@@ -5,7 +5,8 @@ import { ApprovalBroker } from "../src/plugin/broker.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
 import type { PermissionRequest } from "../src/core/wire/grant.ts";
 import type { TaskView } from "../src/task/wire.ts";
-import type { Agent } from "@deepseek-ai/dsh-agent";
+import { DispatchLog } from "../src/task/dispatch-log.ts";
+import { openDb } from "./fixtures/runner.ts";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { fakeNodeId, labelId } from "./fixtures/ids.ts";
 import { catalogFeed, idlePod, podRunning, logger } from "./fixtures/pod.ts";
@@ -61,14 +62,15 @@ function fakeNode(): {
   approved: TaskView[];
   denied: Array<{ view: TaskView; reason?: string }>;
   failNext: boolean;
+  dispatches: DispatchLog;
 } {
   const node = {
     approved: [] as TaskView[],
+    // The tracker's work: what this node dispatched and has not seen end.
+    dispatches: new DispatchLog(openDb(), { warn() {} }),
     denied: [] as Array<{ view: TaskView; reason?: string }>,
     failNext: false,
-    // What the panel model reads to label the nodes in an approval.
     mesh: {
-      list: () => [] as unknown[],
       // The broker names the node by what the panel sends back; this one node answers to every reference.
       get: () => row,
       resolve: () => row,
@@ -104,13 +106,7 @@ describe("approval broker", () => {
     const broker = new ApprovalBroker(idlePod());
     park(broker);
     const first = broker.list()[0]!;
-    expect(first).toMatchObject({
-      node: PEER,
-      task_id: TASK,
-      request_id: "req-1",
-      agent_id: "session-1",
-      tool: "write_file",
-    });
+    expect(first).toEqual({ node: PEER, task_id: TASK, request: REQUEST, agent_id: "session-1" });
     expect(first.request).toBe(REQUEST);
 
     park(broker);
@@ -118,7 +114,7 @@ describe("approval broker", () => {
 
     park(broker, { ...REQUEST, request_id: "req-2" });
     expect(broker.list()).toHaveLength(1);
-    expect(broker.list()[0]!.id).not.toBe(first.id);
+    expect(broker.list()[0]!.request.request_id).toBe("req-2");
   });
 
   it("approves the parked request on the remote task and withdraws the prompt", async () => {
@@ -182,22 +178,9 @@ describe("approval broker", () => {
     const panel = new PanelModel(pod, broker, catalogFeed());
 
     park(broker);
-    expect(panel.approvals()).toEqual([
-      {
-        id: `${PEER}|${TASK}`,
-        peer: PEER,
-        node: PEER,
-        task_id: TASK,
-        tool: "write_file",
-        requested: '{"path":"report.md"}',
-        from: "NODE02",
-        current_mode: "read-only",
-        requested_mode: "workspace-write",
-        agent_id: "session-1",
-      },
-    ]);
+    expect(broker.list()).toHaveLength(1);
     expect((await panel.approve(PEER, TASK)).status.state).toBe("working");
-    expect(panel.approvals()).toEqual([]);
+    expect(broker.list()).toEqual([]);
 
     park(broker);
     await panel.deny(PEER, TASK, "no");
@@ -208,17 +191,16 @@ describe("approval broker", () => {
     const node = fakeNode();
     const pod = podRunning(node);
     const broker = new ApprovalBroker(pod);
-    const tracker = new Tracker(pod, broker, logger, { intervalMs: 60_000 });
+    const tracker = new Tracker(pod, broker, logger, () => undefined);
     const panel = new PanelModel(pod, broker, catalogFeed());
     try {
-      const agent = { id: SessionId("session-1"), status: "idle", inject() {}, followup() {} } as unknown as Agent;
-      tracker.track(agent, PEER, TASK);
+      node.dispatches.recordSend(PEER, suspended(REQUEST), SessionId("session-1"));
+      tracker.start();
       await waitFor(() => broker.list().length === 1);
-      expect(panel.approvals()).toHaveLength(1);
 
       await panel.approve(PEER, TASK);
-      // The next poll is a minute away: until then nothing but the broker may speak for this task.
-      expect(panel.approvals()).toEqual([]);
+      // The next poll is a second away: until then nothing but the broker may speak for this task.
+      expect(broker.list()).toEqual([]);
     } finally {
       tracker.stop();
     }

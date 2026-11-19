@@ -109,7 +109,6 @@ async function task(args: Args): Promise<void> {
       const view = await target.getTask(submitted.id);
       if (isTerminal(view.status.state)) {
         console.log(`final=${view.status.state} message=${JSON.stringify(view.status.message)}`);
-        console.log(`artifacts=${JSON.stringify(view.artifacts ?? [])}`);
         return;
       }
       await sleep(100);

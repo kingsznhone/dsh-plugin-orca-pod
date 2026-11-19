@@ -68,7 +68,7 @@ export async function downloadBlob(node: string, blob: string, name: string): Pr
  * an action refreshes the snapshot for everyone, and an unchanged payload
  * leaves it (and every component) untouched.
  */
-export function createStore() {
+function createStore() {
   let snap: Snapshot = { state: null, error: null, actionError: null, busy: false, panelOpen: false, docked: [] };
   let payload = "";
   let polledAt = 0;
@@ -145,7 +145,7 @@ export function createStore() {
 export const store = createStore();
 export const useStore = () => React.useSyncExternalStore(store.subscribe, store.get);
 /** What `useRead` holds: the answer once it arrived, or why it did not. */
-export type ReadResult<T> = { data: T | null; error: string | null };
+type ReadResult<T> = { data: T | null; error: string | null };
 
 /** Read one panel route on mount, and again when the query or `version` changes. */
 export function useRead<K extends keyof PodReads>(

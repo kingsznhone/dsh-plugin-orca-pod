@@ -19,9 +19,9 @@ const KEY_DERIVATION_N = 1 << 15;
 const KEY_DERIVATION_R = 8;
 const KEY_DERIVATION_P = 1;
 const KEY_DERIVATION_MAX_MEM = 64 * 1024 * 1024;
-export const DEFAULT_CLOCK_SKEW_MS = 60_000;
-const DEFAULT_NONCE_TTL_MS = 5 * 60_000;
-const DEFAULT_NONCE_CAPACITY = 10_000;
+const CLOCK_SKEW_MS = 60_000;
+const NONCE_TTL_MS = 5 * 60_000;
+const NONCE_CAPACITY = 10_000;
 
 /**
  * scrypt(password, salt="orca-pod\x00<workgroup_id>") -> 32 bytes.
@@ -91,12 +91,6 @@ function hmacOf(key: Buffer, input: string): string {
   return createHmac("sha256", key).update(input).digest("base64url");
 }
 
-function sameText(left: string, right: string): boolean {
-  const a = Buffer.from(left, "base64url");
-  const b = Buffer.from(right, "base64url");
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
 type AuthHeaderOptions = {
   identity: NodeIdentity;
   /** The workgroup key: what the `proof` is made with. */
@@ -104,10 +98,11 @@ type AuthHeaderOptions = {
   workgroupId: WorkgroupId;
   method: string;
   url: string;
-  targetOrcaNodeId?: string;
+  /** Empty for a first contact, which cannot know the receiver's id yet. */
+  targetOrcaNodeId: string;
   body?: Uint8Array | string;
-  ts?: number;
-  nonce?: string;
+  /** The caller keeps it to check the reply against (`newNonce`). */
+  nonce: string;
 };
 
 /** A fresh request nonce. The caller keeps it to check the reply against. */
@@ -116,9 +111,9 @@ export function newNonce(): string {
 }
 
 export function buildAuthHeader(options: AuthHeaderOptions): string {
-  const ts = options.ts ?? Date.now();
-  const nonce = options.nonce ?? newNonce();
-  const target = options.targetOrcaNodeId ?? "";
+  const ts = Date.now();
+  const { nonce } = options;
+  const target = options.targetOrcaNodeId;
   const input = signatureInput({
     method: options.method,
     url: options.url,
@@ -171,27 +166,17 @@ export function parseAuthHeader(header: string | undefined): ParsedAuthHeader | 
 /** Bounded set of recently seen nonces. remember() returns false on replay. */
 export class NonceCache {
   private readonly seen = new Map<string, number>();
-  readonly ttlMs: number;
-  readonly capacity: number;
 
-  constructor(ttlMs: number = DEFAULT_NONCE_TTL_MS, capacity: number = DEFAULT_NONCE_CAPACITY) {
-    this.ttlMs = ttlMs;
-    this.capacity = capacity;
-  }
-
-  remember(key: string, now: number = Date.now()): boolean {
+  remember(key: string): boolean {
+    const now = Date.now();
     this.prune(now);
     if (this.seen.has(key)) return false;
-    if (this.seen.size >= this.capacity) {
+    if (this.seen.size >= NONCE_CAPACITY) {
       const oldest = this.seen.keys().next();
       if (!oldest.done) this.seen.delete(oldest.value);
     }
-    this.seen.set(key, now + this.ttlMs);
+    this.seen.set(key, now + NONCE_TTL_MS);
     return true;
-  }
-
-  get size(): number {
-    return this.seen.size;
   }
 
   private prune(now: number): void {
@@ -202,7 +187,7 @@ export class NonceCache {
   }
 }
 
-export type VerifyAuthOptions = {
+type VerifyAuthOptions = {
   method: string;
   url: string;
   /** This node's id; a request addressed to another node is rejected. */
@@ -218,15 +203,10 @@ export type VerifyAuthOptions = {
   body?: Uint8Array | string;
   header: string | undefined;
   nonceCache: NonceCache;
-  now?: number;
-  skewMs?: number;
 };
 
-export type VerifiedAuth = {
-  orcaNodeId: OrcaNodeId;
-  ts: number;
-  nonce: string;
-};
+/** Who sent a request whose proofs held. */
+export type VerifiedAuth = { orcaNodeId: OrcaNodeId };
 
 export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (!options.header) throw new PodError("missing_auth", "missing Authorization header");
@@ -238,9 +218,7 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
   if (!isWorkgroupId(parsed.workgroupId)) {
     throw new PodError("malformed_auth", "wg in the Authorization header is not a workgroup id");
   }
-  const now = options.now ?? Date.now();
-  const skewMs = options.skewMs ?? DEFAULT_CLOCK_SKEW_MS;
-  if (Math.abs(now - parsed.ts) > skewMs) {
+  if (Math.abs(Date.now() - parsed.ts) > CLOCK_SKEW_MS) {
     throw new PodError("clock_skew", "timestamp outside the allowed skew window");
   }
   if (parsed.ts < options.notBefore) {
@@ -269,13 +247,15 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
     throw new PodError("bad_signature", "signature does not match");
   }
   // After the signature, so only a node that exists can make a caller learn the workgroup was wrong.
-  if (!sameText(hmacOf(options.key, input), parsed.proof)) {
+  const expected = Buffer.from(hmacOf(options.key, input), "base64url");
+  const proof = Buffer.from(parsed.proof, "base64url");
+  if (expected.length !== proof.length || !timingSafeEqual(expected, proof)) {
     throw new PodError("bad_proof", "workgroup proof does not verify");
   }
-  if (!options.nonceCache.remember(`${parsed.orcaNodeId}:${parsed.nonce}`, now)) {
+  if (!options.nonceCache.remember(`${parsed.orcaNodeId}:${parsed.nonce}`)) {
     throw new PodError("nonce_replay", "nonce already used");
   }
-  return { orcaNodeId: parsed.orcaNodeId, ts: parsed.ts, nonce: parsed.nonce };
+  return { orcaNodeId: parsed.orcaNodeId };
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +266,8 @@ export function verifyAuth(options: VerifyAuthOptions): VerifiedAuth {
 // then checked against the name the file was published under.
 // ---------------------------------------------------------------------------
 
-const REPLY_HEADER = "pod-reply";
+/** The name of the reply header, lower case as Fastify and `fetch` both see it. */
+export const REPLY_HEADER = "pod-reply";
 
 type ReplyFields = { nonce: string; status: number; subject: string };
 
@@ -298,9 +279,6 @@ function replyInput({ nonce, status, subject }: ReplyFields): string {
 export function buildReplyHeader(identity: NodeIdentity, fields: ReplyFields): string {
   return `id=${identity.orcaNodeId}; sig=${signWithIdentity(identity, replyInput(fields))}`;
 }
-
-/** The name of the reply header, lower case as Fastify and `fetch` both see it. */
-export const REPLY_HEADER_NAME = REPLY_HEADER;
 
 /**
  * The node that signed a reply, or null when the header is absent, malformed or

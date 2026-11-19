@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createMesh, type Mesh } from "./support/harness.ts";
@@ -85,27 +84,6 @@ describe("A2A task surface", () => {
     await origin.mesh.resolve(targetUrl).cancelTask(holder.id);
     await origin.mesh.resolve(targetUrl).approve(suspended);
     expect(textOf(await waitForState(origin, targetUrl, parked.id, "completed"))).toBe("done");
-  });
-
-  it("stores echo artifacts as content-addressed blobs", async () => {
-    const { origin, targetUrl } = await twoNodes();
-    const content = "hello pod\n";
-    const submitted = await origin.mesh.resolve(targetUrl).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "artifact" }] },
-      metadata: {
-        echo: {
-          final: { state: "completed", text: "with artifact" },
-          artifacts: [{ name: "echo.txt", content }],
-        },
-      },
-    });
-
-    const done = await waitForState(origin, targetUrl, submitted.id, "completed");
-    const artifact = done.artifacts?.[0];
-    expect(artifact).toBeDefined();
-    expect(artifact?.artifactId).toBe(createHash("sha256").update(content).digest("hex"));
-    expect(artifact?.bytes).toBe(Buffer.byteLength(content));
-    expect(artifact?.name).toBe("echo.txt");
   });
 
   it("rejects an invalid echo script before creating a task", async () => {

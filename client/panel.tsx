@@ -68,15 +68,12 @@ function Stat({ label, tone, children }: { label: string; tone?: "warning"; chil
 
 /** The four numbers that say how this node is doing. */
 function Stats({ state }: { state: PodState }) {
-  const { self, members, mesh, approvals, recent } = state;
+  const { self, members, approvals, recent } = state;
   // The host marks the tasks still holding a slot: they are the ones that can be cancelled.
   const active = recent.filter((row) => row.cancellable).length;
   return (
     <div className={css.stats}>
-      <Stat label={t("statPeers")}>
-        {mesh.reachable}
-        <span className={css.statTotal}>{`/ ${members.length}`}</span>
-      </Stat>
+      <Stat label={t("statPeers")}>{members.length}</Stat>
       <Stat label={t("statApprovals")} tone={approvals.length > 0 ? "warning" : undefined}>
         {approvals.length}
       </Stat>
@@ -98,7 +95,7 @@ function Stats({ state }: { state: PodState }) {
   );
 }
 
-export function StatusPage({
+function StatusPage({
   snap,
   state,
   frame,
@@ -110,12 +107,12 @@ export function StatusPage({
   onOpenSettings: () => void;
 }) {
   const { busy } = snap;
-  const { self, config, members, mesh, approvals, recent, workspace } = state;
+  const { self, config, members, approvals, recent, workspace } = state;
   const [task, setTask] = React.useState<PodTaskRow | null>(null);
   const [node, setNode] = React.useState<PodPeer | null>(null);
   const [allOpen, setAllOpen] = React.useState(false);
   // The header reflects the live mesh, not the remembered peer list.
-  const joined = mesh.reachable > 0;
+  const joined = members.length > 0;
   const error = snap.error ?? snap.actionError ?? config.error;
   const cancel = (row: PodTaskRow) => store.act("cancel", { peer: row.peer, task_id: row.id });
   const body = (
@@ -168,7 +165,7 @@ export function StatusPage({
           </Button>
         }
       >
-        <TaskTable rows={recent} showArtifacts={false} busy={busy} onOpen={setTask} onCancel={cancel} />
+        <TaskTable rows={recent} showFiles={false} busy={busy} onOpen={setTask} onCancel={cancel} />
       </Section>
       <div className={css.split}>
         <Section title={t("members")} count={members.length}>
@@ -256,8 +253,8 @@ export function Panel({ overlay = false }: { overlay?: boolean }) {
 export function SidebarAction({ wide }: { wide?: boolean }) {
   useLocale();
   const { state, panelOpen } = useStore();
-  const pending = state === null ? 0 : state.approval_count;
-  const reachable = state === null ? 0 : state.mesh.reachable;
+  const pending = state === null ? 0 : state.approvals.length;
+  const reachable = state === null ? 0 : state.members.length;
   const title = pending > 0 ? `${t("nav")} · ${pending} ${t("pendingApprovals")}` : t("nav");
   return (
     <button

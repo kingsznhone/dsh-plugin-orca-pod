@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  decodeBase58,
-  encodeBase58,
   exportIdentity,
   generateNodeIdentity,
   importIdentity,
@@ -10,34 +8,14 @@ import {
   verifyWithNodeId,
 } from "../src/core/identity.ts";
 
-describe("base58", () => {
-  it("encodes the way the Bitcoin alphabet does", () => {
-    expect(encodeBase58(Buffer.from("Hello World!"))).toBe("2NEpo7TZRRrLZSi2U");
-    expect(encodeBase58(Buffer.alloc(0))).toBe("");
-  });
-
-  it("keeps leading zero bytes as leading ones", () => {
-    expect(encodeBase58(Buffer.from([0, 0, 1]))).toBe("112");
-    expect(decodeBase58("112")).toEqual(Buffer.from([0, 0, 1]));
-  });
-
-  it("round-trips random bytes", () => {
-    for (let length = 0; length < 40; length += 1) {
-      const bytes = Buffer.from(Array.from({ length }, () => Math.floor(Math.random() * 256)));
-      expect(decodeBase58(encodeBase58(bytes))).toEqual(bytes);
-    }
-  });
-
-  it("refuses a character outside the alphabet", () => {
-    expect(() => decodeBase58("0OIl")).toThrow(/not a base58 character/);
-  });
-});
+/** A seed of 32 bytes, two of them leading zeros, in base58 (Bitcoin alphabet): what an identity is stored as. */
+const SEED_WITH_LEADING_ZEROS = "11CiMQsCUhqABwwLyCFeX2iPnBZX3s28dUUCBrirhs";
 
 describe("node identity", () => {
   it("is exported as the base58 of its 32-byte seed and imported back as the same node", () => {
     const identity = generateNodeIdentity();
     const text = exportIdentity(identity);
-    expect(decodeBase58(text)).toHaveLength(32);
+    expect(text).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
 
     const again = importIdentity(text);
     expect(again.orcaNodeId).toBe(identity.orcaNodeId);
@@ -47,8 +25,13 @@ describe("node identity", () => {
     expect(verifyWithNodeId(identity.orcaNodeId, "hullo", signature)).toBe(false);
   });
 
+  it("keeps leading zero bytes of the seed as leading ones", () => {
+    expect(exportIdentity(importIdentity(SEED_WITH_LEADING_ZEROS))).toBe(SEED_WITH_LEADING_ZEROS);
+  });
+
   it("refuses text that is not an Ed25519 seed", () => {
-    expect(() => importIdentity("not*base58")).toThrow();
-    expect(() => importIdentity(encodeBase58(Buffer.alloc(31, 7)))).toThrow(/32 bytes/);
+    expect(() => importIdentity("0OIl")).toThrow(/not a base58 character/);
+    // 31 bytes of 7.
+    expect(() => importIdentity("7DUeBUtEcb7nujVZRJmeBju3X1mo6PpnWNtJ9EBhdY")).toThrow(/32 bytes/);
   });
 });

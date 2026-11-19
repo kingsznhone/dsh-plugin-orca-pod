@@ -13,15 +13,12 @@ import { isIPv4, isIPv6 } from "node:net";
  * - Link-local (cloud metadata), multicast and unspecified addresses are never
  *   accepted. Explicit endpoints (config, CLI, a direct join) are not filtered.
  */
-export type DialPolicy = {
+type DialPolicy = {
   /** Public addresses are off by default; private ranges are the normal case. */
   allowPublicPeers?: boolean;
   /** Set false to reject loopback targets; allowed by default for same-host meshes. */
   allowLoopbackPeers?: boolean;
 };
-
-/** Policy for endpoints a node declares for itself: only the always-forbidden ranges are refused. */
-export const EXPLICIT_DIAL_POLICY: DialPolicy = { allowPublicPeers: true, allowLoopbackPeers: true };
 
 type AddressClass = "loopback" | "link-local" | "private" | "public" | "reserved";
 
@@ -68,7 +65,7 @@ function addressAllowed(address: string, policy: DialPolicy): boolean {
 }
 
 /** What screening an endpoint concluded: it may be dialed, must not be, or its name does not resolve from here. */
-export type ScreenVerdict = "allowed" | "refused" | "unresolved";
+type ScreenVerdict = "allowed" | "refused" | "unresolved";
 
 /**
  * Screen one endpoint: `refused` when the URL is unusable or a literal or
@@ -76,7 +73,7 @@ export type ScreenVerdict = "allowed" | "refused" | "unresolved";
  * from here right now, else `allowed`. A caller that only needs to keep known
  * bad addresses out (a join) can accept `unresolved`.
  */
-export async function screenEndpoint(endpoint: string, policy: DialPolicy = {}): Promise<ScreenVerdict> {
+async function screenEndpoint(endpoint: string, policy: DialPolicy): Promise<ScreenVerdict> {
   let url: URL;
   try {
     url = new URL(endpoint);
@@ -115,17 +112,14 @@ export class EndpointScreen {
   private readonly candidates = new Map<string, Cached<boolean>>();
   private readonly declarations = new Map<string, Cached<string[]>>();
 
-  constructor(
-    private readonly policy: DialPolicy,
-    private readonly clock: () => number = Date.now,
-  ) {}
+  constructor(private readonly policy: DialPolicy) {}
 
   /** Whether a candidate endpoint may be dialed. */
   async candidate(endpoint: string): Promise<boolean> {
     const cached = this.candidates.get(endpoint);
-    if (cached !== undefined && cached.until > this.clock()) return cached.value;
+    if (cached !== undefined && cached.until > Date.now()) return cached.value;
     const value = (await screenEndpoint(endpoint, this.policy)) === "allowed";
-    this.candidates.set(endpoint, { value, until: this.clock() + SCREENING_TTL_MS });
+    this.candidates.set(endpoint, { value, until: Date.now() + SCREENING_TTL_MS });
     return value;
   }
 
@@ -143,11 +137,12 @@ export class EndpointScreen {
   async declared(declared: readonly string[], overLoopback: boolean, fresh: boolean): Promise<string[]> {
     const key = `${overLoopback}|${declared.join(",")}`;
     const cached = this.declarations.get(key);
-    if (!fresh && cached !== undefined && cached.until > this.clock()) return cached.value;
-    const policy = { ...EXPLICIT_DIAL_POLICY, allowLoopbackPeers: overLoopback };
+    if (!fresh && cached !== undefined && cached.until > Date.now()) return cached.value;
+    // Only the always-forbidden ranges are refused, and loopback unless the request came over it.
+    const policy = { allowPublicPeers: true, allowLoopbackPeers: overLoopback };
     const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, policy)));
     const allowed = declared.filter((_, index) => verdicts[index] !== "refused");
-    this.declarations.set(key, { value: allowed, until: this.clock() + SCREENING_TTL_MS });
+    this.declarations.set(key, { value: allowed, until: Date.now() + SCREENING_TTL_MS });
     return allowed;
   }
 }

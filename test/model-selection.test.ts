@@ -10,9 +10,10 @@ import { ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 import { ModelOffersSchema, ModelSelectionSchema } from "../src/core/wire/model.ts";
 import { parseSchema } from "../src/core/schema.ts";
 import type { Settings } from "../src/node/settings.ts";
-import { ModelCatalogFeed, type HostModelCatalog } from "../src/plugin/catalog.ts";
+import { ModelCatalogFeed } from "../src/plugin/catalog.ts";
 import { Pod } from "../src/plugin/pod.ts";
-import { MemoryPodStores } from "../src/plugin/stores.ts";
+import { PASSWORD_REF } from "../src/plugin/stores.ts";
+import { MemoryCredentials, podStores } from "./fixtures/credentials.ts";
 import { Orca } from "../src/node/orca.ts";
 import { wg } from "./fixtures/ids.ts";
 import { peersOf } from "./support/node.ts";
@@ -35,7 +36,7 @@ async function startNode(options: Partial<Settings>): Promise<Orca> {
     port: 0,
     ...options,
   });
-  const node = new Orca(...config, { persistent: true });
+  const node = new Orca(...config);
   await node.start();
   LIVE.push(node);
   return node;
@@ -203,7 +204,7 @@ describe("model catalog", () => {
     } as unknown as Pick<Context, "inject">;
     const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
     const feed = new ModelCatalogFeed(ctx, logger);
-    const told: HostModelCatalog[] = [];
+    const told: ReturnType<ModelCatalogFeed["current"]>[] = [];
     feed.changes.subscribe(() => told.push(feed.current()));
     await vi.waitFor(() => expect(feed.current().models).toHaveLength(2));
     // Whoever follows the feed is told when a catalog arrived, and reads it from the feed.
@@ -234,7 +235,9 @@ describe("model catalog", () => {
       },
     } as unknown as Pick<Context, "inject">;
     const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
-    const stores = new MemoryPodStores({ password: "pw" });
+    const credentials = new MemoryCredentials();
+    credentials.secrets.set(PASSWORD_REF, "pw");
+    const stores = podStores(credentials);
     await mkdir(root, { recursive: true });
     await writeFile(join(root, "settings.json"), JSON.stringify({ workgroup_id: wg("wg-catalog"), port: 0 }));
     const feed = new ModelCatalogFeed(ctx, logger);
@@ -242,13 +245,12 @@ describe("model catalog", () => {
     const pod = new Pod(logger, stores, feed, root);
     pod.start();
     try {
-      await pod.settled();
-      const first = pod.requireRun().orca;
+      const first = await pod.orca();
       expect(first.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash"]);
 
       // An in-place restart makes a new node, which gets the catalog as well.
       await pod.reconfigure({ workgroup_password: "rotated" });
-      const second = pod.requireRun().orca;
+      const second = await pod.orca();
       expect(second).not.toBe(first);
       expect(second.models.offers().map((offer) => offer.id)).toEqual(["deepseek-flash"]);
 

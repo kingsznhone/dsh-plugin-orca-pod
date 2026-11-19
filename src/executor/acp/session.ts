@@ -26,7 +26,7 @@ import { errorMessage, isMissingFile } from "../../core/errors.ts";
 import type { NodeLogger } from "../../core/events.ts";
 import { describeModelRequest } from "../../core/wire/model.ts";
 import type { AcpMcpServer } from "./config.ts";
-import { AcpConnection, HANDSHAKE_TIMEOUT_MS, type AcpSpawnSpec, type SessionRoute } from "./connection.ts";
+import { AcpConnection, HANDSHAKE_TIMEOUT_MS } from "./connection.ts";
 
 /** JSON-RPC code ACP agents use for a session they do not know. */
 const RESOURCE_NOT_FOUND: ErrorCode = -32002;
@@ -45,7 +45,8 @@ type SessionBindings = z.infer<typeof SessionBindingsSchema>;
  */
 export class AcpSession {
   constructor(
-    private readonly connection: AcpConnection,
+    /** The pool's one connection; every session of the pool shares it and its child. */
+    readonly connection: AcpConnection,
     readonly id: string,
     private options: SessionConfigOption[],
   ) {}
@@ -77,25 +78,6 @@ export class AcpSession {
     return this.connection.request("session/prompt", { sessionId: this.id, prompt: [{ type: "text", text }] });
   }
 
-  /** Route the child's messages for this session to `route` until the returned function is called. */
-  attach(route: SessionRoute): () => void {
-    return this.connection.attach(this.id, route);
-  }
-
-  isAttached(route: SessionRoute): boolean {
-    return this.connection.isAttached(this.id, route);
-  }
-
-  /** Tell the child to stop the current prompt; it answers the prompt with `cancelled`. */
-  cancel(): void {
-    this.connection.cancel(this.id);
-  }
-
-  /** Close the connection and its child, which every session of the pool shares. */
-  forceClose(): Promise<void> {
-    return this.connection.close();
-  }
-
   /** Set the option the agent files under `category`; the agent answers with its options as they are now. */
   private async setOption(category: SessionConfigOptionCategory, value: string): Promise<void> {
     const option = this.options.find((candidate) => candidate.category === category);
@@ -109,13 +91,16 @@ export class AcpSession {
   }
 }
 
+/** How the pool starts its child; the environment is read at each start, when the node knows where it listens. */
+type AcpChildSpec = { command: string; args: string[]; env: () => NodeJS.ProcessEnv };
+
 export class AcpSessionPool {
   private readonly mcpServers: McpServerStdio[];
   /** Session ids belong to one connection: a fresh child cannot resume ids cached for the old one. */
   private current: { connection: AcpConnection; sessions: Map<string, AcpSession> } | null = null;
 
   constructor(
-    private readonly spawn: Omit<AcpSpawnSpec, "cwd">,
+    private readonly child: AcpChildSpec,
     mcpServers: AcpMcpServer[],
     private readonly logger: NodeLogger,
   ) {
@@ -135,7 +120,8 @@ export class AcpSessionPool {
     const active = sessions.get(key);
     if (active !== undefined) return active;
 
-    const bindings = await this.loadBindings(input.podDir);
+    const bindingsPath = join(input.podDir, "sessions.json");
+    const bindings = await this.loadBindings(bindingsPath);
     const bound = bindings[key];
     const resumed = bound === undefined ? null : await this.resume(connection, bound, cwd);
     if (bound !== undefined && resumed !== null) {
@@ -149,7 +135,7 @@ export class AcpSessionPool {
     const session = new AcpSession(connection, created.sessionId, created.configOptions ?? []);
     sessions.set(key, session);
     bindings[key] = created.sessionId;
-    await this.saveBindings(input.podDir, bindings);
+    await writeFileAtomic(bindingsPath, `${JSON.stringify(bindings, null, 2)}\n`, { mode: 0o600 });
     return session;
   }
 
@@ -162,7 +148,8 @@ export class AcpSessionPool {
 
   private async connect(cwd: string): Promise<{ connection: AcpConnection; sessions: Map<string, AcpSession> }> {
     if (this.current === null || this.current.connection.isClosed()) {
-      this.current = { connection: AcpConnection.spawn({ ...this.spawn, cwd }), sessions: new Map() };
+      const { command, args, env } = this.child;
+      this.current = { connection: AcpConnection.spawn({ command, args, env: env(), cwd }), sessions: new Map() };
     }
     const joined = this.current;
     await joined.connection.ready;
@@ -191,8 +178,7 @@ export class AcpSessionPool {
   }
 
   /** Missing file means no bindings yet; a corrupt one throws instead of being overwritten by the next write. */
-  private async loadBindings(podDir: string): Promise<SessionBindings> {
-    const path = join(podDir, "sessions.json");
+  private async loadBindings(path: string): Promise<SessionBindings> {
     let text: string;
     try {
       text = await readFile(path, "utf8");
@@ -203,9 +189,5 @@ export class AcpSessionPool {
     return parseOrThrow(SessionBindingsSchema, JSON.parse(text), (issue) => {
       return new Error(`${path} is not a map of session ids: ${describeIssue(issue)}`);
     });
-  }
-
-  private async saveBindings(podDir: string, bindings: SessionBindings): Promise<void> {
-    await writeFileAtomic(join(podDir, "sessions.json"), `${JSON.stringify(bindings, null, 2)}\n`, { mode: 0o600 });
   }
 }

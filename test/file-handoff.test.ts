@@ -1,15 +1,17 @@
 /**
- * Files between two real nodes (§3.8): the origin hands a file to a task, the
- * target fetches it into the task's inbox before the agent starts, and what the
- * agent leaves in its outbox comes back as an artifact the origin can fetch.
+ * Files between two real nodes (§5.6): files are not part of a task. The origin
+ * publishes one and names it in the task text; the task fetches it by that name
+ * and publishes what it hands back, naming it in its result; the origin fetches
+ * that. The agent here does what the task's `orca_pod` file methods have the
+ * target node do (its local routes, tested on their own in `blobs.test.ts`).
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { saveBlob } from "../src/core/blobs.ts";
+import { blobRefText, parseBlobRef, saveBlob } from "../src/core/blobs.ts";
 import type { ExecutorEvent, LocalExecutor } from "../src/executor/executor.ts";
 import { nodeParts } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
@@ -46,71 +48,70 @@ async function startNode(executor?: LocalExecutor): Promise<Orca> {
   return node;
 }
 
+const FILE_NAME = /[A-Za-z0-9_-]{43}\/[0-9a-f]{64}/;
+
 describe("file hand-off", () => {
-  it("carries a file to the task's inbox and its outbox back to the origin", async () => {
+  it("moves a file to a task and one back, by the names written in the texts", async () => {
     const seen: string[] = [];
+    let target: Orca | undefined;
     const agent: LocalExecutor = {
       async *run(input): AsyncGenerator<ExecutorEvent> {
-        const text = readFileSync(join(input.workspaceDir, "inbox", input.taskId, "in.txt"), "utf8");
+        const node = target as Orca;
+        // fetch: the name the origin wrote, saved where the agent works.
+        const ref = parseBlobRef(FILE_NAME.exec(input.prompt)?.[0] ?? "");
+        if (ref === null) throw new Error("the task text names no file");
+        const input_ = join(input.workspaceDir, "in.txt");
+        await saveBlob(await node.mesh.require(ref.node).fetchBlob(ref.blob), input_, ref.blob);
+        const text = readFileSync(input_, "utf8");
         seen.push(text);
-        const outbox = join(input.workspaceDir, "outbox", input.taskId);
-        mkdirSync(outbox, { recursive: true });
-        writeFileSync(join(outbox, "out.txt"), text.toUpperCase());
-        yield { type: "completed", text: "converted" };
+        // publish: what the agent hands back, named in its result.
+        const output = join(input.workspaceDir, "out.txt");
+        writeFileSync(output, text.toUpperCase());
+        const blob = await node.blobs.register(output);
+        yield { type: "completed", text: `converted: ${blobRefText({ node: node.orcaNodeId, blob: blob.blob_id })}` };
       },
     };
     const origin = await startNode();
-    const target = await startNode(agent);
+    target = await startNode(agent);
     await connectAll([origin, target]);
 
     const source = join(tempRoot(), "in.txt");
     writeFileSync(source, "hello from the origin");
-    const published = await origin.publish(source);
+    const published = await origin.blobs.register(source);
+    const name = blobRefText({ node: origin.orcaNodeId, blob: published.blob_id });
     const submitted = await origin.mesh.resolve(target.mesh.self.endpoints[0] as string).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "convert it" }] },
-      metadata: {
-        pod: { files: [{ ref: `${origin.orcaNodeId}/${published.blob_id}`, name: "in.txt" }] },
-      },
+      message: { role: "user", parts: [{ kind: "text", text: `convert ${name}` }] },
     });
 
     const done = await waitFor(
-      () => origin.mesh.resolve(target.mesh.self.endpoints[0] as string).getTask(submitted.id),
+      () => origin.mesh.resolve((target as Orca).mesh.self.endpoints[0] as string).getTask(submitted.id),
       (view) => isTerminal(view.status.state),
       { label: "the task to finish" },
     );
 
     expect(done.status.state).toBe("completed");
     expect(seen).toEqual(["hello from the origin"]);
-    const [artifact] = done.artifacts ?? [];
-    expect(artifact?.name).toBe("out.txt");
+    const result = done.status.message?.parts[0];
+    const back = parseBlobRef(FILE_NAME.exec(result?.kind === "text" ? result.text : "")?.[0] ?? "");
+    expect(back?.node).toBe(target.orcaNodeId);
 
-    const output = join(tempRoot(), "out.txt");
-    const opened = await origin.mesh.require(target.orcaNodeId).fetchBlob(artifact?.artifactId as string);
-    await saveBlob(opened, output, artifact?.artifactId as string);
-    expect(readFileSync(output, "utf8")).toBe("HELLO FROM THE ORIGIN");
+    const saved = join(tempRoot(), "out.txt");
+    await saveBlob(await origin.mesh.require(back!.node).fetchBlob(back!.blob), saved, back!.blob);
+    expect(readFileSync(saved, "utf8")).toBe("HELLO FROM THE ORIGIN");
   });
 
-  it("fails the task as input_unavailable when the origin no longer has the file", async () => {
+  it("serves a published file after the original is gone: the node keeps its own copy", async () => {
     const target = await startNode();
     const origin = await startNode();
     await connectAll([origin, target]);
 
     const source = join(tempRoot(), "gone.txt");
     writeFileSync(source, "soon deleted");
-    const published = await origin.publish(source);
+    const published = await origin.blobs.register(source);
     rmSync(source);
-    const submitted = await origin.mesh.resolve(target.mesh.self.endpoints[0] as string).sendTask({
-      message: { role: "user", parts: [{ kind: "text", text: "use it" }] },
-      metadata: { pod: { files: [{ ref: `${origin.orcaNodeId}/${published.blob_id}`, name: "gone.txt" }] } },
-    });
 
-    const done = await waitFor(
-      () => origin.mesh.resolve(target.mesh.self.endpoints[0] as string).getTask(submitted.id),
-      (view) => isTerminal(view.status.state),
-      { label: "the task to fail" },
-    );
-
-    expect(done.status.state).toBe("failed");
-    expect(done.status.reason).toBe("input_unavailable");
+    const saved = join(tempRoot(), "copy.txt");
+    await saveBlob(await target.mesh.require(origin.orcaNodeId).fetchBlob(published.blob_id), saved, published.blob_id);
+    expect(readFileSync(saved, "utf8")).toBe("soon deleted");
   });
 });

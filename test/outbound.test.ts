@@ -213,7 +213,7 @@ describe("outbound A2A calls (11)", () => {
     expect(origin.dispatches.list()).toHaveLength(0);
   });
 
-  it("refreshes an existing dispatch entry without creating more", async () => {
+  it("leaves the dispatch log to the tracker: reading a dispatched task writes nothing", async () => {
     const peer = await makeNode(undefined);
     await peer.start();
     const origin = await makeNode(undefined);
@@ -223,11 +223,12 @@ describe("outbound A2A calls (11)", () => {
     const view = await origin.mesh.resolve(peer.mesh.self.endpoints[0]!).sendTask({
       message: { role: "user", parts: [{ kind: "text", text: "ping" }] },
     });
+    const recorded = origin.dispatches.list();
     await origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask(view.id);
     await origin.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask(view.id);
 
-    const entries = origin.dispatches.list();
-    expect(entries).toHaveLength(1);
-    expect(entries[0]!.task_id).toBe(view.id);
+    expect(origin.dispatches.list()).toEqual(recorded);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.task_id).toBe(view.id);
   });
 });

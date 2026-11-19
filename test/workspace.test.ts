@@ -24,7 +24,6 @@ describe("workspace", () => {
     const workspace = new Workspace(tempDir(), wg("orca-dev"));
     expect(existsSync(workspace.root)).toBe(false);
     expect(workspace.root.endsWith(join("workgroups", "orca-dev"))).toBe(true);
-    expect(workspace.notes).toBe(join(workspace.root, "notes"));
     expect(workspace.state.endsWith(join("state", "orca-dev"))).toBe(true);
   });
 
@@ -33,10 +32,9 @@ describe("workspace", () => {
     workspace.ensure();
     workspace.ensure();
 
-    for (const dir of [workspace.root, workspace.notes, workspace.state]) {
+    for (const dir of [workspace.root, workspace.state]) {
       expect(existsSync(dir)).toBe(true);
     }
-    expect(existsSync(join(workspace.state, "tasks"))).toBe(true);
   });
 
   it("isolates workgroups", () => {

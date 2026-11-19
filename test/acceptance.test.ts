@@ -131,7 +131,7 @@ describe("acceptance: single slot concurrency", () => {
       data_root: root,
       port: 0,
     });
-    const node = new Orca(...config, { persistent: true });
+    const node = new Orca(...config);
     await node.start();
     try {
       const results = await Promise.allSettled(
@@ -172,8 +172,8 @@ describe("acceptance: password rotation", () => {
       data_root: rootB,
       port: 0,
     });
-    const a1 = new Orca(...configA1, { persistent: true });
-    const b = new Orca(...configB, { persistent: true });
+    const a1 = new Orca(...configA1);
+    const b = new Orca(...configB);
     await a1.start();
     await b.start();
     await b.mesh.probe(a1.mesh.self.endpoints[0]!);
@@ -187,8 +187,8 @@ describe("acceptance: password rotation", () => {
       data_root: rotatedRoot,
       port: 0,
     });
-    const a2 = new Orca(...rotated, { persistent: true });
-    const b2 = new Orca(...configB, { persistent: true });
+    const a2 = new Orca(...rotated);
+    const b2 = new Orca(...configB);
     await a2.start();
     await b2.start();
     try {

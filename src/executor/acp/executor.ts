@@ -5,7 +5,13 @@
  * task's resume message answers the prompt.
  */
 
-import type { PromptResponse, RequestPermissionResponse, StopReason } from "@agentclientprotocol/sdk";
+import type {
+  PromptResponse,
+  RequestPermissionRequest,
+  RequestPermissionResponse,
+  StopReason,
+  ToolCallUpdate,
+} from "@agentclientprotocol/sdk";
 
 import { IN_TASK_ENV } from "../../core/entry.ts";
 import { abortError } from "../../core/errors.ts";
@@ -14,14 +20,7 @@ import type { ModelCatalog } from "../../core/model-catalog.ts";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor.ts";
 import { KILL_GRACE_MS, type SessionRoute } from "./connection.ts";
-import {
-  CANCELLED,
-  escalationFor,
-  modeAllows,
-  outcomeFor,
-  parsePermissionRequest,
-  type AcpPermissionAsk,
-} from "./permissions.ts";
+import { CANCELLED, escalationFor, modeAllows, outcomeFor } from "./permissions.ts";
 import type { AcpExecutorConfig } from "./config.ts";
 import { AcpSessionPool, type AcpSession } from "./session.ts";
 
@@ -35,7 +34,7 @@ const FAILED_STOP_REASONS: Partial<Record<StopReason, string>> = {
 type RunEvent =
   | { kind: "prompt-done"; result: PromptResponse }
   | { kind: "prompt-error"; error: Error }
-  | { kind: "permission"; request: AcpPermissionAsk; reply: (outcome: RequestPermissionResponse) => void };
+  | { kind: "permission"; request: RequestPermissionRequest; reply: (outcome: RequestPermissionResponse) => void };
 
 /** A small single-consumer async queue; the executor loop is the only reader. */
 class AsyncQueue<T> {
@@ -80,7 +79,7 @@ class AcpRun {
 
   /** Drive the prompt to its end; a suspension is yielded and answered with the granted mode. */
   async *drive(signal: AbortSignal): AsyncGenerator<ExecutorEvent, void, SandboxMode | undefined> {
-    const detach = this.session.attach(this.route);
+    const detach = this.session.connection.attach(this.session.id, this.route);
     const disarm = this.armAbort(signal);
 
     this.session.prompt(this.input.prompt).then(
@@ -106,21 +105,23 @@ class AcpRun {
           break;
         }
         const { request, reply } = event;
+        const { toolCall, options } = request;
         // A grant for an earlier request may already cover one queued behind it.
-        if (modeAllows(this.mode, request.kind)) {
-          reply(outcomeFor(request.options, "allow"));
+        if (modeAllows(this.mode, toolCall.kind)) {
+          reply(outcomeFor(options, "allow"));
           continue;
         }
-        const requestedMode = escalationFor(this.mode, this.input.permissionCeiling, request.kind);
+        const requestedMode = escalationFor(this.mode, this.input.permissionCeiling, toolCall.kind);
         if (requestedMode === null) {
-          reply(outcomeFor(request.options, "reject"));
+          reply(outcomeFor(options, "reject"));
           continue;
         }
         // Suspending sets the task to input-required; coming back means the
         // origin granted the mode (a denial aborts the run instead), and the
         // rest of the task runs under it.
-        this.mode = (yield { type: "suspend", suspend: AcpRun.suspensionFor(request, requestedMode) }) ?? requestedMode;
-        reply(outcomeFor(request.options, "allow"));
+        this.mode =
+          (yield { type: "suspend", suspend: AcpRun.suspensionFor(toolCall, requestedMode) }) ?? requestedMode;
+        reply(outcomeFor(options, "allow"));
       }
     } finally {
       disarm();
@@ -141,12 +142,12 @@ class AcpRun {
           this.transcript += update.content.text;
         }
       },
-      permission: (params) => {
-        const request = parsePermissionRequest(params);
-        if (modeAllows(this.mode, request.kind)) return Promise.resolve(outcomeFor(request.options, "allow"));
+      permission: (request) => {
+        const { toolCall, options } = request;
+        if (modeAllows(this.mode, toolCall.kind)) return Promise.resolve(outcomeFor(options, "allow"));
         // Past this node's ceiling nobody may allow it: refuse without asking.
-        if (escalationFor(this.mode, this.input.permissionCeiling, request.kind) === null) {
-          return Promise.resolve(outcomeFor(request.options, "reject"));
+        if (escalationFor(this.mode, this.input.permissionCeiling, toolCall.kind) === null) {
+          return Promise.resolve(outcomeFor(options, "reject"));
         }
         return new Promise((resolve) => {
           const reply = (outcome: RequestPermissionResponse): void => {
@@ -172,9 +173,12 @@ class AcpRun {
     const onAbort = (): void => {
       this.aborted = true;
       for (const reply of [...this.open]) reply(CANCELLED);
-      this.session.cancel();
+      // The child answers the prompt with `cancelled`; one that does not is killed, with
+      // every session it serves, unless the next task already took the connection over.
+      const { connection, id } = this.session;
+      connection.cancel(id);
       forceClose = setTimeout(() => {
-        if (this.session.isAttached(this.route)) void this.session.forceClose();
+        if (connection.isAttached(id, this.route)) void connection.close();
       }, KILL_GRACE_MS);
       forceClose.unref();
     };
@@ -187,13 +191,13 @@ class AcpRun {
   }
 
   /** Suspending sets the task to input-required; coming back means the origin granted the mode (a denial aborts the run). */
-  private static suspensionFor(request: AcpPermissionAsk, requestedMode: SandboxMode): Suspension {
+  private static suspensionFor(toolCall: ToolCallUpdate, requestedMode: SandboxMode): Suspension {
     return {
       kind: "permission",
-      tool: request.title,
+      tool: toolCall.title ?? "tool",
       requested: {
-        tool_call_id: request.toolCallId,
-        ...(request.kind === undefined ? {} : { tool_kind: request.kind }),
+        tool_call_id: toolCall.toolCallId,
+        ...(toolCall.kind == null ? {} : { tool_kind: toolCall.kind }),
       },
       requestedMode,
     };
@@ -208,13 +212,20 @@ export class AcpExecutor implements LocalExecutor {
     /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (§6.15). */
     private readonly models: ModelCatalog,
     logger: NodeLogger,
+    child: {
+      /** The host's own DSH profile, so the task has this plugin; unset passes no `--profile` (D46). */
+      profile: string | undefined;
+      /** What the task's plugin needs to reach this machine's node, read when the child starts. */
+      env: () => Record<string, string>;
+    },
   ) {
     this.sessions = new AcpSessionPool(
       {
         command: config.command ?? "dsh",
-        args: [...(config.extra_args ?? []), "--profile", config.profile ?? "acp"],
-        // Sessions spawned by this executor carry the in-task marker that makes the plugin refuse to send (§7.9).
-        env: { ...process.env, [IN_TASK_ENV]: "1" },
+        args: [...(config.extra_args ?? []), ...(child.profile === undefined ? [] : ["--profile", child.profile])],
+        // Sessions spawned by this executor carry the in-task marker: the plugin there
+        // starts no node and offers only the file methods, through this node (§7.9, §5.6).
+        env: () => ({ ...process.env, ...child.env(), [IN_TASK_ENV]: "1" }),
       },
       config.mcp_servers ?? [],
       logger,

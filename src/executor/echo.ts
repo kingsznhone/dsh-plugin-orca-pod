@@ -39,7 +39,7 @@ export class EchoExecutor implements LocalExecutor {
       };
       return;
     }
-    const { steps, final, artifacts } = input.echo;
+    const { steps, final } = input.echo;
     let lastAt = 0;
     for (const step of steps) {
       await sleep(step.at_ms - lastAt, undefined, { signal });
@@ -48,7 +48,6 @@ export class EchoExecutor implements LocalExecutor {
       const { mode, ...suspend } = step.suspend;
       yield { type: "suspend", suspend: { ...suspend, requestedMode: mode } };
     }
-    for (const artifact of artifacts) yield { type: "artifact", name: artifact.name, content: artifact.content };
     if (final.state === "hang") {
       // Only tasks/cancel or TTL can end it (§6.3).
       await new Promise<void>((_resolve, reject) => {

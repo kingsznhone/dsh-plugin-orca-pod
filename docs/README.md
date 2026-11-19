@@ -18,7 +18,7 @@
 | [03-membership.md](03-membership.md)         | 3   | 成员状态判定、加入、心跳与看门狗、收敛、候选端点与墓碑            |
 | [04-transport.md](04-transport.md)           | 4   | 监听与路由、反向代理、A2A 面、任务状态机                          |
 | [05-tasks.md](05-tasks.md)                   | 5   | 任务元数据、回报与唤醒、取消、存储、blob 通道、交接               |
-| [06-execution.md](06-execution.md)           | 6   | LocalExecutor、EchoExecutor、ACP、工作区、单槽、结果与产物        |
+| [06-execution.md](06-execution.md)           | 6   | LocalExecutor、EchoExecutor、ACP、工作区、单槽、结果与交回的文件  |
 | [07-security.md](07-security.md)             | 7   | workgroup 与签名、TLS、不可信输入、授权、grant、审批回路          |
 | [08-reliability.md](08-reliability.md)       | 8   | 失联与重启、背压、放大与唤醒、可观测性                            |
 | [09-implementation.md](09-implementation.md) | 9   | 模块划分、面板、进程内多 orca node、DSH 组合入口、依赖            |
@@ -26,6 +26,7 @@
 | [11-open-questions.md](11-open-questions.md) | 11  | 未决问题、待讨论与暂缓项（每项写明当前行为）                      |
 | [12-handoff.md](12-handoff.md)               | 12  | 阅读顺序、第一条 prompt、交接规则、后续专题                       |
 | [DECISIONS.md](DECISIONS.md)                 | —   | 顶层/跨模块决策（章节内取舍已并入各章正文）                       |
+| [arch.md](arch.md)                           | —   | 插件架构导览：加载入口、host ↔ client 通信、send 链路             |
 
 ## 阅读顺序
 
@@ -57,9 +58,9 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - 入组 = `workgroup_id` + **非空密码**：密码只派生每个节点间请求头里的 workgroup 证明（HMAC，与 Ed25519 签名同时带，答复也由应答方签名）；**没有 session token、没有 TTL**。换密码 = 重建组。
 - 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询；没有 SSE、没有 push。
-- 文件交换按**名字**：节点只发布自己机器上的文件，名字是 `<节点 id>/<sha256>`，不含地址；谁需要谁让自己的节点去拉（`orca_pod` 的 `fetch`；任务里的文件由执行器在 `inbox/` 与 `outbox/` 交接）——产物的名字写在结论文本里由 origin 取，交给任务的文件写在任务书里由 target 上的 agent 取；结论文本内联返回，`notes/` 不出本机。
+- 文件交换按**名字**：节点只发布自己机器上的文件，名字是 `<节点 id>/<sha256>`，不含地址；谁需要谁让自己的节点去拉（`orca_pod` 的 `publish` 与 `fetch`，宿主和任务里都有）。文件不是任务的一部分：交回的文件名字写在结论文本里由 origin 取，交给任务的文件写在任务文本里由 target 上的 agent 取；结论文本内联返回，工作区不出本机。
 - **任务与产物凭 id 交接**：同 workgroup 任意 orca node 知道 `task_id` / `blob_id` 就能读；没有列表接口，也没有 per-task ACL——id 就是句柄。
-- **交接靠工作区**：同一 workgroup 的任务共享一份持久工作区（agent 的 cwd 就是 workgroup 根）与 `notes/`；后到的 agent 读现场决定接着干什么，协议不定义“续跑”。
+- **交接靠工作区**：同一 workgroup 的任务共享一份持久工作区（agent 的 cwd 就是 workgroup 根），里面留什么由 agent 自己决定；后到的 agent 读现场决定接着干什么，协议不定义“续跑”。
 - **权限跟着发起会话走**：任务继承发起会话的权限模式（没继承到就按只读）；target 按这个模式自动应答 ACP 的权限请求，模式之外的请求挂起为 `input-required`，由 origin 的人在 UI 上决定；target 永不本地弹窗。
 - 目标侧执行目录 = **workgroup 工作区**：加入 workgroup 时自动分配、跨任务持久。**orca node 是单槽的**：同一时间只跑一个任务，忙时 `429 orca_node_busy`（不排队），忙闲状态对其他 orca node 可见；**遇到忙时由调用方模型决定**重试、换 orca node 还是回报用户。
 - 任务状态落**单机 SQLite**；target 重启则所有非终态任务 `failed(node_restart)`，origin 的追踪连续失败则放弃并告知 agent，不重发、不猜、不复活。

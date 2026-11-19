@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { ConfigValidationError, PanelPatchSchema, nodeSettings, parseSettings } from "../src/node/settings.ts";
+import { PanelPatchSchema, nodeSettings, parseSettings } from "../src/node/settings.ts";
+
+/** What `parseSettings` throws: every problem, each with the path of its value. */
+type SettingsError = Error & { issues: { path: string[]; message: string }[] };
 
 describe("settings parser", () => {
   it("treats null like absent so a patch can clear a field", () => {
@@ -12,8 +15,8 @@ describe("settings parser", () => {
       parseSettings({ port: "11811", task_timeout_s: -1, executor: "nope", result_max_bytes: 1.5 });
       expect.unreachable();
     } catch (error) {
-      expect(error).toBeInstanceOf(ConfigValidationError);
-      const keys = (error as ConfigValidationError).issues.map((issue) => issue.path[0]);
+      expect(error).toBeInstanceOf(Error);
+      const keys = (error as SettingsError).issues.map((issue) => issue.path[0]);
       expect(keys.sort()).toEqual(["executor", "port", "result_max_bytes", "task_timeout_s"]);
     }
   });
@@ -23,7 +26,7 @@ describe("settings parser", () => {
       parseSettings({ acp: { mcp_servers: [{ name: "fs", command: "" }] }, executor: "nope", port: 70000 });
       expect.unreachable();
     } catch (error) {
-      const { issues, message } = error as ConfigValidationError;
+      const { issues, message } = error as SettingsError;
       expect(issues).toEqual([
         { path: ["port"], message: expect.stringMatching(/<=65535/) },
         { path: ["executor"], message: expect.stringMatching(/"acp"\|"echo"/) },

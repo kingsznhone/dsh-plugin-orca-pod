@@ -5,13 +5,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { EventBus } from "../src/core/events.ts";
 import { DispatchLog } from "../src/task/dispatch-log.ts";
 import { nodeParts } from "./support/node.ts";
-import type { DispatchEntry } from "../src/task/wire.ts";
+import type { TaskView } from "../src/task/wire.ts";
 import { Orca } from "../src/node/orca.ts";
 import { SqliteDb } from "../src/core/sqlite.ts";
-import { SqliteDispatchStore } from "../src/task/dispatch-store.ts";
 import { fakeNodeId, wg } from "./fixtures/ids.ts";
 
 const WORKGROUP = wg("orca-dispatches");
@@ -29,9 +27,8 @@ afterEach(async () => {
 
 const NODE = fakeNodeId("dispatch-target");
 
-function entry(overrides: Partial<DispatchEntry> & Pick<DispatchEntry, "task_id" | "state">): DispatchEntry {
-  const now = new Date().toISOString();
-  return { node: NODE, created_at: now, updated_at: now, ...overrides };
+function view(id: string, state: TaskView["status"]["state"]): TaskView {
+  return { kind: "task", id, contextId: `ctx-${id}`, status: { state, timestamp: new Date().toISOString() } };
 }
 
 function tempRoot(): string {
@@ -40,58 +37,44 @@ function tempRoot(): string {
   return root;
 }
 
-describe("dispatch store (13.4)", () => {
-  it("survives a reopen", () => {
+/** The dispatch log of the database at `file`, the way a node process opens it. */
+function logAt(file: string): { log: DispatchLog; db: SqliteDb } {
+  const db = new SqliteDb(file);
+  db.open();
+  return { log: new DispatchLog(db, { warn() {} }), db };
+}
+
+describe("dispatch log on disk (13.4)", () => {
+  it("survives a reopen, with the node and the dispatching session", () => {
     const file = join(tempRoot(), "tasks.db");
-    const db = new SqliteDb(file);
-    db.open();
-    const store = new SqliteDispatchStore(db);
-    store.save(entry({ task_id: "task-1", state: "working" }));
-    store.save(entry({ task_id: "task-2", state: "completed" }));
-    db.close();
+    const first = logAt(file);
+    first.log.recordSend(NODE, view("task-1", "working"), SessionId("session-7"));
+    first.log.recordSend(NODE, view("task-2", "completed"));
+    first.db.close();
 
-    const reopenedDb = new SqliteDb(file);
-
-    reopenedDb.open();
-    const reopened = new SqliteDispatchStore(reopenedDb);
-    const byId = new Map(reopened.list().map((item) => [item.task_id, item]));
-    expect(byId.get("task-1")).toMatchObject({ state: "working" });
+    const reopened = logAt(file);
+    const byId = new Map(reopened.log.list().map((item) => [item.task_id, item]));
+    expect(byId.get("task-1")).toMatchObject({ state: "working", node: NODE, agent_id: "session-7" });
     expect(byId.get("task-2")).toMatchObject({ state: "completed" });
-    expect(reopened.get("task-1")?.node).toBe(NODE);
-    reopenedDb.close();
-  });
-
-  it("persists the dispatching agent so tracking can resume after a restart", () => {
-    const file = join(tempRoot(), "tasks.db");
-    const db = new SqliteDb(file);
-    db.open();
-    const store = new SqliteDispatchStore(db);
-    store.save(entry({ task_id: "task-1", state: "working", agent_id: SessionId("session-7") }));
-    db.close();
-
-    const reopenedDb = new SqliteDb(file);
-
-    reopenedDb.open();
-    const reopened = new SqliteDispatchStore(reopenedDb);
-    expect(reopened.get("task-1")?.agent_id).toBe("session-7");
-    reopenedDb.close();
+    reopened.db.close();
   });
 
   it("marks only in-flight entries unknown on restart", () => {
-    const file = join(tempRoot(), "tasks.db");
-    const db = new SqliteDb(file);
-    db.open();
-    const store = new SqliteDispatchStore(db);
-    store.save(entry({ task_id: "running", state: "working" }));
-    store.save(entry({ task_id: "parked", state: "input-required" }));
-    store.save(entry({ task_id: "done", state: "completed" }));
-    store.save(entry({ task_id: "failed", state: "failed" }));
-
-    new DispatchLog(store, new EventBus()).markInFlightUnknown();
-    expect(store.get("running")).toMatchObject({ state: "unknown", last_error: "origin_restart" });
-    expect(store.get("parked")?.state).toBe("unknown");
-    expect(store.get("done")?.state).toBe("completed");
-    expect(store.get("failed")?.state).toBe("failed");
+    const { log, db } = logAt(join(tempRoot(), "tasks.db"));
+    for (const [id, state] of [
+      ["running", "working"],
+      ["parked", "input-required"],
+      ["done", "completed"],
+      ["failed", "failed"],
+    ] as const) {
+      log.recordSend(NODE, view(id, state));
+    }
+    log.markInFlightUnknown();
+    const byId = new Map(log.list().map((item) => [item.task_id, item]));
+    expect(byId.get("running")).toMatchObject({ state: "unknown", last_error: "origin_restart" });
+    expect(byId.get("parked")?.state).toBe("unknown");
+    expect(byId.get("done")?.state).toBe("completed");
+    expect(byId.get("failed")?.state).toBe("failed");
     db.close();
   });
 });
@@ -118,7 +101,7 @@ describe("origin dispatch log (13.4)", () => {
       bind_host: "127.0.0.1",
       port: 0,
     });
-    let origin = new Orca(...originConfig, { persistent: true });
+    let origin = new Orca(...originConfig);
     await origin.start();
     nodes.push(origin);
     await origin.mesh.probe(peer.mesh.self.endpoints[0]!);
@@ -150,7 +133,7 @@ describe("origin dispatch log (13.4)", () => {
     // Restart the origin: in-flight dispatches become unknown, never "failed".
     await origin.stop();
     nodes = nodes.filter((node) => node !== origin);
-    origin = new Orca(...originConfig, { persistent: true });
+    origin = new Orca(...originConfig);
     await origin.start();
     nodes.push(origin);
 

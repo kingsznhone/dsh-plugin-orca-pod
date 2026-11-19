@@ -32,7 +32,7 @@ function isDue(table: ReturnType<typeof setup>, id: OrcaNodeId): boolean {
 /** One failed greeting, the way the mesh counts it: a drop forgets the node and tombstones its id. */
 function miss(table: ReturnType<typeof setup>, id: OrcaNodeId): void {
   const node = table.mesh.get(id);
-  if (node?.missed(table.clock.monotonicMs(), table.mesh.timings) === "drop") table.mesh.remove(id);
+  if (node?.missed(table.clock.monotonicMs(), TIMINGS) === "drop") table.mesh.remove(id);
 }
 
 describe("the node table", () => {
@@ -63,7 +63,6 @@ describe("the node table", () => {
 
     expect(mesh.get(B)?.state).toBe("unknown");
     expect(mesh.get(B)?.view().last_recv_at).toBeNull();
-    expect(mesh.get(B)?.isCandidate).toBe(true);
     expect(mesh.require(B).due(0)).toBe(true);
   });
 
@@ -95,7 +94,9 @@ describe("the node table", () => {
     advance(5100);
     mesh.evaluate();
     expect(mesh.get(B)).toBeUndefined();
-    expect(mesh.isTombstoned(B)).toBe(true);
+    // Tombstoned: a stale list cannot bring it back.
+    mesh.mergeRemote([listed(B)]);
+    expect(mesh.get(B)).toBeUndefined();
 
     mesh.mergeRemote([listed(B)]);
     expect(mesh.get(B)).toBeUndefined();
@@ -132,7 +133,9 @@ describe("the node table", () => {
 
     mesh.remove(B);
     expect(mesh.peers()).toHaveLength(0);
-    expect(mesh.isTombstoned(B)).toBe(true);
+    // Tombstoned: a stale list cannot bring it back.
+    mesh.mergeRemote([listed(B)]);
+    expect(mesh.get(B)).toBeUndefined();
 
     mesh.mergeRemote([listed(B)]);
     expect(mesh.get(B)).toBeUndefined();
@@ -143,13 +146,14 @@ describe("the node table", () => {
     const { mesh } = table;
     table.greeted(B);
     mesh.remove(B);
-    expect(mesh.isTombstoned(B)).toBe(true);
+    // Tombstoned: a stale list cannot bring it back.
+    mesh.mergeRemote([listed(B)]);
+    expect(mesh.get(B)).toBeUndefined();
 
     // The node leaves and comes back within the tombstone window: it proved the password
     // in the request, so the record must exist afterwards.
     table.greeted(B);
     expect(mesh.get(B)?.state).toBe("online");
-    expect(mesh.isTombstoned(B)).toBe(false);
 
     mesh.remove(B);
     mesh.mergeRemote([listed(B)]);
@@ -184,7 +188,9 @@ describe("the node table", () => {
     }
     miss(table, D);
     expect(mesh.get(D)).toBeUndefined();
-    expect(mesh.isTombstoned(D)).toBe(true);
+    // Tombstoned: a stale list cannot bring it back.
+    mesh.mergeRemote([listed(D)]);
+    expect(mesh.get(D)).toBeUndefined();
     // A stale list cannot bring it straight back.
     mesh.mergeRemote([listed(D)]);
     expect(mesh.get(D)).toBeUndefined();
@@ -256,11 +262,12 @@ describe("the node table", () => {
     const { mesh } = table;
     mesh.mergeRemote([listed(D)]);
     for (let attempt = 0; attempt < CANDIDATE_MAX_FAILURES; attempt += 1) miss(table, D);
-    expect(mesh.isTombstoned(D)).toBe(true);
+    // Tombstoned: a stale list cannot bring it back.
+    mesh.mergeRemote([listed(D)]);
+    expect(mesh.get(D)).toBeUndefined();
     // The node comes back and greets with both proofs.
     table.greeted(D);
     expect(mesh.get(D)?.state).toBe("online");
-    expect(mesh.isTombstoned(D)).toBe(false);
   });
 });
 

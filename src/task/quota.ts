@@ -2,7 +2,7 @@ import { errorMessage, PodError } from "../core/errors.ts";
 import type { NodeLogger } from "../core/events.ts";
 import type { Workspace, WorkspaceUsage } from "./workspace.ts";
 
-export type QuotaLimits = { maxBytes: number; maxFiles: number };
+type QuotaLimits = { maxBytes: number; maxFiles: number };
 
 /**
  * The workspace quota (§6.13): a new task is refused while the group workspace

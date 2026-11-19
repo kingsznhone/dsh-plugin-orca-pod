@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SqliteDb, storeDbPath } from "../src/core/sqlite.ts";
 import type { Orca } from "../src/node/orca.ts";
-import { SqliteTaskStore } from "../src/task/task-store.ts";
 import { wg } from "./fixtures/ids.ts";
 import { waitFor } from "./support/harness.ts";
 import { newNode } from "./support/node.ts";
@@ -31,7 +30,7 @@ describe("starting a node on a data root another process is running on", () => {
     roots.push(root);
     const input = { workgroup_id: wg("start-order"), workgroup_password: "pw", data_root: root, port: 0 };
 
-    const running = newNode(input, { persistent: true });
+    const running = newNode(input);
     nodes.push(running);
     const { port, url } = await running.start();
 
@@ -47,7 +46,7 @@ describe("starting a node on a data root another process is running on", () => {
     );
 
     // Another process of the same machine: same data root, same port.
-    const second = newNode({ ...input, port }, { persistent: true });
+    const second = newNode({ ...input, port });
     nodes.push(second);
     await expect(second.start()).rejects.toMatchObject({ code: "EADDRINUSE" });
     await second.stop();
@@ -57,7 +56,8 @@ describe("starting a node on a data root another process is running on", () => {
     const db = new SqliteDb(storeDbPath(root));
     db.open();
     try {
-      expect(new SqliteTaskStore(db).load(submitted.id)?.view.status.state).toBe("working");
+      const row = db.db.prepare("SELECT payload FROM tasks WHERE task_id = ?").get(submitted.id) as { payload: string };
+      expect(JSON.parse(row.payload).view.status.state).toBe("working");
     } finally {
       db.close();
     }

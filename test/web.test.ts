@@ -14,43 +14,36 @@ import { ApprovalBroker } from "../src/plugin/broker.ts";
 import type { SelfRecord } from "../src/core/wire/peer.ts";
 import type { TaskView } from "../src/task/wire.ts";
 import { isDirectLoopbackRequest } from "../src/core/net.ts";
-import { PanelRoutes, POD_API_PREFIX } from "../src/plugin/panel-routes.ts";
+import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
+import { PanelRoutes } from "../src/plugin/panel-routes.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 import { catalogFeed, idlePod } from "./fixtures/pod.ts";
 
-function taskView(id: string, state: TaskView["status"]["state"], artifacts: TaskView["artifacts"] = []): TaskView {
-  return {
-    kind: "task",
-    id,
-    contextId: "ctx-1",
-    status: { state, timestamp: "2026-01-01T00:00:00.000Z" },
-    artifacts,
-  } as TaskView;
+function taskView(id: string, state: TaskView["status"]["state"]): TaskView {
+  return { kind: "task", id, contextId: "ctx-1", status: { state, timestamp: "2026-01-01T00:00:00.000Z" } };
 }
 
-const ARTIFACT = { name: "report.md", blob_id: "art-1", bytes: 3, node: "NODE02" };
+const FILE = { node: "NODE02", blob_id: "a".repeat(64) };
 
 const RECENT: PodTaskRow[] = [
   {
     id: "TASK02",
     peer: "NODE02",
-    node: "NODE02",
     state: "input-required",
     who: "node two",
     who_title: "NODE02",
     at: "2026-01-01T00:00:02.000Z",
-    artifacts: [],
+    files: [],
     cancellable: true,
   },
   {
     id: "TASK01",
     peer: "NODE02",
-    node: "NODE02",
     state: "completed",
     who: "node two",
     who_title: "http://127.0.0.1:11812",
     at: "2026-01-01T00:00:01.000Z",
-    artifacts: [ARTIFACT],
+    files: [FILE],
     cancellable: false,
   },
 ];
@@ -58,7 +51,6 @@ const RECENT: PodTaskRow[] = [
 const APPROVAL: PodApproval = {
   id: "NODE02|TASK02",
   peer: "NODE02",
-  node: "NODE02",
   task_id: "TASK02",
   tool: "write_file",
   requested: '{"path":"report.md"}',
@@ -75,18 +67,22 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
   const broker = new ApprovalBroker(pod);
   const panel = new PanelModel(pod, broker, catalogFeed());
   const stubs: Partial<PanelModel> = {
-    self: () =>
-      ({
+    state: async () => ({
+      self: {
         orca_node_id: "NODE01",
         display_name: "node one",
         endpoints: ["http://127.0.0.1:11811"],
         state: "online",
         workgroup_id: "wg",
         busy_from: null,
-      }) as unknown as PodPeer<SelfRecord>,
-    members: () => [{ orca_node_id: "NODE02", state: "online", endpoints: [], busy_from: null } as unknown as PodPeer],
+      } as unknown as PodPeer<SelfRecord>,
+      config: await panel.config(),
+      members: [{ orca_node_id: "NODE02", state: "online", endpoints: [], busy_from: null } as unknown as PodPeer],
+      approvals: [APPROVAL],
+      recent: RECENT,
+      workspace: { root: "/data/workgroups/wg", state: "/data/state/wg" },
+    }),
     recent: (limit) => RECENT.slice(0, limit),
-    approvals: () => [APPROVAL],
     config: async () => ({
       configured: true,
       workgroup_id: "wg",
@@ -139,8 +135,7 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
         task: taskView(taskId, "working"),
         origin: "node two",
         dispatch: null,
-        artifacts: [ARTIFACT],
-        inputs: ["in.txt"],
+        files: [FILE],
       };
     },
     approve: async (peer, taskId) => {
@@ -155,12 +150,6 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
       calls.push(`cancel:${peer}:${taskId}`);
       return taskView(taskId, "canceled");
     },
-    workspace: () => ({
-      root: "/data/workgroups/wg",
-      notes: "/data/workgroups/wg/notes",
-      state: "/data/state/wg",
-      notes_files: ["STATUS.md"],
-    }),
     blob: async (node, blobId) => {
       calls.push(`blob:${node}/${blobId}`);
       return { stream: Readable.from([Buffer.from("file bytes")]), size: 10 };
@@ -173,10 +162,30 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
   return Object.assign(panel, { calls });
 }
 
+/** The route the panel registers on the host's web server, the way the host receives it. */
+function registeredRoute(panel: PanelModel): WebRoute {
+  let registered: WebRoute | undefined;
+  const ctx = {
+    inject: (_services: string[], scope: (inner: unknown) => void) =>
+      scope({
+        effect: (run: () => unknown) => run(),
+        webServer: { register: (route: WebRoute) => (registered = route) },
+      }),
+  };
+  new PanelRoutes(panel).register(ctx as never);
+  if (registered === undefined) throw new Error("the panel registered no route");
+  return registered;
+}
+
+/** The prefix the panel's API lives under, as the host routes it. */
+const POD_API_PREFIX = registeredRoute(new PanelModel(idlePod(), new ApprovalBroker(idlePod()), catalogFeed())).path;
+
 /** The panel routes over a panel model, as the plain function the web server calls. */
 function apiHandler(panel: PanelModel): (request: never, response: never) => Promise<void> {
-  const api = new PanelRoutes(panel);
-  return (request, response) => api.handle(request as never, response as never);
+  const { handler } = registeredRoute(panel);
+  return async (request, response) => {
+    await handler(request, response);
+  };
 }
 
 interface InvokeOptions {
@@ -270,13 +279,11 @@ describe("panel HTTP bridge", () => {
     expect(result.status).toBe(200);
     expect(result.body.self.orca_node_id).toBe("NODE01");
     expect(result.body.members).toHaveLength(1);
-    expect(result.body.mesh).toEqual({ reachable: 1 });
     expect(result.body.recent.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
-    expect(result.body.recent[1].artifacts[0].name).toBe("report.md");
+    expect(result.body.recent[1].files).toEqual([FILE]);
     expect(result.body.approvals).toHaveLength(1);
-    expect(result.body.approval_count).toBe(1);
     expect(result.body.approvals[0]).toMatchObject({ tool: "write_file", from: "node two", agent_id: "session-1" });
-    expect(result.body.workspace.notes_files).toEqual(["STATUS.md"]);
+    expect(result.body.workspace).toEqual({ root: "/data/workgroups/wg", state: "/data/state/wg" });
     expect(result.body).not.toHaveProperty("tasks");
     expect(result.body).not.toHaveProperty("prompts");
   });
@@ -383,13 +390,12 @@ describe("panel HTTP bridge", () => {
     expect(unknown.status).toBe(404);
   });
 
-  it("serves one task with its dispatch, artifacts and inputs in a single call", async () => {
+  it("serves one task with its dispatch and the files its result names in a single call", async () => {
     const panel = fakePanel() as PanelModel & { calls: string[] };
     const result = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/task?peer=p&task=TASK01` });
     expect(result.status).toBe(200);
     expect(result.body.task.id).toBe("TASK01");
-    expect(result.body).toMatchObject({ origin: "node two", dispatch: null, inputs: ["in.txt"] });
-    expect(result.body.artifacts[0].name).toBe("report.md");
+    expect(result.body).toMatchObject({ origin: "node two", dispatch: null, files: [FILE] });
     expect(panel.calls).toEqual(["task:p:TASK01"]);
 
     const missing = await invoke(apiHandler(panel), { url: `${POD_API_PREFIX}/task?peer=p` });

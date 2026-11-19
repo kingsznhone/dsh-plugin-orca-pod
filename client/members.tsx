@@ -101,10 +101,6 @@ export function Workspace({ workspace }: { workspace: WorkspaceView | null }) {
       <div className={`${panel.path} ${ui.mono}`} title={workspace.root}>
         {workspace.root}
       </div>
-      <dl className={panel.kv}>
-        <dt>{t("notes")}</dt>
-        <dd>{workspace.notes_files.join(", ") || t("empty")}</dd>
-      </dl>
     </div>
   );
 }

@@ -40,7 +40,7 @@ describe("workspace quota", () => {
 
   it("refuses a new task while the workspace holds more files than its quota", async () => {
     const deps = runnerSetup({ maxWorkspaceFiles: 2 });
-    for (const name of ["a", "b", "c"]) writeFileSync(join(deps.workspace.notes, name), "x");
+    for (const name of ["a", "b", "c"]) writeFileSync(join(deps.workspace.root, name), "x");
     const runner = createTestRunner(deps);
     runner.start();
 
@@ -51,7 +51,7 @@ describe("workspace quota", () => {
     const deps = runnerSetup({ maxWorkspaceFiles: 2 });
     const runner = createTestRunner(deps);
     runner.start();
-    const files = ["a", "b", "c"].map((name) => join(deps.workspace.notes, name));
+    const files = ["a", "b", "c"].map((name) => join(deps.workspace.root, name));
     for (const file of files) writeFileSync(file, "x");
     await submitUntilRefused(() => runner.submit({ message }));
 

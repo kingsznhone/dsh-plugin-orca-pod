@@ -6,10 +6,10 @@
  * the publisher changes nothing.
  */
 
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { rename, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync, rmSync } from "node:fs";
+import { mkdir, rename, rm } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { StatementSync } from "node:sqlite";
@@ -39,64 +39,33 @@ export function parseBlobRef(text: string): BlobRef | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** How long a published file stays downloadable unless `publish --ttl` says otherwise (§5.6). */
-export const DEFAULT_BLOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** The same retention in seconds: published files and the links to them. */
-export const DEFAULT_BLOB_TTL_S = Math.floor(DEFAULT_BLOB_TTL_MS / 1000);
+/** How long a published file stays downloadable unless its publisher says otherwise (§5.6): 7 days. */
+const DEFAULT_BLOB_TTL_S = 7 * 24 * 60 * 60;
 
 // Published files (§5.6)
 
-export type FileBlob = {
+type FileBlob = {
   /** sha256 of the file contents; doubles as the content address. */
   blob_id: string;
-  /** Absolute path on this orca node. */
+  /** Absolute path on this orca node: the registry's own copy of the file. */
   path: string;
   size: number;
   expires_at: string | null;
 };
 
-/** Mapping storage; the durable implementation is `SqliteFileBlobStore`. */
-export interface FileBlobStore {
-  save(blob: FileBlob): void;
-  get(blobId: string): FileBlob | undefined;
-}
-
 /** A published file, open for streaming. */
 export type OpenedBlob = { stream: Readable; size: number | undefined };
-
-/** Open a file some member published, wherever it lives (§5.6); supplied by whoever owns the mesh. */
-export type FetchBlob = (ref: BlobRef, signal?: AbortSignal) => Promise<OpenedBlob>;
-
-export interface FileBlobRegistry {
-  register(path: string, ttlS?: number): Promise<FileBlob>;
-  get(blobId: string): FileBlob | undefined;
-  has(blobId: string): boolean;
-  /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (§5.6). */
-  open(blobId: string): OpenedBlob;
-}
-
-/** A mapping that lives as long as the process: unit tests and in-memory orca nodes. */
-export class MemoryFileBlobStore implements FileBlobStore {
-  private readonly entries = new Map<string, FileBlob>();
-
-  save(blob: FileBlob): void {
-    this.entries.set(blob.blob_id, blob);
-  }
-
-  get(blobId: string): FileBlob | undefined {
-    return this.entries.get(blobId);
-  }
-}
 
 /**
  * Durable file-blob mapping (§5.6), in the same database as tasks so one
  * `data_root` holds all node state. This node writes rows when it publishes a
  * file and the gateway reads them, which is why publishing needs no network route at all.
  */
-export class SqliteFileBlobStore implements FileBlobStore {
+class FileBlobStore {
   /** Prepared on first use, because the database opens after the store is built. */
-  private statements: { upsert: StatementSync; selectOne: StatementSync } | undefined;
+  private statements:
+    | { upsert: StatementSync; selectOne: StatementSync; selectExpired: StatementSync; remove: StatementSync }
+    | undefined;
 
   constructor(private readonly handle: SqliteDb) {}
 
@@ -109,7 +78,17 @@ export class SqliteFileBlobStore implements FileBlobStore {
     return row && { ...row, size: Number(row.size) };
   }
 
-  private prepared(): NonNullable<SqliteFileBlobStore["statements"]> {
+  /** Every file whose time ran out at or before `at` (an ISO timestamp). */
+  expired(at: string): FileBlob[] {
+    if (this.handle.closed) return [];
+    return (this.prepared().selectExpired.all(at) as FileBlob[]).map((row) => ({ ...row, size: Number(row.size) }));
+  }
+
+  delete(blobId: string): void {
+    if (!this.handle.closed) this.prepared().remove.run(blobId);
+  }
+
+  private prepared(): NonNullable<FileBlobStore["statements"]> {
     if (this.statements !== undefined) return this.statements;
     const { db } = this.handle;
     db.exec(
@@ -126,6 +105,11 @@ export class SqliteFileBlobStore implements FileBlobStore {
          ON CONFLICT(blob_id) DO UPDATE SET path = excluded.path, size = excluded.size, expires_at = excluded.expires_at`,
       ),
       selectOne: db.prepare("SELECT blob_id, path, size, expires_at FROM file_blobs WHERE blob_id = ?"),
+      // ISO timestamps of one format compare as text.
+      selectExpired: db.prepare(
+        "SELECT blob_id, path, size, expires_at FROM file_blobs WHERE expires_at IS NOT NULL AND expires_at <= ?",
+      ),
+      remove: db.prepare("DELETE FROM file_blobs WHERE blob_id = ?"),
     };
     return this.statements;
   }
@@ -134,9 +118,9 @@ export class SqliteFileBlobStore implements FileBlobStore {
 /**
  * A pass-through that hashes (sha256) and counts what flows through it: a file
  * is named by this digest when it is published and checked against it when it
- * is fetched (§5.6). It fails the stream once more than `maxBytes` have passed.
+ * is fetched (§5.6).
  */
-export function sha256Tap(maxBytes = Number.POSITIVE_INFINITY): {
+function sha256Tap(): {
   stream: Transform;
   digest(): { sha: string; size: number };
 } {
@@ -146,8 +130,7 @@ export function sha256Tap(maxBytes = Number.POSITIVE_INFINITY): {
     transform(chunk: Buffer, _encoding, done) {
       hash.update(chunk);
       size += chunk.length;
-      if (size > maxBytes) done(new PodError("blob_too_large", `the file is larger than ${maxBytes} bytes`));
-      else done(null, chunk);
+      done(null, chunk);
     },
   });
   return { stream, digest: () => ({ sha: hash.digest("hex"), size }) };
@@ -155,16 +138,11 @@ export function sha256Tap(maxBytes = Number.POSITIVE_INFINITY): {
 
 /**
  * Write a fetched file to `path`: the bytes go to `<path>.part` first and are
- * moved into place only when their sha256 is the one the file is named by (§5.6)
- * and they stay within `maxBytes`. Nothing is left behind on failure.
+ * moved into place only when their sha256 is the one the file is named by (§5.6).
+ * Nothing is left behind on failure.
  */
-export async function saveBlob(
-  opened: OpenedBlob,
-  path: string,
-  sha: string,
-  maxBytes = Number.POSITIVE_INFINITY,
-): Promise<{ size: number }> {
-  const tap = sha256Tap(maxBytes);
+export async function saveBlob(opened: OpenedBlob, path: string, sha: string): Promise<{ size: number }> {
+  const tap = sha256Tap();
   const partial = `${path}.part`;
   try {
     await pipeline(opened.stream, tap.stream, createWriteStream(partial));
@@ -181,45 +159,84 @@ export async function saveBlob(
   }
 }
 
+/** How often expired files are swept away while the node runs. */
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
 /**
  * File-backed blob registry (§5.6).
  *
  * Files move between nodes by link only: a node publishes a file of its own,
- * and whoever needs it pulls the bytes from that node's gateway. The registry
- * maps the file's sha256 to its local path and a TTL. A task appends the name
- * of a result to its summary; an origin puts the names of the files it hands
- * over into the task text. A name is `<orca_node_id>/<sha256>` (`blobRefText`),
- * while the `blob_id` itself is the bare sha256.
+ * and whoever needs it pulls the bytes from that node's gateway. A name is
+ * `<orca_node_id>/<sha256>` (`blobRefText`), while the `blob_id` itself is the
+ * bare sha256. Tasks know nothing of files: whoever hands one over writes its
+ * name into the text it sends.
  *
- * Registration is a local capability, not an HTTP route: publishing a path is
- * equivalent to reading it. Only this node's own code (the `orca_pod` tool, the
- * task runner) registers files; peers only ever see the name, never a path.
+ * Publishing copies the file into the registry's own directory, named by its
+ * hash, so a later change to the original changes nothing a fetcher gets. The
+ * registry keeps what it copied for the file's TTL and then deletes the copy
+ * with its row (`sweep`).
+ *
+ * Registration is a local capability: publishing a path is equivalent to reading
+ * it. Only this machine reaches it (the `orca_pod` tool, through this process or
+ * the node's local routes); peers only ever see the name, never a path.
  */
-export class DiskBlobRegistry implements FileBlobRegistry {
-  constructor(private readonly store: FileBlobStore) {}
+export class FileBlobRegistry {
+  private readonly store: FileBlobStore;
+  private sweeper: NodeJS.Timeout | undefined;
 
+  constructor(
+    db: SqliteDb,
+    /** Where the copies live; every file in it belongs to this registry. */
+    private readonly dir: string,
+  ) {
+    this.store = new FileBlobStore(db);
+  }
+
+  /** Sweep the expired files now, then every hour until `stop()`. */
+  start(): void {
+    this.sweep();
+    this.sweeper = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS);
+    this.sweeper.unref();
+  }
+
+  stop(): void {
+    if (this.sweeper !== undefined) clearInterval(this.sweeper);
+    this.sweeper = undefined;
+  }
+
+  /**
+   * Copy a file in and name it by its sha256. Publishing the same bytes again
+   * keeps the one copy and the later of the two expiries; a TTL of 0 never expires.
+   */
   async register(path: string, ttlS: number = DEFAULT_BLOB_TTL_S): Promise<FileBlob> {
-    const absolute = resolve(path);
-    const { sha, size } = await DiskBlobRegistry.hashFile(absolute);
+    await mkdir(this.dir, { recursive: true });
+    const partial = join(this.dir, `.${randomUUID()}.part`);
+    const tap = sha256Tap();
+    let sha: string;
+    let size: number;
+    try {
+      await pipeline(createReadStream(resolve(path)), tap.stream, createWriteStream(partial));
+      ({ sha, size } = tap.digest());
+      // The same bytes are already here (and may be streaming to someone): keep that copy.
+      if (existsSync(join(this.dir, sha))) await rm(partial, { force: true });
+      else await rename(partial, join(this.dir, sha));
+    } catch (error) {
+      await rm(partial, { force: true });
+      throw error;
+    }
+    const requested = ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null;
+    const previous = this.store.get(sha);
     const blob: FileBlob = {
       blob_id: sha,
-      path: absolute,
+      path: join(this.dir, sha),
       size,
-      expires_at: ttlS > 0 ? new Date(Date.now() + ttlS * 1000).toISOString() : null,
+      expires_at: previous === undefined ? requested : FileBlobRegistry.later(previous.expires_at, requested),
     };
     this.store.save(blob);
     return { ...blob };
   }
 
-  get(blobId: string): FileBlob | undefined {
-    const blob = this.store.get(blobId);
-    return blob && { ...blob };
-  }
-
-  has(blobId: string): boolean {
-    return this.store.get(blobId) !== undefined;
-  }
-
+  /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (§5.6). */
   open(blobId: string): OpenedBlob {
     const file = this.store.get(blobId);
     if (!file) throw new PodError("blob_not_found");
@@ -228,13 +245,26 @@ export class DiskBlobRegistry implements FileBlobRegistry {
     return { stream: createReadStream(file.path), size: file.size };
   }
 
-  private static async hashFile(path: string): Promise<{ sha: string; size: number }> {
-    const tap = sha256Tap();
-    await pipeline(createReadStream(path), tap.stream, async (source: AsyncIterable<Buffer>) => {
-      for await (const _chunk of source) {
-        // Only the digest is wanted; the bytes are dropped.
+  /** Delete every file whose time ran out, its row and its copy. */
+  private sweep(): void {
+    for (const blob of this.store.expired(new Date().toISOString())) {
+      // Only a copy this registry made is its to delete: a row an older version
+      // wrote names the publisher's own file, which stays where it is.
+      const inside = relative(this.dir, blob.path);
+      const owned = inside !== "" && !inside.startsWith("..") && !isAbsolute(inside);
+      try {
+        if (owned) rmSync(blob.path, { force: true });
+      } catch {
+        // Still open for a download (Windows): keep the row, so the next sweep tries again.
+        continue;
       }
-    });
-    return tap.digest();
+      this.store.delete(blob.blob_id);
+    }
+  }
+
+  /** The later of two expiries; null (never) wins. */
+  private static later(left: string | null, right: string | null): string | null {
+    if (left === null || right === null) return null;
+    return left > right ? left : right;
   }
 }

@@ -5,7 +5,7 @@ import { ChangeSignal, type NodeLogger } from "./events.ts";
 import type { ModelDefaults, ModelOffer } from "./wire/model.ts";
 
 /** What the settings may pin about models (§6.15). */
-export type ModelPins = {
+type ModelPins = {
   models?: ModelOffer[];
   default_model?: ModelSelection;
   default_reasoning_effort?: ReasoningEffortId;

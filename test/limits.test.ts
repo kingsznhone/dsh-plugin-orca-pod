@@ -4,10 +4,11 @@
  * visible/recorded so an origin can size its delegations.
  */
 
+import { JsonTable } from "../src/core/sqlite.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { nodeParts } from "./support/node.ts";
 import { Orca } from "../src/node/orca.ts";
@@ -106,16 +107,11 @@ describe("storage failures", () => {
   it("logs a store that cannot save and still ends the task, instead of crashing the node", async () => {
     const warnings: string[] = [];
     const seen: TaskView[] = [];
-    const runner = createTestRunner({
-      store: {
-        save() {
-          throw new Error("disk full");
-        },
-        load: () => undefined,
-        list: () => [],
-      },
-      logger: { warn: (text) => warnings.push(text) },
+    // The task table cannot be written: every save of the runner's table fails.
+    const failing = vi.spyOn(JsonTable.prototype, "save").mockImplementation(() => {
+      throw new Error("disk full");
     });
+    const runner = createTestRunner({ logger: { warn: (text) => warnings.push(text) } });
     runner.events.subscribe((event) => seen.push(event.view));
     runner.submit(completedTask("fine"));
 
@@ -126,6 +122,7 @@ describe("storage failures", () => {
     expect(seen.at(-1)?.status.state).toBe("completed");
     expect(warnings.some((text) => text.includes("disk full"))).toBe(true);
     expect(runner.busy()).toBeNull();
+    failing.mockRestore();
   });
 });
 
@@ -139,7 +136,7 @@ describe("budget advertisement", () => {
       port: 0,
       task_timeout_s: 900,
     });
-    const node = new Orca(...config, { persistent: true });
+    const node = new Orca(...config);
     await node.start();
     try {
       const card = (await (await fetch(`${node.mesh.self.endpoints[0]!}/.well-known/agent-card.json`)).json()) as {
@@ -154,7 +151,7 @@ describe("budget advertisement", () => {
         data_root: otherRoot,
         port: 0,
       });
-      const other = new Orca(...otherConfig, { persistent: true });
+      const other = new Orca(...otherConfig);
       await other.start();
       try {
         await other.mesh.probe(node.mesh.self.endpoints[0]!);

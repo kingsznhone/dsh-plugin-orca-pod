@@ -7,7 +7,7 @@ import type { PeerState, TaskState } from "./types.ts";
 /** Every state a member, a task or a dispatch can be in; `unknown` is both a peer's and a dispatch's. */
 export type ShownState = PeerState | TaskState;
 
-export const STATE_KEY: Record<ShownState, string> = {
+const STATE_KEY: Record<ShownState, string> = {
   online: "stateOnline",
   suspect: "stateSuspect",
   offline: "stateOffline",

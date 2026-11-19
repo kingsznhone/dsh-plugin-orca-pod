@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { generateNodeIdentity, type NodeIdentity } from "../../src/core/identity.ts";
 import { deriveWorkgroupKey } from "../../src/core/signing.ts";
 import { createOrcaNodeConfig, type OrcaNodeConfig } from "../../src/node/config.ts";
-import { Orca, type OrcaNodeOptions } from "../../src/node/orca.ts";
+import { Orca } from "../../src/node/orca.ts";
+
+type OrcaNodeOptions = ConstructorParameters<typeof Orca>[3];
 import type { PeerView } from "../../src/core/wire/peer.ts";
 import { parseSettings, type Settings } from "../../src/node/settings.ts";
 

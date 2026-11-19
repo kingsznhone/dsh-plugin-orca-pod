@@ -33,7 +33,7 @@ const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 /** Bytes as base58 (the Bitcoin alphabet); each leading zero byte is a leading `1`. */
-export function encodeBase58(bytes: Uint8Array): string {
+function encodeBase58(bytes: Uint8Array): string {
   let value = 0n;
   for (const byte of bytes) value = value * 256n + BigInt(byte);
   let text = "";
@@ -46,7 +46,7 @@ export function encodeBase58(bytes: Uint8Array): string {
 }
 
 /** The bytes a base58 text stands for; throws on a character outside the alphabet. */
-export function decodeBase58(text: string): Buffer {
+function decodeBase58(text: string): Buffer {
   let value = 0n;
   for (const character of text) {
     const digit = BASE58_ALPHABET.indexOf(character);
@@ -69,15 +69,14 @@ export function shortenNodeId(orcaNodeId: string): string {
 }
 
 /** The node id of a public key: its raw 32 bytes in base64url (§7.1). */
-function nodeIdOfPublicKey(publicKey: KeyObject): OrcaNodeId {
-  const der = publicKey.export({ format: "der", type: "spki" });
-  const raw = Buffer.from(der).subarray(-RAW_KEY_BYTES);
-  return OrcaNodeIdSchema.parse(raw.toString("base64url"));
-}
-
 function identityOf(privateKey: KeyObject): NodeIdentity {
   return {
-    orcaNodeId: nodeIdOfPublicKey(createPublicKey(privateKey)),
+    // The node id is the raw public key: the last bytes of its SPKI encoding.
+    orcaNodeId: OrcaNodeIdSchema.parse(
+      Buffer.from(createPublicKey(privateKey).export({ format: "der", type: "spki" }))
+        .subarray(-RAW_KEY_BYTES)
+        .toString("base64url"),
+    ),
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
   };
 }

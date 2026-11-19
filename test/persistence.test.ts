@@ -30,7 +30,7 @@ async function nodeFor(dataRoot: string): Promise<Orca> {
     data_root: dataRoot,
     port: 0,
   });
-  const orcaNode = new Orca(...config, { persistent: true });
+  const orcaNode = new Orca(...config);
   orcaNodes.push(orcaNode);
   return orcaNode;
 }

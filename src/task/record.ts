@@ -10,21 +10,17 @@
  * events belong to the runner, which listens to `changes` and reads the state.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
 
-import type { FetchBlob, FileBlobRegistry } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
 import type { OrcaNodeId } from "../core/wire/peer.ts";
 import { narrowPermissionMode } from "../core/wire/permission.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor/executor.ts";
-import { TaskFiles } from "./files.ts";
 import type { GrantFailure } from "./grants.ts";
 import type { TaskMeta } from "./meta.ts";
 import { composePrompt } from "./prompt.ts";
@@ -35,10 +31,6 @@ import type { Workspace } from "./workspace.ts";
 export type TaskSettings = {
   logger: NodeLogger;
   selfOrcaNodeId: OrcaNodeId;
-  /** Fetches the files an origin attaches to a task from the member that published them (§3.8). */
-  fetchBlob: FetchBlob;
-  /** The largest single file taken into a task's inbox or handed back from its outbox. */
-  maxFileBytes: number;
   /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
   permissionCeiling?: SandboxMode;
   /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
@@ -47,7 +39,7 @@ export type TaskSettings = {
   resultMaxBytes: number;
 };
 
-export type RecordInit = {
+type RecordInit = {
   view: TaskView;
   origin: OrcaNodeId;
   meta: TaskMeta;
@@ -61,13 +53,12 @@ export class TaskRecord {
   readonly id: string;
   readonly origin: OrcaNodeId;
   readonly createdAt: string;
-  /** Notified after every observable change: a new state, or a new artifact. */
+  /** Notified after every observable change of state. */
   readonly changes: ChangeSignal;
   private readonly view: TaskView;
   private readonly meta: TaskMeta;
   private readonly ttlS: number;
   private readonly text: string;
-  private readonly files: TaskFiles;
   private readonly abort = new AbortController();
   /** Effective mode: inherited and capped at the start, widened by a grant (§7.12). */
   private mode: SandboxMode;
@@ -80,8 +71,6 @@ export class TaskRecord {
   constructor(
     init: RecordInit,
     private readonly executor: LocalExecutor,
-    /** Where the files a task produces are published (§5.6). */
-    private readonly blobs: FileBlobRegistry,
     private readonly workspace: Workspace,
     private readonly settings: TaskSettings,
   ) {
@@ -93,7 +82,6 @@ export class TaskRecord {
     this.meta = init.meta;
     this.ttlS = init.ttlS;
     this.text = init.text;
-    this.files = new TaskFiles(this.id, init.meta.files, workspace, blobs, settings.fetchBlob, settings.maxFileBytes);
     // The ceiling only narrows what the origin asked for (§7.10); a grant widens it later (§7.12).
     this.mode =
       settings.permissionCeiling === undefined
@@ -119,8 +107,7 @@ export class TaskRecord {
     this.armTtl();
     this.changes.notify();
     void this.guarded(async () => {
-      const input = await this.prepare();
-      if (this.over) return;
+      const input = this.prepare();
       this.iterator = this.executor.run(input, this.abort.signal);
       this.move("working");
       await this.drive();
@@ -158,7 +145,7 @@ export class TaskRecord {
     this.changes.notify();
   }
 
-  /** The single exit: after this the task holds no timer, permission request or inbox/outbox directory. */
+  /** The single exit: after this the task holds no timer or permission request. */
   private finish(state: TaskState, message: A2AMessage | undefined, reason?: string): void {
     if (this.over) return;
     this.view.status = {
@@ -170,9 +157,6 @@ export class TaskRecord {
     this.clearTtl();
     this.clearPermissionTimer();
     this.request = null;
-    this.files.clear().catch((error: unknown) => {
-      this.settings.logger.warn(`task ${this.id}: its inbox/outbox could not be removed: ${errorMessage(error)}`);
-    });
     this.changes.notify();
   }
 
@@ -198,21 +182,16 @@ export class TaskRecord {
 
   // ---- running ----
 
-  private async prepare(): Promise<ExecuteInput> {
+  private prepare(): ExecuteInput {
     const { meta, settings, workspace } = this;
-    const inputs = await this.files.stage(this.abort.signal);
     return {
-      taskId: this.id,
       contextId: this.view.contextId,
       prompt: composePrompt({
         taskId: this.id,
         selfOrcaNodeId: settings.selfOrcaNodeId,
-        inputs,
         text: this.text,
-        noteFiles: workspace.noteFiles(),
       }),
       originOrcaNode: this.origin,
-      selfOrcaNodeId: settings.selfOrcaNodeId,
       workspaceDir: workspace.root,
       podDir: workspace.state,
       permissionMode: this.mode,
@@ -239,48 +218,14 @@ export class TaskRecord {
       switch (event.type) {
         case "suspend":
           return this.requestPermission(event.suspend);
-        case "artifact":
-          await this.addArtifact(event.name, event.content);
-          break;
         case "completed":
-          return this.finish("completed", textMessage(await this.handBack(event.text)));
+          return this.finish("completed", textMessage(event.text));
         case "failed":
-          return this.finish("failed", textMessage(await this.handBack(event.text)), event.reason ?? "executor_error");
+          return this.finish("failed", textMessage(event.text), event.reason ?? "executor_error");
         default:
           return assertNever(event);
       }
     }
-  }
-
-  /**
-   * An artifact the executor hands over as text (only the echo script does):
-   * written under this node's own state, outside the agent's workspace, and
-   * published like any produced file (§5.6). The name is the origin's label and
-   * never a path; the file is numbered.
-   */
-  private async addArtifact(name: string, content: string): Promise<void> {
-    const path = this.workspace.artifactPath(this.id, (this.view.artifacts ?? []).length + 1);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, "utf8");
-    const blob = await this.blobs.register(path);
-    if (this.over) return;
-    this.view.artifacts = [
-      ...(this.view.artifacts ?? []),
-      { artifactId: blob.blob_id, name, mediaType: "text/plain", bytes: blob.size },
-    ];
-    this.changes.notify();
-  }
-
-  /**
-   * The task ends: publish what the agent left in its outbox and attach it to
-   * the task as artifacts (§3.8). Files that could not be handed back are named
-   * in the text the origin reads.
-   */
-  private async handBack(text: string): Promise<string> {
-    const { artifacts, note } = await this.files.publish((this.view.artifacts ?? []).length + 1);
-    if (this.over) return text;
-    if (artifacts.length > 0) this.view.artifacts = [...(this.view.artifacts ?? []), ...artifacts];
-    return note === null ? text : `${text}\n\n[orca-pod] ${note}`;
   }
 
   /** Ask the origin to let this task continue with a wider mode (§7.12); the executor waits for the answer. */
@@ -298,14 +243,10 @@ export class TaskRecord {
       expires_at: permissionTtlS === undefined ? undefined : new Date(Date.now() + permissionTtlS * 1000).toISOString(),
     };
     this.request = request;
-    this.park({ role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] });
-  }
-
-  /** `input-required`: the TTL stands still while the task waits. */
-  private park(message: A2AMessage): void {
+    // `input-required`: the TTL stands still while the task waits.
     this.clearTtl();
-    if (this.request !== null) this.armPermissionTimer();
-    this.move("input-required", message);
+    this.armPermissionTimer();
+    this.move("input-required", { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] });
   }
 
   // ---- timers ----

@@ -1,15 +1,17 @@
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
-import { bodySha256, buildReplyHeader, NonceCache, parseAuthHeader, REPLY_HEADER_NAME } from "../core/signing.ts";
+import { bodySha256, buildReplyHeader, parseAuthHeader, REPLY_HEADER } from "../core/signing.ts";
 import { PodError, POD_ERROR_STATUS } from "../core/errors.ts";
 import { isBlockedFetchPort, pickFreePort } from "../core/net.ts";
 import type { Mesh } from "../mesh/mesh.ts";
+import type { FileBlobRegistry } from "../core/blobs.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { A2aRoutes } from "./a2a-routes.ts";
 import { AccessPolicy } from "./access.ts";
 import { BlobRoutes } from "./blob-routes.ts";
 import { ClusterRoutes } from "./cluster-routes.ts";
+import { LocalRoutes } from "./local-routes.ts";
 
 /**
  * Default cap for signed requests. Authentication needs the body bytes, so the
@@ -22,11 +24,12 @@ const BUSY_RETRY_AFTER_S = 30;
 
 /**
  * The inbound HTTP surface of an orca node (§4): the signed routes of the
- * workgroup, the A2A task API and the file routes, behind one access policy and
+ * workgroup, the A2A task API, the file routes and this machine's local routes, behind one access policy and
  * one error format; every answer to a signed request is itself signed. The
  * constructor only builds the routes in memory; `listen` binds the port.
  */
 export class Gateway {
+  /** The HTTP surface: every route behind the access policy; `listen` binds it to a port. */
   readonly app: FastifyInstance;
 
   constructor(
@@ -35,6 +38,8 @@ export class Gateway {
     /** Workgroup key behind the proof of every request (§7.1). */
     key: Buffer,
     private readonly identity: NodeIdentity,
+    /** What this machine's own processes reach through the local routes, and the token they take. */
+    local: { token: string; blobs: FileBlobRegistry },
   ) {
     // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
     // shutdown must not wait for it. Routes register no Fastify schemas: each
@@ -43,10 +48,11 @@ export class Gateway {
     this.installBodyParsers();
     this.app.setErrorHandler((error, request, reply) => this.handleError(error, request, reply));
     this.app.addHook("onSend", async (request, reply, payload) => this.signReply(request, reply, payload));
-    new AccessPolicy(mesh.self.id, mesh.workgroupId, key, new NonceCache(), Date.now()).install(this.app);
+    new AccessPolicy(mesh.self.id, mesh.workgroupId, key, local.token).install(this.app);
     new ClusterRoutes(mesh).register(this.app);
     new A2aRoutes(mesh.self.id, tasks).register(this.app);
     new BlobRoutes(mesh).register(this.app);
+    new LocalRoutes(mesh, local.blobs).register(this.app);
   }
 
   /**
@@ -90,7 +96,7 @@ export class Gateway {
       subject = `blob:${(request.params as { blob_id?: string }).blob_id ?? ""}`;
     }
     if (subject !== undefined) {
-      reply.header(REPLY_HEADER_NAME, buildReplyHeader(this.identity, { nonce, status: reply.statusCode, subject }));
+      reply.header(REPLY_HEADER, buildReplyHeader(this.identity, { nonce, status: reply.statusCode, subject }));
     }
     return payload;
   }

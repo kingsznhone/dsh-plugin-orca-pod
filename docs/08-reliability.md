@@ -8,23 +8,23 @@
 
 - **不重发、不自动恢复**，也不做 exactly-once：失败就是失败，要不要重来由人或 agent 显式再派一次（新 task）；
 - **失败立即、终止明确**：target 重启 → `failed(node_restart)`；TTL 到点 → `failed(timeout)`；
-- **状态诚实**：宁可说“失败/未知”，不假装成功；origin 看不到的任务标 `unknown`，不写成 `failed`；
+- **状态诚实**：宁可说“失败/未知”，不假装成功；origin 重启后还没读到的任务标 `unknown`，tracker 读不到的任务记成 `failed` 并写明原因（[§8.2](#82-orca-node-失联任务不重发读不到就记失败)）；
 - 没有“副作用未知”标记：`failed` 不表示目标侧没改过文件，要不要保留现场由人看工作区 diff 决定。
 
-### 8.2 orca node 失联：任务不重发，origin 不替它判死
+### 8.2 orca node 失联：任务不重发，读不到就记失败
 
 ```text
 origin 的 tracker 轮询 tasks/get
-  → 瞬时失败（超时/网络错误/5xx）：按 1s 起翻倍、上限 30s 退避重试
-  → 连续 5 次仍失败：停止跟踪，告诉发起会话
-      "tracking of task … was interrupted: …; the task may still be running — call orca_pod with method "status" to check it"
-  → 404 / 401 / 403：确定性失败，立即停止并同样告知
+  → 瞬时失败（超时/网络错误/5xx/节点不在线）：按 1s 起翻倍、上限 30s 退避重试
+  → 连续 5 次仍失败：派发日志记成 failed（last_error = 最后一次的错误），停止轮询，告诉发起会话
+      "task … on … is failed; reason: …; this node could not read the task and stopped following it"
+  → 404 / 节点已不在节点表 / 401 / 403：第一次就记成 failed，同样告知
 ```
 
 要点：
 
-- origin 的“放弃跟踪”不是任务状态：origin 不会把任务记成 `failed`，不补发 `tasks/cancel`，也没有 `node_unreachable`、`task_lost` 这类状态——它只知道自己看不到了；
-- 为什么不做重发 / 不做自动判死：跨 orca node 无法知道“执行到哪一步”，重发可能重复写文件、重复调 API；判死又可能冤枉一个只是网络抖动的任务。把事实交给 agent 与人：任务可能仍在跑，用 `status` 再查；
+- origin 记下的 `failed` 是 origin 自己的结论（D45）：它说的是“这边读不到了”，不代表目标侧真的失败，目标可能还在跑。origin 不补发 `tasks/cancel`，也不另设 `node_unreachable`、`task_lost` 之类的状态；要看目标侧此刻的状态，用 `status` 再查一次（`status` 只读，不改派发日志）；
+- 为什么不重发：跨 orca node 无法知道“执行到哪一步”，重发可能重复写文件、重复调 API。为什么读不到就记失败、而不是一直挂着：一个永远未结束的派发会让 tracker 一直轮询、让 agent 一直等不到结论；记成失败之后，要不要重来由 agent 与人决定；
 - 目标恢复后如果它自己完成了：**不处理、不召回**，也没有 `late_result` 状态。它发布的文件按登记的有效期（默认 7 天）可下载；
 - 目标侧：目标 orca node 继续跑（如果还活着），结果留在本地 SQLite，不回调 origin；
 - 成员层面的失联（心跳断）只影响**新任务的路由**（只有 `online` 接新任务，[§3.3](03-membership.md#33-心跳与双向看门狗)），不改变已派任务的状态。
@@ -39,14 +39,14 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 **origin 重启（origin 侧派发日志）**：target 的 task 有 SQLite 兜底，origin 自己也需要一份“派给了谁、最后知道什么”的日志，否则进程一退就失忆。实现为 `<data_root>/tasks.db` 里的 `dispatches` 表（表只有 `task_id`、`payload`、`updated_at` 三列；条目 JSON 里才是 `peer`、`context_id`、`state`、`last_error`、`agent_id`、`created_at`）：
 
-- 只有 `sendTask` 新建条目；`getTask`/`cancelTask`/审批只刷新已存在的条目；
-- 节点启动时把仍非终态的条目标成 `state=unknown, last_error=origin_restart`——**不把“看不见”写成“失败”**；之后重新轮询到真实状态再覆盖；
+- 写入按写的人分开（D45）：只有 `sendTask` 新建条目；之后条目的状态只由 tracker 改，每次变化是一条 `UPDATE … SET payload = json_patch(payload, …)`，只在条目未结束、且状态或错误确有变化时写；`getTask`/`cancelTask`/审批都不写派发日志；
+- 节点启动时把仍非终态的条目标成 `state=unknown, last_error=origin_restart`：重启本身不算失败；tracker 下一轮读到真实状态再覆盖，读不到按 [§8.2](#82-orca-node-失联任务不重发读不到就记失败) 记成 `failed`；
 - 面板的“全部任务”列出这张表；
-- 派发时 tracker 把发起会话的 id 写进 `agent_id`；宿主重启后，对仍在宿主里的会话恢复跟踪（[§5.2](05-tasks.md#52-任务回报)），其余任务靠 `status` 或面板查看，不静默丢失。
+- 派发时把发起会话的 id 写进 `agent_id`；tracker 不按会话恢复跟踪，它每轮都从这张表取工作。任务结束时会话在就通知，不在就只留记录（[§5.2](05-tasks.md#52-任务回报)），由 `status` 或面板查看。
 
 ### 8.4 重复提交
 
-不做幂等去重，协议里也没有幂等键：同一条 `message/send` 提交两次就是两个 task。要避免重复，靠调用方（agent 不自动重试；tracker 只读不写）。
+不做幂等去重，协议里也没有幂等键：同一条 `message/send` 提交两次就是两个 task。要避免重复，靠调用方（agent 不自动重试；tracker 只读远端任务、从不提交）。
 
 ### 8.5 超时与背压
 
@@ -86,7 +86,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 目前没有指标导出，也没有结构化 JSON 日志（指标的设想见 [§11](11-open-questions.md#11-未决问题)“指标”）。能观测的有：
 
-- **任务记录**：target 侧 `tasks/get`（状态、`reason`、结论、artifacts）；origin 侧 `dispatches` 派发日志（面板“全部任务”）；老版本写的条目只有 `peer`（URL），没有 `node`：读取时 `node` 为空，tracker 不再恢复跟踪它；
+- **任务记录**：target 侧 `tasks/get`（状态、`reason`、结论）；origin 侧 `dispatches` 派发日志（面板“全部任务”）；老版本写的条目只有 `peer`（URL），没有 `node`：读取时 `node` 为空，tracker 不再恢复跟踪它；
 - **成员状态**：`/cluster/members` 与 `orca_pod` 的 `members`——每个 peer 的 `state`（`online`/`suspect`/`offline`/`unknown`）、`last_recv_at`、`busy`、`max_task_ttl_s`、runtime、模型目录；
 - **面板**：`/orca-api/state` 一次轮询拿到自己、成员、待审批、最近任务、工作区（[§9.2](09-implementation.md#92-面板)）；
 - **日志**：节点通过注入的 logger 记 warning（拒绝的候选端点、被丢弃的 peer、落盘失败、blob 清理失败等），是 DSH 的 logger。

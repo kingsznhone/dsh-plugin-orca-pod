@@ -1,12 +1,12 @@
 /** Panel building blocks on top of DSH's shared primitives: cards, tables, fact lists, dialogs. */
 
-import { Modal, StateDot, Tag, fileSizeText } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Modal, StateDot, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import React, { type ReactNode } from "react";
-import { ageOf, stateDot, stateLabel, type ShownState } from "./format.ts";
+import { ageOf, short, stateDot, stateLabel, type ShownState } from "./format.ts";
 import { t } from "./i18n.ts";
 import { errorMessage } from "../src/core/errors.ts";
 import { downloadBlob, store } from "./store.ts";
-import type { ModelOffer, ModelSelection, PodArtifact } from "./types.ts";
+import type { ModelOffer, ModelSelection, PodFileRef } from "./types.ts";
 import ui from "./ui.module.css";
 
 /** `provider/model`: how a model route is written everywhere in the panel. */
@@ -144,35 +144,28 @@ export function Updated() {
   return <span className={ui.caption}>{t("updated") + ageOf(store.polledAt()) + t("updatedSuffix")}</span>;
 }
 
-/** A task's artifacts, each saved through this node on click; one whose publisher is unknown is plain text. */
-export function ArtifactLinks({ artifacts }: { artifacts: PodArtifact[] }) {
+/** The files a task's result names, each saved through this node on click. */
+export function FileLinks({ files }: { files: PodFileRef[] }) {
   const [failed, setFailed] = React.useState<string | null>(null);
-  const save = (artifact: PodArtifact, node: string) => {
+  const save = (file: PodFileRef) => {
     setFailed(null);
-    downloadBlob(node, artifact.blob_id, artifact.name).catch((error: unknown) =>
-      setFailed(`${artifact.name}: ${errorMessage(error)}`),
+    downloadBlob(file.node, file.blob_id, file.blob_id).catch((error: unknown) =>
+      setFailed(`${short(file.blob_id)}: ${errorMessage(error)}`),
     );
   };
   return (
     <>
-      {artifacts.map((artifact) => {
-        const { node } = artifact;
-        return node === null ? (
-          <span key={artifact.blob_id} className={ui.tertiary}>
-            {artifact.name}
-          </span>
-        ) : (
-          <button
-            key={artifact.blob_id}
-            type={"button"}
-            className={ui.linkButton}
-            title={`${fileSizeText(artifact.bytes)} · ${artifact.blob_id}`}
-            onClick={stop(() => save(artifact, node))}
-          >
-            {artifact.name}
-          </button>
-        );
-      })}
+      {files.map((file) => (
+        <button
+          key={`${file.node}/${file.blob_id}`}
+          type={"button"}
+          className={ui.linkButton}
+          title={`${file.node}/${file.blob_id}`}
+          onClick={stop(() => save(file))}
+        >
+          {short(file.blob_id)}
+        </button>
+      ))}
       {failed ? <span className={ui.error}>{failed}</span> : null}
     </>
   );

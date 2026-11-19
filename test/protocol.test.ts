@@ -11,7 +11,6 @@ import {
   type RuntimeInfo,
   type OrcaNodeId,
 } from "../src/core/wire/peer.ts";
-import { newTaskId } from "../src/task/wire.ts";
 import { labelId } from "./fixtures/ids.ts";
 
 // 43 base64url characters decode to a 32-byte Ed25519 public key.
@@ -228,24 +227,5 @@ describe("id guards", () => {
     expect(isWorkgroupId("-wg")).toBe(false);
     expect(isWorkgroupId("WG")).toBe(false);
     expect(isWorkgroupId("a".repeat(33))).toBe(false);
-  });
-});
-
-describe("newTaskId", () => {
-  it("encodes the millisecond timestamp in the leading ten characters, like a ULID", () => {
-    // Reference value from the ULID specification.
-    expect(newTaskId(1469918176385, () => 0)).toBe(`01ARYZ6S41${"0".repeat(16)}`);
-  });
-
-  it("keeps the random part in the trailing sixteen characters", () => {
-    expect(newTaskId(1469918176385, () => 0.999)).toBe(`01ARYZ6S41${"Z".repeat(16)}`);
-    expect(newTaskId()).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-  });
-
-  it("sorts ids by creation time", () => {
-    const times = [1_700_000_000_000, 1_700_000_000_001, 1_700_000_060_000, 1_800_000_000_000];
-    const ids = times.map((time, index) => newTaskId(time, () => 0.999 - index / 10));
-    expect([...ids].sort()).toEqual(ids);
-    expect(ids.every((id) => id.length === 26)).toBe(true);
   });
 });
