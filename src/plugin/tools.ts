@@ -148,15 +148,9 @@ type PodCall =
 
 // ---- what a call answers ----
 
-/** A node as `members` and `connect` list it. */
-type PeerSummary = Pick<
-  PeerView,
-  "orca_node_id" | "display_name" | "endpoints" | "state" | "busy" | "runtime" | "last_recv_at" | "max_task_ttl_s"
->;
-
 type SendResult = { task_id: string; state: TaskState; peer: string; node: string };
 type FetchResult = { path: string; size: number };
-type ConnectResult = { peer: string; members: PeerSummary[]; members_digest: string };
+type ConnectResult = { peer: string; members: PeerView[]; members_digest: string };
 
 /**
  * The machine's node as the tool reaches it: the pod of this process (the host),
@@ -325,7 +319,7 @@ export class PodTool {
     const { mesh } = await PodTool.awaitOrca(pod, signal);
     return {
       peer,
-      members: mesh.peers().map((node) => PodTool.peerSummary(node.view())),
+      members: mesh.peers().map((node) => node.view()),
       members_digest: mesh.digest(),
     };
   }
@@ -354,8 +348,8 @@ export class PodTool {
       case "members": {
         const { mesh } = await PodTool.awaitOrca(pod, signal);
         return {
-          self: PodTool.peerSummary(mesh.self.selfRecord()),
-          members: mesh.peers().map((node) => PodTool.peerSummary(node.view())),
+          self: mesh.self.selfRecord(),
+          members: mesh.peers().map((node) => node.view()),
           members_digest: mesh.digest(),
         };
       }
@@ -431,19 +425,6 @@ export class PodTool {
       throw new Error("ttl_s must be a non-negative integer");
     }
     return { method: "publish", args: { path: PodTool.need(args, "path"), ttl_s: args.ttl_s } };
-  }
-
-  private static peerSummary(peer: PeerView): PeerSummary {
-    return {
-      orca_node_id: peer.orca_node_id,
-      display_name: peer.display_name,
-      endpoints: peer.endpoints,
-      state: peer.state,
-      busy: peer.busy,
-      runtime: peer.runtime,
-      last_recv_at: peer.last_recv_at,
-      max_task_ttl_s: peer.max_task_ttl_s,
-    };
   }
 
   /**

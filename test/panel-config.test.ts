@@ -292,7 +292,7 @@ describe("panel configuration of the pod", () => {
       expect(handle.run!.orca.settings.bind_host).toBe("127.0.0.1");
 
       const view = await panelFor(handle).saveConfig({ bind_host: "0.0.0.0" });
-      expect(view.bind_host).toBe("0.0.0.0");
+      expect(view.settings.bind_host).toBe("0.0.0.0");
       expect((await readJson(settingsPath(root))).bind_host).toBe("0.0.0.0");
       expect(handle.run!.orca.settings.bind_host).toBe("0.0.0.0");
     } finally {
@@ -315,7 +315,7 @@ describe("panel configuration of the pod", () => {
         executor: "echo",
       });
 
-      expect(view.advanced).toEqual({
+      expect(view.settings).toMatchObject({
         task_timeout_s: 120,
         approval_timeout_s: 45,
         result_max_bytes: 4096,
@@ -340,9 +340,9 @@ describe("panel configuration of the pod", () => {
       // Clearing a field removes it from the settings file and the node's settings,
       // so the local default applies again instead of a stale stored value.
       const cleared = await panel.saveConfig({ task_timeout_s: null, default_reasoning_effort: null, executor: null });
-      expect(cleared.advanced.task_timeout_s).toBeNull();
-      expect(cleared.advanced.default_reasoning_effort).toBeNull();
-      expect(cleared.advanced.executor).toBeNull();
+      expect(cleared.settings.task_timeout_s).toBeUndefined();
+      expect(cleared.settings.default_reasoning_effort).toBeUndefined();
+      expect(cleared.settings.executor).toBeUndefined();
       const clearedSettings = handle.run!.orca.settings;
       expect(clearedSettings.task_timeout_s).toBeUndefined();
       expect(clearedSettings.default_reasoning_effort).toBeUndefined();
@@ -535,7 +535,7 @@ describe("panel model configuration", () => {
       const view = await panelFor(handle).config();
       expect(view).toMatchObject({
         configured: true,
-        workgroup_id: "wg-panel",
+        settings: { workgroup_id: "wg-panel" },
         password_set: true,
         running: true,
         error: null,
@@ -564,7 +564,7 @@ describe("panel model configuration", () => {
 
       const view = await panelFor(handle).saveConfig({ workgroup_id: wg("wg-other") });
 
-      expect(view.workgroup_id).toBe("wg-other");
+      expect(view.settings.workgroup_id).toBe("wg-other");
       expect(view.password_set).toBe(true);
       expect(credentials.secrets.get(PASSWORD_REF)).toBe(PASSWORD);
       expect(handle.run!.orca.orcaNodeId).toBe(firstId);
@@ -608,14 +608,27 @@ describe("panel model configuration", () => {
       const panel = panelFor(handle);
       const self = (await panel.state()).self!;
       expect(self.display_name).toBe(shortenNodeId(self.orca_node_id));
-      const { display_name, suggested_endpoints: suggested, bind_choices: choices, advanced } = await panel.config();
+      const { display_name, suggested_endpoints: suggested, bind_choices: choices, settings } = await panel.config();
       expect(display_name).toBe(shortenNodeId(self.orca_node_id));
       for (const url of suggested) expect(url.startsWith("http://")).toBe(true);
       expect(choices.slice(0, 2)).toEqual(["127.0.0.1", "::"]);
-      expect(advanced).toMatchObject({
+      expect(settings).toMatchObject({
         max_workspace_bytes: 5 * 1024 ** 3,
         max_workspace_files: 50_000,
       });
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it("shows the settings but not the ACP executor's, whose MCP server env may hold secrets", async () => {
+    const acp = { mcp_servers: [{ name: "probe", command: "probe", env: { PROBE_TOKEN: "do-not-show" } }] };
+    const { handle } = await started({ ...bundle(), acp });
+    try {
+      const view = await panelFor(handle).config();
+      expect(view.settings.display_name).toBe("panel node");
+      expect(view.settings).not.toHaveProperty("acp");
+      expect(JSON.stringify(view)).not.toContain("do-not-show");
     } finally {
       await handle.stop();
     }
@@ -646,7 +659,11 @@ describe("panel model configuration", () => {
       expect(handle.status.kind).not.toBe("failed");
       expect(handle.configured).toBe(true);
       expect(credentials.secrets.get(PASSWORD_REF)).toBe("pw-fresh");
-      expect(await panel.config()).toMatchObject({ configured: true, running: true, workgroup_id: "wg-fresh" });
+      expect(await panel.config()).toMatchObject({
+        configured: true,
+        running: true,
+        settings: { workgroup_id: "wg-fresh" },
+      });
     } finally {
       await handle.stop();
     }

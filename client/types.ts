@@ -18,7 +18,6 @@ import type { ComponentType } from "react";
 
 export type {
   PodActions,
-  PodAdvancedConfig,
   PodApproval,
   PodFileRef,
   PodConfigView,

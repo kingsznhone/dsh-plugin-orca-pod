@@ -18,7 +18,7 @@ import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { errorMessage, PodError } from "../core/errors.ts";
 import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import type { PermissionRequest } from "../core/wire/grant.ts";
-import type { OrcaNodeId } from "../core/wire/peer.ts";
+import type { OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
 import { narrowPermissionMode } from "../core/wire/permission.ts";
 import type { ExecuteInput, ExecutorEvent, LocalExecutor, Suspension } from "../executor/executor.ts";
 import type { GrantFailure } from "./grants.ts";
@@ -27,16 +27,22 @@ import { composePrompt } from "./prompt.ts";
 import { isTerminal, messageText, textMessage, type A2AMessage, type TaskState, type TaskView } from "./wire.ts";
 import type { Workspace } from "./workspace.ts";
 
-/** What a record needs to know about its node. */
-export type TaskSettings = {
+/** How this node runs tasks: the runner and every record it builds read the same object. */
+export type TaskConfig = {
   logger: NodeLogger;
   selfOrcaNodeId: OrcaNodeId;
+  workgroupId: WorkgroupId;
   /** Local ceiling for inherited origin modes; an inherited mode can only narrow it (§7.10). */
   permissionCeiling?: SandboxMode;
   /** Auto-reject a parked permission request after this many seconds; unset waits forever (§7.12). */
   permissionTtlS?: number;
   /** Inline result summary cap in bytes; longer summaries are truncated (§6.11). */
   resultMaxBytes: number;
+  /** Hard cap on task lifetime; peers see it as max_task_ttl_s (§6.9). */
+  taskTimeoutS: number;
+  /** A new task is refused while the workspace holds more than this (§6.13). */
+  maxWorkspaceBytes: number;
+  maxWorkspaceFiles: number;
 };
 
 type RecordInit = {
@@ -72,7 +78,7 @@ export class TaskRecord {
     init: RecordInit,
     private readonly executor: LocalExecutor,
     private readonly workspace: Workspace,
-    private readonly settings: TaskSettings,
+    private readonly settings: TaskConfig,
   ) {
     this.view = init.view;
     this.id = init.view.id;

@@ -5,13 +5,12 @@
  * bundle). `panel.ts` fills the shapes, `panel-routes.ts` serves them.
  */
 
-import type { LlmReasoningEffortInfo, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import type { LlmReasoningEffortInfo } from "@deepseek-ai/dsh-llm";
 import type { SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { z } from "zod";
 
 import type { PeerView, SelfRecord } from "../core/wire/peer.ts";
-import type { ExecutorKind } from "../core/constants.ts";
-import type { PanelPatch } from "../node/settings.ts";
+import type { PanelPatch, Settings } from "../node/settings.ts";
 import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
 
 /** A file a task's result names as `<orca node id>/<sha256>` (§5.6), which the panel saves through this node. */
@@ -72,30 +71,21 @@ export interface WorkspaceView {
   state: string;
 }
 
-/** Advanced local controls the panel may edit; null means "not overridden". */
-export interface PodAdvancedConfig {
-  task_timeout_s: number | null;
-  approval_timeout_s: number | null;
-  result_max_bytes: number | null;
-  max_workspace_bytes: number;
-  max_workspace_files: number;
-  allow_public_peers: boolean | null;
-  allow_loopback_peers: boolean | null;
-  permission_mode: SandboxMode | null;
-  default_reasoning_effort: ReasoningEffortId | null;
-  executor: ExecutorKind | null;
-}
-
-/** Effective pod configuration as the panel may see it (never the password). */
+/** The pod's configuration as the panel sees it: the settings, and what the running node made of them. */
 export interface PodConfigView {
   /** True once a workgroup and its stored password exist (first-run setup done). */
   configured: boolean;
-  workgroup_id: string;
+  /**
+   * The settings as the last start read them; an absent field takes its default.
+   * They never hold the password, and the ACP executor's are left out: the env of
+   * its MCP servers may hold secrets, and the panel does not edit them.
+   */
+  settings: Omit<Settings, "acp">;
   /** This node's orca node id (also the default display name), null before first start. */
   node_id: string | null;
+  /** The name the node goes by: its own record's while it runs, else the setting. */
   display_name: string | null;
-  /** Listen address the node actually uses. */
-  bind_host: string;
+  /** The port the node listens on while it runs, else the setting. */
   port: number;
   /** Currently advertised dial URLs (the node's own list when it is running). */
   endpoints: string[];
@@ -107,10 +97,9 @@ export interface PodConfigView {
   reasoning_efforts: readonly LlmReasoningEffortInfo[];
   /** Listen addresses the form offers. */
   bind_choices: string[];
+  /** Peers joined on startup: the configured ones and the ones remembered at runtime. */
   peers: string[];
   data_root: string;
-  /** Local connection/timeout controls; null means the bundle default applies. */
-  advanced: PodAdvancedConfig;
   password_set: boolean;
   running: boolean;
   error: string | null;

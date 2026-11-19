@@ -32,7 +32,7 @@ import {
 import type { MeshContext } from "./context.ts";
 import { remoteError, type Answer } from "./peer-client.ts";
 import { CANDIDATE_MAX_FAILURES, type MeshTimings } from "./timings.ts";
-import type { HelloRequest, SelfDescription } from "./wire.ts";
+import { SelfDescriptionSchema, type HelloRequest, type SelfDescription } from "./wire.ts";
 
 type SuspectReason = "quiet" | "unreachable";
 
@@ -69,7 +69,13 @@ export class OrcaNode {
 
   private constructor(
     private readonly ctx: MeshContext,
-    private readonly record: PeerView,
+    readonly id: OrcaNodeId,
+    /** What the node last said about itself (§3.3); the rest of its record is what this node observed. */
+    private described: SelfDescription,
+    private observed: PeerState,
+    private busy: BusyState | null,
+    /** Wall time of the last signed message from it; peers see it as `last_recv_at`. */
+    private lastRecvAt: string | null,
     /** Explicit: made contact or was configured directly. Candidate: only seen in a remote list. */
     private origin: PeerOrigin,
     private lastRecvMs: number | null,
@@ -77,8 +83,7 @@ export class OrcaNode {
 
   /** This node: online by definition, described by whoever runs it. */
   static self(ctx: MeshContext, description: SelfDescription): OrcaNode {
-    const view = OrcaNode.viewOf(ctx.identity.orcaNodeId, description);
-    return new OrcaNode(ctx, { ...view, state: "online", busy: null, last_recv_at: null }, "explicit", null);
+    return new OrcaNode(ctx, ctx.identity.orcaNodeId, description, "online", null, null, "explicit", null);
   }
 
   /** A node that proved itself by contact (or whose answer to ours we verified), as it described itself. */
@@ -90,26 +95,21 @@ export class OrcaNode {
     nowMs: number,
     wallIso: string,
   ): OrcaNode {
-    const view = OrcaNode.viewOf(id, description);
-    return new OrcaNode(ctx, { ...view, state: "online", busy, last_recv_at: wallIso }, "explicit", nowMs);
+    return new OrcaNode(ctx, id, description, "online", busy, wallIso, "explicit", nowMs);
   }
 
   /** A node only seen in somebody else's list: never reached, so `unknown`. */
   static candidate(ctx: MeshContext, view: PeerView): OrcaNode {
-    return new OrcaNode(ctx, { ...view, state: "unknown", last_recv_at: null }, "candidate", null);
-  }
-
-  /** What a record says about itself, in the form a node describes itself in. */
-  static describing(view: PeerView): SelfDescription {
-    return {
-      display_name: view.display_name,
-      endpoints: view.endpoints,
-      runtime: view.runtime,
-      max_task_ttl_s: view.max_task_ttl_s,
-      models: view.models,
-      default_model: view.default_model,
-      default_reasoning_effort: view.default_reasoning_effort,
-    };
+    return new OrcaNode(
+      ctx,
+      view.orca_node_id,
+      SelfDescriptionSchema.parse(view),
+      "unknown",
+      view.busy,
+      null,
+      "candidate",
+      null,
+    );
   }
 
   /** A first contact at an address nobody vouched for: the one request every `hello` is, to a node whose id is not known yet. */
@@ -129,10 +129,6 @@ export class OrcaNode {
 
   // ---- identity ----
 
-  get id(): OrcaNodeId {
-    return this.record.orca_node_id;
-  }
-
   /** Whether this is the node this process is. */
   get isSelf(): boolean {
     return this.id === this.ctx.identity.orcaNodeId;
@@ -143,11 +139,11 @@ export class OrcaNode {
   }
 
   get displayName(): string {
-    return this.record.display_name;
+    return this.described.display_name;
   }
 
   get state(): PeerState {
-    return this.isSelf ? "online" : this.record.state;
+    return this.isSelf ? "online" : this.observed;
   }
 
   /** Online or suspect: a node this one vouches for to others. */
@@ -157,14 +153,30 @@ export class OrcaNode {
 
   /** The advertised dial addresses, best first. */
   get endpoints(): readonly string[] {
-    return this.record.endpoints;
+    return this.described.endpoints;
   }
 
-  /** The record peers list, as this node knows it now. */
+  /** What the node last said about itself, as a `hello` carries it. */
+  get description(): SelfDescription {
+    return this.described;
+  }
+
+  /** The record peers list, as this node knows it now: what it said, and what this node observed. */
   view(): PeerView {
-    return this.isSelf
-      ? { ...this.record, state: "online", last_recv_at: new Date().toISOString() }
-      : { ...this.record };
+    const { described } = this;
+    const runtime = described.runtime ?? null;
+    return {
+      ...described,
+      orca_node_id: this.id,
+      endpoints: [...described.endpoints],
+      runtime,
+      runtime_digest: runtimeDigest(runtime),
+      default_model: described.default_model ?? null,
+      default_reasoning_effort: described.default_reasoning_effort ?? null,
+      state: this.state,
+      busy: this.busy,
+      last_recv_at: this.isSelf ? new Date().toISOString() : this.lastRecvAt,
+    };
   }
 
   /** This node's own record with its workgroup, as it answers a `hello`; only for this node. */
@@ -179,20 +191,12 @@ export class OrcaNode {
    * what whoever runs it pushes when something changed.
    */
   describe(description: SelfDescription): void {
-    const next = OrcaNode.viewOf(this.id, description);
-    this.record.display_name = next.display_name;
-    this.record.endpoints = next.endpoints;
-    this.record.runtime = next.runtime;
-    this.record.runtime_digest = next.runtime_digest;
-    if (next.max_task_ttl_s !== undefined) this.record.max_task_ttl_s = next.max_task_ttl_s;
-    this.record.models = next.models;
-    this.record.default_model = next.default_model;
-    this.record.default_reasoning_effort = next.default_reasoning_effort;
+    this.described = { ...description, endpoints: [...description.endpoints] };
     this.origin = "explicit";
   }
 
   setBusy(busy: BusyState | null): void {
-    this.record.busy = busy;
+    this.busy = busy;
   }
 
   // ---- evidence ----
@@ -200,8 +204,8 @@ export class OrcaNode {
   /** A signed message from the node arrived. */
   heard(nowMs: number, wallIso: string): void {
     if (this.isSelf) return;
-    this.record.state = "online";
-    this.record.last_recv_at = wallIso;
+    this.observed = "online";
+    this.lastRecvAt = wallIso;
     this.suspectReason = null;
     this.lastRecvMs = nowMs;
     this.fails = 0;
@@ -216,12 +220,12 @@ export class OrcaNode {
     this.fails = 0;
     this.probeFails = 0;
     this.nextProbeMs = 0;
-    if (this.record.state === "suspect" && this.suspectReason === "unreachable") {
-      this.record.state = "online";
+    if (this.observed === "suspect" && this.suspectReason === "unreachable") {
+      this.observed = "online";
       this.suspectReason = null;
     }
-    if (this.record.state === "offline") {
-      this.record.state = "online";
+    if (this.observed === "offline") {
+      this.observed = "online";
       this.offlineSinceMs = null;
     }
   }
@@ -234,8 +238,8 @@ export class OrcaNode {
   missed(nowMs: number, timings: MeshTimings): "drop" | "kept" {
     if (this.isSelf) return "kept";
     this.fails += 1;
-    if (this.record.state === "unknown" && this.fails >= CANDIDATE_MAX_FAILURES) return "drop";
-    if (this.record.state === "offline" || this.record.state === "unknown") {
+    if (this.observed === "unknown" && this.fails >= CANDIDATE_MAX_FAILURES) return "drop";
+    if (this.observed === "offline" || this.observed === "unknown") {
       this.probeFails += 1;
       const backoff = timings.recoverProbeMs * 2 ** (this.probeFails - 1);
       this.nextProbeMs = nowMs + Math.min(backoff, timings.maxRecoverProbeMs);
@@ -244,7 +248,7 @@ export class OrcaNode {
     const recentlyHeard = this.lastRecvMs !== null && nowMs - this.lastRecvMs <= timings.offlineAfterMs;
     const missThreshold = Math.max(1, Math.round(timings.suspectAfterMs / timings.intervalMs));
     if (this.fails >= missThreshold && recentlyHeard) {
-      this.record.state = "suspect";
+      this.observed = "suspect";
       this.suspectReason = "unreachable";
     }
     return "kept";
@@ -252,26 +256,26 @@ export class OrcaNode {
 
   /** Move between online, suspect and offline by how long the node has been quiet. */
   reassess(nowMs: number, timings: MeshTimings): void {
-    if (this.isSelf || this.record.state === "offline" || this.lastRecvMs === null) return;
+    if (this.isSelf || this.observed === "offline" || this.lastRecvMs === null) return;
     const age = nowMs - this.lastRecvMs;
     if (age >= timings.offlineAfterMs) {
-      this.record.state = "offline";
+      this.observed = "offline";
       this.suspectReason = null;
       this.offlineSinceMs = nowMs;
       this.nextProbeMs = nowMs;
       return;
     }
     if (age >= timings.suspectAfterMs) {
-      if (this.record.state === "online") {
-        this.record.state = "suspect";
+      if (this.observed === "online") {
+        this.observed = "suspect";
         this.suspectReason = "quiet";
       } else if (this.suspectReason === "unreachable") {
         this.suspectReason = "quiet";
       }
       return;
     }
-    if (this.record.state === "suspect") {
-      this.record.state = "online";
+    if (this.observed === "suspect") {
+      this.observed = "online";
       this.suspectReason = null;
     }
   }
@@ -279,16 +283,14 @@ export class OrcaNode {
   /** A node that has been offline for the record TTL is forgotten. */
   expired(nowMs: number, timings: MeshTimings): boolean {
     return (
-      this.record.state === "offline" &&
-      this.offlineSinceMs !== null &&
-      nowMs - this.offlineSinceMs >= timings.recordTtlMs
+      this.observed === "offline" && this.offlineSinceMs !== null && nowMs - this.offlineSinceMs >= timings.recordTtlMs
     );
   }
 
   /** Whether a hello is due: offline nodes and unreached candidates are probed on the backoff schedule; this node never. */
   due(nowMs: number): boolean {
-    if (this.isSelf || this.record.endpoints.length === 0) return false;
-    if (this.record.state !== "offline" && this.record.state !== "unknown") return true;
+    if (this.isSelf || this.described.endpoints.length === 0) return false;
+    if (this.observed !== "offline" && this.observed !== "unknown") return true;
     return nowMs >= this.nextProbeMs;
   }
 
@@ -297,7 +299,7 @@ export class OrcaNode {
   /** Whether `url` is an address of this node: one it advertises, or one that reached it. */
   hasUrl(url: string): boolean {
     const key = OrcaNode.trimSlash(url);
-    return this.record.endpoints.some((own) => OrcaNode.trimSlash(own) === key) || this.aliases.has(key);
+    return this.described.endpoints.some((own) => OrcaNode.trimSlash(own) === key) || this.aliases.has(key);
   }
 
   /** Remember that `url` reached this node, though it does not advertise it. */
@@ -308,7 +310,7 @@ export class OrcaNode {
   /** Addresses this node can be dialed at: screened if it came from a remote list, the last good one first. */
   private async dialOrder(): Promise<string[]> {
     const allowed: string[] = [];
-    for (const endpoint of this.record.endpoints) {
+    for (const endpoint of this.described.endpoints) {
       if (!this.isCandidate || (await this.candidateAllowed(endpoint))) allowed.push(endpoint);
     }
     const { preferred } = this;
@@ -486,24 +488,5 @@ export class OrcaNode {
 
   private static trimSlash(url: string): string {
     return url.replace(/\/+$/, "");
-  }
-
-  /** The recorded fields a self-description fills in. */
-  private static viewOf(
-    id: OrcaNodeId,
-    description: SelfDescription,
-  ): Omit<PeerView, "state" | "busy" | "last_recv_at"> {
-    const runtime = description.runtime ?? null;
-    return {
-      orca_node_id: id,
-      display_name: description.display_name,
-      endpoints: [...description.endpoints],
-      runtime,
-      runtime_digest: runtimeDigest(runtime),
-      max_task_ttl_s: description.max_task_ttl_s,
-      models: description.models,
-      default_model: description.default_model ?? null,
-      default_reasoning_effort: description.default_reasoning_effort ?? null,
-    };
   }
 }

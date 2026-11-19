@@ -40,7 +40,7 @@ export class A2aRoutes {
         const { message, metadata } = call.params;
         return message.taskId
           ? this.tasks.resume(message.taskId, message, caller)
-          : this.tasks.submit({ message, metadata, originOrcaNode: caller });
+          : this.tasks.submit({ message, metadata }, caller);
       }
       case "tasks/get": {
         const { id } = call.params;

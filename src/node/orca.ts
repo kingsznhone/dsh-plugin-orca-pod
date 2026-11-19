@@ -222,7 +222,7 @@ export class Orca {
       endpoints: [...endpoints],
       runtime: this.runtime,
       max_task_ttl_s: this.taskTimeoutS,
-      models: offers.length > 0 ? offers : undefined,
+      ...(offers.length > 0 ? { models: offers } : {}),
       default_model: defaults.model,
       default_reasoning_effort: defaults.reasoningEffort,
     };

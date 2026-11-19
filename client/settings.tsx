@@ -15,16 +15,27 @@ import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
 import css from "./settings.module.css";
 import { store, useStore } from "./store.ts";
-import type { PanelPatch, PodActions, PodAdvancedConfig, PodConfigView } from "./types.ts";
+import type { PanelPatch, PodActions, PodConfigView } from "./types.ts";
 import ui from "./ui.module.css";
 
-/** Advanced settings edited as numbers: the ones the host reports as a number. */
-type LimitKey = {
-  [K in keyof PodAdvancedConfig]: PodAdvancedConfig[K] extends number | null ? K : never;
-}[keyof PodAdvancedConfig];
+/** The settings the panel shows. */
+type ShownSettings = PodConfigView["settings"];
 
-/** Advanced settings edited as a choice: the rest. */
-type SelectKey = Exclude<keyof PodAdvancedConfig, LimitKey>;
+/** Advanced settings edited as numbers. */
+type LimitKey =
+  | "task_timeout_s"
+  | "approval_timeout_s"
+  | "result_max_bytes"
+  | "max_workspace_bytes"
+  | "max_workspace_files";
+
+/** Advanced settings edited as a choice. */
+type SelectKey =
+  | "permission_mode"
+  | "allow_public_peers"
+  | "allow_loopback_peers"
+  | "default_reasoning_effort"
+  | "executor";
 
 interface Limit {
   key: LimitKey;
@@ -67,7 +78,7 @@ const LIMITS: Limit[] = [
 const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
 
 /** What the choices are built from: the host's mode list, its default model's efforts, the current values. */
-type ChoiceSource = Pick<PodConfigView, "permission_modes" | "reasoning_efforts" | "advanced">;
+type ChoiceSource = Pick<PodConfigView, "permission_modes" | "reasoning_efforts" | "settings">;
 
 function selectFields(config: ChoiceSource): SelectField[] {
   const tri: Array<[string, string]> = [
@@ -80,9 +91,9 @@ function selectFields(config: ChoiceSource): SelectField[] {
     ...values.map((value): [string, string] => [value, value]),
   ];
   // The efforts belong to the host's default model; a saved effort it no longer offers stays selectable.
-  const saved = config.advanced.default_reasoning_effort;
+  const saved = config.settings.default_reasoning_effort;
   const efforts: Array<[string, string]> = config.reasoning_efforts.map(({ id, name }) => [id, name]);
-  if (saved !== null && !efforts.some(([id]) => id === saved)) efforts.push([saved, saved]);
+  if (saved !== undefined && !efforts.some(([id]) => id === saved)) efforts.push([saved, saved]);
   return [
     ["permission_mode", "cfgPermissionMode", literal(config.permission_modes)],
     ["allow_public_peers", "cfgAllowPublicPeers", tri],
@@ -92,11 +103,12 @@ function selectFields(config: ChoiceSource): SelectField[] {
   ];
 }
 
-const unitText = (value: number | null, unit = 1): string => (value === null ? "" : String(+(value / unit).toFixed(3)));
+const unitText = (value: number | undefined, unit = 1): string =>
+  value === undefined ? "" : String(+(value / unit).toFixed(3));
 
 /** The numeric limits as form text, in their display units (MiB/GiB); unset is blank. */
-function limitTexts(advanced: PodAdvancedConfig): Record<LimitKey, string> {
-  return Object.fromEntries(LIMITS.map(({ key, unit }) => [key, unitText(advanced[key], unit)])) as Record<
+function limitTexts(settings: ShownSettings): Record<LimitKey, string> {
+  return Object.fromEntries(LIMITS.map(({ key, unit }) => [key, unitText(settings[key], unit)])) as Record<
     LimitKey,
     string
   >;
@@ -104,10 +116,10 @@ function limitTexts(advanced: PodAdvancedConfig): Record<LimitKey, string> {
 
 /** The choices as form text: booleans become allow/deny, unset is blank. */
 function choiceTexts(config: ChoiceSource): Record<SelectKey, string> {
-  const { advanced } = config;
+  const { settings } = config;
   const text = (key: SelectKey): string => {
-    const value = advanced[key];
-    if (BOOLEANS.includes(key)) return value === null ? "" : value ? "allow" : "deny";
+    const value = settings[key];
+    if (BOOLEANS.includes(key)) return value === undefined ? "" : value ? "allow" : "deny";
     return String(value ?? "");
   };
   return Object.fromEntries(selectFields(config).map(([key]) => [key, text(key)])) as Record<SelectKey, string>;
@@ -115,14 +127,14 @@ function choiceTexts(config: ChoiceSource): Record<SelectKey, string> {
 
 function initialForm(config: PodConfigView, wizard: boolean): FormState {
   return {
-    workgroup_id: config.workgroup_id || DEFAULT_WORKGROUP,
+    workgroup_id: config.settings.workgroup_id ?? DEFAULT_WORKGROUP,
     password: "",
     /* The first run starts from this node's own id; a configured install keeps its saved name. */
     display_name: (wizard ? config.node_id : config.display_name) ?? "",
-    bind_host: config.bind_host,
+    bind_host: config.settings.bind_host,
     port: String(config.port),
     endpoints: config.suggested_endpoints.length > 0 ? config.suggested_endpoints : [""],
-    ...limitTexts(config.advanced),
+    ...limitTexts(config.settings),
     ...choiceTexts(config),
   };
 }
@@ -146,8 +158,8 @@ function limitValues(
       values[key] = value;
     } else {
       /* An untouched field keeps its exact byte count instead of the rounded display. */
-      const original = config.advanced[key];
-      values[key] = text === unitText(original, unit) ? original : Math.round(value * unit);
+      const original = config.settings[key];
+      values[key] = original !== undefined && text === unitText(original, unit) ? original : Math.round(value * unit);
     }
   }
   return { values };

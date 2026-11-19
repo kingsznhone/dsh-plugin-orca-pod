@@ -120,16 +120,15 @@ export function permissionRequestOf(view: TaskView): PermissionRequest | null {
   return null;
 }
 
-export type SubmitTaskInput = {
-  message: A2AMessage;
-  metadata?: TaskMetadata;
-};
-
 // ---- JSON-RPC (§4.7) ----
 
 /** What every JSON-RPC request carries besides its method: the `id` the answer echoes. */
 const RpcEnvelope = z.object({ id: z.unknown().optional() });
 const TaskIdParams = z.looseObject({ id: z.string() });
+
+/** What `message/send` carries: the task's message and its metadata. */
+const SendParams = z.looseObject({ message: A2AMessageSchema, metadata: TaskMetadataSchema.optional() });
+export type SubmitTaskInput = z.output<typeof SendParams>;
 
 /**
  * An A2A request, one variant per method. The caller builds it against `z.input`
@@ -138,10 +137,7 @@ const TaskIdParams = z.looseObject({ id: z.string() });
  * task view.
  */
 export const A2ARequestSchema = z.discriminatedUnion("method", [
-  RpcEnvelope.extend({
-    method: z.literal("message/send"),
-    params: z.looseObject({ message: A2AMessageSchema, metadata: TaskMetadataSchema.optional() }),
-  }),
+  RpcEnvelope.extend({ method: z.literal("message/send"), params: SendParams }),
   RpcEnvelope.extend({ method: z.literal("tasks/get"), params: TaskIdParams }),
   RpcEnvelope.extend({ method: z.literal("tasks/cancel"), params: TaskIdParams }),
 ]);

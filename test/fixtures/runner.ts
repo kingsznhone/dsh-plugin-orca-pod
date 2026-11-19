@@ -8,6 +8,7 @@ import { SqliteDb, storeDbPath } from "../../src/core/sqlite.ts";
 import type { OrcaNodeId } from "../../src/core/wire/peer.ts";
 import { EchoExecutor } from "../../src/executor/echo.ts";
 import type { LocalExecutor } from "../../src/executor/executor.ts";
+import type { TaskConfig } from "../../src/task/record.ts";
 import { SingleSlotTaskRunner } from "../../src/task/runner.ts";
 import type { SubmitTaskInput, TaskView } from "../../src/task/wire.ts";
 import { Workspace } from "../../src/task/workspace.ts";
@@ -41,8 +42,8 @@ export function openDb(dataRoot: string = tempDir("orca-db-")): SqliteDb {
 export const SELF = labelId("SELF");
 export const ORIGIN = labelId("ORIGIN");
 
-/** What a task runner is built from, flat: its collaborators and its options. */
-export type RunnerSetup = ConstructorParameters<typeof SingleSlotTaskRunner>[3] & {
+/** What a task runner is built from, flat: its collaborators and its config. */
+export type RunnerSetup = TaskConfig & {
   executor: LocalExecutor;
   db: SqliteDb;
   workspace: Workspace;
@@ -70,8 +71,8 @@ export function runnerSetup(overrides: Partial<RunnerSetup> = {}): RunnerSetup {
 
 /** A runner whose caller defaults to `ORIGIN`, as the gateway would stamp it. */
 export class TestRunner extends SingleSlotTaskRunner {
-  override submit(input: SubmitTaskInput & { originOrcaNode?: OrcaNodeId }): TaskView {
-    return super.submit({ originOrcaNode: ORIGIN, ...input });
+  override submit(input: SubmitTaskInput, origin: OrcaNodeId = ORIGIN): TaskView {
+    return super.submit(input, origin);
   }
 }
 

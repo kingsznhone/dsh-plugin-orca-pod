@@ -9,7 +9,7 @@ import { BusyStateSchema, PeerViewSchema, RuntimeInfoSchema, type PeerView } fro
  * by the sender's request signature, so only the node itself can state it; the
  * latest one replaces what the receiver recorded before.
  */
-const SelfDescriptionSchema = PeerViewSchema.pick({
+export const SelfDescriptionSchema = PeerViewSchema.pick({
   display_name: true,
   endpoints: true,
   max_task_ttl_s: true,

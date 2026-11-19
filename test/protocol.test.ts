@@ -30,10 +30,17 @@ function makeRuntime(): RuntimeInfo {
   };
 }
 
-type DigestPeer = Pick<PeerView, "orca_node_id" | "endpoints" | "runtime_digest">;
-
-function makePeer(orcaNodeId: OrcaNodeId, endpoints: string[], runtime: RuntimeInfo): DigestPeer {
-  return { orca_node_id: orcaNodeId, endpoints, runtime_digest: runtimeDigest(runtime) };
+function makePeer(orcaNodeId: OrcaNodeId, endpoints: string[], runtime: RuntimeInfo): PeerView {
+  return {
+    orca_node_id: orcaNodeId,
+    display_name: orcaNodeId,
+    endpoints,
+    runtime,
+    runtime_digest: runtimeDigest(runtime),
+    state: "online",
+    busy: null,
+    last_recv_at: null,
+  };
 }
 
 describe("generateNodeIdentity", () => {

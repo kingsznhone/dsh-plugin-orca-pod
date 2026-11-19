@@ -9,14 +9,14 @@
 import { errorMessage, PodError } from "../core/errors.ts";
 import { JsonTable, type SqliteDb } from "../core/sqlite.ts";
 import { EventBus } from "../core/events.ts";
-import type { BusyState, OrcaNodeId, WorkgroupId } from "../core/wire/peer.ts";
+import type { BusyState, OrcaNodeId } from "../core/wire/peer.ts";
 import type { LocalExecutor } from "../executor/executor.ts";
 import { ulid } from "ulid";
 
 import { GrantLedger } from "./grants.ts";
 import { parsePodMetadata, parseResume } from "./meta.ts";
 import { WorkspaceQuota } from "./quota.ts";
-import { TaskRecord, type TaskSettings } from "./record.ts";
+import { TaskRecord, type TaskConfig } from "./record.ts";
 import {
   isTerminal,
   messageText,
@@ -38,16 +38,6 @@ type PersistedTask = {
   updated_at: string;
 };
 
-/** What the runner is configured with besides its collaborators: what each record needs, and the runner's own limits. */
-type TaskRunnerOptions = TaskSettings & {
-  workgroupId: WorkgroupId;
-  /** Hard cap on task lifetime; peers see it as max_task_ttl_s (§6.9). */
-  taskTimeoutS: number;
-  /** A new task is refused while the workspace holds more than this (§6.13). */
-  maxWorkspaceBytes: number;
-  maxWorkspaceFiles: number;
-};
-
 export class SingleSlotTaskRunner {
   /** Fires after every observable task change, for the UI and for whoever tracks `busy()` (§9.2). */
   readonly events: EventBus<TaskEvent>;
@@ -64,7 +54,7 @@ export class SingleSlotTaskRunner {
     db: SqliteDb,
     /** Group workspace: the executor's cwd (§6.7). */
     private readonly workspace: Workspace,
-    private readonly options: TaskRunnerOptions,
+    private readonly options: TaskConfig,
   ) {
     this.events = new EventBus(options.logger);
     this.store = new JsonTable<PersistedTask>(
@@ -86,8 +76,8 @@ export class SingleSlotTaskRunner {
     this.quota.measure();
   }
 
-  /** `input.originOrcaNode` is the authenticated caller; it is recorded for busy/holder reporting (§6.9). */
-  submit(input: SubmitTaskInput & { originOrcaNode: OrcaNodeId }): TaskView {
+  /** `origin` is the authenticated caller; it is recorded for busy/holder reporting (§6.9). */
+  submit(input: SubmitTaskInput, origin: OrcaNodeId): TaskView {
     if (this.holder !== null) throw SingleSlotTaskRunner.busyError();
     const meta = parsePodMetadata(input.metadata);
     this.quota.assertWithin();
@@ -100,13 +90,13 @@ export class SingleSlotTaskRunner {
       contextId: input.message.contextId ?? id,
       status: { state: "submitted", timestamp: new Date().toISOString() },
       // Every reader learns who dispatched the task from the view (§7.6).
-      metadata: { ...input.metadata, pod: { ...input.metadata?.pod, origin_orca_node: input.originOrcaNode } },
+      metadata: { ...input.metadata, pod: { ...input.metadata?.pod, origin_orca_node: origin } },
     };
     const { taskTimeoutS } = this.options;
     const record = new TaskRecord(
       {
         view,
-        origin: input.originOrcaNode,
+        origin,
         meta,
         ttlS: Math.min(meta.taskTtlS ?? taskTimeoutS, taskTimeoutS),
         text: messageText(input.message),

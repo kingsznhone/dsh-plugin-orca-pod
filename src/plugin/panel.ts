@@ -130,39 +130,26 @@ export class PanelModel {
   /** Effective config plus setup state; the password itself is never returned. */
   async config(): Promise<PodConfigView> {
     const { pod } = this;
-    const config = pod.settings;
+    const { acp: _acp, ...settings } = pod.settings;
     const { run, status } = pod;
     const current = run?.orca ?? null;
     const self = current?.mesh.self.selfRecord() ?? null;
-    const port = run?.port ?? config.port;
-    const endpoints = [...(current?.mesh.self.endpoints ?? config.endpoints)];
+    const port = run?.port ?? settings.port;
+    const endpoints = [...(current?.mesh.self.endpoints ?? settings.endpoints)];
     const usable = endpoints.filter((url) => !isLoopbackEndpoint(url));
     return {
       configured: pod.configured,
-      workgroup_id: config.workgroup_id ?? "",
+      settings,
       node_id: self?.orca_node_id ?? null,
-      display_name: self?.display_name ?? config.display_name ?? null,
-      bind_host: config.bind_host,
+      display_name: self?.display_name ?? settings.display_name ?? null,
       port,
       endpoints,
       suggested_endpoints: usable.length > 0 ? usable : detectLocalEndpoints(port),
       permission_modes: SANDBOX_MODES,
       reasoning_efforts: this.catalog.current().reasoningEfforts,
-      bind_choices: [...new Set([...bindChoices(port), config.bind_host])],
-      peers: [...new Set([...config.peers, ...pod.rememberedPeers])],
+      bind_choices: [...new Set([...bindChoices(port), settings.bind_host])],
+      peers: [...new Set([...settings.peers, ...pod.rememberedPeers])],
       data_root: pod.dataRoot,
-      advanced: {
-        task_timeout_s: config.task_timeout_s ?? null,
-        approval_timeout_s: config.approval_timeout_s ?? null,
-        result_max_bytes: config.result_max_bytes ?? null,
-        max_workspace_bytes: config.max_workspace_bytes,
-        max_workspace_files: config.max_workspace_files,
-        allow_public_peers: config.allow_public_peers ?? null,
-        allow_loopback_peers: config.allow_loopback_peers ?? null,
-        permission_mode: config.permission_mode ?? null,
-        default_reasoning_effort: config.default_reasoning_effort ?? null,
-        executor: config.executor ?? null,
-      },
       password_set: await pod.passwordConfigured(),
       running: current !== null,
       error: status.kind === "failed" ? status.error.message : null,

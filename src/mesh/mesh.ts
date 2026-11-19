@@ -14,7 +14,7 @@ import type { MeshContext } from "./context.ts";
 import { OrcaNode } from "./orca-node.ts";
 import type { EndpointScreen } from "./screening.ts";
 import { heartbeatIntervalMsFor, resolveTimings, windowsFor, type MeshTimings } from "./timings.ts";
-import type { HelloRequest, MembersEvent, SelfDescription } from "./wire.ts";
+import { SelfDescriptionSchema, type HelloRequest, type MembersEvent, type SelfDescription } from "./wire.ts";
 
 /** A seed address that has not answered yet, and when it is tried again. */
 type Seed = { fails: number; nextAtMs: number; trying: boolean };
@@ -197,7 +197,7 @@ export class Mesh {
     const known = this.list().find((node) => node.hasUrl(url));
     const answer = await OrcaNode.contact(this.ctx, url, known?.id ?? "", this.helloRequest());
     const { clock } = this.ctx;
-    const description = OrcaNode.describing(answer.body.self);
+    const description = SelfDescriptionSchema.parse(answer.body.self);
     let node = this.nodes.get(answer.from);
     if (answer.from === this.self.id) {
       // This node's own address under another name: nothing to learn but the name.
@@ -339,7 +339,7 @@ export class Mesh {
     const { clock } = this.ctx;
     try {
       const answer = await node.hello(this.helloRequest(), this.current.heartbeatTimeoutMs);
-      node.describe({ ...OrcaNode.describing(answer.body.self), endpoints: [...node.endpoints] });
+      node.describe({ ...SelfDescriptionSchema.parse(answer.body.self), endpoints: [...node.endpoints] });
       node.setBusy(answer.body.self.busy);
       this.hears(node);
       if (answer.body.members !== null) this.mergeRemote(answer.body.members);
@@ -407,8 +407,7 @@ export class Mesh {
 
   /** What this node says in every hello: who it is, how busy, and the digest of what it knows. */
   private helloRequest(): HelloRequest {
-    const view = this.self.view();
-    return { self: OrcaNode.describing(view), busy: view.busy, digest: this.digest() };
+    return { self: this.self.description, busy: this.self.view().busy, digest: this.digest() };
   }
 
   /** The roster fields a panel renders; two rosters with the same signature need no event. */

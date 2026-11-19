@@ -16,7 +16,7 @@ import type { TaskView } from "../src/task/wire.ts";
 import { isDirectLoopbackRequest } from "../src/core/net.ts";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import { PanelRoutes } from "../src/plugin/panel-routes.ts";
-import { fakeNodeId } from "./fixtures/ids.ts";
+import { fakeNodeId, wg } from "./fixtures/ids.ts";
 import { catalogFeed, idlePod } from "./fixtures/pod.ts";
 
 function taskView(id: string, state: TaskView["status"]["state"]): TaskView {
@@ -85,7 +85,15 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
     recent: (limit) => RECENT.slice(0, limit),
     config: async () => ({
       configured: true,
-      workgroup_id: "wg",
+      settings: {
+        workgroup_id: wg("wg"),
+        bind_host: "127.0.0.1",
+        port: 11811,
+        endpoints: [],
+        peers: [],
+        max_workspace_bytes: 5368709120,
+        max_workspace_files: 50000,
+      },
       node_id: "NODE01",
       display_name: "node one",
       port: 11811,
@@ -94,21 +102,8 @@ function fakePanel(overrides: Partial<PanelModel> = {}): PanelModel & { calls: s
       bind_choices: ["127.0.0.1", "::", "192.168.1.5"],
       permission_modes: ["read-only", "workspace-write", "danger-full-access"],
       reasoning_efforts: [],
-      bind_host: "127.0.0.1",
       peers: [],
       data_root: "/data",
-      advanced: {
-        task_timeout_s: null,
-        approval_timeout_s: null,
-        result_max_bytes: null,
-        max_workspace_bytes: 5368709120,
-        max_workspace_files: 50000,
-        allow_public_peers: null,
-        allow_loopback_peers: null,
-        permission_mode: null,
-        default_reasoning_effort: null,
-        executor: null,
-      },
       password_set: true,
       running: true,
       error: null,
@@ -424,7 +419,7 @@ describe("panel HTTP bridge", () => {
   it("includes the editable config in the state snapshot", async () => {
     const result = await invoke(apiHandler(fakePanel()), { url: `${POD_API_PREFIX}/state` });
     expect(result.status).toBe(200);
-    expect(result.body.config.workgroup_id).toBe("wg");
+    expect(result.body.config.settings.workgroup_id).toBe("wg");
     expect(result.body.config.password_set).toBe(true);
     expect(result.body.config.suggested_endpoints).toEqual(["http://192.168.1.5:11811"]);
     expect(result.body.config.bind_choices).toContain("::");

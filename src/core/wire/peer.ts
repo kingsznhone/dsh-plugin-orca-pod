@@ -106,9 +106,7 @@ export function runtimeDigest(runtime: RuntimeInfo | null): string {
   return createHash("sha256").update(stable).digest("hex");
 }
 
-export function membersDigest(
-  peers: ReadonlyArray<Pick<PeerView, "orca_node_id" | "endpoints" | "runtime_digest">>,
-): string {
+export function membersDigest(peers: readonly PeerView[]): string {
   const lines = peers.map((peer) => `${peer.orca_node_id}|${peer.endpoints.join(",")}|${peer.runtime_digest}`).sort();
   return createHash("sha256").update(lines.join("\n")).digest("hex");
 }

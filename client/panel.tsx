@@ -121,7 +121,7 @@ function StatusPage({
         <div className={css.identity}>
           <div className={css.identityName}>
             <span title={self?.orca_node_id}>{self ? self.display_name : t("nodeNotRunning")}</span>
-            <Tag tone={"neutral"}>{config.workgroup_id || "-"}</Tag>
+            <Tag tone={"neutral"}>{config.settings.workgroup_id ?? "-"}</Tag>
             {joined ? <Tag tone={"success"}>{t("meshJoined")}</Tag> : <Tag tone={"outline"}>{t("meshAlone")}</Tag>}
           </div>
           {self ? <div className={`${css.identityMeta} ${ui.mono}`}>{self.orca_node_id}</div> : null}
