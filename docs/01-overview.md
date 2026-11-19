@@ -49,7 +49,7 @@
 
 | 术语                      | 含义                                                                                                                                                                 |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **orca node**             | mesh 里的一台机器（一个进程、一个 `orca_node_id`）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/node/orca-node.ts` 与 `createOrcaNode()`。 |
+| **orca node**             | mesh 里的一台机器（一个 `orca_node_id`；同一台机器上的所有 DSH profile 共用这一个节点）。本文统一写 orca node，不写裸的“节点”，避免与 Node.js 混淆；代码里对应 `src/mesh/orca-node.ts` 的 `OrcaNode`（节点表 `Mesh` 的一行，本机自己也是一行）。 |
 | **workgroup_id**          | 集群命名空间 + 凭证作用域，如 `orca-dev`。正则 `[a-z0-9][a-z0-9-]{1,31}`。                                                                                           |
 | **orca_node_id**          | Ed25519 公钥（43 字符 base64url）；节点身份即公钥，面板与日志显示缩略形式。                                                                                          |
 | **Peer**                  | 同一 workgroup 内、本 orca node 已知的另一个 orca node。                                                                                                             |

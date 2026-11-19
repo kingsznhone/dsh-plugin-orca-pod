@@ -6,23 +6,24 @@
 
 ### 4.1 监听形态
 
-- 默认 `HTTP/1.1` 明文监听，端口 `11811`（可配；选在 10000–20000 之间，避开 Windows 上 Hyper-V/WSL 会预留的 40000–41890 段）。核心库与 DSH 插件都默认绑 `127.0.0.1`：插件首次启动要在面板向导里显式选择 LAN 地址（或 `::`）才对外监听，否则局域网 peer 拨不进来；`orca-pod install` 装的 systemd 服务默认绑 `::`。
+- 默认 `HTTP/1.1` 明文监听，端口 `11811`（可配；选在 10000–20000 之间，避开 Windows 上 Hyper-V/WSL 会预留的 40000–41890 段）。节点只以 DSH 插件的形态运行（[§2.3](02-model.md#23-部署形态)），默认绑 `127.0.0.1`：要在面板向导里显式选择 LAN 地址（或 `::`）才对外监听，否则局域网 peer 拨不进来。
 - advertised endpoints 为空时按监听地址推导（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
 - 不开 HTTP/2：peer 调用都是短请求，HTTP/1.1 keep-alive 足够；TLS 由前置代理负责，代理到上游也走 HTTP/1.1。
 - 不监听 UNIX socket：跨机没有意义，跨用户也没必要。
 - 端口冲突：固定端口被占就启动失败并报错，不静默改端口。Windows 上 Hyper-V / WSL 会预留大段端口（`netstat` 也看不到持有者），所以 11811 只是默认值，不是可假设的常量。
-- 端口 0：进程自己挑一个空闲端口，但会避开 WHATWG fetch 规定的禁用端口（`6000`、`6665–6669` 等，见 `src/core/net.ts`）——这些端口内核能 bind，对端 `fetch` 却直接 `bad port`，等于节点永久 offline。显式配置到禁用端口时启动直接拒绝。`orca-node serve` 会把学到的实际地址与端口写回 `config.json`（已有的显式 `endpoints` 不覆盖）。
+- 端口 0：进程自己挑一个空闲端口，但会避开 WHATWG fetch 规定的禁用端口（`6000`、`6665–6669` 等，见 `src/api/gateway.ts` 的 `isBlockedFetchPort`）——这些端口内核能 bind，对端 `fetch` 却直接 `bad port`，等于节点永久 offline。显式配置到禁用端口时启动直接拒绝。实际监听端口只用来推导自述里的 `endpoints`，不回写 `settings.json`。
 - TLS 不内建：证书轮换不该成为集群协议的一部分，交给成熟的代理（[§7.4](07-security.md#74-tls-部署矩阵)）。
 
 ### 4.2 路由表
 
-每条路由都在注册时声明 `config.access`，缺了启动即失败；一个 `preValidation` 钩子统一验证请求头里的两样证明（**Ed25519 签名 + workgroup HMAC 证明**，[§7.1](07-security.md#71-workgroup-与密码)），所有错误由同一个错误处理器输出，所有给签名请求的答复也由同一个钩子签名（见下）。`access` 有三类：
+每条路由都在注册时声明 `config.access`，缺了启动即失败；一个 `preValidation` 钩子统一验证请求头里的两样证明（**Ed25519 签名 + workgroup HMAC 证明**，[§7.1](07-security.md#71-workgroup-与密码)），所有错误由同一个错误处理器输出，所有给签名请求的答复也由同一个钩子签名（见下）。`access` 有四类：
 
 | access   | 谁能调用                                                                                                |
 | -------- | ------------------------------------------------------------------------------------------------------- |
 | `public` | 任何人                                                                                                  |
 | `hello`  | 两样证明都对的节点；签名可以不带接收方 id，因为首次接触还不知道它                                       |
 | `member` | 两样证明都对、且签名绑定的接收方就是本节点。**不查成员表**：成员表只决定谁在线、往哪里拨，不管准入       |
+| `local`  | 本机持有节点本地令牌的进程：任务会话由执行器拿到令牌（`X-Orca-Local` 头），不验签名，令牌随节点存续      |
 
 **请求与答复的头**（所有节点间路由都一样）：
 
@@ -38,23 +39,23 @@
 - **文件下载**的答复是流，事先算不出 sha256，所以签名只覆盖 status 与 `blob_id`（`subject = blob:<blob_id>`）；收完后按内容的 sha256 校验——文件本来就按 sha256 命名。
 - 内容仍是明文传输，这里只保证完整性与来源，不做加密（TLS 由前置代理终结）。
 
-`/orca-api`（面板）不是网关路由，也没有 access 级：它由 DSH web server 上的同源桥承接，只验回环 socket、无转发头、`Host`/`Origin`/`Sec-Fetch-Site` 同源与 `X-Orca-Pod` 请求头（`403 local_only` / `403 cross_origin`；非 GET 且无 JSON `Content-Type` 时为 `403 json_required`），不验节点签名（[§7.1](07-security.md#71-workgroup-与密码)）。
+`/orca-api`（面板）不是网关路由，也没有 access 级：它由 DSH web server 上的同源桥承接，准入与 DSH 自己的 `/api` 相同：`ctx.connection.admit` 验 `Host`/`Origin` 信任与浏览器会话 cookie（`401 unauthorized` / `403 forbidden`），只放行 owner；另要 `X-Orca-Pod` 请求头（`403 cross_origin`），非 GET 且无 JSON `Content-Type` 时为 `403 json_required`。不验节点签名（[§7.1](07-security.md#71-workgroup-与密码)）。
 
 | Method | Path                           | 用途                                                       | access                          |
 | ------ | ------------------------------ | ---------------------------------------------------------- | ------------------------------- |
 | GET    | `/health`                      | 进程存活探针，返回 `{status:"ok", orca_node_id}`           | public                          |
-| GET    | `/.well-known/agent-card.json` | A2A Agent Card（见 §4.6）                                  | public                          |
 | POST   | `/a2a`                         | A2A JSON-RPC：`message/send`、`tasks/get`、`tasks/cancel`（§4.7） | member                          |
 | GET    | `/blobs/{blob_id}`             | 下载本节点发布的文件                                       | member                          |
+| POST   | `/local/blobs`                 | 任务会话登记本机文件（[§5.6](05-tasks.md#56-文件交换blob-通道)） | local                           |
+| GET    | `/local/blobs/{node}/{blob_id}`| 任务会话取本机节点登记的文件                               | local                           |
 | POST   | `/cluster/hello`               | 接触与心跳：自述 + 忙闲 + 摘要；答复自己的记录，摘要不一致时回目录（[§3.3](03-membership.md#33-心跳与双向看门狗)） | hello                           |
-| GET    | `/cluster/members`             | 全量目录（自述记录数组，含忙闲），给对端检查用              | member                          |
 
 文件按 `<orca_node_id>/<sha256>` 命名，不按 URL（[§5.6](05-tasks.md#56-文件交换blob-通道)）：`/blobs/{blob_id}` 只读本节点登记的文件；取别的成员的文件由本机节点对象（`mesh.get(id).fetchBlob`）按对方宣告的地址去拨，所以发布方在反代后面也照样取得到。登记没有成员可用的路由，只在本机发生：宿主的 `orca_pod` 在进程内登记，任务里的 `orca_pod` 走只认本节点令牌的本地路由 `/local/blobs`（[§5.6](05-tasks.md#56-文件交换blob-通道)）；节点之间不推送文件。
 
 约定：
 
 - `/health` 不暴露成员数、工作区、忙闲、错误栈；`orca_node_id` 是公开信息，用来让脚本在首次接触前确认接收方身份。
-- **Agent Card 公开可读，但不含敏感信息**：只有名字、端点 URL、单任务预算（§4.6）。runtime、忙闲、模型目录、成员数只在签名的 `/cluster/members` 里。公开一张卡不暴露拓扑——拓扑在成员表里，而成员表是签名接口。
+- **没有公开的 Agent Card 或匿名目录**：`display_name`、`endpoints`、`max_task_ttl_s`、runtime、忙闲、模型目录只出现在签名的 `hello` 交换与成员记录里（§4.6）。
 - 不提供 WebSocket、SSE：一条连接一种语义。任务进度靠 `tasks/get` 轮询，成员变化靠心跳周期（自适应 `N` 秒，[§3.3](03-membership.md#33-心跳与双向看门狗)）。
 - 请求体上限：全局 `bodyLimit` **1 MiB**（签名需要 body 字节，认证发生在 body 解析之后、schema 校验之前，所以未认证请求能缓冲的上限必须小），没有任何路由放宽；文件只经 `GET` 流式下发。读超时与连接数上限没有显式配置。
 
@@ -64,16 +65,15 @@
 | ---- | --------------------------------------------------------------------------------------------------------------------------- |
 | 401  | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
 | 403  | `not_task_origin`                                                                                                           |
-| 400  | `bad_request`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
-| 413  | `body_too_large`、`blob_too_large`                                                                                          |
-| 502  | `peer_error`                                                                                                                 |
+| 400  | `bad_request`、`unsupported`、`workgroup_mismatch`、`endpoint_refused`                                                       |
 | 404  | `task_not_found`、`blob_not_found`、`unknown_orca_node`                                                                     |
 | 409  | `permission_denied`                                                                                                          |
 | 410  | `blob_expired`、`blob_file_missing`                                                                                         |
 | 413  | `body_too_large`                                                                                                            |
 | 429  | `orca_node_busy`（带 `retry_after_s: 30`、`holder`，并设 `Retry-After` 头）                                                 |
-| 507  | `quota_exceeded`（工作区超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                                |
 | 500  | `internal`                                                                                                                  |
+| 502  | `peer_error`                                                                                                                 |
+| 507  | `quota_exceeded`（工作区超配额，[§6.13](06-execution.md#613-配额清理跨平台)）                                                |
 
 `/a2a` 上同样的错误包成 JSON-RPC 错误：`{ jsonrpc, id, error: { code: -32000, message: <错误码>, data: { code, message, … } } }`。出站调用在本机抛出的 `unknown_peer`（404）、`peer_not_online`（503）、`peer_error`（502）、`peer_timeout`（504，DSH 的 `deadline` 到点）不会出现在线上（§4.7）。
 
@@ -82,13 +82,13 @@
 | 事项     | 要求                                                                                                                                                                                                                                              |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 心跳路径 | 不要给 `/cluster/hello` 加缓存；代理层保持 keep-alive 到上游                                                                                                                                                                                  |
-| 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；面板入口带任何转发头直接 `403 local_only`                                                                           |
+| 转发头   | 不读 `X-Forwarded-*` 做鉴权或判定“本机”：客户端地址只用 socket；面板入口不看转发头，靠 DSH 的会话 cookie 认人                                                                           |
 | 对端地址 | 节点互通靠 **`hello` 请求体里自报的 `endpoints`**（有序列表，可含 IPv6/IPv4、局域网与公网地址），不靠来源 IP：反代部署必须把公网 URL 配进 `endpoints`，否则对端会记下 loopback 地址、心跳发不过来；对端按顺序逐个尝试，一个地址不可达不代表 orca node 离线 |
 | 健康检查 | 代理 `health_uri /health`，上游不需要鉴权                                                                                                                                                                                                         |
 | 请求大小 | 代理与 orca node 两侧都要限；两侧取更小的（orca node 一侧是 1 MiB，没有更大的请求体）                                                                                                                                                              |
 | TLS 端口 | 公网只开 443；orca node 端口只对代理或私网开放                                                                                                                                                                                                    |
 
-`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（Agent Card `url`、面板展示都用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
+`endpoints` 是 1–8 个 URL 的有序列表，顺序即拨号优先级，第一项是 primary（面板展示用它）。典型用法是同时宣告 IPv6 与 IPv4，或“局域网直连 + 公网反代”两条路：
 
 ```json
 {
@@ -113,21 +113,13 @@
 
 每个 orca node 同时是 A2A server 和 A2A client。“对等”是逻辑对等：双方都能调用对方；不提供持久 socket，每次调用是 HTTP 请求。
 
-### 4.6 Agent Card
+### 4.6 公开面
 
-`GET /.well-known/agent-card.json` 只返回三个字段：
+匿名可读的只有 `GET /health`，它只回答 `{status:"ok", orca_node_id}`。
 
-```json
-{
-  "name": "书房台式机",
-  "url": "http://192.168.1.11:11811/a2a",
-  "max_task_ttl_s": 3600
-}
-```
-
-- `name` 是 `display_name`；`url` 是 `<primary endpoint>/a2a`；`max_task_ttl_s` 是公开的调度预算，让 origin 在派任务前就能拆解。
-- Card 里不放密码、主机名、忙闲状态、内部拓扑、runtime、模型目录；这些只在签名的 `/cluster/members` 里（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）。
-- 它不是完整的 A2A Agent Card schema：没有 skills、capabilities、securitySchemes。执行什么由 LocalExecutor + 继承的权限模式决定，不由 Card 声明。
+- `orca_node_id` 是公开信息，用来让脚本在首次接触前确认接收方身份。
+- 没有 A2A Agent Card，也没有匿名目录：`display_name`、`endpoints`、`max_task_ttl_s`、runtime、忙闲、模型目录都只出现在签名的 `hello` 交换与成员记录里（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）；公开面不暴露拓扑。
+- 执行什么由执行器与继承的权限模式决定，不由任何公开元数据声明（[§6](06-execution.md#6-执行与工作区)）。
 
 ### 4.7 方法与异步语义
 

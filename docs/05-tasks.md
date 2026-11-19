@@ -13,8 +13,7 @@
   "pod": {
     "permission_mode": "workspace-write",
     "model": { "provider": "deepseek", "model": "deepseek-flash", "reasoningEffort": "high" },
-    "reasoning_effort": "high",
-    "task_ttl_s": 1800
+    "reasoning_effort": "high"
   }
 }
 ```
@@ -26,8 +25,8 @@
 - `pod.origin_orca_node`：target 在建任务时按签名者写进任务视图，让读任务的人（面板）不必再查一次；调用方自己带的值被覆盖。
 - `pod.permission_mode`：origin 会话的权限模式（`read-only` / `workspace-write` / `danger-full-access`）；缺省按 `read-only`；本机 `permission_mode` 是上限，取两者较窄（[§7.10](07-security.md#710-权限模式继承)）。非法值 → `400 bad_request`。
 - `pod.model` / `pod.reasoning_effort`（可选）：origin 想用的模型与 effort；由 ACP 执行器用 `session/set_config_option` 落地，选不到就 `failed(model_unavailable)`，不会退回默认模型（[§6.15](06-execution.md#615-按任务选择模型)）。
-- `pod.task_ttl_s`（可选）：origin 期望的任务寿命；实际寿命取它与本机 `task_timeout_s`（默认 3600）的较小者。等待 `input-required` 时 TTL 暂停，恢复后重新计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
-- **任务只有一跳**：任务不转发，执行任务的 agent 也不能再派新任务（插件的 `send` 在执行器会话里拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。做不完就以 `BLOCKED:` 结论交回 origin，由 origin 的会话决定把哪部分派给谁。元数据里因此没有调用链、根任务或跳数。
+- 任务寿命由本机决定：`task_timeout_s`（默认 3600）是执行侧的硬预算，origin 不能指定或缩短它；等待 `input-required` 时暂停，恢复后接着计时（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）。
+- **任务只有一跳**：任务不转发，执行任务的 agent 也不能再派新任务（任务里的 `orca_pod` 只有 `fetch`/`publish`，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。做不完就以 `BLOCKED:` 结论交回 origin，由 origin 的会话决定把哪部分派给谁。元数据里因此没有调用链、根任务或跳数。
 - 元数据是不可信输入：网关用 `TaskMetadataSchema` 解析，之后任务记录只读解析过的 `view.metadata.pod`。`pod` 块类型不合法 → `400 bad_request`，不会建出任务。
 
 ### 5.2 任务回报
@@ -146,7 +145,7 @@ GET  /local/blobs/<node>/<blob_id>           # 同上；本节点的直接读，
 - **获取**：`mesh.get(<发布方>).fetchBlob(blob_id)`：发布方是自己就直接读盘；是别的成员就按拨号顺序逐个地址试，对方一旦作答（包括 `404`）就以它为准，只有连不上才换下一个地址，全都连不上 → `503 peer_not_online`；不是成员 → `404 unknown_orca_node`。下载流式进行，不受普通响应 4 MiB 上限的约束；截止时间只管等到对方开始作答，不管传输多久。写盘时边写临时文件（`<目标>.part`）边算 `sha256`，与引用一致才改名到位，不一致就删掉并报错（文件按内容哈希命名，所以这一步同时是流式下载在没有整体签名时的完整性保证）。
 - **写到哪里由会话沙箱决定**：`fetch` 的 `output` 必须在会话沙箱可写的范围内。`read-only` 的会话写不了任何地方，所以**需要收文件的任务要以 `workspace-write` 派出**。
 - **节点不接收别人的字节**：没有上传路由，也就没有接收侧的配额、临时文件与垃圾回收。
-- **读取要成员签名**：`GET /blobs/{id}` 的访问级别是 `member`，没有可以转交给组外的无签名链接。面板经本机的 `/orca-api/blob` 中转（[§9.2.1](09-implementation.md#921-同源桥pluginwebts)）。
+- **读取要成员签名**：`GET /blobs/{id}` 的访问级别是 `member`，没有可以转交给组外的无签名链接。面板经本机的 `/orca-api/blob` 中转（[§9.2.1](09-implementation.md#921-同源桥pluginpanel-routests)）。
 - **生命周期归 blob 自己**：登记默认 **7 天**过期。节点启动时清扫一次，之后每小时一次：过期的行连同它的副本一起删除（副本正被下载、删不掉时保留这一行，下次再试）；老版本写的、指向发布者原文件的行只删行，不动那个文件。过期 → `410 blob_expired`；副本不在了 → `410 blob_file_missing`；没登记过 → `404 blob_not_found`。要保住某个文件，就在过期前取走它。
 - **不做 per-blob ACL**：同 workgroup 的任意 orca node 知道名字就能取。跨 orca node 直取（C 去 B 拿 A 发布的文件）是设计目标，不要加一层“看起来更安全”的检查。
 - **blob 不可枚举**：知道 `blob_id` 才能取，没有列表接口；id 是内容哈希，不泄露目录结构。id 泄露 = 内容泄露，按这个标准管理它。

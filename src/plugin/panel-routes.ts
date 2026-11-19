@@ -6,9 +6,12 @@
  * to its own host half over the DSH web server instead: one prefix route on the
  * already-running origin, polled by the client with plain `fetch` (§9.2).
  *
- * The route is deliberately reachable only from loopback and never through a
- * reverse proxy: it exposes task prompts, workspace paths and approval actions,
- * so we trust the transport, not a signature (same principle as the local `/cluster/blob`).
+ * The route exposes task prompts, workspace paths and approval actions, so it
+ * admits exactly who DSH's own `/api` admits: `ctx.connection.admit` checks the
+ * Host/Origin trust (loopback, the bind address or `trustedHosts`) and the signed
+ * browser session cookie, and only the owner principal passes. A DSH reached from
+ * another machine therefore gets its panel too, with the same login as the rest
+ * of the web UI.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -17,7 +20,8 @@ import { pipeline } from "node:stream/promises";
 import type { z } from "zod";
 
 import type { Context } from "@deepseek-ai/cordis";
-import { isLoopbackHost, type WebRoute } from "@deepseek-ai/dsh-host-webserver";
+import type { HostConnectionHandle } from "@deepseek-ai/dsh-client-connection";
+import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
 import type { ModelCatalogFeed } from "./catalog.ts";
 import { PanelModel } from "./panel.ts";
@@ -26,7 +30,6 @@ import type { Pod } from "./pod.ts";
 import type { Tracker } from "./tracker.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
 import { readAll } from "../core/stream.ts";
-import { isDirectLoopbackRequest } from "../api/access.ts";
 import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
 import { BlobRefSchema, type OpenedBlob } from "../core/blobs.ts";
@@ -40,7 +43,11 @@ const TASKS_LIMIT = 500;
 /** Largest JSON body accepted for one approval action. */
 const MAX_BODY_BYTES = 64 * 1024;
 
-/** Custom header the panel sends on every call; browsers preflight it cross-origin. */
+/**
+ * Custom header the panel sends on every call; browsers preflight it cross-origin.
+ * DSH's trust check only refuses `cross-site`, and its `SameSite=Strict` cookie
+ * still rides a same-site request, so this is what keeps a sibling subdomain's page out.
+ */
 const PANEL_HEADER = "x-orca-pod";
 
 /** An answer: the status it goes out with, and its JSON body. */
@@ -68,9 +75,13 @@ export class PanelRoutes {
     this.panel = new PanelModel(pod, tracker, catalog);
   }
 
-  /** Route handler for `/orca-api`. */
-  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const refused = PanelRoutes.rejection(request);
+  /** Route handler for `/orca-api`; `connection` is the host's browser admission. */
+  private async handle(
+    connection: HostConnectionHandle,
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const refused = PanelRoutes.rejection(connection, request);
     if (refused !== null) {
       PanelRoutes.sendJson(response, refused.status, refused.body);
       return;
@@ -94,16 +105,17 @@ export class PanelRoutes {
   /**
    * Register the panel route on the host web server.
    *
-   * Registration is fenced behind `inject(['webServer'])`, so a host without a web
-   * UI (ACP, CLI) leaves the plugin without a panel instead of failing startup.
+   * Registration is fenced behind `inject(['webServer', 'connection'])`, so a host
+   * without a web UI (ACP, headless) leaves the plugin without a panel instead of
+   * failing startup; the browser admission comes with the web composition.
    */
   register(ctx: Pick<Context, "inject">): void {
-    const route: WebRoute = {
-      kind: "prefix",
-      path: POD_API_PREFIX,
-      handler: (request, response) => this.handle(request, response),
-    };
-    ctx.inject(["webServer"], (scope) => {
+    ctx.inject(["webServer", "connection"], (scope) => {
+      const route: WebRoute = {
+        kind: "prefix",
+        path: POD_API_PREFIX,
+        handler: (request, response) => this.handle(scope.connection, request, response),
+      };
       scope.effect(() => scope.webServer.register(route), "orca-pod.panel-route");
     });
   }
@@ -197,37 +209,6 @@ export class PanelRoutes {
     return Array.isArray(raw) ? raw[0] : raw;
   }
 
-  /**
-   * Whether a `Host` header names this machine: a loopback address by DSH's own
-   * rule (`isLoopbackHost`: 127/8, `::1` and their mapped forms) or `localhost`.
-   * This is the DNS-rebinding defense: a malicious page can point `evil.example`
-   * at 127.0.0.1, but the browser still sends `Host: evil.example`.
-   */
-  private static isLocalHostHeader(host: string): boolean {
-    const value = host.trim().toLowerCase();
-    const name = value.startsWith("[") ? value.slice(1, value.indexOf("]")) : (value.split(":")[0] ?? "");
-    return name === "localhost" || isLoopbackHost(name);
-  }
-
-  /**
-   * Same-origin gate for the panel API (CSRF). Any page can send a "simple"
-   * cross-site POST to a loopback server, and DNS rebinding can make a hostile
-   * origin look local; both fail here because the browser still sends the real
-   * `Origin`/`Host`. The custom header is the second half: it cannot be attached
-   * cross-origin without a CORS preflight, which this route never approves.
-   */
-  private static isSameOriginPanelRequest(request: IncomingMessage): boolean {
-    const host = PanelRoutes.headerOf(request, "host");
-    if (host === undefined || !PanelRoutes.isLocalHostHeader(host)) return false;
-    const origin = PanelRoutes.headerOf(request, "origin");
-    if (origin !== undefined && (!URL.canParse(origin) || new URL(origin).host !== host.trim().toLowerCase())) {
-      return false;
-    }
-    const site = PanelRoutes.headerOf(request, "sec-fetch-site");
-    if (site !== undefined && site !== "same-origin") return false;
-    return PanelRoutes.headerOf(request, PANEL_HEADER) === "1";
-  }
-
   private static sendJson(response: ServerResponse, status: number, body: unknown): void {
     const payload = JSON.stringify(body);
     response.writeHead(status, {
@@ -248,10 +229,22 @@ export class PanelRoutes {
     return parsed;
   }
 
-  /** The first gate a request fails, as the answer to send; null when it may proceed. */
-  private static rejection(request: IncomingMessage): Reply | null {
-    if (!isDirectLoopbackRequest(request)) return { status: 403, body: { error: "local_only" } };
-    if (!PanelRoutes.isSameOriginPanelRequest(request)) return { status: 403, body: { error: "cross_origin" } };
+  /**
+   * The first gate a request fails, as the answer to send; null when it may proceed.
+   * DSH's admission (Host/Origin trust, then the signed session cookie) answers
+   * 403 or 401 the way its `/api` does; an admitted Peer must be the owner, since
+   * the panel approves work on this machine. The panel header and the JSON
+   * content type then shut out what a same-site page could still send.
+   */
+  private static rejection(connection: HostConnectionHandle, request: IncomingMessage): Reply | null {
+    const admission = connection.admit(request);
+    if ("rejection" in admission) {
+      return admission.rejection === 401
+        ? { status: 401, body: { error: "unauthorized" } }
+        : { status: 403, body: { error: "forbidden" } };
+    }
+    if (admission.peer.principal.kind !== "owner") return { status: 403, body: { error: "forbidden" } };
+    if (PanelRoutes.headerOf(request, PANEL_HEADER) !== "1") return { status: 403, body: { error: "cross_origin" } };
     const contentType = (PanelRoutes.headerOf(request, "content-type") ?? "").toLowerCase();
     if (request.method !== "GET" && !contentType.startsWith("application/json"))
       return { status: 403, body: { error: "json_required" } };

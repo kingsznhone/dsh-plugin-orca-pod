@@ -42,7 +42,7 @@
 ### 10.5 Phase 4：规模化与部署
 
 - `orca-pod install`：检查 `dsh --version`、生成/复用节点配置、渲染 systemd unit 并 `daemon-reload` + `enable --now`；固定常驻 `orca-node serve`（不提供 web 模式）。裸 `install` 或只带 `--dry-run` 是交互式向导；带任何其他参数即进入参数分支、完全不提问（agent 通过 SSH 安装时用 `--workgroup` + `-p/--password`）；`--dry-run`、`--system`、`--skip-dsh-check` 适合无 sudo/CI 场景。
-- 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/cluster/blob`（它故意只认传输层回环）。
+- 部署（不做进插件）：TLS 由前置代理（Caddy/nginx）终结，节点自身只监听明文 HTTP；代理健康检查打 `/health`，不代理 `/local/blobs`（它故意只认本机令牌）。
 - 10 个 orca node full mesh 压测：任务延迟、内存/CPU、心跳稳定性。
 - 验收：10 个 orca node 24h 稳定；单 orca node 故障不影响其他 orca node 任务。
 
@@ -52,7 +52,7 @@
 
 #### 两台 orca node
 
-- [x] `/health` 无鉴权可达；Agent Card 公开可读且不含 runtime/路径/拓扑；`/cluster/members` 无签名被 401
+- [x] `/health` 无鉴权可达且只回节点 id；没有公开 Agent Card，也没有匿名目录；成员列表只能经签名请求（`orca_pod` 的 `members`）或本机面板拿到
 - [ ] 错误 workgroup 被 `400 workgroup_mismatch`、错误密码被 `401 bad_proof`
 - [x] 正确密码 + 签名可 join、心跳、拉目录
 - [x] 两个 orca node 双向心跳；kill 一方 3 拍内从在线集消失（测试用缩短间隔的等价看门狗）
@@ -64,9 +64,8 @@
 - [x] 到 `at_ms` 时任务变 `input-required`，`permission_request` 可读，槽位释放
 - [x] 权限挂起只接受批准或拒绝：纯文本恢复回 `400 bad_request`，任务不变；批准的请求 id 不符回 `400 bad_request`，任务继续等
 - [x] 恢复后从上次位置继续，不重放已过去的 step；总时长约等于各 step 间隔之和（不含挂起时间）
-- [x] `artifacts[].artifactId == sha256(content)`，artifact 元数据与字节数正确
-- [x] 产物 blob 可被另一 orca node GET（artifact id = sha256，与跨 orca node blob GET 同通道）
-- [x] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_ttl_s` 到期进 `failed(timeout)`
+- [x] 交接的文件走 blob：结果里以 `<节点 id>/<sha256>` 引用，origin 按引用 `fetch`，没有 `artifacts` 字段
+- [x] `hang` 脚本被 `tasks/cancel` 后 2s 内变 `canceled` 且槽位释放；不取消则 `task_timeout_s` 到期进 `failed(timeout)`
 
 #### AcpExecutor
 
@@ -75,7 +74,7 @@
 - [x] 取消任务发 `session/cancel`，任务进 `canceled`
 - [x] 同一 `(origin, context)` 复用 session（`session/new` 只一次）；orca node 重启后走 `session/resume`
 - [x] 命令不存在时首个事件是 `failed`，不悬挂
-- [x] 真实 `dsh --profile acp` + 模型凭据的端到端手动冒烟（`scripts/e2e-acp.mjs`，不进 `npm test`）
+- [x] 真实 `dsh --profile acp` + 模型凭据的端到端手动冒烟（`scripts/e2e-acp.ts`，不进 `npm test`）
 
 #### 三台 orca node
 
@@ -96,13 +95,13 @@
 - [x] 权限请求不产生聊天 notice
 - [x] 审批卡片显示需要权限的节点（`requested_by`）
 - [ ] 同一 context 的第二个任务能读到第一个任务的 `notes/STATUS.md`
-- [x] 工作区超过 `max_workspace_bytes`/`max_workspace_files` 时新任务 `507 quota_exceeded`，清理后恢复
+- [x] 工作区超过 `max_workspace_bytes` 时新任务 `507 quota_exceeded`，清理后恢复
 - [ ] orca node 忙时第二个任务返回 429 `orca_node_busy` + `Retry-After`，调用方能从错误体拿到 `retry_after_s` 与持有者
 - [ ] 挂起任务的恢复遇到槽被占时 `429 orca_node_busy`，任务仍是 `input-required`，origin 稍后重试成功
 - [x] C 用 A 给的 `task_id` 能读到 A 在 B 上的结果；没有 `task_id` 时无法枚举（`tasks/get` 只认 id，无列表接口）
 - [x] C 凭 `blob_id` 直接 `GET` B 上的产物，不需要额外授权（Windows↔Linux 双向实测）
 - [x] 交接不走协议层：同一 workgroup 的任务共享 workgroup 根（agent cwd）与 `notes/`，协议没有 `continuation_of`
-- [x] 任务内不能再派任务：执行器会话里 `orca-node send` 与插件 `send` 都拒绝，`publish`/`fetch`/`members` 照常可用
+- [x] 任务内不能再派任务：执行器会话里的 `orca_pod` 只有 `fetch`/`publish`，没有 `send`，也不出现在成员列表里
 - [x] 只有 origin 能取消/恢复任务，其他成员 `403 not_task_origin`
 
 #### 文件交换
@@ -110,7 +109,7 @@
 - [x] `publish` 打印 `<节点 id>/<sha256>`，`fetch` 经本机节点取回，内容与 sha256 一致
 - [x] 取别的成员的文件按它宣告的地址拨号；它作答的错误（如 `404 blob_not_found`）不再换地址重试
 - [x] 登记过期 `410 blob_expired`，文件被删 `410 blob_file_missing`
-- [x] `/blobs/{id}` 只认成员签名；`/cluster/blob` 只认本机
+- [x] `/blobs/{id}` 只认成员签名；`/local/blobs` 只认本机令牌
 
 #### agent 侧（插件接线）
 

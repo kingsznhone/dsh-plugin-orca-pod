@@ -27,7 +27,7 @@
 ```text
 1. 读设置文件 <data_root>/settings.json、凭据库里的密码与节点私钥（没有私钥就生成并写入）
 2. 起监听（默认 127.0.0.1:11811）——这是启动的第一步，端口就是锁：另一个 DSH 进程已占着端口时，
-   本进程报“本机的 orca 节点已在另一个 DSH 进程中运行”，且没有动过共用的数据目录
+   本进程报 `an orca node is already running on this machine, in another DSH process`，且没有动过共用的数据目录
 3. 绑定成功后才打开 SQLite、把被中断的任务标失败、把在途派发标 unknown
 4. 采集 runtime、把监听地址写进自述；开始心跳循环
 5. 配置的 peers 与记住的 peers 作为种子：逐个 `hello`；没应答的由心跳循环按 `recover_probe` 退避继续重试（与 offline 节点的探测共用一条退避，`recoverDelayMs`），直到连上或被手动移除
@@ -64,7 +64,7 @@ D（新）                                            A（已在 mesh）
 - **自动接受**：workgroup 密码正确即接受，没有“待批准”状态。
 - **拒绝**：`400 workgroup_mismatch`（workgroup 不对）、`401 bad_proof`（密码证明不对）、`401 bad_signature`、`401 clock_skew`（时间差 > 60s）、`401 nonce_replay`。
 - **答复绑定请求并带签名**：发方已知对端 id 时，答复必须由那个 id 签名，否则按 `peer_error` 处理；答复签名绑定请求的 nonce，一个答复不能被挪去冒充另一个请求的答复。
-- **模型目录随自述登记**：`self` 里的 `models`/`default_model`/`default_reasoning_effort` 写进成员记录；模型清单只对同组成员可见，不进公开 Agent Card（[§6.15](06-execution.md#615-按任务选择模型)）。
+- **模型目录随自述登记**：`self` 里的 `models`/`default_model`/`default_reasoning_effort` 写进成员记录；模型清单只对同组成员可见，不进公开面（[§6.15](06-execution.md#615-按任务选择模型)）。
 
 ### 3.3 心跳与双向看门狗
 
@@ -168,7 +168,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 具体规则：
 
 1. **候选**：未知 `orca_node_id` + endpoints 进表，`state=unknown`、来源标 `candidate`；拨号前先过 [§7.7](07-security.md#77-ssrf--候选端点防护) 的地址筛查（按 endpoints 顺序）。对方收到我的 `hello` 就会登记我；它的答复到达后，对方在我这里转 online。拨不通时按 offline 的退避节奏重试（`recover_probe` 起、`max_recover_probe` 封顶）；**连续 5 次**没拨通就删记录并留墓碑——别人对一个节点的记忆，不是一直拨它的理由。
-2. **目录只转发亲耳听到的**：`hello` 答复里的目录（以及双方比对的摘要）只含本机与 `online`/`suspect` 的成员。从没拨通的候选、已 offline 的记录留在本机表里（面板与 `orca-node members` 照常显示），但不转发。每个节点只为自己正在通信的对象作保，所以一个死节点最多 `offline_after` 之后就没人再转发它，“A、C 互相把 D 传来传去”的回声从源头断掉。单向不通时（C 听得到 D、A 拨不通 D），C 会继续转发 D，A 在墓碑过期后再试——D 确实还活着，这是对的。
+2. **目录只转发亲耳听到的**：`hello` 答复里的目录（以及双方比对的摘要）只含本机与 `online`/`suspect` 的成员。从没拨通的候选、已 offline 的记录留在本机表里（面板与 `orca_pod` 的 `members` 照常显示），但不转发。每个节点只为自己正在通信的对象作保，所以一个死节点最多 `offline_after` 之后就没人再转发它，“A、C 互相把 D 传来传去”的回声从源头断掉。单向不通时（C 听得到 D、A 拨不通 D），C 会继续转发 D，A 在墓碑过期后再试——D 确实还活着，这是对的。
 3. **已知但 offline**：不复活，只按 `recover_probe` 退避探测。
 4. **对端把我修剪掉**：没有任何东西被拒绝，所以也没有补救——我的下一个 `hello` 本身就让它重新登记我，并带回它的目录。
 5. **修剪**：offline 超过 `record_ttl`（7d）→ 删记录并本地留墓碑；墓碑不传播。墓碑只挡**他人目录**，不挡本人：节点复活后自己的 `hello`（两样证明都通过）会清除墓碑并重新登记。

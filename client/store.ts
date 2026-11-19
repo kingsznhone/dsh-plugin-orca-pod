@@ -18,6 +18,14 @@ export interface Snapshot {
   docked: string[];
 }
 
+/**
+ * URL of one `/orca-api` path, relative to the page's document base the way DSH
+ * resolves its own `/api`: a DSH mounted under a sub-path (`https://x/dsh/`) keeps working.
+ */
+function apiUrl(path: string): URL {
+  return new URL(`orca-api/${path}`, document.baseURI);
+}
+
 /** One `/orca-api` call (a POST when it carries a body): the JSON answer, or the host's `error` text thrown. */
 async function call(path: string, post?: { body: unknown }): Promise<unknown> {
   const init: RequestInit =
@@ -28,7 +36,7 @@ async function call(path: string, post?: { body: unknown }): Promise<unknown> {
           headers: { "x-orca-pod": "1", "content-type": "application/json" },
           body: JSON.stringify(post.body),
         };
-  const response = await fetch(`/orca-api/${path}`, init);
+  const response = await fetch(apiUrl(path), init);
   const data = (await response.json()) as { error?: string };
   if (!response.ok) throw new Error(data.error);
   return data;
@@ -50,7 +58,7 @@ export async function read<K extends keyof PodReads>(
  */
 export async function downloadBlob(node: string, blob_id: string, name: string): Promise<void> {
   const query = new URLSearchParams({ node, blob_id }).toString();
-  const response = await fetch(`/orca-api/blob?${query}`, { headers: { "x-orca-pod": "1" } });
+  const response = await fetch(apiUrl(`blob?${query}`), { headers: { "x-orca-pod": "1" } });
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { error?: string };
     throw new Error(data.error ?? `HTTP ${response.status}`);

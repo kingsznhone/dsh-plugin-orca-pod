@@ -1,7 +1,8 @@
 /**
  * Panel HTTP bridge (§9.2): `/orca-api` is a same-origin route on the DSH web
- * server, gated to loopback traffic so approvals and workspace paths never leak
- * to another machine through a reverse proxy.
+ * server that admits whoever DSH's own `/api` admits (`ctx.connection.admit`),
+ * and of those only the owner, so approvals and workspace paths follow the web
+ * UI's login whether the browser is on this machine or another.
  */
 
 import { PassThrough, Readable } from "node:stream";
@@ -15,7 +16,7 @@ import type { Orca } from "../src/node/orca.ts";
 import { parseSettings } from "../src/node/settings.ts";
 import { Tracker } from "../src/plugin/tracker.ts";
 import type { TaskView } from "../src/task/wire.ts";
-import { isDirectLoopbackRequest } from "../src/api/access.ts";
+import type { ConnectionTrustRequest, PeerAdmission } from "@deepseek-ai/dsh-client-connection";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import { PanelRoutes } from "../src/plugin/panel-routes.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
@@ -138,6 +139,24 @@ function fakeApi(): FakeApi {
   return { panel, pod, tracker, calls };
 }
 
+/** The session cookie value the fake admission reads as the browser owner. */
+const OWNER_COOKIE = "session=owner";
+
+/**
+ * DSH's browser admission, faked by the request's cookie: the owner's session,
+ * another principal's, an untrusted Host (403) or no session at all (401).
+ * The real checks are DSH's; the panel only acts on the outcome.
+ */
+const fakeConnection = {
+  admit(request: ConnectionTrustRequest): PeerAdmission {
+    const headers = request.headers as Record<string, string | undefined>;
+    if (headers.host === "evil.example:7775") return { rejection: 403 };
+    const kind = { [OWNER_COOKIE]: "owner", "session=guest": "guest" }[headers.cookie ?? ""];
+    if (kind === undefined) return { rejection: 401 };
+    return { peer: { principal: { kind } } } as unknown as PeerAdmission;
+  },
+};
+
 /** The route the panel registers on the host's web server, the way the host receives it. */
 function registeredRoute({ pod, tracker }: FakeApi): WebRoute {
   let registered: WebRoute | undefined;
@@ -146,6 +165,7 @@ function registeredRoute({ pod, tracker }: FakeApi): WebRoute {
       scope({
         effect: (run: () => unknown) => run(),
         webServer: { register: (route: WebRoute) => (registered = route) },
+        connection: fakeConnection,
       }),
   };
   new PanelRoutes(pod, tracker, catalogFeed()).register(ctx as never);
@@ -168,7 +188,6 @@ interface InvokeOptions {
   method?: string;
   url: string;
   body?: unknown;
-  address?: string;
   headers?: Record<string, string>;
 }
 
@@ -181,6 +200,7 @@ async function invoke(handler: (request: never, response: never) => Promise<void
   const method = options.method ?? "GET";
   const headers: Record<string, string> = {
     host: "127.0.0.1:7775",
+    cookie: OWNER_COOKIE,
     "x-orca-pod": "1",
     ...(method === "GET" ? {} : { "content-type": "application/json" }),
     ...(options.headers ?? {}),
@@ -188,7 +208,6 @@ async function invoke(handler: (request: never, response: never) => Promise<void
   request.method = method;
   request.url = options.url;
   request.headers = headers;
-  request.socket = { remoteAddress: options.address ?? "127.0.0.1" };
 
   let status = 0;
   let body = "";
@@ -234,8 +253,7 @@ describe("panel HTTP bridge", () => {
     const request = Object.assign(Readable.from([]), {
       method: "GET",
       url: `${POD_API_PREFIX}/blob?node=${node}&blob_id=${blobId}`,
-      headers: { host: "127.0.0.1:7775", "x-orca-pod": "1" },
-      socket: { remoteAddress: "127.0.0.1" },
+      headers: { host: "127.0.0.1:7775", cookie: OWNER_COOKIE, "x-orca-pod": "1" },
     });
     await apiHandler(panel)(request as never, response as never);
     expect(response.statusCode).toBe(200);
@@ -264,36 +282,45 @@ describe("panel HTTP bridge", () => {
     expect(result.body).not.toHaveProperty("prompts");
   });
 
-  it("rejects non-loopback callers and proxied requests", async () => {
-    const handler = apiHandler(fakeApi());
-    const remote = await invoke(handler, { url: `${POD_API_PREFIX}/state`, address: "192.168.1.20" });
-    expect(remote.status).toBe(403);
-    expect(remote.body.error).toBe("local_only");
-
-    const proxied = await invoke(handler, {
+  it("serves a remote browser DSH admitted as the owner, proxied or not", async () => {
+    const result = await invoke(apiHandler(fakeApi()), {
       url: `${POD_API_PREFIX}/state`,
-      headers: { "x-forwarded-for": "192.168.1.20" },
+      headers: { host: "dsh.example.com", "x-forwarded-for": "192.168.1.20" },
     });
-    expect(proxied.status).toBe(403);
+    expect(result.status).toBe(200);
   });
 
-  it("rejects a hostile origin, a foreign Host and a missing panel header", async () => {
-    const handler = apiHandler(fakeApi());
-
-    const rebound = await invoke(handler, {
-      url: `${POD_API_PREFIX}/state`,
-      headers: { host: "evil.example:7775" },
+  it("answers DSH's own refusal: 401 without a session, 403 for an untrusted Host", async () => {
+    const panel = fakeApi();
+    const handler = apiHandler(panel);
+    const anonymous = await invoke(handler, {
+      method: "POST",
+      url: `${POD_API_PREFIX}/reset`,
+      headers: { cookie: "" },
     });
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body.error).toBe("unauthorized");
+
+    const rebound = await invoke(handler, { url: `${POD_API_PREFIX}/state`, headers: { host: "evil.example:7775" } });
     expect(rebound.status).toBe(403);
-    expect(rebound.body.error).toBe("cross_origin");
+    expect(rebound.body.error).toBe("forbidden");
+    expect(panel.calls).toEqual([]);
+  });
 
-    const crossSite = await invoke(handler, {
-      url: `${POD_API_PREFIX}/state`,
-      headers: { origin: "https://evil.example" },
+  it("refuses an admitted Peer that is not the owner", async () => {
+    const panel = fakeApi();
+    const guest = await invoke(apiHandler(panel), {
+      method: "POST",
+      url: `${POD_API_PREFIX}/reset`,
+      headers: { cookie: "session=guest" },
     });
-    expect(crossSite.status).toBe(403);
+    expect(guest.status).toBe(403);
+    expect(guest.body.error).toBe("forbidden");
+    expect(panel.calls).toEqual([]);
+  });
 
-    const noHeader = await invoke(handler, {
+  it("requires the panel header even from the owner's session", async () => {
+    const noHeader = await invoke(apiHandler(fakeApi()), {
       url: `${POD_API_PREFIX}/state`,
       headers: { "x-orca-pod": "" },
     });
@@ -480,6 +507,7 @@ describe("panel HTTP bridge", () => {
   it("registers one prefix route through ctx.inject and cleans it up", () => {
     const registered: Array<{ kind: string; path: string }> = [];
     const cleanups: Array<() => void> = [];
+    const fenced: string[][] = [];
     let offCalls = 0;
     const webServer = {
       register(route: { kind: string; path: string }) {
@@ -497,9 +525,10 @@ describe("panel HTTP bridge", () => {
       },
       logger: { info: () => {}, warn: () => {}, error: () => {} } as unknown as Logger,
       inject(
-        _dependencies: string[],
+        dependencies: string[],
         callback: (scope: { webServer: typeof webServer; effect(execute: () => () => void): undefined }) => void,
       ) {
+        fenced.push(dependencies);
         callback({
           webServer,
           effect(execute) {
@@ -511,17 +540,12 @@ describe("panel HTTP bridge", () => {
     };
     const api = fakeApi();
     new PanelRoutes(api.pod, api.tracker, catalogFeed()).register(ctx as never);
+    // No browser admission, no panel: the route waits for the host's connection service too.
+    expect(fenced).toEqual([["webServer", "connection"]]);
     expect(registered).toHaveLength(1);
     expect(registered[0]).toMatchObject({ kind: "prefix", path: POD_API_PREFIX });
     expect(cleanups).toHaveLength(1);
     cleanups[0]!();
     expect(offCalls).toBe(1);
-  });
-
-  it("keeps loopback detection immune to header spoofing", () => {
-    const base = { socket: { remoteAddress: "::1" }, headers: {} };
-    expect(isDirectLoopbackRequest(base as never)).toBe(true);
-    expect(isDirectLoopbackRequest({ ...base, headers: { "x-real-ip": "10.0.0.1" } } as never)).toBe(false);
-    expect(isDirectLoopbackRequest({ socket: { remoteAddress: "10.0.0.5" }, headers: {} } as never)).toBe(false);
   });
 });

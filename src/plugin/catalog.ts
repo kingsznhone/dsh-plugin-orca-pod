@@ -7,7 +7,7 @@
  * copies both into the node's self record so peers can see what this node can
  * offer before dispatching a task that asks for a specific model.
  *
- * Both services are optional: CLI-only nodes and smoke hosts start without
+ * Both services are optional: headless nodes and smoke hosts start without
  * them, in which case the catalog stays empty and every task runs with the
  * executor's own default. The caller fences on them with `ctx.inject` and
  * passes whatever appeared.
@@ -39,7 +39,7 @@ export class ModelCatalogFeed {
   /** Fires when a refresh produced a catalog; the pod installs it on its node. */
   readonly changes = new ChangeSignal();
   private catalog: HostModelCatalog = { models: [], defaultModel: null, reasoningEfforts: [] };
-  /** The host's `llm` service, while it offers one; absent on CLI-only hosts. */
+  /** The host's `llm` service, while it offers one; absent on headless hosts. */
   private llm?: LlmRuntime;
   /** The host's `agent-default-model` service, while it offers one. */
   private defaultModel?: AgentDefaultModelConfig;

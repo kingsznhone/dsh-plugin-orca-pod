@@ -35,15 +35,16 @@ Hard constraints that must not be undone:
   an HMAC with the key derived from the workgroup password (in the group NOW).
   The member table gates nothing. Replies are signed by the answering node over
   the request nonce, status and body. No session token, no TTL, no empty
-  password. Every route declares config.access (public/hello/member); one hook
+  password. Every route declares config.access (public/hello/member/local); one hook
   authenticates; one error handler answers. A node is an OrcaNode object in
   Mesh's table (this node included); callers resolve it (id, unique name or URL)
   and call its methods. Only seed addresses (settings, remembered peers, the
   connect tool, the panel) may reach a stranger; an unknown ref is unknown_peer.
 - There are no version numbers: no protocol versions, no key-derivation markers, no migrations, no
   compatibility branches. Domain separators are plain tags ("orca-pod/request").
-- Agent Card is public but carries only name, url and max_task_ttl_s; runtime,
-  busy state and the model catalog sit behind signed endpoints only.
+- There is no public catalog. `/health` is the only unauthenticated route and
+  returns just the node id; the member list, runtime, busy state and the model
+  catalog sit behind signed requests or the local panel.
 - Files are named `<orca node id>/<sha256>`, never by URL. Task conclusions come
   back inline as text; large outputs are published by the child and fetched
   explicitly (the orca_pod fetch method), the fetching node dialing the publisher
@@ -87,19 +88,19 @@ Hard constraints that must not be undone:
 - Task and blob ids are the only access handles: any workgroup member holding a
   task_id or blob_id can read it; there is no per-task/per-blob ACL and no
   listing. Only the origin may cancel or resume a task. Id leakage is the exposure
-  boundary. One shared password means orca-node-level checks are policy, not
+  boundary. One shared password means per-node checks are policy, not
   cryptographic isolation.
 - Handoff uses the shared group workspace: a later task reads the workgroup root
   (the agent's cwd) and whatever earlier ones left there; whether to keep notes,
   and where, is the agent's own decision. There is no protocol-level
   continuation flag; whether to continue, and from where, is the agent's call.
-- Password rotation rebuilds the whole group: a node whose password changed is refused on its very next request. There is no per-orca-node revocation
+- Password rotation rebuilds the whole group: a node whose password changed is refused on its very next request. There is no per-node revocation
   and no transition window with two passwords.
-- Task storage is single-orca-node SQLite (WAL). A restart fails every non-terminal
+- Task storage is single-node SQLite (WAL). A restart fails every non-terminal
   task as failed(node_restart); do not re-dispatch and do not invent a resume.
   The origin's dispatch log marks tasks it can no longer see as unknown, never
   as failed.
-- Quotas are settings (max_workspace_bytes, max_workspace_files); over quota
+- Quotas are settings (max_workspace_bytes); over quota
   is 507 quota_exceeded.
 - Files move by name only: a node publishes its own files (orca_pod publish, in the host or a task)
   and whoever needs one has its own node pull it; there is no upload route and

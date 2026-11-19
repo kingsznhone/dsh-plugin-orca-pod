@@ -11,7 +11,7 @@ import { isIPv4, isIPv6 } from "node:net";
  * - Endpoints a node declares in its own join are checked with
  *   `EXPLICIT_DIAL_POLICY` (public addresses are fine) before they are recorded.
  * - Link-local (cloud metadata), multicast and unspecified addresses are never
- *   accepted. Explicit endpoints (config, CLI, a direct join) are not filtered.
+ *   accepted. Explicit endpoints (settings, a direct join) are not filtered.
  */
 export type DialPolicy = {
   /** Public addresses are off by default; private ranges are the normal case. */

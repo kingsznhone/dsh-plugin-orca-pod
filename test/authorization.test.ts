@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { NodeIdentity } from "../src/core/identity.ts";
 import { verifyReplyHeader, bodySha256 } from "../src/core/signing.ts";
-import { parseAuthHeader } from "../src/api/access.ts";
+import { isDirectLoopbackRequest, parseAuthHeader } from "../src/api/access.ts";
 import { wg } from "./fixtures/ids.ts";
 import { createGatewayHarness, type GatewayHarness } from "./fixtures/gateway.ts";
 import { generateNodeIdentity } from "../src/plugin/stores.ts";
@@ -354,5 +354,14 @@ describe("signed replies (§7.1)", () => {
     const response = await harness.app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(200);
     expect(response.headers["pod-reply"]).toBeUndefined();
+  });
+});
+
+describe("direct loopback detection (hello's local-peer hint)", () => {
+  it("is immune to header spoofing", () => {
+    const base = { socket: { remoteAddress: "::1" }, headers: {} };
+    expect(isDirectLoopbackRequest(base as never)).toBe(true);
+    expect(isDirectLoopbackRequest({ ...base, headers: { "x-real-ip": "10.0.0.1" } } as never)).toBe(false);
+    expect(isDirectLoopbackRequest({ socket: { remoteAddress: "10.0.0.5" }, headers: {} } as never)).toBe(false);
   });
 });

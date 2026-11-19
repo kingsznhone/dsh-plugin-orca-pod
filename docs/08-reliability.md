@@ -50,7 +50,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 ### 8.5 超时与背压
 
-- 任务寿命：`pod.task_ttl_s` 与本机 `task_timeout_s`（默认 3600）取较小者；到点 `failed(timeout)`；`input-required` 期间暂停；
+- 任务寿命：本机 `task_timeout_s`（默认 3600）就是实际 TTL，origin 不能指定或缩短；到点 `failed(timeout)`；`input-required` 期间暂停；
 - orca node 单槽：同一时间只跑 1 个任务（[§6.9](06-execution.md#69-单槽执行一个-orca-node-同一时间只做一件事)）；忙时 `429 orca_node_busy` + `Retry-After: 30`，不排队；挂起任务的恢复遇到槽被占也是 429，由 origin 重试；
 - 配额：工作区超额时新任务 `507 quota_exceeded`（[§6.13](06-execution.md#613-配额清理跨平台)）；
 - 出站调用都有截止时间与响应上限（[§4.7](04-transport.md#47-方法与异步语义)）；
@@ -60,7 +60,7 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 一句话：**任务只有一跳，构造上就没有链、没有环**。orca node 不会因为心跳互相唤醒——唤醒只来自任务请求。
 
-1. **任务不转发，也不派生**：orca node 只执行 origin 给它的任务；执行任务的 agent 不能再派新任务（执行器会话里插件的 `send` 拒绝，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。扇出只能发生在有人坐着的根会话里，由那个会话一次次显式派发。
+1. **任务不转发，也不派生**：orca node 只执行 origin 给它的任务；执行任务的 agent 不能再派新任务（任务会话里的 `orca_pod` 没有 `send`，[§7.9](07-security.md#79-权限跟随发起-orca-node)）。扇出只能发生在有人坐着的根会话里，由那个会话一次次显式派发。
 2. **没有回调**：target 从不反连 origin（[§7.12](07-security.md#712-升级回路任务状态不是反向调用)）；完成靠 origin 轮询。不存在“B 做完叫醒 A、A 又叫醒 B”。
 3. **没有广播**：心跳自适应（`N` 秒）、单向；成员变化靠 digest 拉取（[§3.1](03-membership.md#31-成员状态的判定)）；没有 gossip、没有事件订阅、没有 completion webhook。
 
@@ -86,8 +86,8 @@ orca node 启动时（`recover()`），SQLite 里所有非终态 task（`submitt
 
 目前没有指标导出，也没有结构化 JSON 日志（指标的设想见 [§11](11-open-questions.md#11-未决问题)“指标”）。能观测的有：
 
-- **任务记录**：target 侧 `tasks/get`（状态、`reason`、结论）；origin 侧 `dispatches` 派发日志（面板“全部任务”）；老版本写的条目只有 `peer`（URL），没有 `node`：读取时 `node` 为空，tracker 不再恢复跟踪它；
-- **成员状态**：`/cluster/members` 与 `orca_pod` 的 `members`——每个 peer 的 `state`（`online`/`suspect`/`offline`/`unknown`）、`last_recv_at`、`busy`、`max_task_ttl_s`、runtime、模型目录；
+- **任务记录**：target 侧 `tasks/get`（状态、`reason`、结论）；origin 侧 `dispatches` 派发日志（面板“全部任务”）；
+- **成员状态**：`orca_pod` 的 `members` 与面板的成员列表——每个 peer 的 `state`（`online`/`suspect`/`offline`/`unknown`）、`last_recv_at`、`busy`、`max_task_ttl_s`、runtime、模型目录；
 - **面板**：`/orca-api/state` 一次轮询拿到自己、成员、待审批、最近任务、工作区（[§9.2](09-implementation.md#92-面板)）；
 - **日志**：节点通过注入的 logger 记 warning（拒绝的候选端点、被丢弃的 peer、落盘失败、blob 清理失败等），是 DSH 的 logger。
 

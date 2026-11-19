@@ -17,7 +17,7 @@ const NONCE_CAPACITY = 10_000;
  * Who may call a route (§7.1). Every route declares one in `config.access`;
  * registering a route without it fails at startup.
  *
- * - `public`: anyone (health, agent card).
+ * - `public`: anyone (health only; there is no anonymous directory).
  * - `hello`:  a node of this workgroup, known or not yet met: both proofs hold
  *             (the node's signature and the workgroup HMAC), and the signature
  *             may omit the receiver id, because a first contact cannot know it.

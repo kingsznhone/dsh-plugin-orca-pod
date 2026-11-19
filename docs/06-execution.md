@@ -15,18 +15,28 @@ interface LocalExecutor {
   close?(): Promise<void>;
 }
 
+type Suspension = {
+  type: "suspend";
+  tool: string;                   // 请求权限的工具名（ACP 的 toolCall.title）
+  requested: { tool_call_id?: string; tool_kind?: string }; // 能拿到就带上
+  requestedMode: SandboxMode;     // 能覆盖它的最窄模式
+};
+
 type ExecutorEvent =
-  | { type: "suspend"; suspend: Suspension } // 只有 permission（要授权）；不能继续就以 BLOCKED 结论结束
+  | Suspension                     // 只有权限请求会挂起；不能继续就以 BLOCKED 结论结束
   | { type: "completed"; text: string }
   | { type: "failed"; text: string; reason?: string };
 
 type ExecuteInput = {
-  taskId; contextId; originOrcaNode; selfOrcaNodeId;
+  contextId: string;
+  originOrcaNode: OrcaNodeId;      // 会话绑定的键之一（§6.10）
   prompt: string;                 // 完整任务书：可信前言在前，远端文本在最后的不可信块里（§6.7）
   workspaceDir: string;           // workgroup 根，执行器的 cwd
   podDir: string;                 // 网关状态目录（sessions.json），agent 不可见
-  permissionMode: PermissionMode; // 生效模式 = 较窄者（本机上限, origin 继承值）
-  model?; reasoningEffort?;       // 按任务选模型（§6.15）
+  permissionMode: SandboxMode;    // 生效模式 = 较窄者（本机上限, origin 继承值）
+  permissionCeiling: SandboxMode | undefined; // 本机上限；未设表示没有本机上限
+  model: ModelSelection | undefined;          // 按任务选模型（§6.15）
+  reasoningEffort: ReasoningEffortId | undefined;
 };
 ```
 
@@ -41,7 +51,7 @@ type ExecuteInput = {
 | `AcpExecutor`    | 长任务/进度/取消/多轮 | 流式、取消、session resume、权限钩子 | 本地仍是 client→agent          |
 | `ScriptExecutor` | 只在测试与回环脚本里  | 无 DSH 依赖、确定性                  | 不执行真实任务；不随包发布     |
 
-**谁选执行器**：由**被调用 orca node 自己**决定，origin 不参与，也不能在任务里指定，节点设置里也没有执行器的选项。节点总是跑 `AcpExecutor`（[§6.14](06-execution.md#614-acpexecutor)），除非代码在 `new Orca(...)` 的 `options.executor` 里传了别的（测试与回环脚本就是这样传 `ScriptExecutor`）。executor 是本机实现细节，A2A 线协议完全相同。要区分“能不能干这个活”，看 `/cluster/members` 里的 runtime 与模型目录，而不是执行器类型。
+**谁选执行器**：由**被调用 orca node 自己**决定，origin 不参与，也不能在任务里指定，节点设置里也没有执行器的选项。节点总是跑 `AcpExecutor`（[§6.14](06-execution.md#614-acpexecutor)），除非代码在 `new Orca(...)` 的 `options.executor` 里传了别的（测试与回环脚本就是这样传 `ScriptExecutor`）。executor 是本机实现细节，A2A 线协议完全相同。要区分“能不能干这个活”，看成员自述里的 runtime 与模型目录（self record，或面板与 `orca_pod` 的 `members`），而不是执行器类型。
 
 ### 6.3 脚本执行器（测试用）
 
@@ -80,7 +90,7 @@ Pod gateway (local)
 
 任务在**宿主自己的 profile** 里运行（D46，`ctx.profileContext.name`；宿主不是由 dsh 拉起时不传 `--profile`）：这样任务进程里也有本插件，任务 agent 才能用 `orca_pod` 收发文件，不需要另配 profile。代价是任务会话带着宿主 profile 的其他插件与设置。ACP 子进程的 `cwd` 必须是本 orca node 工作区，不允许是用户家目录或 DSH profile 目录。
 
-**ACP 会话不转发任务，也不派新任务**：任务只有一跳，执行器会话里插件的 `send` 拒绝（[§7.9](07-security.md#79-权限跟随发起-orca-node)）；做不完就以 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）。
+**ACP 会话不转发任务，也不派新任务**：任务只有一跳，任务会话里的 `orca_pod` 没有 `send`（[§7.9](07-security.md#79-权限跟随发起-orca-node)）；做不完就以 `BLOCKED:` 结论交回 origin（[§6.14](06-execution.md#614-acpexecutor)）。
 
 ### 6.5 ACP 映射
 
@@ -155,7 +165,7 @@ Pod gateway (local)
 
 - 忙时拒绝发生在**建 task 之前**：不产生 task；模型重试就是一次新的 `message/send`。`submit` 的检查顺序是：槽位 → 工作区配额（[§6.13](06-execution.md#613-配额清理跨平台)）。
 - **`input-required` 的恢复也要重新拿槽**：挂起的任务不占槽，它等 origin 回话时别的任务可以进来；origin 的恢复消息到达时槽若被占，同样回 `429 orca_node_busy`，任务仍停在 `input-required`，**由 origin 自己决定什么时候重试**——不预留、不排队、不替上游重发。
-- **本地硬预算**：`task_timeout_s`（默认 3600s）是本机对单个任务的硬上限，实际 TTL 取 `min(pod.task_ttl_s, task_timeout_s)`；到点先置终态、再 abort 执行器，语义是 `failed("task ttl exceeded", reason="timeout")`，不依赖任务自己配合。`input-required` 期间 TTL 暂停，恢复后重新计时。这个上限随 Agent Card 与 self record 里的 `max_task_ttl_s` 对外公布，origin 据此决定拆多细的任务。
+- **本地硬预算**：`task_timeout_s`（默认 3600s）是本机对单个任务的硬上限，也是任务的实际 TTL；origin 不能指定或缩短它。到点先置终态、再 abort 执行器，语义是 `failed("task ttl exceeded", reason="timeout")`，不依赖任务自己配合。`input-required` 期间 TTL 暂停，恢复后接着计时。这个上限随 self record 的 `max_task_ttl_s` 与成员自述对外公布，origin 据此决定拆多细的任务。
 - **为什么单槽**：两个 agent 同改一棵树的冲突是语义层的（一个删了函数、另一个还在调），工程约束拦不住；而“同一 orca node 上跑多件事”争的是同一台机器的 CPU、磁盘和 DSH 状态，不是换个目录就能隔离的。
 - 槽位在任务终态/取消/失败时释放。orca node 进程崩溃或重启时，SQLite 里所有非终态 task 在下次启动时标成 `failed(node_restart)`（[§8.3](08-reliability.md#83-目标重启)），不自动续跑。
 
@@ -177,18 +187,18 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 | 层         | 走哪                                                  | 说明                                                                                                         |
 | ---------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 结论文本   | `tasks/get` 的 `status.message`，内联                 | agent 在这次 prompt 里说的话，按本地 `result_max_bytes`（默认 32 KiB）截断，末尾带 `…[summary truncated at N bytes]` |
+| 结论文本   | `tasks/get` 的 `status.message`，内联                 | agent 在这次 prompt 里说的话，按本机固定的 32 KiB（`task/record.ts` 的 `RESULT_MAX_BYTES`）截断，末尾带 `…[summary truncated at N bytes]` |
 | 交回的文件 | blob 通道（[§5.6](05-tasks.md#56-文件交换blob-通道)） | agent 用 `orca_pod publish` 发布，把名字写进结论文本；origin 按需 `orca_pod fetch`                                       |
 | 工作区状态 | 本机工作区                                            | **不离开目标机**；要让 origin 知道进展，由 agent 在结论文本里摘要                                            |
 
 规则：
 
-- 结论文本超过 `result_max_bytes`：截断并加标记，不额外写 `result.txt` blob。要传大文件，`publish` 它，在结论里写名字。
+- 结论文本超过 32 KiB：截断并加标记，不额外写 `result.txt` blob。要传大文件，`publish` 它，在结论里写名字。
 - 没有任务 manifest：不自动收集变更文件、不生成 patch；任务视图里没有文件字段，交回的文件只以名字出现在结论里。
 - 任务视图里没有 token 用量。
 - 结论文本是 agent 自己的话，origin 一律当不可信输入处理（[§7.5](07-security.md#75-远程任务是不可信输入)）。
 
-任务 `failed` 时 `status.reason` 是机器可读的原因：`timeout`、`node_restart`、`permission_denied`、`permission_timeout`、`model_unavailable`、`executor_exited`、`executor_error`，以及执行器自带的原因；`canceled` 的 reason 是 `canceled`。
+任务 `failed` 时 `status.reason` 是机器可读的原因：`timeout`、`node_restart`、`permission_denied`、`model_unavailable`、`executor_exited`、`executor_error`，以及执行器自带的原因；`canceled` 的 reason 是 `canceled`。
 
 ### 6.12 明确不做
 
@@ -202,7 +212,7 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 ### 6.13 配额、清理、跨平台
 
-- **工作区配额**：`max_workspace_bytes`（默认 5 GiB）、`max_workspace_files`（默认 50 000），都是设置项（面板高级设置可改）。用量由后台异步遍历 workgroup 根得到：启动时、每个任务结束后、每次因超额拒绝之后各量一次；第一次量完之前不拒绝任何任务，所以只会基于已知的超额拒绝。工作区超额时，**新任务**被 `507 quota_exceeded` 拒绝（发生在建 task 之前）；已在跑的任务和 `input-required` 的恢复不受影响。
+- **工作区配额**：`max_workspace_bytes`（默认 5 GiB）是设置项（面板高级设置可改）。用量由后台异步遍历 workgroup 根得到：启动时、每个任务结束后、每次因超额拒绝之后各量一次；第一次量完之前不拒绝任何任务，所以只会基于已知的超额拒绝。工作区超额时，**新任务**被 `507 quota_exceeded` 拒绝（发生在建 task 之前）；已在跑的任务和 `input-required` 的恢复不受影响。
 - **清理**：工作区不会被节点自动清理——没有 TTL、没有按最久未使用驱逐、没有 purge 命令；超额后由人去清理（下一次拒绝会重新测量，清完即恢复）。发布的文件只是登记，过期后不再可下载，文件本身不删。
 - 跨平台的路径边角没有专门处理，见 [§6.8](06-execution.md#68-目录边界)。
 
@@ -210,10 +220,10 @@ session_id → workspace（本 orca node 的 workgroup 根）
 
 `AcpExecutor`（`src/executor/acp/`）是唯一的真实执行器，也是唯一能承接**权限挂起**的那种：任务交给宿主 profile 下的 `dsh`（stdio 上的 Agent Client Protocol，JSON-RPC 换行分隔），executor 把 `session/update` 与 `session/request_permission` 翻译成 `LocalExecutor` 事件。
 
-配置（本机设置文件 `<data_root>/settings.json`，面板写它）：
+配置（本机设置文件 `<data_root>/settings.json`）：`acp.command`（可选，缺省 `dsh`）只覆盖 ACP 子进程的可执行文件；没有执行器种类选项，也没有额外参数或 MCP 透传。
 
 ```json
-{ "executor": "acp", "acp": { "command": "dsh", "extra_args": [], "mcp_servers": [] } }
+{ "acp": { "command": "dsh" } }
 ```
 
 结构：
@@ -226,8 +236,8 @@ session_id → workspace（本 orca node 的 workgroup 根）
 | ACP                                                                     | executor                                                                                                      |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `initialize`                                                            | 30s 握手超时；`clientCapabilities` 声明没有 fs/terminal 能力                                                  |
-| `session/new {cwd, mcpServers}`                                         | 开工前建会话；`sessionId` 写 `state/<workgroup_id>/sessions.json`                                             |
-| `session/resume {sessionId, cwd, mcpServers}`                           | 重启或第二次任务优先复用；失败回落 `session/new`                                                              |
+| `session/new {cwd, mcpServers: []}`                                     | 开工前建会话；`sessionId` 写 `state/<workgroup_id>/sessions.json`                                             |
+| `session/resume {sessionId, cwd, mcpServers: []}`                       | 重启或第二次任务优先复用；失败回落 `session/new`                                                              |
 | `session/set_config_option`                                             | 有模型/effort 时在 prompt 之前设置，失败 `failed(model_unavailable)`（[§6.15](06-execution.md#615-按任务选择模型)） |
 | `session/prompt {sessionId, prompt: [{type:"text", text}]}`             | 发送任务书                                                                                                    |
 | `session/update` → `agent_message_chunk`                                | 累积结论文本                                                                                                  |
@@ -248,14 +258,14 @@ session_id → workspace（本 orca node 的 workgroup 根）
 - **阻塞只有一种表达**：任务不能暂停下来向 origin 提问，只有权限请求会等 origin。缺信息、需要只有 origin 能做的决定、必需的对端离线（先最多重试一次）时，都把**自己的任务按 completed 结束**（不挂在 working），结论首行写 `BLOCKED: <原因>`，随后列出已完成的步骤、被阻步骤，以及 origin 应补充什么或重跑什么，由 origin 决定下一步（包括把哪部分派给别的节点）。tracker 会把它标成 “completed with a blocker report”。
 - 永不自己批准自己的权限请求。
 
-随包发布的标准 skill bundle（`skills/orca-node/`）介绍 `orca_pod` 工具，是给**宿主自己的会话**用的（可以派任务），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认开，`false` 关闭，是插件配置里唯一的字段；不写用户 skill 目录）；执行器会话看不到宿主的技能注册表，只靠前言。MCP（`acp.mcp_servers`）作为透传保留：需要结构化 schema 的第三方工具仍可挂，传给 `session/new` / `session/resume` 时换成 ACP 的 `McpServerStdio` 形状（`args` 缺省为 `[]`，`env` 由对象换成 `[{name, value}]`）。
+随包发布的标准 skill bundle（`skills/orca-node/`）介绍 `orca_pod` 工具，是给**宿主自己的会话**用的（可以派任务），插件用 `ctx.skills.register` 把它注册进 DSH Host 的 skills 服务（`skill_injection`，默认开，`false` 关闭，是插件配置里唯一的字段；不写用户 skill 目录）；执行器会话看不到宿主的技能注册表，只靠前言。`session/new` 与 `session/resume` 的 `mcpServers` 恒为空数组：任务会话只用插件给的 `orca_pod`，不挂第三方 MCP。
 
 **不做**：把 ACP 的进度透传到 A2A 流、`tool_call` 事件透传、ACP 的 client filesystem/terminal 能力、同一 session 上的多个 in-flight prompt。
 
 **真实冒烟**（需要模型凭据，不进 `npm test`）：
 
 ```bash
-DEEPSEEK_API_KEY=... node scripts/e2e-acp.mjs
+DEEPSEEK_API_KEY=... node --import tsx scripts/e2e-acp.ts
 ```
 
 ### 6.15 按任务选择模型
@@ -264,7 +274,7 @@ orca node 的默认模型由本机 profile 决定（`agent-default-model` 插件
 
 **形状用 DSH 的**：模型选择就是 DSH 的 `ModelSelection`（`@deepseek-ai/dsh-agent`：`{provider, model, reasoningEffort?}`），effort 是适配器自有的 `ReasoningEffortId`（`@deepseek-ai/dsh-llm`），目录条目是 `LlmModelInfo` 中对端需要的部分（`{provider, id, name, description?}`）；协议只定义线上 zod schema，不另造类型。
 
-**自述**：自述记录（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）带 `models`（上述目录条目，上限 128 条，去重）、`default_model`（`ModelSelection` 或 `null`）与 `default_reasoning_effort`（`ReasoningEffortId` 或 `null`）。它们随 `hello` 的自述、self record 与 `/cluster/members` 传播；**不进**公开的 Agent Card，模型清单只对同组成员可见。目录与默认模型**不是设置**，节点宣告的恰是 DSH Host 报告的：插件的 `ModelCatalogFeed` 通过 Host 的 `llm` 服务枚举 `${provider}×listModels`（单 provider 失败只记日志），默认模型取 `agentDefaultModel.currentSelection()`，变化时经 `ModelCatalog.update` 装到节点上；Host 报告之前、或没有这些服务的纯 CLI 节点，目录为空（任务照常用执行器自己的默认）。节点设置里模型相关的只剩 `default_reasoning_effort`：它优先于 Host 的 effort，并折进宣告的默认模型的 `reasoningEffort`。
+**自述**：自述记录（[§2.5](02-model.md#25-orca-node-自述记录selfrecord)）带 `models`（上述目录条目，上限 128 条，去重）、`default_model`（`ModelSelection` 或 `null`）与 `default_reasoning_effort`（`ReasoningEffortId` 或 `null`）。它们随 `hello` 的自述、self record 与成员记录传播；**不进**公开面（`/health`），模型清单只对同组成员可见。目录与默认模型**不是设置**，节点宣告的恰是 DSH Host 报告的：插件的 `ModelCatalogFeed` 通过 Host 的 `llm` 服务枚举 `${provider}×listModels`（单 provider 失败只记日志），默认模型取 `agentDefaultModel.currentSelection()`，变化时经 `ModelCatalog.update` 装到节点上；Host 报告之前、或没有这些服务的独立测试装配，目录为空（任务照常用执行器自己的默认）。节点设置里模型相关的只剩 `default_reasoning_effort`：它优先于 Host 的 effort，并折进宣告的默认模型的 `reasoningEffort`。
 
 **选择**：任务书 `metadata.pod.model` 可选一个 `ModelSelection`，`metadata.pod.reasoning_effort` 可单独给；与 `pod.permission_mode` 同级校验（非法直接 `400 bad_request`）。工具 `orca_pod` 的 `send` 方法的 `model`、`reasoning_effort` 参数落到这两个字段（effort 可单独给）。**优先级**：任务显式值 > 节点本地默认（Host 报告的默认模型，以及 `default_reasoning_effort`——面板高级设置可配；面板可选的 effort 来自 Host `llm.resolveModelInfo` 报告的默认模型 `reasoning.efforts`，不维护自己的清单）> ACP/provider 默认。
 

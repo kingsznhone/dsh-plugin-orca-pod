@@ -32,7 +32,7 @@
         │ Ed25519 + 工作组密钥签名的 HTTP                   │ spawn `dsh`（ACP 协议）
         ▼                                                  ▼
   其他机器上的 orca 节点                              AcpExecutor 拉起的 dsh 子进程
-  /cluster/hello /cluster/members /a2a /blobs/:id     （本机为别人执行任务；单跳，
+  /cluster/hello /a2a /blobs/:id /local/blobs          （本机为别人执行任务；单跳，
                                                        子进程里不能再 send）
 ```
 
@@ -42,38 +42,38 @@
 DSH 启动
  │ 读 profile 中的 bundle 行（cordis.patch.yml: id/name = orca-pod）
  │ 用 Config 做校验（plugin/bundle.ts 的 zod schema，只有 skill_injection）
- │ 等待 inject 列出的硬依赖 ["tools","credentials"]   bundle.ts:41
+ │ 等待 inject 列出的硬依赖 ["tools","credentials"]   bundle.ts:61
  ▼
-apply(ctx, config)                                     bundle.ts:51
+apply(ctx, config)                                     bundle.ts:76
  ├─ 建：只做组装，不触碰网络和磁盘
  │    dataRoot ← DSH home（一台机器一个节点，多个 profile 共用）
- │    Pod / Tracker / PodTool / PanelModel
+ │    Pod / Tracker / PodTool / PanelRoutes（自己造 PanelModel）
  │    OptionalService("agents" | "sandboxPolicy")  ← ctx.inject 围栏跟踪可选服务
  │
- ├─ attach(ctx)                                        bundle.ts:89
- │    ctx.effect(dispose)            插件卸载时: broker.clear → tracker.stop → pod.stop
+ ├─ 挂：一个 apply 内联完成                             bundle.ts:104
+ │    ctx.effect(dispose)            插件卸载时: tracker.stop → pod.stop
  │    ctx.on("agent/inbox/claimed")  用户发消息 → 重置唤醒预算
  │    ctx.on("credentials/*")        密码或节点私钥变了 → pod.credentialsChanged() 重启
- │    ctx.tools.register(orca_pod, {when: configured})  bundle.ts:109
- │    PanelRoutes.register  → inject(["webServer"]) → /orca-api   panel-routes.ts:111
- │    inject(["skills"])    → 注册内置的 orca-node skill（`skill_injection`，默认开）
- │    inject(["settings"])  → configure({auto:false})，不让 DSH 自动生成设置页
+ │    ctx.tools.register(orca_pod, {when: configured})  bundle.ts:121
+ │    PanelRoutes.register  → inject(["webServer","connection"]) → /orca-api   panel-routes.ts
+ │    inject(["skills"])    → 注册内置的 orca-node skill（`skill_injection`，默认开） bundle.ts:128
+ │    inject(["settings"])  → configure({auto:false})，不让 DSH 自动生成设置页  bundle.ts:134
  │
- └─ start()                                            bundle.ts:134
-      pod.start()  立即返回，不阻塞 host               pod.ts:134
+ └─ start()                                            bundle.ts:140
+      pod.start()  立即返回，不阻塞 host               pod.ts:186
         └─ queue: peers.load → restart → boot()
-             bringUp()                                 pod.ts:265
+             bringUp()                                 pod.ts:298
                读 settings.json + 凭据库里的密码
                ├─ 缺 workgroup 或密码 → 状态 "unconfigured"，等面板向导
-               └─ startNode()                          pod.ts:334
+               └─ startNode()                          pod.ts:366
                     stores.identity()（Ed25519 私钥，首次使用时生成）
                     deriveWorkgroupKey(scrypt，只在内存里)
-                    new Orca(...) → orca.start()       node/orca.ts:182
+                    new Orca(...) → orca.start()       node/orca.ts:184
                        gateway.listen  ← 端口就是机器级的锁，绑不上 = 已有节点
                        db.open / tasks.start / dispatches.markInFlightUnknown
                        mesh.start()   心跳 + hello 握手
                     advertise(): 把模型目录装到节点上
-             seed()  连上配置里的 peers 和记住的 peers   pod.ts:391
+             seed()  连上配置里的 peers 和记住的 peers   pod.ts:290
       tracker.start()  每 1s 一轮：从 DispatchLog 取未结束的派发（没有节点时什么也不读）
 ```
 
@@ -82,7 +82,7 @@ apply(ctx, config)                                     bundle.ts:51
 - `apply` 永远不会抛异常，也不会卡住 host。启动失败只会变成 `PodStatus.failed`，工具和面板会显示 "orca node is not running: …"。
 - `Pod` 活得和插件 fiber 一样长。`Orca` 只活一次运行：每次重启都**整个换掉**，从不原地修改。所有重启和状态写入都排进同一个 `SerialQueue`。
 - 首次运行时没有密码，所以不监听端口，`orca_pod` 工具也不显示（`when: () => pod.configured`）。
-- 可选的 host 服务（`webServer`、`skills`、`settings`、`agents`、`sandboxPolicy`、`llm`）都用 `ctx.inject` 围栏：服务不存在时插件照常启动，只是少了对应功能；服务被替换时，回调在新的子 scope 里重新执行。
+- 可选的 host 服务（`webServer` 与 `connection`、`skills`、`settings`、`agents`、`sandboxPolicy`、`llm`）都用 `ctx.inject` 围栏：服务不存在时插件照常启动，只是少了对应功能；服务被替换时，回调在新的子 scope 里重新执行。
 
 ## 3. Host ↔ Client 通信
 
@@ -92,13 +92,13 @@ client 不能 import host 的包，`host.call` 在 host 侧也没有文档化的
 client/store.ts                               src/plugin/panel-routes.ts
 ───────────────                               ──────────────────────────
 subscribe() 第一个订阅者 → 开始轮询
-  read("state")  ── GET /orca-api/state ───▶  handle()  panel-routes.ts:83
+  read("state")  ── GET <baseURI>orca-api/state ▶  handle()  panel-routes.ts
                                                rejection(): 必须同时满足
-                                                 ① 直连 loopback（不经反向代理）
-                                                 ② Host 头是 loopback 或 localhost（防 DNS rebinding）
-                                                 ③ Origin / Sec-Fetch-Site 同源
-                                                 ④ x-orca-pod: 1（跨域会触发预检，而预检永远不放行）
-                                                 ⑤ POST 必须是 application/json
+                                                 ① connection.admit 通过：DSH 的 Host/Origin 信任
+                                                    + 浏览器会话 cookie（与 DSH 自己的 /api 相同）
+                                                 ② Peer 的 principal 是 owner
+                                                 ③ x-orca-pod: 1（跨域会触发预检，而预检永远不放行）
+                                                 ④ POST 必须是 application/json
                                                handleGet → PanelModel.state()
                 ◀── PodState JSON（已经算好用于显示的数据）
 
@@ -121,11 +121,11 @@ client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `ap
 
 ```
 本机 Agent 调用工具
-  PodTool.send            tools.ts:178
+  PodTool.send            tools.ts:293
     taskMode（权限不超过本会话）/ attach 文件（先 publish 成 blob）
-    orca.mesh.resolve(peer).sendTask()    mesh/orca-node.ts:366
+    orca.mesh.resolve(peer).sendTask()    mesh/orca-node.ts:345
       ── 签名的 POST /a2a  message/send ─▶  远端 Gateway → AccessPolicy 验签
-                                            A2aRoutes → tasks.submit()  task/runner.ts:96
+                                            A2aRoutes → tasks.submit()  task/runner.ts:66
                                             SingleSlotTaskRunner → AcpExecutor
                                               spawn dsh 子进程，通过 ACP 跑任务
       dispatches.recordSend(node, view, agentId)  写进派发日志，立即返回 task_id，本轮对话结束
@@ -135,7 +135,7 @@ client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `ap
     ├─ 404 / 401 / 403，或连续 5 次没有响应 → dispatches.fail() 记成 failed，停止轮询，同样通知
     └─ 进入终态 → 合并通知 → 按 agent_id 找会话（不在就不通知）
                            → agent.inject()（agent 正在运行）
-                              或 agent.followup()（agent 空闲，受唤醒预算限制） tracker.ts:247
+                              或 agent.followup()（agent 空闲，受唤醒预算限制） tracker.ts:197
 ```
 
 ## 5. 建议的阅读顺序

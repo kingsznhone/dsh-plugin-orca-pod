@@ -357,7 +357,11 @@ describe("plugin apply", () => {
     const fences = host.scopes.map((scope) => [...scope.dependencies]);
     expect(fences).toContainEqual(["llm"]);
     expect(fences).toContainEqual(["agentDefaultModel"]);
-    expect(fences.some((names) => names.length > 1)).toBe(false);
+    // Neither catalog service waits on anything else, so one missing service never hides the other.
+    const catalog = ["llm", "agentDefaultModel"];
+    expect(fences.some((names) => names.length > 1 && names.some((name) => catalog.includes(name)))).toBe(false);
+    // The panel route is the one scope that needs two services: the route and the admission it gates on.
+    expect(fences).toContainEqual(["webServer", "connection"]);
     for (const dispose of host.disposers) await dispose();
   });
 
