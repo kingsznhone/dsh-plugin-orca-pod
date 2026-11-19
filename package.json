@@ -47,13 +47,13 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/build-client.ts",
+    "build": "npm run clean && tsc -p tsconfig.build.json && rolldown -c --configLoader native",
     "prepare": "npm run build",
     "check": "biome check . && tsc --noEmit && tsc --noEmit -p src/client && vitest run",
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/client",
     "test": "vitest run",
-    "harness": "node --no-warnings --import tsx scripts/harness_run.ts"
+    "watch:client": "rolldown -c --configLoader native --watch"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.8.0",
@@ -93,7 +93,8 @@
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
-    "esbuild": "^0.28.2",
+    "lightningcss": "^1.33.0",
+    "rolldown": "~1.2.19",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"

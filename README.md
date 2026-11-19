@@ -16,8 +16,9 @@ orca-pod/
 ├── locale/               # Plugin Manager 显示元数据（en.json / zh.json）
 ├── icon.svg              # 插件图标（随包发布）
 ├── biome.json            # lint + format
+├── rolldown.config.ts    # 客户端 bundle：src/client → lib/client.js（rolldown -c，与 DSH 自带插件同一工具链）
 ├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # cross.ts（跨机器手测）、harness_run.ts（进程内两个节点走真实回环网络的 smoke）、e2e-acp.ts（真实 dsh 冒烟）、build-client.ts（客户端 TSX 构建）；开发脚本，不随包发布
+├── scripts/              # cross.ts（跨机器手测）、harness_run.ts（进程内两个节点走真实回环网络的 smoke）、e2e-acp.ts（真实 dsh 冒烟）；开发脚本，不随包发布
 ├── skills/orca-node/     # 标准 skill bundle，介绍 orca_pod 工具（随包发布）
 ├── src/                  # TypeScript 源码；host 按功能分 7 个目录（tsc 构建到 lib/）：core ← executor ← task ← mesh ← api ← node ← plugin，另有 client/
 │   ├── index.ts          # 公共入口：apply / Config / inject
@@ -28,7 +29,7 @@ orca-pod/
 │   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes（含本机路由 /local/*；本机进程发布与取文件）、input
 │   ├── node/             # orca（组合根 `Orca`：本进程里的这个实例）、settings（设置 schema 与解析器）、events
 │   ├── plugin/           # DSH bundle：bundle / catalog / panel / panel-api / panel-routes / pod / services / settings-file / skill / stores / tools / tracker
-│   └── client/           # DSH 客户端（面板：设置页、侧栏按钮、审批卡片）的 TSX 源码与提示音，esbuild 构建到 lib/client.js；运行期只 import core
+│   └── client/           # DSH 客户端（面板：设置页、侧栏按钮、审批卡片）的 TSX 源码与提示音，Rolldown 构建到 lib/client.js；运行期只 import core
 └── test/                 # vitest 套件
 ```
 
@@ -96,7 +97,8 @@ dsh --profile desktop --dump-config
 
 ```bash
 npm install         # 同时触发 prepare -> npm run build，产出 lib/
-npm run build       # 先清空 lib/，再 tsc -p tsconfig.build.json + 客户端 esbuild，产出 lib/（已进 .gitignore）
+npm run build       # 先清空 lib/，再 tsc -p tsconfig.build.json + 客户端 Rolldown，产出 lib/（已进 .gitignore）
+npm run watch:client  # 源码一改就重建 lib/client.js；DSH 的 client-hmr 检测到新 bundle 后自动在页面里重载插件
 npm run check       # biome check + tsc --noEmit + vitest run（唯一的验收入口）
 npm run format      # biome format --write
 npm run harness     # 进程内两个节点走真实回环网络的 smoke

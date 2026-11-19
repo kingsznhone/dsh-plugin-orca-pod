@@ -37,7 +37,7 @@ const LAYERS: Record<string, number> = {
   plugin: 6,
   /** `src/index.ts`, the package entry. */
   root: 7,
-  /** `src/client/`, the browser bundle built by `scripts/build-client.ts`. */
+  /** `src/client/`, the browser bundle built by `rolldown.config.ts`. */
   client: 8,
 };
 

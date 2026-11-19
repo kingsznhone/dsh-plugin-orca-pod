@@ -12,7 +12,7 @@
 
 ```
 ┌──────────────────────────── 浏览器 (DSH Web UI) ───────────────────────────────┐
-│  lib/client.js  ← src/client/index.tsx  (esbuild 打成 __ModuleLoader__ 工厂)   │
+│  lib/client.js  ← src/client/index.tsx  (Rolldown 打成 __ModuleLoader__ 工厂)  │
 │   apply(ctx) → 往 slots 注册: settings.section / sidebar / overlay / 审批 dock │
 │   store.ts: 一个共享 snapshot，轮询 GET /orca-api/state，POST /orca-api/<动作>  │
 └───────────────────────────────┬────────────────────────────────────────────────┘
@@ -115,7 +115,7 @@ act("approve",{peer,task_id})
 - 轮询只有一个计时器：有订阅者时运行，最后一个订阅者离开就停；payload 不变时不触发重渲染。
 - 审批**不经过模型**：面板直接调 `Tracker` 的 `approve` / `deny`，因为批准权属于人。
 
-client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `apply(ctx)`，它注册语言包和四类 slot（设置页、侧边栏按钮、overlay 面板与审批弹窗、会话输入框上方的审批 dock）。构建见 `scripts/build-client.ts`：`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives` 由 shell 提供，其余代码打进 bundle。
+client 侧入口：`client/index.tsx` 的 `inject = ["slots", "locale"]` 和 `apply(ctx)`，它注册语言包和四类 slot（设置页、侧边栏按钮、overlay 面板与审批弹窗、会话输入框上方的审批 dock）。构建见 `rolldown.config.ts`：`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives` 由 shell 提供，其余代码打进 bundle。
 
 ## 4. 一次 `orca_pod send` 的完整链路（跨机器）
 
