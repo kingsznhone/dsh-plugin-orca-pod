@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/mesh/peer-client.ts";
+import { nodeFetch, type FetchLike } from "../src/mesh/peer-client.ts";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,7 +52,7 @@ function jittered(state: Jitter): FetchLike {
     }
     const delay = state.delayMs?.() ?? 0;
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-    return fetch(url, init);
+    return nodeFetch(url, init);
   };
 }
 
@@ -62,7 +62,7 @@ function rewriteJson(
   mutate: (body: Record<string, unknown>) => Record<string, unknown>,
 ): FetchLike {
   return async (url, init) => {
-    const response = await fetch(url, init);
+    const response = await nodeFetch(url, init);
     if (!url.pathname.endsWith(pathSuffix)) return response;
     const body = (await response.json()) as Record<string, unknown>;
     // The answer keeps the signature its node put on it, which no longer fits what it now says.
@@ -187,7 +187,7 @@ describe("transport jitter during formation", () => {
       display_name: "c",
       fetch: (url, init) => {
         if (blocked && aHost !== "" && url.host === aHost) throw new TypeError("simulated one-way partition");
-        return fetch(url, init);
+        return nodeFetch(url, init);
       },
     });
 

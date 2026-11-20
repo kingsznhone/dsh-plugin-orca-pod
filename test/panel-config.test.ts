@@ -549,15 +549,19 @@ describe("panel model configuration", () => {
     // An address that is not one is refused before anything is joined or remembered.
     const handle = idlePod({ workgroup_id: "wg-panel", workgroup_password: "pw" });
     await expect(handle.addPeer("http://desk.example.com/a2a")).rejects.toThrow(/without a path/);
-    expect(normalizePeerUrl("10.0.0.2")).toBe("http://10.0.0.2:11811");
-    expect(normalizePeerUrl("10.0.0.2:11811")).toBe("http://10.0.0.2:11811");
-    expect(normalizePeerUrl("http://10.0.0.2:11811/")).toBe("http://10.0.0.2:11811");
+    // Nodes speak https only: every address comes out https.
+    expect(normalizePeerUrl("10.0.0.2")).toBe("https://10.0.0.2:11811");
+    expect(normalizePeerUrl("10.0.0.2:11811")).toBe("https://10.0.0.2:11811");
+    expect(normalizePeerUrl("https://10.0.0.2:11811/")).toBe("https://10.0.0.2:11811");
+    // https without a port is a node behind a proxy, on 443.
     expect(normalizePeerUrl("https://desk.example.com")).toBe("https://desk.example.com:443");
-    expect(normalizePeerUrl("http://desk.example.com")).toBe("http://desk.example.com:80");
-    expect(normalizePeerUrl("[fd00::12]")).toBe("http://[fd00::12]:11811");
-    expect(normalizePeerUrl("[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
-    expect(normalizePeerUrl("fd00::12")).toBe("http://[fd00::12]:11811");
-    expect(normalizePeerUrl("http://[fd00::12]:11811")).toBe("http://[fd00::12]:11811");
+    // http, which older settings and peers wrote, is the same node at https, on the node port when none is named.
+    expect(normalizePeerUrl("http://10.0.0.2:11811/")).toBe("https://10.0.0.2:11811");
+    expect(normalizePeerUrl("http://desk.example.com")).toBe("https://desk.example.com:11811");
+    expect(normalizePeerUrl("[fd00::12]")).toBe("https://[fd00::12]:11811");
+    expect(normalizePeerUrl("[fd00::12]:11811")).toBe("https://[fd00::12]:11811");
+    expect(normalizePeerUrl("fd00::12")).toBe("https://[fd00::12]:11811");
+    expect(normalizePeerUrl("https://[fd00::12]:11811")).toBe("https://[fd00::12]:11811");
     expect(() => normalizePeerUrl("")).toThrow(/peer address is required/);
     expect(() => normalizePeerUrl("http://")).toThrow(/must include a host/);
     expect(() => normalizePeerUrl("http://desk.example.com/a2a")).toThrow(/without a path/);
@@ -574,7 +578,7 @@ describe("panel model configuration", () => {
       const self = (await panel.state()).self!;
       expect(self.display_name).toBe(shortenNodeId(self.orca_node_id));
       const { suggested_endpoints: suggested, bind_choices: choices, settings } = await panel.config();
-      for (const url of suggested) expect(url.startsWith("http://")).toBe(true);
+      for (const url of suggested) expect(url.startsWith("https://")).toBe(true);
       expect(choices.slice(0, 2)).toEqual(["127.0.0.1", "::"]);
       expect(settings).toMatchObject({ max_workspace_bytes: 5 * 1024 ** 3 });
     } finally {

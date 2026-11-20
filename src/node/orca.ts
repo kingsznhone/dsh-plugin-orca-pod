@@ -29,21 +29,24 @@ import { Workspace } from "../task/workspace.ts";
 import type { Settings } from "./settings.ts";
 
 /**
- * Where a task session reaches this machine's node, and the token the node's
- * local routes take (§5.6). The node hands both to the executor for the task's
- * environment; the plugin inside the task uses them for the `orca_pod` file methods.
+ * Where a task session reaches this machine's node, the node's id (the key its
+ * TLS certificate must carry), and the token the node's local routes take (§5.6).
+ * The node hands them to the executor for the task's environment; the plugin
+ * inside the task uses them for the `orca_pod` file methods.
  */
 export const NODE_URL_ENV = "ORCA_POD_NODE_URL";
+export const NODE_ID_ENV = "ORCA_POD_NODE_ID";
 export const NODE_TOKEN_ENV = "ORCA_POD_NODE_TOKEN";
 
 /**
  * The URL a node bound to `host` is dialed at, by DSH's rule for bind literals
  * (`bindUrlHost`: IPv6 bracketed, mapped loopback canonical, host names as
  * they are); undefined when the address has no URL form (an interface zone id).
+ * Nodes speak https only (§7.7).
  */
 export function bindUrl(host: string, port: number): string | undefined {
   const urlHost = bindUrlHost(host);
-  return urlHost === undefined ? undefined : `http://${urlHost}:${port}`;
+  return urlHost === undefined ? undefined : `https://${urlHost}:${port}`;
 }
 
 /**
@@ -110,6 +113,8 @@ export class Orca {
   /** The one database of the data root (§5.5): tasks, published files and dispatches; `start()` opens it. */
   private readonly db: SqliteDb;
   private readonly gateway: Gateway;
+  /** What the nodes of the table share; it holds this node's outbound TLS connections. */
+  private readonly context: MeshContext;
   private readonly runtime: RuntimeInfo;
 
   constructor(
@@ -138,7 +143,13 @@ export class Orca {
       new AcpExecutor(settings.acp ?? {}, this.models, logger, {
         // The task's plugin reaches this node through its local routes (§5.6).
         env: (): Record<string, string> =>
-          this.localUrl === null ? {} : { [NODE_URL_ENV]: this.localUrl, [NODE_TOKEN_ENV]: this.localToken },
+          this.localUrl === null
+            ? {}
+            : {
+                [NODE_URL_ENV]: this.localUrl,
+                [NODE_ID_ENV]: identity.orcaNodeId,
+                [NODE_TOKEN_ENV]: this.localToken,
+              },
       });
     this.tasks = new SingleSlotTaskRunner(
       this.executor,
@@ -148,10 +159,10 @@ export class Orca {
       identity.orcaNodeId,
       logger,
     );
-    const context = new MeshContext(identity, workgroupId, key, this.dispatches, this.blobs, this.tasks, logger, {
+    this.context = new MeshContext(identity, workgroupId, key, this.dispatches, this.blobs, this.tasks, logger, {
       fetch: options.fetch,
     });
-    this.mesh = new Mesh(context, this.describeSelf(Orca.endpointsFrom(settings, settings.port)), {
+    this.mesh = new Mesh(this.context, this.describeSelf(Orca.endpointsFrom(settings, settings.port)), {
       timings: options.timings,
     });
     this.gateway = new Gateway(this.mesh, this.tasks, workgroupId, key, identity, this.localToken);
@@ -195,13 +206,18 @@ export class Orca {
     this.blobs.stop();
     this.mesh.stop();
     await this.gateway.close();
+    await this.context.close();
     await this.executor.close?.();
     this.db.close();
   }
 
-  /** Where a process on this machine dials a node bound to `host`: loopback for a wildcard bind, else the bound address. */
+  /**
+   * Where a process on this machine dials a node bound to `host`: loopback for a
+   * wildcard bind, else the bound address (a connection from this machine to its
+   * own address, which the local routes accept, §5.6).
+   */
   private static localUrlOf(host: string, port: number): string {
-    return (isWildcardHost(host) ? undefined : bindUrl(host, port)) ?? `http://127.0.0.1:${port}`;
+    return (isWildcardHost(host) ? undefined : bindUrl(host, port)) ?? `https://127.0.0.1:${port}`;
   }
 
   /** What this node says about itself (§2.5, §3.3): who it is, where it can be dialed, what it runs on, which models it offers. */
@@ -250,6 +266,6 @@ export class Orca {
       if (url !== undefined) return [url];
     }
     const [firstDetected, ...restDetected] = detectLocalEndpoints(port);
-    return firstDetected === undefined ? [`http://127.0.0.1:${port}`] : [firstDetected, ...restDetected];
+    return firstDetected === undefined ? [`https://127.0.0.1:${port}`] : [firstDetected, ...restDetected];
   }
 }

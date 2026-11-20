@@ -40,10 +40,10 @@ describe("this node as a row of its own table", () => {
     const orca = node({
       bind_host: "10.0.0.2",
       port: 11811,
-      endpoints: ["http://10.0.0.2:11811", "http://127.0.0.1:11811"],
+      endpoints: ["https://10.0.0.2:11811", "https://127.0.0.1:11811"],
     });
     const { self } = orca.mesh;
-    expect(self.endpoints).toEqual(["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
+    expect(self.endpoints).toEqual(["https://10.0.0.2:11811", "https://127.0.0.1:11811"]);
     expect(self.view().busy).toBeNull();
     const busy = { task_id: "t1", origin_orca_node: labelId("OTHER"), since: "2026-01-01T00:00:00.000Z" };
     const slot = vi.spyOn(orca.tasks, "busy").mockReturnValue(busy);

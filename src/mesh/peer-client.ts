@@ -12,6 +12,8 @@ import { buildAuthHeader, bodySha256, newNonce, REPLY_HEADER, verifyReplyHeader 
 import { parseOrThrow } from "../core/schema.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import type { OrcaNodeId, WorkgroupId } from "../core/ids.ts";
+import { type Dispatcher, fetch as undiciFetch } from "undici";
+import type { PeerTls, TlsRoute } from "./tls.ts";
 
 /** Whether a peer's error code is one this node knows. */
 function isPodErrorCode(value: unknown): value is PodErrorCode {
@@ -35,8 +37,20 @@ const ErrorReplySchema = z.object({
 });
 type ErrorReply = z.infer<typeof ErrorReplySchema>;
 
-/** Same shape as the global `fetch`, so a test can wrap it without a library. */
-export type FetchLike = (url: URL, init: RequestInit) => Promise<Response>;
+/**
+ * Outbound HTTP: undici's `fetch` in a running node. The `dispatcher` the client
+ * passes is what pins the TLS connection to the node addressed (`PeerTls`); a
+ * test's fake network ignores it, a test that wraps the real one passes it on.
+ */
+export type FetchLike = (url: URL, init: RequestInit & { dispatcher?: Dispatcher }) => Promise<Response>;
+
+/**
+ * undici's own `fetch`, which takes the `PeerTls` dispatchers: the global one
+ * belongs to the undici bundled in Node and is not meant to take this package's.
+ * The two describe the same Fetch API, so the reply is the global `Response`.
+ */
+export const nodeFetch: FetchLike = (url, init) =>
+  undiciFetch(url, init as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>;
 
 type HttpMethod = "GET" | "POST";
 
@@ -96,6 +110,8 @@ export class HttpPeerClient {
     private readonly workgroupId: WorkgroupId,
     /** Outbound HTTP; tests inject packet loss, delay and partitions. */
     private readonly fetch: FetchLike,
+    /** Pins each call's TLS connection to the node it is addressed to (§7.7). */
+    private readonly tls: PeerTls,
   ) {}
 
   /** Signed JSON request; resolves with the 2xx body, parsed by `request.reply`, and who signed it. */
@@ -111,9 +127,10 @@ export class HttpPeerClient {
       authorization: this.authorization(method, url, options.target, nonce, body),
     };
     if (body !== undefined) headers["content-type"] = "application/json";
+    const route = this.tls.route(options.target);
     // The deadline covers the whole answer, body included.
     const reply = await this.withDeadline(label, options, async (signal) => {
-      const init: RequestInit & { duplex: "half" } = {
+      const init: RequestInit & { duplex: "half"; dispatcher: Dispatcher } = {
         method,
         headers,
         body,
@@ -121,6 +138,7 @@ export class HttpPeerClient {
         // A redirect would carry a signed request to an address nobody vetted.
         redirect: "manual",
         signal,
+        dispatcher: route.dispatcher,
       };
       const response = await this.fetch(url, init);
       const bytes = await HttpPeerClient.readCapped(label, response);
@@ -129,6 +147,7 @@ export class HttpPeerClient {
         status: response.status,
         subject: bodySha256(bytes),
       });
+      HttpPeerClient.sameNode(label, route, from);
       return {
         status: response.status,
         ok: response.ok,
@@ -136,7 +155,7 @@ export class HttpPeerClient {
         bytes,
         from,
       };
-    });
+    }).finally(() => route.release());
     if (!reply.ok) throw HttpPeerClient.unwrapError(label, reply.status, reply.bytes);
     // A peer cannot hand us a shape we did not ask for.
     const parsed = parseOrThrow(schema, HttpPeerClient.parseJson(label, reply), (problem) => {
@@ -156,13 +175,16 @@ export class HttpPeerClient {
     const path = `/blobs/${blobId}`;
     const url = new URL(path, endpoint);
     const nonce = newNonce();
+    const route = this.tls.route(call.target);
     // The deadline covers the answer, not the transfer: a large file may stream for long.
+    // Releasing a first contact's connection lets the transfer finish before it closes.
     return this.withDeadline(path, call, async (signal) => {
       const response = await this.fetch(url, {
         method: "GET",
         headers: { authorization: this.authorization("GET", url, call.target, nonce) },
         redirect: "manual",
         signal,
+        dispatcher: route.dispatcher,
       });
       const { status } = response;
       if (!response.ok || response.body === null) {
@@ -171,13 +193,31 @@ export class HttpPeerClient {
         this.signedBy(path, response, call.target, { nonce, status, subject });
         throw HttpPeerClient.unwrapError(path, status, bytes);
       }
-      this.signedBy(path, response, call.target, { nonce, status, subject: `blob:${blobId}` });
+      const from = this.signedBy(path, response, call.target, { nonce, status, subject: `blob:${blobId}` });
+      HttpPeerClient.sameNode(path, route, from);
       const length = response.headers.get("content-length");
       return {
         stream: Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
         size: length === null ? undefined : Number(length),
       };
-    });
+    }).finally(() => route.release());
+  }
+
+  /**
+   * A first contact's binding (§7.7): the reply must be signed by the node whose
+   * key the TLS certificate carried, so whoever answered the handshake is the node
+   * that answered the request. A known node's connection was pinned before the
+   * request went out; a CA-issued certificate (a proxy) carries no node key.
+   */
+  private static sameNode(label: string, route: TlsRoute, from: OrcaNodeId): void {
+    const presented = route.presented();
+    if (presented !== undefined && presented !== from) {
+      throw new PodError(
+        "peer_error",
+        `${label}: the TLS certificate belongs to ${presented}, but the reply is signed by ${from}`,
+        502,
+      );
+    }
   }
 
   /**

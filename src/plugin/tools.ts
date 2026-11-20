@@ -32,7 +32,9 @@ import { narrowPermissionMode, SandboxModeSchema } from "../executor/permission.
 import { parseOrThrow } from "../core/schema.ts";
 import type { PeerView } from "../mesh/wire.ts";
 import { abortError, errorMessage, PodError } from "../core/errors.ts";
-import { NODE_TOKEN_ENV, NODE_URL_ENV, type Orca } from "../node/orca.ts";
+import { NODE_ID_ENV, NODE_TOKEN_ENV, NODE_URL_ENV, type Orca } from "../node/orca.ts";
+import { nodeFetch } from "../mesh/peer-client.ts";
+import { PeerTls } from "../mesh/tls.ts";
 
 import { canonicalPath, writableRoots, type SandboxExecutionPolicy, type SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
@@ -88,7 +90,7 @@ const PARAMETERS = {
     type: "string",
     description:
       "Target node: its id, its display name (when that is unique) or an address it has. Required by send, status and cancel. " +
-      `For connect it is the address of a node to join: http://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}).`,
+      `For connect it is the address of a node to join: https://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}).`,
   },
   text: { type: "string", description: "send: task text sent as an A2A user message part." },
   ref: { type: "string", description: "fetch: the file to save, as <orca node id>/<sha256>." },
@@ -178,19 +180,25 @@ type ToolNode = { kind: "host"; pod: Pod } | { kind: "task"; local: LocalNode };
  * This machine's node as a task session reaches it (§5.6). The plugin inside a
  * task runs in another `dsh` process and has no node of its own, so its file
  * methods go through the node's local routes, at the address and with the token
- * the executor put into the task's environment.
+ * the executor put into the task's environment, over TLS pinned to the node's id
+ * like any other call to a node (§7.7).
  */
 export class LocalNode {
+  private readonly tls = new PeerTls();
+
   constructor(
     private readonly url: string,
+    /** The node's id: the key its certificate must carry. */
+    private readonly node: string,
     private readonly token: string,
   ) {}
 
   /** The node the executor named; null when it named none (a task an older node started). */
   static fromEnv(): LocalNode | null {
     const url = process.env[NODE_URL_ENV];
+    const node = process.env[NODE_ID_ENV];
     const token = process.env[NODE_TOKEN_ENV];
-    return url && token ? new LocalNode(url, token) : null;
+    return url && node && token ? new LocalNode(url, node, token) : null;
   }
 
   /** Have the node copy a file of this machine into its registry. */
@@ -223,10 +231,11 @@ export class LocalNode {
     signal: AbortSignal,
     init: { method?: string; headers?: Record<string, string>; body?: string } = {},
   ): Promise<Response> {
-    const response = await fetch(new URL(path, this.url), {
+    const response = await nodeFetch(new URL(path, this.url), {
       ...init,
       headers: { ...init.headers, [LOCAL_TOKEN_HEADER]: this.token },
       signal,
+      dispatcher: this.tls.route(this.node).dispatcher,
     });
     if (response.ok) return response;
     const answer = (await response.json().catch(() => undefined)) as { message?: string } | undefined;

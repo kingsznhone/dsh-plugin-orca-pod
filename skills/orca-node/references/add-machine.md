@@ -28,6 +28,7 @@ A machine behind NAT, such as one on a home connection next to a cloud server, c
 only dispatch: the server cannot reach it, its panel marks it "network blocked",
 and it cannot be handed tasks. Recommend a VPN or public IPv6 for that case.
 A machine runs one node however many DSH profiles it has. Do not change a remote
-config over the mesh. Traffic is not encrypted: prefer a VPN, and on public IPv6
-make sure the workgroup password is strong and each machine has a local
-permission ceiling.
+config over the mesh. Traffic is encrypted (HTTPS, each node's certificate is
+pinned to its id), but anyone who can reach the port can try to join: on public
+IPv6 make sure the workgroup password is strong and each machine has a local
+permission ceiling. All machines must run the same plugin version.

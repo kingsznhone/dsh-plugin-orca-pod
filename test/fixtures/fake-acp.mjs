@@ -141,6 +141,7 @@ function onRequest(message) {
       method: "initialize",
       inTask: process.env.ORCA_POD_IN_TASK,
       nodeUrl: process.env.ORCA_POD_NODE_URL,
+      nodeId: process.env.ORCA_POD_NODE_ID,
       hasNodeToken: (process.env.ORCA_POD_NODE_TOKEN ?? "").length > 0,
       // What the executor appended after the mode and the log path (`--profile acp`).
       extraArgs: process.argv.slice(4),

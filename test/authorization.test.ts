@@ -124,7 +124,7 @@ describe("workgroup proof gate (C1)", () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const path = await probe(harness);
     const node = generateNodeIdentity();
-    const before = await hello(harness, node, helloBody(["http://node.test"]));
+    const before = await hello(harness, node, helloBody(["https://node.test"]));
     expect(before.statusCode).toBe(200);
     expect(harness.mesh.get(node.orcaNodeId)?.state).toBe("online");
 
@@ -153,7 +153,7 @@ describe("workgroup proof gate (C1)", () => {
     expect(harness.mesh.get(node.orcaNodeId)).toBeUndefined();
     expect((await members()).statusCode).toBe(200);
 
-    await hello(harness, node, helloBody(["http://node.test"]));
+    await hello(harness, node, helloBody(["https://node.test"]));
     harness.mesh.remove(node.orcaNodeId);
     expect(harness.mesh.get(node.orcaNodeId)).toBeUndefined();
     expect((await members()).statusCode).toBe(200);
@@ -179,7 +179,7 @@ describe("workgroup proof gate (C1)", () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const path = await probe(harness);
     const stranger = generateNodeIdentity();
-    const joined = await hello(harness, stranger, helloBody(["http://stranger.test"]));
+    const joined = await hello(harness, stranger, helloBody(["https://stranger.test"]));
     expect(joined.statusCode).toBe(200);
     expect(joined.json()).toMatchObject({ self: { orca_node_id: harness.orcaNodeId, workgroup_id: WORKGROUP } });
     expect(harness.mesh.get(stranger.orcaNodeId)?.state).toBe("online");
@@ -196,11 +196,11 @@ describe("workgroup proof gate (C1)", () => {
   it("answers with the directory only when the sender's digest differs", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const stranger = generateNodeIdentity();
-    const first = await hello(harness, stranger, helloBody(["http://stranger.test"]));
+    const first = await hello(harness, stranger, helloBody(["https://stranger.test"]));
     const { members_digest: digest, members } = first.json<{ members_digest: string; members: unknown[] | null }>();
     expect(members).not.toBeNull();
 
-    const again = await hello(harness, stranger, helloBody(["http://stranger.test"], { digest }));
+    const again = await hello(harness, stranger, helloBody(["https://stranger.test"], { digest }));
     expect(again.json()).toMatchObject({ members_digest: digest, members: null });
   });
 
@@ -213,27 +213,27 @@ describe("workgroup proof gate (C1)", () => {
     };
 
     // Cloud metadata and other link-local targets are never accepted.
-    const metadata = await greet(["http://169.254.169.254:80"], "10.0.0.5");
+    const metadata = await greet(["https://169.254.169.254:80"], "10.0.0.5");
     expect(metadata.response.statusCode).toBe(400);
     expect(metadata.response.json()).toMatchObject({ code: "endpoint_refused" });
     expect(metadata.record).toBeUndefined();
 
     // A remote machine cannot be reached at our loopback address.
-    const remoteLoopback = await greet(["http://127.0.0.1:22"], "10.0.0.5");
+    const remoteLoopback = await greet(["https://127.0.0.1:22"], "10.0.0.5");
     expect(remoteLoopback.response.statusCode).toBe(400);
 
     // A same-host node greeting over loopback may advertise loopback.
-    const local = await greet(["http://127.0.0.1:11811"], "127.0.0.1");
+    const local = await greet(["https://127.0.0.1:11811"], "127.0.0.1");
     expect(local.response.statusCode).toBe(200);
-    expect(local.record?.endpoints).toEqual(["http://127.0.0.1:11811"]);
+    expect(local.record?.endpoints).toEqual(["https://127.0.0.1:11811"]);
 
     // Mixed lists keep only what may be dialed; public addresses are fine for a node that proved the password.
     const mixed = await greet(
-      ["http://169.254.169.254:80", "http://10.0.0.5:11811", "http://8.8.8.8:11811"],
+      ["https://169.254.169.254:80", "https://10.0.0.5:11811", "https://8.8.8.8:11811"],
       "10.0.0.5",
     );
     expect(mixed.response.statusCode).toBe(200);
-    expect(mixed.record?.endpoints).toEqual(["http://10.0.0.5:11811", "http://8.8.8.8:11811"]);
+    expect(mixed.record?.endpoints).toEqual(["https://10.0.0.5:11811", "https://8.8.8.8:11811"]);
   });
 
   it("answers an unknown path with 404 before any signature check", async () => {
@@ -257,7 +257,7 @@ describe("workgroup proof gate (C1)", () => {
 
   it("rejects a hello whose busy field is not a busy holder", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
-    const response = await hello(harness, generateNodeIdentity(), helloBody(["http://node.test"], { busy: "yes" }));
+    const response = await hello(harness, generateNodeIdentity(), helloBody(["https://node.test"], { busy: "yes" }));
     expect(response.statusCode).toBe(400);
   });
 

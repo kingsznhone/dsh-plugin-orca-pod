@@ -68,7 +68,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 - **启动门禁**：`workgroup_id` 为空，或凭据库里取不到密码时，节点保持空闲（不启动、不监听、不报错），首屏是向导；向导填好后 `POST /orca-api/config` → `Pod.reconfigure` 才启动。换 `workgroup_id` 时密码保持（它是整台机器的，不是某个 group 的）；没有存过密码时拒绝。
 - `reconfigure`：只取面板可改的字段（`null` 表示删除该键、回到默认），先用合并结果整体复验；有新密码先写凭据库，再写设置文件，然后原地重启。设置文件读不出或不是 JSON 时启动失败并点名该文件，**不会**当成空设置覆盖它。
 - **外部改了凭据**：订阅 `credentials/reference-updated`（密码）与 `credentials/record-updated`（私钥）；涉及这两个名字且与本次运行所用的值不同时，经 `Pod` 的串行队列重启一次（`Pod.credentialsChanged`）；`Pod` 自己的写入不会引起重启。
-- `connect(peer)`：地址先归一化（裸 host/IP 补 `http://` 与默认端口 `11811`；`host:port`；带 scheme 的 URL 不补端口，http 80、https 443；裸 IPv6 加方括号；拒绝带路径/查询串），立即 `mesh.probe`，成功才加进 `settings.json` 的 `peers`（不重启：节点已经连上了）；启动时设置里的 `peers` 作为**种子**交给 `mesh.seed`，没应答的由心跳循环按 `recover_probe` 退避继续重试，直到连上。
+- `connect(peer)`：地址先归一化（一律是 `https://`：裸 host/IP 补默认端口 `11811`；`host:port`；`https://` 不带端口时是 443（代理后面的节点）；`http://` 按 `https://` 读，不带端口时补 `11811`；裸 IPv6 加方括号；拒绝带路径/查询串），立即 `mesh.probe`，成功才加进 `settings.json` 的 `peers`（不重启：节点已经连上了）；启动时设置里的 `peers` 作为**种子**交给 `mesh.seed`，没应答的由心跳循环按 `recover_probe` 退避继续重试，直到连上。
 - `reset()`：**整台机器的节点回到初始状态，没有分支**：删密码、私钥记录、`settings.json`，回首启向导。
 - 设置视图的“高级设置”：任务超时（`task_timeout_s`）、工作区配额（`max_workspace_bytes`，按 GiB 显示）、本机权限上限（`permission_mode`）、默认 reasoning effort（取自宿主默认模型的 efforts）；执行器与审批超时不是设置项。
 
@@ -257,6 +257,7 @@ export function apply(ctx, config) {
 | `zod`                                 | 运行时 | 唯一的 schema 写法：协议线上形状、网关输入、设置都用它声明，类型由 `z.infer` 推导，规范化（endpoints、peer 地址）写成 `.transform`。不可信输入经 `core/schema.ts` 的 `parseOrThrow`（网关里是它的一行包装 `parseInput`）：`z.object` 丢弃未描述的键并返回新值，失败时把第一处问题写成“路径 + 原因”一句话交给调用方造错误；需要按值收窄类型的地方直接用 schema 的 `safeParse` 结果（如品牌 id），不另设 `isX` 守卫；A2A 请求是按 `method` 区分的一个联合 schema，路由 `switch` 时 `params` 即已定型；只看外形的地方（A2A 的 message、metadata）用 `z.looseObject` 保留其余字段。`@agentclientprotocol/sdk` 也依赖它（必需 peer），所以它本来就在运行期里。不调用 `z.config()`：全局配置会波及 SDK |
 | `@deepseek-ai/dsh-*`（`agent` / `app-boot` / `atomic-write` / `brand` / `credentials` / `error` / `home-paths` / `host-webserver` / `launch-environment` / `llm` / `native-command` / `sandbox` / `sandbox-policy` / `session` / `skill` / `timeout` / `tools` / `util-values`） | 运行时 | 与宿主同一套基建（D40）：错误基类 `HarnessError`、工具 schema DSL、原子写、`deadline`/`timeoutOf`、凭据引用、模型与 sandbox 枚举、品牌类型、DSH home 与启动环境快照；版本跟宿主 `^0.2.2-rc.5`（`dsh-error` 仍 `^0.2.2-rc.2`），随包发布 |
 | `cross-spawn` | 运行时 | ACP 子进程的跨平台派生：Windows `.cmd` shim 解析与命令行引号（`executor/acp/connection.ts`）；杀进程树同在该文件（`AcpConnection` 的私有方法） |
+| `undici` | 运行时 | 节点间（和任务会话到本机节点）的 HTTPS 客户端：自定义 connector 在握手后、请求发出前按节点 id 钉住自签证书，`sigalgs` 列出 Ed25519（BoringSSL 默认不列），关掉 TLS 会话缓存（[§7.4](07-security.md#74-tls)）。Node 内置的 `fetch` 两样都做不到 |
 | `typescript`                          | 开发 | 类型检查（`tsc --noEmit`）与构建（`tsc -p tsconfig.build.json` → `lib/`）                           |
 | `rolldown` + `lightningcss`           | 开发 | 把 `src/client/` 的 TSX 与 CSS Modules 打成 `lib/client.js`（`rolldown.config.ts`），与 DSH 自带插件同一工具链；版本跟 vitest 带的 vite 走（`rolldown` 用 `~`，避免装出两份） |
 | `@types/react`                        | 开发 | 客户端 TSX 的类型；React 运行时由 DSH 壳提供，不随包发布                                           |

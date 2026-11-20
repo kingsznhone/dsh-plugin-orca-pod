@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/mesh/peer-client.ts";
+import { nodeFetch, type FetchLike } from "../src/mesh/peer-client.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,7 +53,7 @@ describe("outbound A2A calls (11)", () => {
     await peer.start();
     const stalled: FetchLike = (url, init) =>
       url.pathname !== "/a2a"
-        ? fetch(url, init)
+        ? nodeFetch(url, init)
         : new Promise<Response>((_resolve, reject) => {
             init.signal?.addEventListener(
               "abort",
@@ -109,7 +109,7 @@ describe("outbound A2A calls (11)", () => {
     let cancelled = false;
     const endless: FetchLike = (url, init) =>
       url.pathname !== "/a2a"
-        ? fetch(url, init)
+        ? nodeFetch(url, init)
         : Promise.resolve(
             new Response(
               new ReadableStream<Uint8Array>({
@@ -135,7 +135,7 @@ describe("outbound A2A calls (11)", () => {
   /** An origin whose `/a2a` answers come from `answer`, a peer it knows and can take the identity of. */
   async function originAnsweredBy(peer: Orca, answer: (init: RequestInit) => Response): Promise<Orca> {
     const forged: FetchLike = (url, init) =>
-      url.pathname === "/a2a" ? Promise.resolve(answer(init)) : fetch(url, init);
+      url.pathname === "/a2a" ? Promise.resolve(answer(init)) : nodeFetch(url, init);
     const origin = await makeNode(forged);
     await origin.start();
     await origin.mesh.probe(peer.mesh.self.endpoints[0]!);

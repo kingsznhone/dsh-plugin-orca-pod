@@ -17,6 +17,8 @@ export const POD_ERROR_STATUS = {
   bad_proof: 401,
   // Authorization.
   not_task_origin: 403,
+  /** A local route asked from another machine, or through a proxy (§5.6). */
+  not_local: 403,
   // Malformed or unsupported requests.
   bad_request: 400,
   unsupported: 400,

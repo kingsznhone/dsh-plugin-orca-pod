@@ -4,8 +4,9 @@ import type { NodeIdentity } from "../core/identity.ts";
 import type { WorkgroupId } from "../core/ids.ts";
 import type { DispatchLog } from "../task/dispatch-log.ts";
 import type { SingleSlotTaskRunner } from "../task/runner.ts";
-import { HttpPeerClient, type FetchLike } from "./peer-client.ts";
+import { HttpPeerClient, nodeFetch, type FetchLike } from "./peer-client.ts";
 import { EndpointScreen } from "./screening.ts";
+import { PeerTls } from "./tls.ts";
 import { resolveClock, type MeshClock } from "./timings.ts";
 
 /** What a test may replace: the network and the clock. */
@@ -26,6 +27,8 @@ export type MeshContextOptions = {
 export class MeshContext {
   /** Signs and sends; it knows no node, the target is always named. */
   readonly client: HttpPeerClient;
+  /** The TLS connections the client's calls go over, each pinned to the node it is addressed to (§7.7). */
+  private readonly tls = new PeerTls();
   /** What this node concluded about the endpoints it was told of (§7.7). */
   readonly screening: EndpointScreen;
   readonly clock: MeshClock;
@@ -45,8 +48,13 @@ export class MeshContext {
     readonly logger: NodeLogger,
     options: MeshContextOptions = {},
   ) {
-    this.client = new HttpPeerClient(identity, key, workgroupId, options.fetch ?? ((url, init) => fetch(url, init)));
+    this.client = new HttpPeerClient(identity, key, workgroupId, options.fetch ?? nodeFetch, this.tls);
     this.screening = new EndpointScreen();
     this.clock = resolveClock(options.clock);
+  }
+
+  /** Close the connections this node holds open to others; the instance is stopping. */
+  close(): Promise<void> {
+    return this.tls.close();
   }
 }

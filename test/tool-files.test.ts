@@ -170,11 +170,15 @@ describe("orca_pod fetch", () => {
 });
 
 describe("orca_pod inside a task", () => {
-  /** A gateway listening on loopback, and the tool of a task session that reaches it as `LocalNode`. */
-  async function taskTool(root: string, token?: string) {
+  /**
+   * A gateway listening on loopback (https, its own certificate), and the tool of a
+   * task session that reaches it as `LocalNode`, pinned to `node` (the gateway's own id unless given).
+   */
+  async function taskTool(root: string, options: { token?: string; node?: string } = {}) {
     const harness = createGatewayHarness();
     const url = await harness.url();
-    const local = new LocalNode(url, token ?? harness.localToken);
+    expect(url).toMatch(/^https:\/\//);
+    const local = new LocalNode(url, options.node ?? harness.orcaNodeId, options.token ?? harness.localToken);
     return { harness, call: toolOver({ kind: "task", local }, policyOf("workspace-write", root)) };
   }
 
@@ -198,7 +202,38 @@ describe("orca_pod inside a task", () => {
     // The tool's schema offers only these two: DSH refuses any other before it runs.
     await expect(call({ method: "members" })).rejects.toThrow(/"method" must be one of/);
 
-    const { call: stranger } = await taskTool(root, "not-the-token");
+    const { call: stranger } = await taskTool(root, { token: "not-the-token" });
     await expect(stranger({ method: "publish", path: "x.txt" })).rejects.toThrow(/answered 401/);
+  });
+
+  it("will not talk to a node whose certificate is not the one it was told of", async () => {
+    const root = tempRoot();
+    writeFileSync(join(root, "x.txt"), "x");
+    // Pinned to another node's id: the TLS connection is refused before the token is sent.
+    const { call } = await taskTool(root, { node: createGatewayHarness().orcaNodeId });
+    await expect(call({ method: "publish", path: "x.txt" })).rejects.toThrow(/fetch failed/);
+  });
+
+  it("refuses the local routes to another machine, even with the token", async () => {
+    const harness = createGatewayHarness();
+    const local = { "x-orca-local": harness.localToken, "content-type": "application/json" };
+    const payload = JSON.stringify({ path: join(tempRoot(), "x.txt") });
+    const elsewhere = await harness.app.inject({
+      method: "POST",
+      url: "/local/blobs",
+      headers: local,
+      payload,
+      remoteAddress: "192.0.2.7",
+    });
+    expect(elsewhere.statusCode).toBe(403);
+    expect(elsewhere.json()).toMatchObject({ code: "not_local" });
+    // Through a proxy on this machine is not from this machine either.
+    const proxied = await harness.app.inject({
+      method: "POST",
+      url: "/local/blobs",
+      headers: { ...local, "x-forwarded-for": "192.0.2.7" },
+      payload,
+    });
+    expect(proxied.statusCode).toBe(403);
   });
 });

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildAuthHeader, newNonce } from "../src/core/signing.ts";
+import { nodeFetch } from "../src/mesh/peer-client.ts";
+import { PeerTls } from "../src/mesh/tls.ts";
 import type { NodeIdentity } from "../src/core/identity.ts";
 import { identityOf } from "./support/node.ts";
 import { createMesh, type Mesh } from "./support/harness.ts";
@@ -84,9 +86,16 @@ async function signedResume(
     method: "message/send",
     params: { message },
   });
-  // Signatures bind the receiver id (§7.1); the test signs for a real target node.
-  const health = (await (await fetch(new URL("/health", targetUrl))).json()) as { orca_node_id: string };
-  const response = await fetch(url, {
+  // Signatures bind the receiver id (§7.1); the test signs for a real target node, which it
+  // first meets over TLS like any node would (any node's certificate), then dials pinned to it (§7.7).
+  const tls = new PeerTls();
+  const contact = tls.route("");
+  const health = (await (
+    await nodeFetch(new URL("/health", targetUrl), { dispatcher: contact.dispatcher })
+  ).json()) as { orca_node_id: string };
+  contact.release();
+  const response = await nodeFetch(url, {
+    dispatcher: tls.route(health.orca_node_id).dispatcher,
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -103,6 +112,7 @@ async function signedResume(
     result?: TaskView;
     error?: { message?: string };
   };
+  await tls.close();
   return { status: response.status, code: payload.error?.message ?? null, view: payload.result ?? null };
 }
 

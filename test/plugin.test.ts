@@ -49,13 +49,13 @@ describe("settings", () => {
       workgroup_password: "pw",
       display_name: "pod-a",
       port: 0,
-      endpoints: ["http://127.0.0.1:9000"],
-      peers: ["http://127.0.0.1:11811"],
+      endpoints: ["https://127.0.0.1:9000"],
+      peers: ["https://127.0.0.1:11811"],
     });
     expect(config.port).toBe(0);
     expect(config.display_name).toBe("pod-a");
-    expect(config.endpoints).toEqual(["http://127.0.0.1:9000"]);
-    expect(config.peers).toEqual(["http://127.0.0.1:11811"]);
+    expect(config.endpoints).toEqual(["https://127.0.0.1:9000"]);
+    expect(config.peers).toEqual(["https://127.0.0.1:11811"]);
   });
 
   it("allows starting without a workgroup so the panel can run its wizard", () => {

@@ -20,15 +20,16 @@ function splitHostPort(rest: string, original: string): { host: string; portText
 }
 
 /**
- * The one canonical form of a peer address: `scheme://host:port` with no path
+ * The one canonical form of a peer address: `https://host:port` with no path
  * and no trailing slash. Accepts a bare `host`, `host:port` (default port `DEFAULT_PORT`)
- * and bare IPv6 literals; an explicit scheme without a port gets its own default.
+ * and bare IPv6 literals. Nodes speak https only (§7.7): `https://` without a
+ * port means 443 (a node behind a proxy); `http://`, which older settings and
+ * peers wrote, is read as https, on the node port when it names none.
  */
 export function normalizePeerUrl(peer: string): string {
   const trimmed = peer.trim();
   if (trimmed.length === 0) throw new Error("peer address is required");
   const schemeMatch = /^(https?):\/\//i.exec(trimmed);
-  const scheme = schemeMatch?.[1]?.toLowerCase() ?? "http";
   const rest = (schemeMatch === null ? trimmed : trimmed.slice(schemeMatch[0].length)).replace(/\/+$/, "");
   if (rest.length === 0) throw new Error(`peer address must include a host: ${trimmed}`);
   if (rest.includes("/") || rest.includes("?") || rest.includes("#")) {
@@ -36,10 +37,15 @@ export function normalizePeerUrl(peer: string): string {
   }
   const { host, portText } = splitHostPort(rest, trimmed);
   if (host.length === 0) throw new Error(`peer address must include a host: ${trimmed}`);
-  const fallbackPort = schemeMatch === null ? DEFAULT_PORT : scheme === "https" ? 443 : 80;
+  const fallbackPort = schemeMatch?.[1]?.toLowerCase() === "https" ? 443 : DEFAULT_PORT;
   const port = portText === undefined || portText.length === 0 ? fallbackPort : Number(portText);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`invalid peer port: ${portText ?? ""}`);
-  const url = `${scheme}://${host.includes(":") ? `[${host}]` : host}:${port}`;
-  if (!URL.canParse(url)) throw new Error(`peer address must be an http(s) host[:port]: ${trimmed}`);
+  const url = `https://${host.includes(":") ? `[${host}]` : host}:${port}`;
+  if (!URL.canParse(url)) throw new Error(`peer address must be an https host[:port]: ${trimmed}`);
   return url;
+}
+
+/** An endpoint as nodes dial it: https, which is all a node serves (§7.7); an `http://` one is read as https. */
+export function asHttps(endpoint: string): string {
+  return endpoint.replace(/^http:\/\//i, "https://");
 }

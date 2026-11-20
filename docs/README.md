@@ -56,7 +56,7 @@ Orca Pod 是一个小规模、对等的 DSH 集群：
 - **没有全局成员表，也没有成员版本号。** 每个 orca node 的表里只放“我直接收到过它心跳”的 orca node；别人的表只能提供**候选端点**，不能替谁声明在线。
 - orca node 身份 = 首次启动生成的 **Ed25519 公钥**（节点 id 就是公钥的 base58，通常 43–44 字符；私钥种子也以 base58 存在 DSH 凭据库的 `orca-pod/node` 记录里；面板空间紧的地方显示缩略，如 `9xQe…3ZLw`；一台机器一个节点）。节点用自己的私钥签每个请求，别人用公钥验签——id 可验证、不可伪造。
 - 入组 = `workgroup_id` + **非空密码**：密码只派生每个节点间请求头里的 workgroup 证明（HMAC，与 Ed25519 签名同时带，答复也由应答方签名）；**没有 session token、没有 TTL**。换密码 = 重建组。
-- 监听是**明文 HTTP/1.1 + keep-alive**；TLS 由 Caddy / nginx 终止，orca node 本身不必管证书。
+- 监听是 **HTTPS（TLS 1.3）上的 HTTP/1.1 + keep-alive**，没有明文端口；证书用节点的 Ed25519 身份密钥自签，拨号方按节点 id 钉扎，不需要 CA（D63，[§7.4](07-security.md#74-tls)）。
 - 任务面用 **A2A**：`message/send` 异步建 task，`tasks/get` 轮询；没有 SSE、没有 push。
 - 文件交换按**名字**：节点只发布自己机器上的文件，名字是 `<节点 id>/<sha256>`，不含地址；谁需要谁让自己的节点去拉（`orca_pod` 的 `publish` 与 `fetch`，宿主和任务里都有）。文件不是任务的一部分：交回的文件名字写在结论文本里由 origin 取，交给任务的文件写在任务文本里由 target 上的 agent 取；结论文本内联返回，工作区不出本机。
 - **任务与产物凭 id 交接**：同 workgroup 任意 orca node 知道 `task_id` / `blob_id` 就能读；没有列表接口，也没有 per-task ACL——id 就是句柄。

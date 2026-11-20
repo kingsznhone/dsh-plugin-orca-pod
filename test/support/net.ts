@@ -66,12 +66,12 @@ export class TestNet {
   }
 
   /**
-   * A node that has not started its loop yet. Its address is `http://10.0.0.<n>:11811`
+   * A node that has not started its loop yet. Its address is `https://10.0.0.<n>:11811`
    * unless `endpoints` says otherwise; only the first one is routed to it.
    */
   node(options: { endpoints?: string[]; timings?: Partial<MeshTimings> } = {}): NetNode {
     this.hosts += 1;
-    const endpoints = options.endpoints ?? [`http://10.0.0.${this.hosts}:11811`];
+    const endpoints = options.endpoints ?? [`https://10.0.0.${this.hosts}:11811`];
     const identity = generateNodeIdentity();
     const db = openDb();
     const blobs = new FileBlobRegistry(db, tempDir("orca-blobs-"));

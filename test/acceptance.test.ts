@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/mesh/peer-client.ts";
+import { nodeFetch, type FetchLike } from "../src/mesh/peer-client.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,7 +60,7 @@ describe("acceptance: membership under partition", () => {
         if (blockedPort !== null && (url.port === blockedPort || index === blockedIndex)) {
           return Promise.reject(new TypeError("simulated network partition"));
         }
-        return fetch(url, init);
+        return nodeFetch(url, init);
       };
     const mesh = await createMesh({
       orcaNodes: 3,

@@ -82,6 +82,7 @@ type LogEntry = {
   method?: string;
   inTask?: string;
   nodeUrl?: string;
+  nodeId?: string;
   hasNodeToken?: boolean;
   extraArgs?: string[];
   text?: string;
@@ -125,9 +126,11 @@ describe("AcpExecutor", () => {
     const entries = await logEntries(join(root, "acp.log"));
     const initialize = entries.find((entry) => entry.method === "initialize");
     // The agent runs inside a task: the plugin there refuses to send (§7.9) and moves
-    // files through this node, which it reaches at its loopback address with a token (§5.6).
+    // files through this node, which it reaches at its loopback address over TLS pinned to
+    // the node's id, with a token (§5.6, §7.7).
     expect(initialize?.inTask).toBe("1");
-    expect(initialize?.nodeUrl).toBe(`http://127.0.0.1:${new URL(node.mesh.self.endpoints[0]!).port}`);
+    expect(initialize?.nodeUrl).toBe(`https://127.0.0.1:${new URL(node.mesh.self.endpoints[0]!).port}`);
+    expect(initialize?.nodeId).toBe(node.mesh.self.id);
     expect(initialize?.hasNodeToken).toBe(true);
     // It runs in the acp profile, which loads this plugin too (D60).
     expect(initialize?.extraArgs).toEqual(["--profile", "acp"]);

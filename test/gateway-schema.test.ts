@@ -48,7 +48,7 @@ function harness() {
   };
   /** A `hello`: what the node says about itself, with `self` fields overridden and top-level fields added. */
   const helloBody = (self: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
-    self: { display_name: "joiner", endpoints: ["http://127.0.0.1:1"], ...self },
+    self: { display_name: "joiner", endpoints: ["https://127.0.0.1:1"], ...self },
     busy: null,
     digest: "",
     ...extra,
@@ -144,14 +144,14 @@ describe("gateway body schemas", () => {
 
     const description = {
       display_name: "renamed",
-      endpoints: ["http://127.0.0.1:2/"],
+      endpoints: ["https://127.0.0.1:2/"],
       models: [{ provider: "p", id: "m", name: "M" }],
     };
     const ok = await post(member, "/cluster/hello", helloBody(description));
     expect(ok.statusCode).toBe(200);
     expect(mesh.get(member.orcaNodeId)?.view()).toMatchObject({
       display_name: "renamed",
-      endpoints: ["http://127.0.0.1:2"],
+      endpoints: ["https://127.0.0.1:2"],
       models: [{ provider: "p", id: "m", name: "M" }],
     });
 
@@ -159,9 +159,9 @@ describe("gateway body schemas", () => {
     const refused = await post(
       member,
       "/cluster/hello",
-      helloBody({ ...description, endpoints: ["http://169.254.169.254"] }),
+      helloBody({ ...description, endpoints: ["https://169.254.169.254"] }),
     );
     expect(refused.json()).toMatchObject({ code: "endpoint_refused" });
-    expect(mesh.get(member.orcaNodeId)?.view().endpoints).toEqual(["http://127.0.0.1:2"]);
+    expect(mesh.get(member.orcaNodeId)?.view().endpoints).toEqual(["https://127.0.0.1:2"]);
   });
 });

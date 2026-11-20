@@ -184,16 +184,16 @@ describe("EndpointsSchema", () => {
     return parsed.success ? parsed.data : null;
   };
 
-  it("accepts an ordered list of http(s) URLs and rejects a bare string", () => {
+  it("accepts an ordered list of http(s) URLs, reading http as https (nodes serve https only), and rejects a bare string", () => {
     expect(endpoints(["http://a:1", "https://pod.example.com/a2a"])).toEqual([
-      "http://a:1",
+      "https://a:1",
       "https://pod.example.com/a2a",
     ]);
     expect(endpoints("http://a:1")).toBeNull();
   });
 
   it("strips one trailing slash and deduplicates", () => {
-    expect(endpoints(["http://a:1/", "http://a:1", "http://b:2/"])).toEqual(["http://a:1", "http://b:2"]);
+    expect(endpoints(["https://a:1/", "http://a:1", "https://b:2/"])).toEqual(["https://a:1", "https://b:2"]);
   });
 
   it("rejects other protocols, text that is not a URL, and more than eight", () => {

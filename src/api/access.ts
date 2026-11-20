@@ -28,7 +28,10 @@ const NONCE_CAPACITY = 10_000;
  *             it only says who is online and where to dial.
  * - `local`:  a process on this machine that holds the node's local token (a task
  *             session, which the executor hands it to). No signature: the token
- *             lives as long as the node and never leaves the machine (§5.6).
+ *             lives as long as the node and never leaves the machine (§5.6). The
+ *             connection must come from this machine as well, so a token that
+ *             did leave it (a task can read its own environment and could put
+ *             the token in its result) opens nothing from elsewhere.
  */
 type Access = "public" | "hello" | "member" | "local";
 
@@ -44,6 +47,21 @@ export function isDirectLoopbackRequest(request: {
     isLoopbackHost(request.socket?.remoteAddress ?? "") &&
     PROXY_HEADERS.every((name) => request.headers[name] === undefined)
   );
+}
+
+/**
+ * True when the request came from a process on this machine, straight to the
+ * node: over loopback, or (a node bound to one LAN address, which loopback cannot
+ * reach) from the very address the connection arrived at, which only this
+ * machine can be the source of. A request a proxy forwarded is not.
+ */
+export function isFromThisMachine(request: {
+  socket?: { remoteAddress?: string | undefined; localAddress?: string | undefined } | undefined;
+  headers: IncomingHttpHeaders;
+}): boolean {
+  const remote = request.socket?.remoteAddress;
+  if (remote === undefined || PROXY_HEADERS.some((name) => request.headers[name] !== undefined)) return false;
+  return isLoopbackHost(remote) || remote === request.socket?.localAddress;
 }
 
 /** The header a local route reads its token from. */
@@ -154,8 +172,11 @@ export class AccessPolicy {
     });
   }
 
-  /** A local route answers only the holder of this node's local token. */
+  /** A local route answers only a process on this machine that holds this node's local token. */
   private checkLocal(request: FastifyRequest): void {
+    if (!isFromThisMachine(request)) {
+      throw new PodError("not_local", "local routes answer only this machine's own processes");
+    }
     const given = Buffer.from(String(request.headers[LOCAL_TOKEN_HEADER] ?? ""));
     const expected = Buffer.from(this.localToken);
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) {

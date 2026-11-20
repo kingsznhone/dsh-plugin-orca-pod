@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { OrcaNodeIdSchema, WorkgroupIdSchema } from "../core/ids.ts";
+import { asHttps } from "../core/net.ts";
 import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../executor/model.ts";
 import { BusyStateSchema } from "../task/wire.ts";
 
@@ -14,13 +15,15 @@ import { BusyStateSchema } from "../task/wire.ts";
 const MAX_ENDPOINTS = 8;
 
 /**
- * Dial addresses a node advertises for itself, best first (§3.2): http(s) base
+ * Dial addresses a node advertises for itself, best first (§3.2): https base
  * URLs, kept in the order given, without a trailing slash and without repeats.
+ * Nodes serve https only (§7.7); an `http://` URL, which older settings wrote, is
+ * read as https.
  */
 export const EndpointsSchema = z
   .array(z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }))
   .max(MAX_ENDPOINTS, `must be at most ${MAX_ENDPOINTS} URLs`)
-  .transform((endpoints) => [...new Set(endpoints.map((endpoint) => endpoint.replace(/\/$/, "")))]);
+  .transform((endpoints) => [...new Set(endpoints.map((endpoint) => asHttps(endpoint.replace(/\/$/, ""))))]);
 
 const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
 export type PeerState = z.infer<typeof PeerStateSchema>;

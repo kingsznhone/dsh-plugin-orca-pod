@@ -29,10 +29,16 @@ describe("settings parser", () => {
     expect(raw.acp).toHaveProperty("extra", true);
   });
 
-  it("canonicalizes peers and rejects what is not an address", () => {
+  it("canonicalizes peers to https and rejects what is not an address", () => {
+    // An http address an older settings file kept is the same node, at https.
     expect(parseSettings({ peers: ["10.0.0.2", "http://10.0.0.2:11811/", "[fd00::1]:9000"] }).peers).toEqual([
-      "http://10.0.0.2:11811",
-      "http://[fd00::1]:9000",
+      "https://10.0.0.2:11811",
+      "https://[fd00::1]:9000",
+    ]);
+    // https without a port is a node behind a proxy, on 443; http without one is the node port.
+    expect(parseSettings({ peers: ["https://pod.example.com", "http://10.0.0.3"] }).peers).toEqual([
+      "https://pod.example.com:443",
+      "https://10.0.0.3:11811",
     ]);
     expect(() => parseSettings({ peers: ["not a url"] })).toThrow(/peers/);
   });

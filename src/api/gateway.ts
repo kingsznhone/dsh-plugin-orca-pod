@@ -1,6 +1,7 @@
 import { createServer, type AddressInfo } from "node:net";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
+import { nodeCertificate } from "../core/certificate.ts";
 import { bodySha256, buildReplyHeader, REPLY_HEADER } from "../core/signing.ts";
 import { PodError, POD_ERROR_STATUS } from "../core/errors.ts";
 
@@ -42,10 +43,18 @@ export class Gateway {
     /** The token this machine's own processes show the local routes. */
     localToken: string,
   ) {
-    // `forceCloseConnections`: a panel or curl may hold an idle keep-alive socket;
-    // shutdown must not wait for it. Routes register no Fastify schemas: each
-    // handler parses its input with zod (`input.ts`) after the access policy ran.
-    this.app = Fastify({ logger: false, bodyLimit: MAX_REQUEST_BYTES, forceCloseConnections: true });
+    // https only (§7.7): the certificate is self-signed over the node's identity key,
+    // so a caller pins it to the node id it dials. Nothing is served in plaintext,
+    // this machine's own processes included.
+    // `forceCloseConnections`: a peer may hold an idle keep-alive socket; shutdown
+    // must not wait for it. Routes register no Fastify schemas: each handler parses
+    // its input with zod (`input.ts`) after the access policy ran.
+    this.app = Fastify({
+      logger: false,
+      bodyLimit: MAX_REQUEST_BYTES,
+      forceCloseConnections: true,
+      https: { ...nodeCertificate(identity), minVersion: "TLSv1.3" },
+    });
     this.installBodyParsers();
     this.app.setErrorHandler((error, request, reply) => this.handleError(error, request, reply));
     this.app.addHook("onSend", async (request, reply, payload) => this.signReply(request, reply, payload));

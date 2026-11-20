@@ -382,12 +382,12 @@ describe("panel HTTP bridge", () => {
         workgroup_password: "next-password",
         display_name: "renamed",
         port: 11812,
-        endpoints: ["http://127.0.0.1:11812"],
+        endpoints: ["https://127.0.0.1:11812"],
       },
     });
     expect(result.status).toBe(200);
     expect(panel.calls).toEqual([
-      'reconfigure:{"workgroup_id":"wg","workgroup_password":"next-password","display_name":"renamed","port":11812,"endpoints":["http://127.0.0.1:11812"]}',
+      'reconfigure:{"workgroup_id":"wg","workgroup_password":"next-password","display_name":"renamed","port":11812,"endpoints":["https://127.0.0.1:11812"]}',
     ]);
   });
 

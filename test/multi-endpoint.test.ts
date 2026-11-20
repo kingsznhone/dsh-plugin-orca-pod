@@ -1,4 +1,4 @@
-import type { FetchLike } from "../src/mesh/peer-client.ts";
+import { nodeFetch, type FetchLike } from "../src/mesh/peer-client.ts";
 import { mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -55,8 +55,8 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
     const password = "correct horse battery staple";
     const deadPort = await closedPort();
     const listenPort = await closedPort();
-    const dead = `http://127.0.0.1:${deadPort}`;
-    const live = `http://127.0.0.1:${listenPort}`;
+    const dead = `https://127.0.0.1:${deadPort}`;
+    const live = `https://127.0.0.1:${listenPort}`;
 
     const bConfig = nodeParts({
       workgroup_id: workgroupId,
@@ -71,7 +71,7 @@ describe("multiple advertised endpoints (IPv4/IPv6, LAN, public matrix)", () => 
     let deadAttempts = 0;
     const counting: FetchLike = async (url, init) => {
       if (String(url).includes(`:${deadPort}/`)) deadAttempts += 1;
-      return fetch(url, init);
+      return nodeFetch(url, init);
     };
     const aConfig = nodeParts({
       workgroup_id: workgroupId,

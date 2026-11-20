@@ -297,7 +297,7 @@ describe("mesh formation", () => {
     const seeded = await makeNode(workgroupId, "formation-test", { display_name: "seeded", timings: FAST });
     try {
       // The late node's address is known (a fixed port), but nothing listens there yet.
-      const lateUrl = `http://127.0.0.1:${port}`;
+      const lateUrl = `https://127.0.0.1:${port}`;
       await seeded.start();
       const { reached, pending } = await seeded.mesh.seed([lateUrl]);
       expect(reached).toEqual([]);

@@ -17,7 +17,7 @@ import { wg } from "./ids.ts";
 import { createTestRunner, openDb, tempDir } from "./runner.ts";
 import { generateNodeIdentity } from "../../src/plugin/stores.ts";
 
-export const GATEWAY_ENDPOINT = "http://orca-node.test";
+export const GATEWAY_ENDPOINT = "https://orca-node.test";
 
 const RUNTIME: RuntimeInfo = {
   os: { family: "linux", name: "Linux", version: "6" },

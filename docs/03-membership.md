@@ -40,7 +40,7 @@
 
 ```text
 D（新）                                            A（已在 mesh）
-  POST http://A:11811/cluster/hello
+  POST https://A:11811/cluster/hello
   Authorization: Pod id=D; wg=<workgroup>; ts; nonce; sig=<Ed25519>; proof=<HMAC>   （首次没有 target）
   { self: {display_name, endpoints, runtime, max_task_ttl_s, models, ...}, busy, digest }
                                               ├ 验两样证明、时间窗、nonce 未用过（所有路由一样）
@@ -81,7 +81,7 @@ D（新）                                            A（已在 mesh）
 
 ```http
 POST /cluster/hello          （请求头同上；body 如下）
-{ "self": { "display_name": "...", "endpoints": ["http://10.0.0.2:11811"], "runtime": { ... },
+{ "self": { "display_name": "...", "endpoints": ["https://10.0.0.2:11811"], "runtime": { ... },
             "max_task_ttl_s": 3600, "models": [ ... ], "default_model": { ... }, "default_reasoning_effort": "high" },
   "busy": null,
   "digest": "<members_digest>" }

@@ -45,7 +45,7 @@ async function vouchedBy(net: TestNet, node: NetNode): Promise<OrcaNodeId[]> {
 async function greet(
   viewer: NetNode,
   id: OrcaNodeId,
-  endpoints = ["http://10.9.9.9:11811"],
+  endpoints = ["https://10.9.9.9:11811"],
   display_name = `node-${id}`,
 ): Promise<OrcaNode> {
   await viewer.mesh.greeted(id, { self: { display_name, endpoints }, busy: null, digest: "" }, true);
@@ -97,7 +97,7 @@ describe("the node table", () => {
     const honest = hostile.mesh.greeted.bind(hostile.mesh);
     vi.spyOn(hostile.mesh, "greeted").mockImplementation(async (caller, request, overLoopback) => ({
       ...(await honest(caller, request, overLoopback)),
-      members: [listed(c.id, "http://192.0.2.9:11811", { display_name: "mallory" })],
+      members: [listed(c.id, "https://192.0.2.9:11811", { display_name: "mallory" })],
     }));
     await b.mesh.probe(hostile.url);
     expect(b.mesh.get(c.id)?.view()).toMatchObject({ display_name: c.mesh.self.displayName, endpoints: [c.url] });
@@ -289,14 +289,14 @@ const NODE_C = fakeNodeId("row-c");
 describe("a node as the table's row", () => {
   it("is found by id, by a unique display name, and by an address it advertises", async () => {
     const a = new TestNet(TIMINGS).node();
-    const node = await greet(a, NODE_B, ["http://10.0.0.2:11811", "http://127.0.0.1:11811"]);
+    const node = await greet(a, NODE_B, ["https://10.0.0.2:11811", "https://127.0.0.1:11811"]);
 
     expect(a.mesh.resolve(NODE_B)).toBe(node);
     expect(a.mesh.resolve(`node-${NODE_B}`)).toBe(node);
     expect(a.mesh.resolve("10.0.0.2:11811")).toBe(node);
-    expect(a.mesh.resolve("http://127.0.0.1:11811/")).toBe(node);
+    expect(a.mesh.resolve("https://127.0.0.1:11811/")).toBe(node);
     // An address it does not advertise does not name it, even one that would reach it.
-    expect(() => a.mesh.resolve("http://localhost:11811")).toThrow(/not a known node/);
+    expect(() => a.mesh.resolve("https://localhost:11811")).toThrow(/not a known node/);
     // This node is found like any other.
     expect(a.mesh.resolve(a.mesh.self.displayName)).toBe(a.mesh.self);
     expect(a.mesh.resolve(a.id)).toBe(a.mesh.self);
@@ -304,11 +304,11 @@ describe("a node as the table's row", () => {
 
   it("refuses a stranger, and a name that two nodes have", async () => {
     const a = new TestNet(TIMINGS).node();
-    expect(() => a.mesh.resolve("http://203.0.113.9:11811")).toThrow(/not a known node/);
+    expect(() => a.mesh.resolve("https://203.0.113.9:11811")).toThrow(/not a known node/);
     expect(() => a.mesh.resolve("nobody")).toThrow(/not a known node/);
 
-    await greet(a, NODE_B, ["http://127.0.0.1:11811"], "twin");
-    await greet(a, NODE_C, ["http://127.0.0.1:11812"], "twin");
+    await greet(a, NODE_B, ["https://127.0.0.1:11811"], "twin");
+    await greet(a, NODE_C, ["https://127.0.0.1:11812"], "twin");
     expect(() => a.mesh.resolve("twin")).toThrow(
       new RegExp(`several nodes.*${NODE_B}.*${NODE_C}|several nodes.*${NODE_C}.*${NODE_B}`),
     );
@@ -332,16 +332,16 @@ describe("a node as the table's row", () => {
     const node = await greet(a, NODE_B);
     node.describe({
       display_name: "renamed",
-      endpoints: ["http://10.0.0.9:11811"],
+      endpoints: ["https://10.0.0.9:11811"],
       models: [{ provider: "p", id: "m", name: "M" }],
     });
     expect(node.view()).toMatchObject({
       display_name: "renamed",
-      endpoints: ["http://10.0.0.9:11811"],
+      endpoints: ["https://10.0.0.9:11811"],
       models: [{ provider: "p", id: "m", name: "M" }],
     });
     // A catalog it stopped advertising does not linger.
-    node.describe({ display_name: "renamed", endpoints: ["http://10.0.0.9:11811"] });
+    node.describe({ display_name: "renamed", endpoints: ["https://10.0.0.9:11811"] });
     expect(node.view().models).toBeUndefined();
   });
 });
