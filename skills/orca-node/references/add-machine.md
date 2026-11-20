@@ -5,9 +5,9 @@ no separate installer or service.
 
 1. On the new machine, install DeepSeek Harness, then install this plugin in
    all three profiles, whichever app the machine uses:
-   `dsh plugin --profile desktop add orca-pod`,
-   `dsh plugin --profile web add orca-pod` and
-   `dsh plugin --profile acp add orca-pod`. The `desktop` or `web` copy runs the
+   `dsh plugin --profile desktop add dsh-plugin-orca-pod`,
+   `dsh plugin --profile web add dsh-plugin-orca-pod` and
+   `dsh plugin --profile acp add dsh-plugin-orca-pod`. The `desktop` or `web` copy runs the
    node that other machines call (one node per machine, whichever DSH starts
    first); the `acp` profile runs task children and gives their agent the
    `orca_pod` file methods. Without the `acp` copy tasks still run, but they

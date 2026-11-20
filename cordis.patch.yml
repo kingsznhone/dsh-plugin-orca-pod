@@ -1,4 +1,4 @@
-# DeepSeek Harness bundle patch for orca-pod.
+# DeepSeek Harness bundle patch for dsh-plugin-orca-pod.
 #
 # The install root is this package (the repository root): `dsh plugin --profile
 # <name> add <path to this directory>` links it into the profile and appends the
@@ -18,8 +18,8 @@
 # address is loopback, and the wizard asks which interface should be exposed to
 # peers.
 - insert:
-    - id: orca-pod
-      name: "orca-pod"
+    - id: dsh-plugin-orca-pod
+      name: "dsh-plugin-orca-pod"
       config:
         port: 11811
         peers: []

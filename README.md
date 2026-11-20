@@ -6,7 +6,7 @@
 
 **把你自己的几台电脑连成一张网，分布式哦鲸鲸**
 
-Windows / Linux · 2–10 台机器 · 全程 HTTPS 加密
+Windows / Linux / MacOS · 2–10 台机器 · 全程 HTTPS 加密
 
 [功能](#它能做什么) · [安装](#安装) · [第一次设置](#第一次设置) · [日常使用](#日常使用) · [设置](#设置) · [常见问题](#常见问题)
 
@@ -44,9 +44,9 @@ Windows / Linux · 2–10 台机器 · 全程 HTTPS 加密
 在终端里运行下面三条命令，插件会从 npm 下载安装：
 
 ```bash
-dsh plugin --profile desktop add orca-pod
-dsh plugin --profile web add orca-pod
-dsh plugin --profile acp add orca-pod
+dsh plugin --profile desktop add dsh-plugin-orca-pod
+dsh plugin --profile web add dsh-plugin-orca-pod
+dsh plugin --profile acp add dsh-plugin-orca-pod
 ```
 
 三条都运行就好，不用管这台机器用的是桌面版还是 `dsh web`：
@@ -194,7 +194,7 @@ dsh plugin --profile acp add orca-pod
 
 ### 任务能跑，但交不了文件
 
-那台机器的 `acp` profile 里可能没装插件。请在那台机器上运行 `dsh plugin --profile acp add orca-pod`。
+那台机器的 `acp` profile 里可能没装插件。请在那台机器上运行 `dsh plugin --profile acp add dsh-plugin-orca-pod`。
 
 ### 提示节点已在另一个 DeepSeek Harness 进程中运行
 
@@ -207,9 +207,9 @@ dsh plugin --profile acp add orca-pod
 运行下面三条命令，然后重新打开 DeepSeek Harness：
 
 ```bash
-dsh plugin --profile desktop add orca-pod@latest
-dsh plugin --profile web add orca-pod@latest
-dsh plugin --profile acp add orca-pod@latest
+dsh plugin --profile desktop add dsh-plugin-orca-pod@latest
+dsh plugin --profile web add dsh-plugin-orca-pod@latest
+dsh plugin --profile acp add dsh-plugin-orca-pod@latest
 ```
 
 > ⚠️ **请把网里所有机器一起更新**：新旧版本的通信方式可能不兼容，只更新一部分机器的话，它们之间可能连不上。
@@ -220,9 +220,9 @@ dsh plugin --profile acp add orca-pod@latest
 2. 从三个 profile 里移除插件：
 
    ```bash
-   dsh plugin --profile desktop remove orca-pod
-   dsh plugin --profile web remove orca-pod
-   dsh plugin --profile acp remove orca-pod
+   dsh plugin --profile desktop remove dsh-plugin-orca-pod
+   dsh plugin --profile web remove dsh-plugin-orca-pod
+   dsh plugin --profile acp remove dsh-plugin-orca-pod
    ```
 
 3. 任务记录和传输过的文件保存在 DeepSeek Harness 数据目录下的 `orca-pod` 文件夹里（默认是 `~/.dsh/orca-pod`），不再需要的话可以手动删除。
@@ -230,3 +230,9 @@ dsh plugin --profile acp add orca-pod@latest
 ---
 
 🛠️ 参与开发请阅读 [docs/README.md](docs/README.md)。
+
+---
+
+## 许可证
+
+本项目以 **GPL-3.0-only** 发布，详见 [LICENSE](LICENSE)。

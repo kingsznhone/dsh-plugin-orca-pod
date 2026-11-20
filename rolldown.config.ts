@@ -24,7 +24,7 @@ import { transform as compileCss } from "lightningcss";
 import type { Plugin, RolldownOptions } from "rolldown";
 
 /** Module id the shell registers the factory under: the package name. */
-const MODULE_ID = "orca-pod";
+const MODULE_ID = "dsh-plugin-orca-pod";
 
 /** Platform modules the factory's `require` answers; everything else is bundled. */
 export const CLIENT_EXTERNALS = ["react", "react/jsx-runtime", "@deepseek-ai/dsh-client-ui-primitives"];
@@ -58,7 +58,7 @@ export function compileCssModule(source: string, file: string): { css: string; n
 /** `import styles from "./x.module.css"`: the scoped class map, with the sheet injected once per page. */
 function cssModules(): Plugin {
   return {
-    name: "orca-pod-css-modules",
+    name: "dsh-plugin-orca-pod-css-modules",
     load: {
       filter: { id: /\.module\.css$/ },
       async handler(path) {

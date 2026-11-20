@@ -40,14 +40,6 @@
   },
   "overrides": [
     {
-      "includes": ["scripts/**"],
-      "linter": {
-        "rules": {
-          "style": { "noParameterProperties": "error" }
-        }
-      }
-    },
-    {
       "includes": ["test/**"],
       "linter": {
         "rules": {

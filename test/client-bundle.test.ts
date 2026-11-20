@@ -41,7 +41,7 @@ function registered(document?: ReturnType<typeof fakeDocument>): { id: string; f
 
 describe("client bundle", () => {
   it("registers one lazy factory under the package name", () => {
-    expect(registered().id).toBe("orca-pod");
+    expect(registered().id).toBe("dsh-plugin-orca-pod");
   });
 
   it("requires only the shell's platform modules", () => {
@@ -77,14 +77,14 @@ describe("client bundle", () => {
       },
       effect: (execute: () => () => void) => execute(),
     });
-    expect(dictionaries).toEqual(["orca-pod:en", "orca-pod:zh"]);
+    expect(dictionaries).toEqual(["dsh-plugin-orca-pod:en", "dsh-plugin-orca-pod:zh"]);
     expect(slots).toEqual([
-      "orca-pod",
-      "orca-pod",
-      "orca-pod.panel",
-      "orca-pod.approval-popup",
-      "orca-pod.sounds",
-      "orca-pod.approval-dock",
+      "dsh-plugin-orca-pod",
+      "dsh-plugin-orca-pod",
+      "dsh-plugin-orca-pod.panel",
+      "dsh-plugin-orca-pod.approval-popup",
+      "dsh-plugin-orca-pod.sounds",
+      "dsh-plugin-orca-pod.approval-dock",
     ]);
   });
 
@@ -96,17 +96,17 @@ describe("client bundle", () => {
     factory(() => ({}));
     const tags = document.head.tags;
     expect(tags.map((tag) => tag.dataset.pluginCss).sort()).toEqual([
-      "orca-pod/approvals.module.css",
-      "orca-pod/panel.module.css",
-      "orca-pod/settings.module.css",
-      "orca-pod/ui.module.css",
+      "dsh-plugin-orca-pod/approvals.module.css",
+      "dsh-plugin-orca-pod/panel.module.css",
+      "dsh-plugin-orca-pod/settings.module.css",
+      "dsh-plugin-orca-pod/ui.module.css",
     ]);
     for (const tag of tags) {
-      expect(tag.dataset.plugin).toBe("orca-pod");
-      const file = tag.dataset.pluginCss?.replace(/^orca-pod\/|\.module\.css$/g, "");
+      expect(tag.dataset.plugin).toBe("dsh-plugin-orca-pod");
+      const file = tag.dataset.pluginCss?.replace(/^dsh-plugin-orca-pod\/|\.module\.css$/g, "");
       const classes = tag.textContent.match(/\.-?[A-Za-z_][\w-]*/g) ?? [];
       expect(classes.length).toBeGreaterThan(0);
-      for (const name of classes) expect(name.startsWith(`.orca-pod-${file}_`), name).toBe(true);
+      for (const name of classes) expect(name.startsWith(`.dsh-plugin-orca-pod-${file}_`), name).toBe(true);
     }
   });
 });
@@ -124,14 +124,14 @@ describe("CSS modules", () => {
       "x",
     );
     expect(names).toEqual({
-      row: "orca-pod-x_row",
-      wide: "orca-pod-x_wide orca-pod-x_row",
-      spin: "orca-pod-x_spin",
-      busy: "orca-pod-x_busy",
+      row: "dsh-plugin-orca-pod-x_row",
+      wide: "dsh-plugin-orca-pod-x_wide dsh-plugin-orca-pod-x_row",
+      spin: "dsh-plugin-orca-pod-x_spin",
+      busy: "dsh-plugin-orca-pod-x_busy",
     });
-    expect(css).toContain(".dsw-host .orca-pod-x_row[data-x=");
+    expect(css).toContain(".dsw-host .dsh-plugin-orca-pod-x_row[data-x=");
     expect(css).toContain("url(a.svg)");
-    expect(css).not.toMatch(/orca-pod-x_(foo|svg)/);
-    expect(css).toContain("@keyframes orca-pod-x_spin");
+    expect(css).not.toMatch(/dsh-plugin-orca-pod-x_(foo|svg)/);
+    expect(css).toContain("@keyframes dsh-plugin-orca-pod-x_spin");
   });
 });
