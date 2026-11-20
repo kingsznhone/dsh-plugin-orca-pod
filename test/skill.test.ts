@@ -15,9 +15,9 @@ describe("orca-node skill bundle", () => {
     expect(basename(dirname(path))).toBe("orca-node");
     expect(registration.resourceBase?.kind).toBe("directory");
     expect(resolve((registration.resourceBase as { path: string }).path)).toBe(dirname(path));
-    expect(readFileSync(join(dirname(path), "references", "add-machine.md"), "utf8")).toContain(
-      "install this plugin in\n   all three profiles",
-    );
+    const addMachine = readFileSync(join(dirname(path), "references", "add-machine.md"), "utf8");
+    expect(addMachine).toContain("profiles that machine uses");
+    expect(addMachine).toContain("dsh plugin --profile <name> add dsh-plugin-orca-pod");
   });
 
   it("reads the frontmatter and strips it from the body", () => {
