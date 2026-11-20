@@ -399,6 +399,7 @@ describe("panel HTTP bridge", () => {
       body: {
         task_timeout_s: 120,
         max_workspace_bytes: 2147483648,
+        // Settings that no longer exist (candidate screening is automatic now) are dropped.
         allow_public_peers: true,
         allow_loopback_peers: false,
         permission_mode: "workspace-write",
@@ -408,7 +409,7 @@ describe("panel HTTP bridge", () => {
     expect(saved.status).toBe(200);
     expect(panel.calls).toEqual([
       // Keys come out in the settings table's order, not the body's.
-      'reconfigure:{"permission_mode":"workspace-write","task_timeout_s":120,"max_workspace_bytes":2147483648,"allow_public_peers":true,"allow_loopback_peers":false,"default_reasoning_effort":"max"}',
+      'reconfigure:{"permission_mode":"workspace-write","task_timeout_s":120,"max_workspace_bytes":2147483648,"default_reasoning_effort":"max"}',
     ]);
 
     // Clearing a control sends null, so the override (and the persisted config
@@ -418,14 +419,14 @@ describe("panel HTTP bridge", () => {
       url: `${POD_API_PREFIX}/config`,
       body: {
         task_timeout_s: null,
-        allow_public_peers: null,
+        max_workspace_bytes: null,
         permission_mode: null,
         default_reasoning_effort: null,
       },
     });
     expect(cleared.status).toBe(200);
     expect(panel.calls[1]).toBe(
-      'reconfigure:{"permission_mode":null,"task_timeout_s":null,"allow_public_peers":null,"default_reasoning_effort":null}',
+      'reconfigure:{"permission_mode":null,"task_timeout_s":null,"max_workspace_bytes":null,"default_reasoning_effort":null}',
     );
   });
 

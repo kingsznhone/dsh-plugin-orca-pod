@@ -4,7 +4,6 @@ import {
   Button,
   IconChevronRightOutlineRegular,
   IconSettingsOutlineRegular,
-  IconUsersOutlineRegular,
   IconWarningOutlineRegular,
   Input,
   Modal,
@@ -245,12 +244,23 @@ export function Panel({ overlay = false }: { overlay?: boolean }) {
   );
 }
 
-/** Sidebar-foot entry: a green badge with reachable peers, amber while a decision waits. */
+/** The mesh light, a ◈ drawn rather than typed so it looks the same in every font; it takes the text colour. */
+function MeshLight() {
+  return (
+    <svg width={16} height={16} viewBox={"0 0 16 16"} fill={"none"} aria-hidden={true}>
+      <path d={"M8 1.5 14.5 8 8 14.5 1.5 8Z"} stroke={"currentColor"} strokeWidth={1.5} strokeLinejoin={"round"} />
+      <path d={"M8 5 11 8 8 11 5 8Z"} fill={"currentColor"} />
+    </svg>
+  );
+}
+
+/** Sidebar-foot entry and status light: grey off the mesh, green with reachable peers, amber while a decision waits. */
 export function SidebarAction({ wide }: { wide?: boolean }) {
   useLocale();
   const { state, panelOpen } = useStore();
   const pending = state === null ? 0 : state.approvals.length;
   const reachable = state === null ? 0 : state.members.length;
+  const light = pending > 0 ? "warning" : reachable > 0 ? "connected" : undefined;
   const title = pending > 0 ? `${t("nav")} · ${pending} ${t("pendingApprovals")}` : t("nav");
   return (
     <button
@@ -261,11 +271,8 @@ export function SidebarAction({ wide }: { wide?: boolean }) {
       aria-label={title}
       onClick={() => store.setPanelOpen(!panelOpen)}
     >
-      <span className={css.sidebarIcon}>
-        <IconUsersOutlineRegular size={16} />
-        {pending > 0 || reachable > 0 ? (
-          <span className={css.sidebarBadge} data-tone={pending > 0 ? "warning" : undefined} />
-        ) : null}
+      <span className={css.sidebarIcon} data-light={light}>
+        <MeshLight />
       </span>
       {wide === false ? null : <span className={css.sidebarLabel}>{t("nav")}</span>}
       {wide !== false && pending > 0 ? <Tag tone={"warning"}>{pending}</Tag> : null}

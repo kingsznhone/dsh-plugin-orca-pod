@@ -148,17 +148,9 @@ export class Orca {
       identity.orcaNodeId,
       logger,
     );
-    const context = new MeshContext(
-      identity,
-      workgroupId,
-      key,
-      this.dispatches,
-      this.blobs,
-      this.tasks,
-      { allowPublicPeers: settings.allow_public_peers, allowLoopbackPeers: settings.allow_loopback_peers },
-      logger,
-      { fetch: options.fetch },
-    );
+    const context = new MeshContext(identity, workgroupId, key, this.dispatches, this.blobs, this.tasks, logger, {
+      fetch: options.fetch,
+    });
     this.mesh = new Mesh(context, this.describeSelf(Orca.endpointsFrom(settings, settings.port)), {
       timings: options.timings,
     });

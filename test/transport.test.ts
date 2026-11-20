@@ -176,7 +176,7 @@ describe("transport jitter during formation", () => {
     }
   });
 
-  it("keeps a peer online through a 15-heartbeat one-way outbound failure", async () => {
+  it("holds a peer at suspect, not offline, through a 15-heartbeat one-way outbound failure", async () => {
     const workgroupId = newWorkgroupId();
     const a = await makeNode(workgroupId, "jitter", { display_name: "a" });
     const b = await makeNode(workgroupId, "jitter", { display_name: "b" });
@@ -203,24 +203,21 @@ describe("transport jitter during formation", () => {
       await c.mesh.probe(bUrl);
       await waitFor(() => [a, b, c].every((orcaNode) => peersOf(orcaNode).length === 2));
 
-      // c → a 单向断，持续 1.5s = 15 个心跳间隔。在线判定是“最近有没有收到它”：
-      // a 的心跳仍能到 c，所以 c 不应该把 a 判死，也不应该报 peer_not_online。
+      // c → a 单向断，持续 1.5s = 15 个心跳间隔（例如 a 在 NAT 后面）。a 的心跳仍能到 c，
+      // 所以 c 不把 a 判死（不进 offline）；但 c 连不上 a，a 停在 suspect(unreachable)，
+      // 派任务立即得到 peer_not_online，而不是等拨号失败（§3.3）。
+      const stateOfA = () => peersOf(c).find((peer) => peer.orca_node_id === a.mesh.self.id)?.state;
       blocked = true;
       await sleep(1500);
-      expect(peersOf(c).some((peer) => peer.orca_node_id === a.mesh.self.id && peer.state === "online")).toBe(true);
+      expect(stateOfA()).toBe("suspect");
       expect(peersOf(a).some((peer) => peer.orca_node_id === c.mesh.self.id && peer.state === "online")).toBe(true);
+      await expect(
+        c.mesh.resolve(aUrl).sendTask({ message: { role: "user", parts: [{ kind: "text", text: "hi" }] } }),
+      ).rejects.toMatchObject({ code: "peer_not_online" });
 
-      let error: unknown;
-      try {
-        await c.mesh.resolve(aUrl).sendTask({ message: { role: "user", parts: [{ kind: "text", text: "hi" }] } });
-      } catch (caught) {
-        error = caught;
-      }
-      expect(error).toBeInstanceOf(TypeError);
-      expect((error as { code?: string }).code).toBeUndefined();
-
-      // 链路恢复后同一调用应该成功并跑完。
+      // 链路恢复：c 的下一拍心跳得到应答，a 回到 online，同一调用成功并跑完。
       blocked = false;
+      await waitFor(() => stateOfA() === "online");
       const task = await c.mesh.resolve(aUrl).sendTask({
         message: scriptMessage({ final: { state: "completed", text: "ok" } }),
       });

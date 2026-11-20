@@ -7,13 +7,18 @@ import { isLoopbackEndpoint } from "../src/plugin/pod.ts";
 import { fakeNodeId } from "./fixtures/ids.ts";
 import { listed, TestNet } from "./support/net.ts";
 
+/** A candidate named in a member list from another machine. */
+const fromElsewhere = (endpoint: string) => new EndpointScreen().candidate(endpoint, false);
+/** A candidate named in a member list that arrived over loopback, from a node on this machine. */
+const fromThisMachine = (endpoint: string) => new EndpointScreen().candidate(endpoint, true);
+
 describe("candidate endpoint filtering (§7.7)", () => {
   it("allows private ranges", async () => {
-    expect(await new EndpointScreen({}).candidate("http://10.1.2.3:11811")).toBe(true);
-    expect(await new EndpointScreen({}).candidate("http://172.20.0.9:11811")).toBe(true);
-    expect(await new EndpointScreen({}).candidate("http://192.168.86.252:11812")).toBe(true);
-    expect(await new EndpointScreen({}).candidate("http://100.64.1.10:11811")).toBe(true);
-    expect(await new EndpointScreen({}).candidate("http://[fd00::1]:11811")).toBe(true);
+    expect(await fromElsewhere("http://10.1.2.3:11811")).toBe(true);
+    expect(await fromElsewhere("http://172.20.0.9:11811")).toBe(true);
+    expect(await fromElsewhere("http://192.168.86.252:11812")).toBe(true);
+    expect(await fromElsewhere("http://100.64.1.10:11811")).toBe(true);
+    expect(await fromElsewhere("http://[fd00::1]:11811")).toBe(true);
   });
 
   it("always rejects metadata, link-local, multicast and unspecified addresses", async () => {
@@ -25,26 +30,28 @@ describe("candidate endpoint filtering (§7.7)", () => {
       "http://[::]:11811",
     ];
     for (const endpoint of blocked) {
-      expect(await new EndpointScreen({}).candidate(endpoint)).toBe(false);
-      expect(await new EndpointScreen({ allowPublicPeers: true }).candidate(endpoint)).toBe(false);
+      expect(await fromElsewhere(endpoint)).toBe(false);
+      expect(await fromThisMachine(endpoint)).toBe(false);
     }
   });
 
-  it("allows loopback by default, and rejects it when disabled", async () => {
-    expect(await new EndpointScreen({}).candidate("http://127.0.0.1:11811")).toBe(true);
-    expect(await new EndpointScreen({}).candidate("http://[::1]:11811")).toBe(true);
-    expect(await new EndpointScreen({ allowLoopbackPeers: false }).candidate("http://127.0.0.1:11811")).toBe(false);
-    expect(await new EndpointScreen({ allowLoopbackPeers: false }).candidate("http://[::1]:11811")).toBe(false);
+  it("allows loopback only from a list that came from this machine", async () => {
+    // One machine runs one node: another machine's loopback address names this machine.
+    expect(await fromElsewhere("http://127.0.0.1:11811")).toBe(false);
+    expect(await fromElsewhere("http://[::1]:11811")).toBe(false);
+    // Nodes sharing this machine (tests, development) list each other at loopback.
+    expect(await fromThisMachine("http://127.0.0.1:11811")).toBe(true);
+    expect(await fromThisMachine("http://[::1]:11811")).toBe(true);
   });
 
-  it("rejects public addresses unless allowPublicPeers is set", async () => {
-    expect(await new EndpointScreen({}).candidate("http://8.8.8.8:11811")).toBe(false);
-    expect(await new EndpointScreen({ allowPublicPeers: true }).candidate("http://8.8.8.8:11811")).toBe(true);
+  it("allows public addresses: a mesh may span a cloud server or public IPv6", async () => {
+    expect(await fromElsewhere("http://8.8.8.8:11811")).toBe(true);
+    expect(await fromElsewhere("http://[2001:db8::1]:11811")).toBe(true);
   });
 
   it("resolves hostnames and applies the same address policy", async () => {
-    expect(await new EndpointScreen({}).candidate("http://localhost:11811")).toBe(true);
-    expect(await new EndpointScreen({ allowLoopbackPeers: false }).candidate("http://localhost:11811")).toBe(false);
+    expect(await fromElsewhere("http://localhost:11811")).toBe(false);
+    expect(await fromThisMachine("http://localhost:11811")).toBe(true);
   });
 
   it("never picks a port that fetch refuses to dial", async () => {
@@ -61,8 +68,8 @@ describe("candidate endpoint filtering (§7.7)", () => {
   });
 
   it("rejects non-http schemes and malformed endpoints", async () => {
-    expect(await new EndpointScreen({}).candidate("ftp://10.0.0.1/")).toBe(false);
-    expect(await new EndpointScreen({}).candidate("not a url")).toBe(false);
+    expect(await fromElsewhere("ftp://10.0.0.1/")).toBe(false);
+    expect(await fromElsewhere("not a url")).toBe(false);
   });
 
   it("detects advertised endpoints with IPv4 first and no loopback", () => {
@@ -109,6 +116,33 @@ describe("peer origin (§7.7)", () => {
     expect(dialed.some((url) => url.startsWith("http://10.0.0.99:1"))).toBe(true);
     // The public address a member declared for itself is dialed.
     expect(dialed.some((url) => url.startsWith("http://8.8.8.8:1"))).toBe(true);
+  });
+
+  it("dials a listed loopback address only when the list came from this machine", async () => {
+    const net = new TestNet();
+    const a = net.node();
+    /** A member whose list names one more node, at `listedAt`. */
+    const listing = (options: { endpoints?: string[] }, name: string, listedAt: string) => {
+      const lister = net.node(options);
+      const honest = lister.mesh.greeted.bind(lister.mesh);
+      vi.spyOn(lister.mesh, "greeted").mockImplementation(async (caller, request, overLoopback) => ({
+        ...(await honest(caller, request, overLoopback)),
+        members: [listed(fakeNodeId(name), listedAt)],
+      }));
+      return lister;
+    };
+    // Another machine (10.0.0.x) lists a node at loopback: that address would be this machine.
+    const remote = listing({}, "remote-listed", "http://127.0.0.1:7001");
+    // A node on this machine (reached at loopback) lists another node on this machine.
+    const local = listing({ endpoints: ["http://127.0.0.1:7000"] }, "local-listed", "http://127.0.0.1:7002");
+    await a.mesh.probe(remote.url);
+    await a.mesh.probe(local.url);
+    a.mesh.start();
+    await net.advance(100);
+
+    const dialed = net.dials.filter((dial) => dial.from === a.id).map((dial) => dial.url);
+    expect(dialed.some((url) => url.startsWith("http://127.0.0.1:7001"))).toBe(false);
+    expect(dialed.some((url) => url.startsWith("http://127.0.0.1:7002"))).toBe(true);
   });
 });
 

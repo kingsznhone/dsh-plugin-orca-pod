@@ -25,7 +25,7 @@ type ShownSettings = PodConfigView["settings"];
 type LimitKey = "task_timeout_s" | "max_workspace_bytes";
 
 /** Advanced settings edited as a choice. */
-type SelectKey = "permission_mode" | "allow_public_peers" | "allow_loopback_peers" | "default_reasoning_effort";
+type SelectKey = "permission_mode" | "default_reasoning_effort";
 
 interface Limit {
   key: LimitKey;
@@ -61,17 +61,11 @@ const LIMITS: Limit[] = [
   { key: "task_timeout_s", label: "cfgTaskTimeout", hint: "cfgTaskTimeoutHint" },
   { key: "max_workspace_bytes", label: "cfgMaxWorkspaceGiB", hint: "cfgMaxWorkspaceHint", unit: GIB },
 ];
-const BOOLEANS: SelectKey[] = ["allow_public_peers", "allow_loopback_peers"];
 
 /** What the choices are built from: the host's mode list, its default model's efforts, the current values. */
 type ChoiceSource = Pick<PodConfigView, "permission_modes" | "reasoning_efforts" | "settings">;
 
 function selectFields(config: ChoiceSource): SelectField[] {
-  const tri: Array<[string, string]> = [
-    ["", t("cfgDefaultOption")],
-    ["allow", t("cfgAllowOption")],
-    ["deny", t("cfgDenyOption")],
-  ];
   const literal = (values: readonly string[]): Array<[string, string]> => [
     ["", t("cfgDefaultOption")],
     ...values.map((value): [string, string] => [value, value]),
@@ -82,8 +76,6 @@ function selectFields(config: ChoiceSource): SelectField[] {
   if (saved !== undefined && !efforts.some(([id]) => id === saved)) efforts.push([saved, saved]);
   return [
     ["permission_mode", "cfgPermissionMode", literal(config.permission_modes)],
-    ["allow_public_peers", "cfgAllowPublicPeers", tri],
-    ["allow_loopback_peers", "cfgAllowLoopbackPeers", tri],
     ["default_reasoning_effort", "cfgDefaultEffort", [["", t("cfgDefaultOption")], ...efforts], "cfgDefaultEffortHint"],
   ];
 }
@@ -99,15 +91,13 @@ function limitTexts(settings: ShownSettings): Record<LimitKey, string> {
   >;
 }
 
-/** The choices as form text: booleans become allow/deny, unset is blank. */
+/** The choices as form text; unset is blank. */
 function choiceTexts(config: ChoiceSource): Record<SelectKey, string> {
   const { settings } = config;
-  const text = (key: SelectKey): string => {
-    const value = settings[key];
-    if (BOOLEANS.includes(key)) return value === undefined ? "" : value ? "allow" : "deny";
-    return String(value ?? "");
-  };
-  return Object.fromEntries(selectFields(config).map(([key]) => [key, text(key)])) as Record<SelectKey, string>;
+  return Object.fromEntries(selectFields(config).map(([key]) => [key, String(settings[key] ?? "")])) as Record<
+    SelectKey,
+    string
+  >;
 }
 
 function initialForm(config: PodConfigView, self: PodPeer | null): FormState {
@@ -150,11 +140,11 @@ function limitValues(
   return { values };
 }
 
-/** The choices as the host takes them: allow/deny become booleans, blank clears. */
-function choiceValues(form: FormState, config: ChoiceSource): Partial<Record<SelectKey, string | boolean | null>> {
-  const values: Partial<Record<SelectKey, string | boolean | null>> = {};
+/** The choices as the host takes them; blank clears. */
+function choiceValues(form: FormState, config: ChoiceSource): Partial<Record<SelectKey, string | null>> {
+  const values: Partial<Record<SelectKey, string | null>> = {};
   for (const [key] of selectFields(config)) {
-    values[key] = BOOLEANS.includes(key) ? (form[key] === "" ? null : form[key] === "allow") : form[key] || null;
+    values[key] = form[key] || null;
   }
   return values;
 }

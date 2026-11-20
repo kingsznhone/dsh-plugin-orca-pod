@@ -83,7 +83,6 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     new DispatchLog(db),
     blobs,
     tasks,
-    {},
     { warn() {} },
     {
       fetch: async () => {

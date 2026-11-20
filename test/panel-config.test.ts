@@ -307,8 +307,6 @@ describe("panel configuration of the pod", () => {
       const panel = panelFor(handle);
       await handle.reconfigure({
         task_timeout_s: 120,
-        allow_public_peers: true,
-        allow_loopback_peers: false,
         permission_mode: "workspace-write",
         default_reasoning_effort: ReasoningEffortId("max"),
       });
@@ -317,8 +315,6 @@ describe("panel configuration of the pod", () => {
       expect(view.settings).toMatchObject({
         task_timeout_s: 120,
         max_workspace_bytes: 5 * 1024 ** 3,
-        allow_public_peers: true,
-        allow_loopback_peers: false,
         permission_mode: "workspace-write",
         default_reasoning_effort: ReasoningEffortId("max"),
       });

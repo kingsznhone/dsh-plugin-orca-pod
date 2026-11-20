@@ -83,7 +83,6 @@ export class TestNet {
       new DispatchLog(db),
       blobs,
       tasks,
-      {},
       { warn() {} },
       { fetch: this.fetchFrom(identity.orcaNodeId), clock: this.clock },
     );

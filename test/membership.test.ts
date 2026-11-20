@@ -126,6 +126,38 @@ describe("the node table", () => {
     expect(a.mesh.get(b.id)).toBeUndefined();
   });
 
+  it("holds a node it hears but cannot reach (behind NAT) at suspect, until one of its own hellos gets through", async () => {
+    const net = new TestNet(TIMINGS);
+    // `home` sits behind NAT: its hellos reach `server`, and `server`'s answers come back on
+    // the same connection, but `server` cannot open a connection to it.
+    const [server, home] = (await net.started(2)) as [NetNode, NetNode];
+    net.cut(server, home, true);
+    // Unreachable takes as many failed rounds as the suspect window holds.
+    await net.advance(TIMINGS.suspectAfterMs + ROUND_MS);
+
+    // Sampled through many rounds, its own greetings arriving in between: never back to
+    // online, so the server is not offered it for tasks it could not deliver (§3.3).
+    const seen = new Set<string | undefined>();
+    for (let step = 0; step < 20; step += 1) {
+      await net.advance(ROUND_MS / 4);
+      seen.add(stateOf(server, home));
+    }
+    expect([...seen]).toEqual(["suspect"]);
+    // The panel tells this apart from a quiet node: it is heard, just not reachable.
+    expect(server.mesh.require(home.id).unreachable).toBe(true);
+    await expect(server.mesh.require(home.id).sendTask({ message: { role: "user", parts: [] } })).rejects.toMatchObject(
+      { code: "peer_not_online" },
+    );
+    // The other way round nothing is wrong: the home node hears every answer.
+    expect(stateOf(home, server)).toBe("online");
+
+    // Once the server's own hello is answered, the node is online again.
+    net.heal(server, home);
+    await net.advance(2 * ROUND_MS);
+    expect(stateOf(server, home)).toBe("online");
+    expect(server.mesh.require(home.id).unreachable).toBe(false);
+  });
+
   it("keeps a removed node out against stale lists, and lets it back in through its own greeting", async () => {
     const net = new TestNet(TIMINGS);
     const [a, b, c] = (await net.started(3)) as [NetNode, NetNode, NetNode];

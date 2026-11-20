@@ -12,6 +12,7 @@ import { OrcaNodeIdSchema, type OrcaNodeId } from "../core/ids.ts";
 import type { BusyState } from "../task/wire.ts";
 import type { MeshContext } from "./context.ts";
 import { OrcaNode } from "./orca-node.ts";
+import { isLoopbackUrl } from "./screening.ts";
 import { heartbeatIntervalMsFor, recoverDelayMs, resolveTimings, windowsFor, type MeshTimings } from "./timings.ts";
 
 /** A seed address that has not answered yet, and when it is tried again. */
@@ -133,8 +134,11 @@ export class Mesh {
     this.tombstones.set(id, this.ctx.clock.monotonicMs() + this.current.tombstoneMs);
   }
 
-  /** Remote lists only add records; they never touch online state. */
-  private mergeRemote(members: readonly PeerView[]): void {
+  /**
+   * Remote lists only add records; they never touch online state.
+   * `fromThisMachine`: the list arrived over loopback, so its loopback addresses are ours (§7.7).
+   */
+  private mergeRemote(members: readonly PeerView[], fromThisMachine: boolean): void {
     for (const member of members) {
       if (member.orca_node_id === this.self.id) continue;
       if (this.isTombstoned(member.orca_node_id)) continue;
@@ -143,7 +147,7 @@ export class Mesh {
       // update its endpoints or profile; otherwise any member could redirect
       // everyone's traffic to itself.
       if (this.nodes.has(member.orca_node_id)) continue;
-      this.nodes.set(member.orca_node_id, OrcaNode.candidate(this.ctx, member));
+      this.nodes.set(member.orca_node_id, OrcaNode.candidate(this.ctx, member, fromThisMachine));
     }
   }
 
@@ -169,8 +173,13 @@ export class Mesh {
     const answer = await OrcaNode.contact(this.ctx, url, known?.id ?? "", this.helloRequest());
     // This node's own address under another name.
     if (answer.from === this.self.id) return this.self;
-    const node = this.admit(answer.from, SelfDescriptionSchema.parse(answer.body.self), answer.body.self.busy);
-    if (answer.body.members !== null) this.mergeRemote(answer.body.members);
+    const node = this.admit(
+      answer.from,
+      SelfDescriptionSchema.parse(answer.body.self),
+      answer.body.self.busy,
+      "answered",
+    );
+    if (answer.body.members !== null) this.mergeRemote(answer.body.members, isLoopbackUrl(url));
     return node;
   }
 
@@ -212,7 +221,7 @@ export class Mesh {
       if (endpoints.length === 0) {
         throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
       }
-      this.admit(caller, { ...request.self, endpoints }, request.busy);
+      this.admit(caller, { ...request.self, endpoints }, request.busy, "heard");
     }
     const digest = this.digest();
     return {
@@ -277,11 +286,11 @@ export class Mesh {
     try {
       const answer = await node.hello(request, this.current.heartbeatTimeoutMs);
       // Its addresses stay the ones it declared when it greeted us; an answer does not move them.
-      node.heard(
+      node.answered(
         { ...SelfDescriptionSchema.parse(answer.body.self), endpoints: [...node.endpoints] },
         answer.body.self.busy,
       );
-      if (answer.body.members !== null) this.mergeRemote(answer.body.members);
+      if (answer.body.members !== null) this.mergeRemote(answer.body.members, node.answersOverLoopback);
     } catch (error) {
       if (OrcaNode.isRejection(error)) {
         // This node still uses another password: stop answering it and forget it
@@ -299,17 +308,25 @@ export class Mesh {
   }
 
   /**
-   * A node spoke for itself, signed (it greeted this one, or answered a first
-   * contact): record it as it described itself, heard just now. Tombstones only
-   * keep stale *remote lists* from reviving a removed id; they must not lock out a
-   * node that comes back on its own with a valid proof.
+   * A node spoke for itself, signed: it greeted this one (`heard`), or answered a
+   * first contact (`answered`, which also shows it can be reached). Record it as
+   * it described itself, heard just now. Tombstones only keep stale *remote
+   * lists* from reviving a removed id; they must not lock out a node that comes
+   * back on its own with a valid proof.
    */
-  private admit(id: OrcaNodeId, description: SelfDescription, busy: BusyState | null): OrcaNode {
+  private admit(
+    id: OrcaNodeId,
+    description: SelfDescription,
+    busy: BusyState | null,
+    evidence: "heard" | "answered",
+  ): OrcaNode {
     let node = this.nodes.get(id);
     if (node === undefined) {
       this.tombstones.delete(id);
       node = OrcaNode.explicit(this.ctx, id, description, busy);
       this.nodes.set(id, node);
+    } else if (evidence === "answered") {
+      node.answered(description, busy);
     } else {
       node.heard(description, busy);
     }

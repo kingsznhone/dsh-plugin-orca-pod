@@ -5,20 +5,18 @@ import { isIPv4, isIPv6 } from "node:net";
 /**
  * Endpoint screening (§7.7).
  *
- * - Candidates (endpoints learned from another node's member list) are checked
- *   against the configured policy before the heartbeat loop dials them:
- *   private ranges yes, public only when allowed, loopback unless disabled.
- * - Endpoints a node declares in its own join are checked with
- *   `EXPLICIT_DIAL_POLICY` (public addresses are fine) before they are recorded.
+ * - Private and public addresses may be dialed: a mesh may span a VPN, public
+ *   IPv6 or a cloud server, and only members, who proved the password, declare
+ *   endpoints or hand out lists.
+ * - Loopback is accepted only when it came from this machine: an endpoint a node
+ *   declared in a `hello` that arrived over loopback, or a candidate in a member
+ *   list that arrived over loopback. One machine runs one node, so a loopback
+ *   address from anywhere else names this machine, never the node it is meant
+ *   for, and could only aim our heartbeats at a local service. Same-machine
+ *   meshes (tests, development) still work, because there everything is loopback.
  * - Link-local (cloud metadata), multicast and unspecified addresses are never
  *   accepted. Explicit endpoints (settings, a direct join) are not filtered.
  */
-export type DialPolicy = {
-  /** Public addresses are off by default; private ranges are the normal case. */
-  allowPublicPeers?: boolean;
-  /** Set false to reject loopback targets; allowed by default for same-host meshes. */
-  allowLoopbackPeers?: boolean;
-};
 
 type AddressClass = "loopback" | "link-local" | "private" | "public" | "reserved";
 
@@ -49,18 +47,26 @@ function addressClass(address: string): AddressClass {
   return isIPv4(address) ? ipv4Class(address) : ipv6Class(address);
 }
 
-function addressAllowed(address: string, policy: DialPolicy): boolean {
+function addressAllowed(address: string, fromThisMachine: boolean): boolean {
   const cls = addressClass(address);
   switch (cls) {
     case "loopback":
-      return policy.allowLoopbackPeers !== false;
+      return fromThisMachine;
     case "link-local":
     case "reserved":
       return false;
     case "private":
-      return true;
     case "public":
-      return policy.allowPublicPeers === true;
+      return true;
+  }
+}
+
+/** Whether a URL names this machine by a loopback host (`127.0.0.1`, `[::1]`, `localhost`). */
+export function isLoopbackUrl(endpoint: string): boolean {
+  try {
+    return isLoopbackHost(new URL(endpoint).hostname.replace(/^\[|\]$/g, ""));
+  } catch {
+    return false;
   }
 }
 
@@ -73,7 +79,7 @@ type ScreenVerdict = "allowed" | "refused" | "unresolved";
  * from here right now, else `allowed`. A caller that only needs to keep known
  * bad addresses out (a join) can accept `unresolved`.
  */
-async function screenEndpoint(endpoint: string, policy: DialPolicy): Promise<ScreenVerdict> {
+async function screenEndpoint(endpoint: string, fromThisMachine: boolean): Promise<ScreenVerdict> {
   let url: URL;
   try {
     url = new URL(endpoint);
@@ -82,7 +88,7 @@ async function screenEndpoint(endpoint: string, policy: DialPolicy): Promise<Scr
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return "refused";
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (isIPv4(host) || isIPv6(host)) return addressAllowed(host, policy) ? "allowed" : "refused";
+  if (isIPv4(host) || isIPv6(host)) return addressAllowed(host, fromThisMachine) ? "allowed" : "refused";
   let addresses: { address: string }[];
   try {
     addresses = await lookup(host, { all: true, verbatim: true });
@@ -90,7 +96,7 @@ async function screenEndpoint(endpoint: string, policy: DialPolicy): Promise<Scr
     return "unresolved";
   }
   if (addresses.length === 0) return "unresolved";
-  return addresses.every((entry) => addressAllowed(entry.address, policy)) ? "allowed" : "refused";
+  return addresses.every((entry) => addressAllowed(entry.address, fromThisMachine)) ? "allowed" : "refused";
 }
 
 /** How long one screening conclusion is reused (§7.7). */
@@ -104,43 +110,39 @@ type Cached<T> = { value: T; until: number };
  * process would never notice that a name now points somewhere else.
  *
  * Two kinds of endpoint come through here (§7.7): a candidate, learned from
- * someone else's member list, is screened under the node's own policy before it
- * is dialed; the endpoints a node declares for itself in its `hello` are screened
- * before they are recorded, under the policy of explicit contact.
+ * someone else's member list, is screened before it is dialed; the endpoints a
+ * node declares for itself in its `hello` are screened before they are recorded.
+ * Both follow the same rule; `fromThisMachine` says whether the list or the
+ * `hello` arrived over loopback.
  */
 export class EndpointScreen {
   private readonly candidates = new Map<string, Cached<boolean>>();
   private readonly declarations = new Map<string, Cached<string[]>>();
 
-  constructor(private readonly policy: DialPolicy) {}
-
-  /** Whether a candidate endpoint may be dialed. */
-  async candidate(endpoint: string): Promise<boolean> {
-    const cached = this.candidates.get(endpoint);
+  /** Whether a candidate endpoint may be dialed; `fromThisMachine`: the list that named it arrived over loopback. */
+  async candidate(endpoint: string, fromThisMachine: boolean): Promise<boolean> {
+    const key = `${fromThisMachine}|${endpoint}`;
+    const cached = this.candidates.get(key);
     if (cached !== undefined && cached.until > Date.now()) return cached.value;
-    const value = (await screenEndpoint(endpoint, this.policy)) === "allowed";
-    this.candidates.set(endpoint, { value, until: Date.now() + SCREENING_TTL_MS });
+    const value = (await screenEndpoint(endpoint, fromThisMachine)) === "allowed";
+    this.candidates.set(key, { value, until: Date.now() + SCREENING_TTL_MS });
     return value;
   }
 
   /**
    * The endpoints a node declared in its `hello` that this node is willing to dial
-   * back. The sender proved the password, so public addresses are fine, but what
-   * it declares is still input: link-local (cloud metadata), multicast and
-   * unspecified addresses are dropped, and so are loopback addresses unless the
-   * request itself came over loopback (a remote machine cannot be reached at our
-   * 127.0.0.1, so such an endpoint could only aim our heartbeats at a local
-   * service). A name that does not resolve from here is kept: it is not known to
-   * be bad. `fresh` screens again instead of reusing the last conclusion: a first
-   * contact always does.
+   * back. The sender proved the password, but what it declares is still input:
+   * link-local (cloud metadata), multicast and unspecified addresses are dropped,
+   * and so are loopback addresses unless the request itself came over loopback.
+   * A name that does not resolve from here is kept: it is not known to be bad.
+   * `fresh` screens again instead of reusing the last conclusion: a first contact
+   * always does.
    */
   async declared(declared: readonly string[], overLoopback: boolean, fresh: boolean): Promise<string[]> {
     const key = `${overLoopback}|${declared.join(",")}`;
     const cached = this.declarations.get(key);
     if (!fresh && cached !== undefined && cached.until > Date.now()) return cached.value;
-    // Only the always-forbidden ranges are refused, and loopback unless the request came over it.
-    const policy = { allowPublicPeers: true, allowLoopbackPeers: overLoopback };
-    const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, policy)));
+    const verdicts = await Promise.all(declared.map((endpoint) => screenEndpoint(endpoint, overLoopback)));
     const allowed = declared.filter((_, index) => verdicts[index] !== "refused");
     this.declarations.set(key, { value: allowed, until: Date.now() + SCREENING_TTL_MS });
     return allowed;

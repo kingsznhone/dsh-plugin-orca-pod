@@ -120,6 +120,11 @@
   margin-top: 2px;
 }
 
+.alert[data-tone="warning"] {
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent);
+  color: var(--dsw-alias-state-warn-primary);
+}
+
 /* ---- Connect card ---- */
 
 .connect {
@@ -315,25 +320,17 @@
 }
 
 .sidebarIcon {
-  position: relative;
   display: inline-flex;
   flex: none;
   color: var(--dsw-alias-label-secondary);
 }
 
-.sidebarBadge {
-  position: absolute;
-  top: -2px;
-  right: -3px;
-  width: 7px;
-  height: 7px;
-  border: 1.5px solid var(--dsw-alias-bg-layer-1);
-  border-radius: 50%;
-  background: var(--dsw-alias-state-success-primary);
+.sidebarIcon[data-light="connected"] {
+  color: var(--dsw-alias-state-success-primary);
 }
 
-.sidebarBadge[data-tone="warning"] {
-  background: var(--dsw-alias-state-warn-primary);
+.sidebarIcon[data-light="warning"] {
+  color: var(--dsw-alias-state-warn-primary);
 }
 
 .sidebarLabel {

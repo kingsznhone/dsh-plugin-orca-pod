@@ -1,6 +1,12 @@
 /** Mesh members, the node detail dialog and the workspace summary. */
 
-import { IconChevronRightOutlineRegular, StateDot, Tag, fileSizeText } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  IconChevronRightOutlineRegular,
+  IconWarningOutlineRegular,
+  StateDot,
+  Tag,
+  fileSizeText,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import { age, short, stateDot, stateLabel } from "./format.ts";
 import { t } from "./i18n.ts";
 import panel from "./panel.module.css";
@@ -17,7 +23,9 @@ export function Members({ members, onOpen }: { members: PodPeer[]; onOpen: (memb
           <button
             type={"button"}
             className={panel.member}
-            title={`${member.orca_node_id} · ${stateLabel(member.state)}`}
+            title={[member.orca_node_id, stateLabel(member.state), member.unreachable ? t("blocked") : null]
+              .filter(Boolean)
+              .join(" · ")}
             onClick={() => onOpen(member)}
           >
             <StateDot state={stateDot(member.state)} />
@@ -27,6 +35,7 @@ export function Members({ members, onOpen }: { members: PodPeer[]; onOpen: (memb
                 {member.default_model ? modelId(member.default_model) : stateLabel(member.state)}
               </span>
             </span>
+            {member.unreachable ? <Tag tone={"warning"}>{t("blocked")}</Tag> : null}
             {member.busy ? <Tag tone={"info"}>{t("busy")}</Tag> : null}
             <IconChevronRightOutlineRegular size={14} className={panel.chevron} />
           </button>
@@ -68,10 +77,22 @@ export function NodeDetail({ member, onClose }: { member: PodPeer; onClose: () =
   return (
     <Dialog title={t("ndTitle")} onClose={onClose}>
       <p className={`${ui.idLine} ${ui.mono}`}>{member.orca_node_id}</p>
+      {member.unreachable ? (
+        <p className={panel.alert} data-tone={"warning"}>
+          <IconWarningOutlineRegular size={14} />
+          {t("blockedHint")}
+        </p>
+      ) : null}
       <Facts
         rows={[
           [t("colNode"), member.display_name],
-          [t("colState"), <StateText key={"state"} state={member.state} />],
+          [
+            t("colState"),
+            <span key={"state"} className={ui.inline}>
+              <StateText state={member.state} />
+              {member.unreachable ? ` · ${t("blocked")}` : null}
+            </span>,
+          ],
           [
             t("colBusy"),
             member.busy ? `${short(member.busy.task_id)} · ${t("busyOrigin")}${member.busy_from}` : t("idle"),

@@ -51,10 +51,6 @@ const SettingsSchema = z.object({
   peers: PeersSchema.default([]),
   acp: AcpExecutorConfigSchema.optional(),
   ...TaskSettingsSchema.shape,
-  /** Allow candidate endpoints on public IPs (§7.7). */
-  allow_public_peers: z.boolean().optional(),
-  /** Reject loopback candidate endpoints; allowed by default for same-host meshes (§7.7). */
-  allow_loopback_peers: z.boolean().optional(),
   ...ModelSettingsSchema.shape,
 });
 
@@ -91,8 +87,6 @@ export const PanelPatchSchema = z.object({
   permission_mode: clearable(shape.permission_mode.unwrap()),
   task_timeout_s: clearable(shape.task_timeout_s.unwrap()),
   max_workspace_bytes: clearable(shape.max_workspace_bytes.unwrap()),
-  allow_public_peers: clearable(shape.allow_public_peers.unwrap()),
-  allow_loopback_peers: clearable(shape.allow_loopback_peers.unwrap()),
   default_reasoning_effort: clearable(shape.default_reasoning_effort.unwrap()),
 });
 

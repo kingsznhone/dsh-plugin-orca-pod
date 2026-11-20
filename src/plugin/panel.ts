@@ -15,6 +15,7 @@ import { type DispatchEntry, type PodTaskMetadata, type TaskView, isTerminal } f
 import { shortenNodeId } from "../core/identity.ts";
 import { detectLocalEndpoints, type Orca } from "../node/orca.ts";
 import { isLoopbackEndpoint, type Pod } from "./pod.ts";
+import type { OrcaNode } from "../mesh/orca-node.ts";
 import type { PeerView } from "../mesh/wire.ts";
 import type { ModelCatalogFeed } from "./catalog.ts";
 import { taskKey, type Tracker } from "./tracker.ts";
@@ -68,21 +69,24 @@ export class PanelModel {
   async state(): Promise<PodState> {
     const current = this.pod.run;
     const labels = new RosterLabels(current);
-    const busyFrom = (view: PeerView): PodPeer => ({
-      ...view,
-      busy_from: view.busy === null ? null : labels.label(view.busy.origin_orca_node),
-    });
+    const shown = (node: OrcaNode): PodPeer => {
+      const view = node.view();
+      return {
+        ...view,
+        busy_from: view.busy === null ? null : labels.label(view.busy.origin_orca_node),
+        unreachable: node.unreachable,
+      };
+    };
     return {
-      self: current === null ? null : busyFrom(current.mesh.self.view()),
+      self: current === null ? null : shown(current.mesh.self),
       config: await this.config(current),
       members:
         current === null
           ? []
           : current.mesh
               .peers()
-              .map((node) => node.view())
-              .filter((member) => member.state !== "offline")
-              .map(busyFrom),
+              .filter((node) => node.state !== "offline")
+              .map(shown),
       approvals: this.tracker.approvals().map(({ node, view, request, agentId }) => ({
         id: taskKey(node, view.id),
         peer: node,

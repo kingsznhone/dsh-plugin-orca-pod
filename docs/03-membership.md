@@ -128,7 +128,9 @@ offline ──(低频探测成功)───────────────�
 offline ──(record_ttl 到期)────────────────────► 修剪出表（本地）+ 墓碑
 ```
 
-路由规则：**只有 `online` 接受新任务**（否则 `peer_not_online`）；`suspect`/`offline` 都不派新任务，但不取消已经在跑的任务。`suspect(unreachable)` 在 UI 里单独标“单向不通”——这和“它挂了”是两种故障，排障方向完全相反。
+路由规则：**只有 `online` 接受新任务**（否则 `peer_not_online`）；`suspect`/`offline` 都不派新任务，但不取消已经在跑的任务。`suspect(unreachable)` 在面板里单独标“网络受阻”（`PodPeer.unreachable`，本机的观测，不进线上的 `PeerView`）——这和“它挂了”是两种故障，排障方向完全相反。
+
+“收到”分两种证据（`OrcaNode`）：对方**主动发来**的 `hello`（`heard`）只刷新自述与 `last_recv_at`，不清除 `unreachable`；只有对方**应答了我方请求**（`answered`：心跳应答、首次接触的应答）才证明能拨通，清零失败计数并回到 `online`。`reassess` 只把 `suspect(quiet)` 拉回 `online`。否则 NAT 后的节点每拍主动来一次 `hello`，就会被反复抹回 `online`，派任务要等拨号超时才失败。
 
 ### 3.4 收敛时序
 
@@ -187,7 +189,7 @@ C 收到 → 把 D 当成 online 写进自己的表，并回传给 A
 ### 3.7 故障、恢复、休眠
 
 - 网络抖动：`suspect` 是可恢复态；新任务在 suspect 期间暂停路由（只有 `online` 接新任务），但**不取消**在跑的任务。
-- 单向不通：`suspect(unreachable)`，UI 提示检查防火墙/代理/端口，而不是“对方关机了”。
+- 单向不通：`suspect(unreachable)`，面板标“网络受阻”，提示改用 VPN 或公网 IPv6、检查防火墙/端口，而不是“对方关机了”。典型场景是 NAT 后的家宽节点与公网服务器：家宽节点仍能作为 origin 向服务器派任务（全程 origin → target），服务器不能向它派任务。
 - 机器休眠：超时判定用单调时钟，不用墙钟；唤醒后各 peer 按正常的看门狗规则恢复。
 - 时钟漂移：`ts` 窗口 ±60s；超过就以独立的 `clock_skew` 错误拒绝，别静默容忍。
 - 脑裂（本设计不存在“裂”）：没有主 orca node，没有需要多数派的状态；每个 orca node 各自观测，最多是互相看不见，恢复后靠心跳自动重连。

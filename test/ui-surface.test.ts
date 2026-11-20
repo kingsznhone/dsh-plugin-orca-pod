@@ -170,6 +170,10 @@ describe("UI data surface", () => {
     });
 
     expect((await panel.state()).members.map((peer) => peer.orca_node_id)).toContain(a.mesh.self.id);
+    // Both directions work here, so the panel does not mark the member as blocked.
+    expect((await panel.state()).members.find((peer) => peer.orca_node_id === a.mesh.self.id)).toMatchObject({
+      unreachable: false,
+    });
   });
 
   it("merges local tasks and dispatches into one list and tells where each can be cancelled", async () => {

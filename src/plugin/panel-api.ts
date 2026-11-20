@@ -13,8 +13,12 @@ import type { PeerView } from "../mesh/wire.ts";
 import type { PanelPatch, Settings } from "../node/settings.ts";
 import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
 
-/** A node as the panel shows it; `busy_from` is the label of the origin it is busy for. */
-export type PodPeer = PeerView & { busy_from: string | null };
+/**
+ * A node as the panel shows it; `busy_from` is the label of the origin it is busy
+ * for. `unreachable`: this node hears it but cannot connect to it, so traffic
+ * flows one way only (§3.3); this node's own observation, not part of the wire view.
+ */
+export type PodPeer = PeerView & { busy_from: string | null; unreachable: boolean };
 
 /** One permission request waiting for the human. */
 export interface PodApproval {

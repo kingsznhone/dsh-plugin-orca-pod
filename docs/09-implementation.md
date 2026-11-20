@@ -70,7 +70,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 - **外部改了凭据**：订阅 `credentials/reference-updated`（密码）与 `credentials/record-updated`（私钥）；涉及这两个名字且与本次运行所用的值不同时，经 `Pod` 的串行队列重启一次（`Pod.credentialsChanged`）；`Pod` 自己的写入不会引起重启。
 - `connect(peer)`：地址先归一化（裸 host/IP 补 `http://` 与默认端口 `11811`；`host:port`；带 scheme 的 URL 不补端口，http 80、https 443；裸 IPv6 加方括号；拒绝带路径/查询串），立即 `mesh.probe`，成功才加进 `settings.json` 的 `peers`（不重启：节点已经连上了）；启动时设置里的 `peers` 作为**种子**交给 `mesh.seed`，没应答的由心跳循环按 `recover_probe` 退避继续重试，直到连上。
 - `reset()`：**整台机器的节点回到初始状态，没有分支**：删密码、私钥记录、`settings.json`，回首启向导。
-- 设置视图的“高级设置”：任务超时（`task_timeout_s`）、工作区配额（`max_workspace_bytes`，按 GiB 显示）、本机权限上限（`permission_mode`）、公网/回环候选端点（`allow_public_peers` / `allow_loopback_peers`）、默认 reasoning effort（取自宿主默认模型的 efforts）；执行器与审批超时不是设置项。
+- 设置视图的“高级设置”：任务超时（`task_timeout_s`）、工作区配额（`max_workspace_bytes`，按 GiB 显示）、本机权限上限（`permission_mode`）、默认 reasoning effort（取自宿主默认模型的 efforts）；执行器与审批超时不是设置项。
 
 #### 9.2.1 同源桥（`plugin/panel-routes.ts`）
 
@@ -94,7 +94,7 @@ HTTP 层用 Fastify 承载：路由、JSON 解析、`bodyLimit`、错误处理�
 | Slot                      | id                        | 作用                                                                                          |
 | ------------------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
 | `settings.section`        | `orca-pod`                | 设置页里的一页面板                                                                            |
-| `sidebar.footer.action`   | `orca-pod`                | 侧边栏底部按钮，图标带状态角标：有挂起审批为橙黄（并显示件数）、有在线成员为绿、未连接无角标 |
+| `sidebar.footer.action`   | `orca-pod`                | 侧边栏底部按钮，同时是状态灯：菱形图标 ◈ 有挂起审批为橙黄（宽模式另显示件数）、有在线成员为绿、未连接为灰 |
 | `shell.overlay`           | `orca-pod.panel`          | 居中模态浮层，点侧边栏按钮打开，Esc/遮罩/× 关闭                                               |
 | `conversation.input.dock` | `orca-pod.approval-dock`  | **当前会话**里的审批聊天卡（按任务的发起会话 id 匹配）：允许/拒绝/在面板中处理                |
 | `shell.overlay`           | `orca-pod.approval-popup` | **后台会话**的审批弹窗（不受当前会话过滤）                                                    |
@@ -227,7 +227,7 @@ export function apply(ctx, config) {
 - TypeScript、ESM、Node ≥ 24（用内置 `node:sqlite`；发布的是 `tsc -p tsconfig.build.json` 编译出的 `lib/`，相对 import 由 `rewriteRelativeImportExtensions` 改写；`npm run build` 先清空 `lib/`，搬过的文件不会留下旧产物）；npm（单包，`npm install` 在仓库根目录一次装齐）；vitest；biome（lint + format，`biome.json` 在根目录）；`tsc --noEmit`。
 - **`src/` 不再由裸 `node` 直接运行**：服务用 class 并用构造器参数属性，Node 的类型剥离不认这种写法（`erasableSyntaxOnly` 因此关闭，Node 26 也已移除 `--experimental-transform-types`）。开发时用 vitest（测试）或 `node --import tsx`（`scripts/cross.ts`、`scripts/harness_run.ts`）；`npm run harness` 就是直接这样跑 `scripts/harness_run.ts`，不先 build，也不 spawn 子进程。`enum` 与 `namespace` 仍然不用（Biome `noEnum` / `noNamespace`），`scripts/**` 仍只写可擦除语法（`noParameterProperties`）。
 - **发布形态是编译产物，不是 `.ts`**：`main`/`exports`/`types` 都指向 `lib/`（没有 `bin`），`files` 只含 `lib/`、`cordis.patch.yml`、`locale/`、`icon.svg`、`skills/` 与 `README.md`，不含 `src/`，`prepare` 即 `npm run build`。DSH 的插件加载器用原生 `import()` 加载入口，没有转译钩子，发行版（Electron 内置 Node 24）里也没有任何 TS 转译器，所以不需要也不能依赖 tsx。Node 的类型剥离对 `node_modules` 下的文件直接报 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，tarball 安装的包里放 `.ts` 必然加载失败。`dsh plugin add <本地路径>` 装的是 `link:`，链接前必须先 `npm run build`，加载的是 `lib/`。加载器会把说明符里的 `.ts` 改写成 `.js`，那只是对源码风格写法的兼容，不是编译。客户端 bundle（`dsh.client`、`platform: web`）另由 Rolldown 产出，与此无关但同样必需。
-- **验收入口：`npm run check`** = `biome check . && tsc --noEmit && tsc --noEmit -p src/client && vitest run`。另有 `npm run format`、`npm run typecheck`、`npm test`、`npm run harness`。
+- **验收入口：`npm run check`** = `biome check . && tsc --noEmit && tsc --noEmit -p src/client && vitest run`。另有 `npm run format`、`npm run typecheck`、`npm test`、`npm run harness`，以及 `npm run watch:client`（源码一改就重建 `lib/client.js`，DSH 的 `client-hmr` 发现新 bundle 后在页面里自动重载插件）。
 - 服务用 class，不做依赖注入（D41）：没有容器（awilix、inversify 等）、没有 `XDeps` 依赖类型、没有专为解耦设的端口接口和 Provider。协作者用构造器参数属性（`private readonly x: X`），参数写具体的 class；私有协作者由拥有者自己 `new`，共享对象由创建者传入；子系统对外的通知用自己持有的 `ChangeSignal`；只有一个固定接收方的（任务记录通知运行器）是构造时传入的回调。构造器不写盘、不联网、不启计时器（读 `settings.json` 这类同步只读除外；SQLite 存储与 `OptionalService` 是两个例外：前者就是它的连接，后者的构造就是向 Cordis 订阅），创建目录、监听端口、首次测量放到 `start()`。私有成员用 TS 的 `private`，不用 `#`。不传未绑定的方法（`foo(obj.method)` 会丢 `this`），要么传对象本身，要么写箭头函数。无状态的纯计算（签名验签、schema 解析、地址筛查、任务书拼装）、线上形状与 DTO 保持函数或纯数据。
 - 模块级函数的去留（D42）：参数里带着某个 class 的状态或协作者的函数，就是那个 class 的方法；只在一个 class 里用的函数是它的 `private` 方法，不读 `this` 的写成 `private static`；只有被多个模块用的无状态纯计算、导出后有独立单元测试的纯契约才保持为函数。只为测试存在的公开面（公开方法与字段、选项字段、`Pick` / 结构参数类型、依赖袋）不留，测试经真实入口走；一个默认值、一个检查、一个派生值只在拥有者那里算一次；不用 `ReturnType` 给已有类型换写法。可调参数和协议常量留在模块顶层，不改 `static readonly`，不允许模块级可变状态。
 - 插件侧的状态与归属（D43）：总是一起赋值、一起清空的字段合成一个值，用几个布尔或可空字段划分出的状态写成判别联合（`PodStatus`）；跨重启的对象（`Pod`）与一次运行的对象（`Orca`）在类型上分开，读取当前运行只用 §9.2 表里的四种写法；同一份数据只有一个登记处、把 A 装到 B 只有一条路径、所有者之间的引用单向；必须先做 X 再做 Y 的地方由一个方法按顺序做完，而不是靠调用方读注释；class 名是领域名词；构造器只组装，启动与注册钩子是显式的方法调用。

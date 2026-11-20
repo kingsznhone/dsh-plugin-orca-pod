@@ -27,6 +27,7 @@ import {
 import type { OrcaNodeId } from "../core/ids.ts";
 import type { MeshContext } from "./context.ts";
 import type { Answer } from "./peer-client.ts";
+import { isLoopbackUrl } from "./screening.ts";
 import { CANDIDATE_MAX_FAILURES, recoverDelayMs, type MeshTimings } from "./timings.ts";
 
 type SuspectReason = "quiet" | "unreachable";
@@ -56,6 +57,8 @@ export class OrcaNode {
   private preferred: string | undefined;
   /** Whether a refused candidate address was already logged; one line per node is enough. */
   private warned = false;
+  /** A candidate named in a member list that arrived over loopback: its loopback addresses are this machine's (§7.7). */
+  private listedFromThisMachine = false;
 
   private constructor(
     private readonly ctx: MeshContext,
@@ -82,9 +85,12 @@ export class OrcaNode {
     return new OrcaNode(ctx, id, description, "online", busy, clock.wallIso(), "explicit", clock.monotonicMs());
   }
 
-  /** A node only seen in somebody else's list: never reached, so `unknown`. */
-  static candidate(ctx: MeshContext, view: PeerView): OrcaNode {
-    return new OrcaNode(
+  /**
+   * A node only seen in somebody else's list: never reached, so `unknown`.
+   * `fromThisMachine`: the list arrived over loopback, from a node on this machine.
+   */
+  static candidate(ctx: MeshContext, view: PeerView, fromThisMachine: boolean): OrcaNode {
+    const node = new OrcaNode(
       ctx,
       view.orca_node_id,
       SelfDescriptionSchema.parse(view),
@@ -94,6 +100,8 @@ export class OrcaNode {
       "candidate",
       null,
     );
+    node.listedFromThisMachine = fromThisMachine;
+    return node;
   }
 
   /** A first contact at an address nobody vouched for: the one request every `hello` is, to a node whose id is not known yet. */
@@ -129,6 +137,16 @@ export class OrcaNode {
   /** This node is online from the start, and nothing it hears or misses changes that. */
   get state(): PeerState {
     return this.observed;
+  }
+
+  /** Heard, but this node cannot reach it: traffic flows one way only, as with a node behind NAT (§3.3). */
+  get unreachable(): boolean {
+    return this.observed === "suspect" && this.suspectReason === "unreachable";
+  }
+
+  /** Whether the address it last answered at is a loopback one: it runs on this machine. */
+  get answersOverLoopback(): boolean {
+    return this.preferred !== undefined && isLoopbackUrl(this.preferred);
   }
 
   /** Online or suspect: a node this one vouches for to others. */
@@ -184,22 +202,32 @@ export class OrcaNode {
   // ---- evidence ----
 
   /**
-   * A signed message from the node arrived (it greeted us, or answered us), with
-   * what it says about itself: that replaces what was recorded, it is online,
-   * and nothing is owed.
+   * The node greeted us, signed, with what it says about itself: that replaces
+   * what was recorded, and it was heard just now. It is online again, unless this
+   * node cannot reach it: a node behind NAT greets us every round, yet only an
+   * answer to our own hello shows it can be dialed, so until then it stays
+   * `suspect(unreachable)` and is not handed tasks (§3.3).
    */
   heard(description: SelfDescription, busy: BusyState | null): void {
     if (this.isSelf) return;
     this.describe(description);
     this.busy = busy;
-    this.observed = "online";
     this.lastRecvAt = this.ctx.clock.wallIso();
-    this.suspectReason = null;
     this.lastRecvMs = this.ctx.clock.monotonicMs();
-    this.fails = 0;
     this.probeFails = 0;
     this.nextProbeMs = 0;
     this.offlineSinceMs = null;
+    if (this.suspectReason === "unreachable") return;
+    this.observed = "online";
+    this.suspectReason = null;
+  }
+
+  /** The node answered our request, signed: heard, and reachable, so it is online and nothing is owed. */
+  answered(description: SelfDescription, busy: BusyState | null): void {
+    if (this.isSelf) return;
+    this.fails = 0;
+    this.suspectReason = null;
+    this.heard(description, busy);
   }
 
   /**
@@ -245,7 +273,8 @@ export class OrcaNode {
       }
       return;
     }
-    if (this.observed === "suspect") {
+    // Heard again: quiet is over. Unreachable is not, until a hello of ours is answered.
+    if (this.observed === "suspect" && this.suspectReason === "quiet") {
       this.observed = "online";
       this.suspectReason = null;
     }
@@ -287,7 +316,7 @@ export class OrcaNode {
 
   /** An address from another node's member list is screened before it is dialed (§7.7). */
   private async candidateAllowed(endpoint: string): Promise<boolean> {
-    const allowed = await this.ctx.screening.candidate(endpoint);
+    const allowed = await this.ctx.screening.candidate(endpoint, this.listedFromThisMachine);
     if (!allowed && !this.warned) {
       this.warned = true;
       this.ctx.logger.warn(`orca-pod: refusing candidate endpoint ${endpoint} from ${this.id} (§7.7)`);

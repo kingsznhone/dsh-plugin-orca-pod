@@ -1,5 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Orca pod">
-  <rect width="64" height="64" rx="14" fill="#0f172a" />
-  <path d="M32 11 49 32 32 53 15 32Z" fill="#f8fafc" />
-  <path d="M32 21 41 32 32 43 23 32Z" fill="#0ea5e9" />
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Orca pod">
+  <!-- A full mesh (K4): three peers around this node, every pair linked. DSH plugin palette, 36x36 canvas. -->
+  <path d="M18 6.5 6 27.5H30ZM18 20.5 18 6.5M18 20.5 6 27.5M18 20.5 30 27.5" stroke="url(#orca-pod-links)" stroke-width="2.25" stroke-linejoin="round" />
+  <circle cx="18" cy="6.5" r="3.8" fill="url(#orca-pod-peer)" />
+  <circle cx="6" cy="27.5" r="3.8" fill="url(#orca-pod-peer)" />
+  <circle cx="30" cy="27.5" r="3.8" fill="url(#orca-pod-peer)" />
+  <circle cx="18" cy="20.5" r="4" fill="url(#orca-pod-self)" />
+  <defs>
+    <linearGradient id="orca-pod-links" x1="18" y1="6.5" x2="18" y2="27.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#86B8F5" />
+      <stop offset="1" stop-color="#5269E1" />
+    </linearGradient>
+    <linearGradient id="orca-pod-peer" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#86B8F5" />
+      <stop offset="1" stop-color="#5269E1" />
+    </linearGradient>
+    <linearGradient id="orca-pod-self" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#51CFDB" />
+      <stop offset="1" stop-color="#108792" />
+    </linearGradient>
+  </defs>
 </svg>

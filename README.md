@@ -1,111 +1,190 @@
-# orca-pod
+# Orca Pod
 
-分布式 DSH 对等集群（DSH 插件形态）。设计文档入口：[docs/README.md](docs/README.md)。
+把你自己的几台电脑连成一张网：在任意一台的 DeepSeek Harness 里对 agent 说一句话，就能把任务交给另一台去做，做完的结果会自动回到你的对话里。
 
-- 目标：2–10 台自己的机器，跨 Windows/Linux，互相派任务、回传结果。
-- 形态：full mesh、明文 HTTP + 前置代理终止 TLS、A2A 任务面、按名字（`<节点 id>/<sha256>`）拉取的文件。**只有 DSH 插件这一种运行形态**：一台机器一个 orca 节点（“这台机器上装的 DSH 可以被连接”），所有 DSH profile 共用同一个节点；没有独立运行的 `orca-node`、没有 CLI、没有 `install`。
-- 代码：单包 `orca-pod`，入口只有 DSH host bundle；运行时依赖见 `package.json`（16 项：`fastify`、`zod`、`ulid`、`cross-spawn`、`@agentclientprotocol/sdk` 与 11 个 `@deepseek-ai/dsh-*` 子包），自研模块在 `src/`，随包发布的是编译后的 `lib/`（`npm run build`）；本地 checkout 用 `link:` 接入时先在仓库里 `npm install`，依赖从该仓库的 `node_modules` 解析（从安装包安装则依赖随包解析）。
-- 验收：`npm run check`（biome + tsc + vitest）。
+适合手上有 2–10 台机器（Windows 或 Linux）的人，比如一台日常用的笔记本，加上一台性能更强的台式机或家里的服务器。
 
-## 布局
+## 它能做什么
 
-```text
-orca-pod/
-├── package.json          # 单包清单：dsh.bundle.patch -> cordis.patch.yml；exports -> lib/
-├── cordis.patch.yml      # DSH 行：id orca-pod、name 'orca-pod'
-├── locale/               # Plugin Manager 显示元数据（en.json / zh.json）
-├── icon.svg              # 插件图标（随包发布）
-├── biome.json            # lint + format
-├── rolldown.config.ts    # 客户端 bundle：src/client → lib/client.js（rolldown -c，与 DSH 自带插件同一工具链）
-├── docs/                 # 设计文档（12 篇 + DECISIONS）
-├── scripts/              # cross.ts（跨机器手测）、harness_run.ts（进程内两个节点走真实回环网络的 smoke）、e2e-acp.ts（真实 dsh 冒烟）；开发脚本，不随包发布
-├── skills/orca-node/     # 标准 skill bundle，介绍 orca_pod 工具（随包发布）
-├── src/                  # TypeScript 源码；host 按功能分 7 个目录（tsc 构建到 lib/）：core ← executor ← task ← mesh ← api ← node ← plugin，另有 client/
-│   ├── index.ts          # 公共入口：apply / Config / inject
-│   ├── core/             # 公共底座（只放多个上下文共用的）：errors、schema、events（ChangeSignal）、constants、ids（orca node id 与 workgroup id）、net（peer 地址归一化）、identity（Ed25519 签名与验签，orca_node_id=公钥）、signing（请求的签名 + workgroup 证明、答复签名）、sqlite、stream、blobs（发布文件）
-│   ├── executor/         # executor 契约、model（模型路由）与 model-catalog、permission（权限模式）、acp/（connection / session / permissions / executor，执行器的 `command` 设置也在 executor 里）
-│   ├── task/             # 本机执行：wire、runner（单槽运行器）、record（任务状态机）、quota、workspace、prompt（任务书）、dispatch-log（派发日志，含它的表）
-│   ├── mesh/             # 节点表：mesh（`Mesh`：Map<节点 id, OrcaNode>，本机自己也在表里；hello / 种子 / 目录 / 墓碑 / 心跳循环）、orca-node（表里的一行：自述、状态机、拨号、sendTask / fetchBlob）、context（一个实例里所有节点共用的 `MeshContext`）、peer-client（唯一的出站客户端）、screening（端点筛查）、timings、wire
-│   ├── api/              # 入站 HTTP：gateway（含答复签名）、access（public / hello / member / local）、cluster-routes、a2a-routes、blob-routes（含本机路由 /local/*；本机进程发布与取文件）、input
-│   ├── node/             # orca（组合根 `Orca`：本进程里的这个实例）、settings（设置 schema 与解析器）、events
-│   ├── plugin/           # DSH bundle：bundle / catalog / panel / panel-api / panel-routes / pod / services / settings-file / skill / stores / tools / tracker
-│   └── client/           # DSH 客户端（面板：设置页、侧栏按钮、审批卡片）的 TSX 源码与提示音，Rolldown 构建到 lib/client.js；运行期只 import core
-└── test/                 # vitest 套件
-```
+- **几台机器连成一张网**：每台机器都能看到其他所有机器，新机器只要连上网里的任意一台，其他机器很快就会认识它。
+- **把任务交给别的机器**：在对话里直接说，比如"让 office-pc 把这个仓库的测试跑一遍"。任务在那台机器上由它自己的 DeepSeek Harness 执行。你不用守着，做完后结果会出现在原来的对话里。
+- **在机器之间传文件**：需要交给任务的文件，agent 会先发布出去，再由对方取走；对方产出的文件也用同样的方式交回来。
+- **权限由你把关**：任务默认沿用你当前对话的权限。任务需要更多权限时，会弹出审批卡片，你点"允许升级"之后，这个任务才会继续。
+- **状态一眼可见**：侧边栏底部的菱形状态灯，灰色表示还没连上其他机器，绿色表示已连上，橙黄色表示有审批在等你。点开面板可以看到在线的机器、正在进行的任务和待处理的审批。有审批到达、任务完成或失败时，还会有提示音。
 
-## 安装（本地 checkout）
+## 准备工作
+
+- 每台机器都装好 DeepSeek Harness 0.2 版（0.2.2-rc.5 或更新）。
+- 机器之间网络能互通：在同一个局域网里，或者都加入了同一个 VPN，或者都有公网 IPv6 地址。家里的电脑要和云服务器连在一起时，请先看[跨网络连接](#跨网络连接家里的电脑--云服务器)。
+- 每台机器的防火墙允许其他机器访问 Orca Pod 的端口（默认是 TCP 11811）。
+
+## 安装
+
+每台机器都要做一遍。
+
+**1. 安装插件**
+
+在终端里运行下面三条命令，插件会从 npm 下载安装：
 
 ```bash
-npm install          # 触发 prepare，产出 lib/（包入口在 lib/，checkout 里没有它就无法加载）
-dsh plugin --profile desktop add /absolute/path/to/orca-pod
-
-# verify the profile picked up the bundle and its patch row
-dsh --profile desktop --dump-config
+dsh plugin --profile desktop add orca-pod
+dsh plugin --profile web add orca-pod
+dsh plugin --profile acp add orca-pod
 ```
 
-`dsh plugin add` 把包记成 profile 里的 `link:` 依赖并追加到 `dsh.profile.bundles`；DSH 通过 profile 的 `node_modules` 解析包名并应用 `cordis.patch.yml`。bundle 的运行时依赖见 `package.json`（16 项，含 11 个 `@deepseek-ai/dsh-*` 与 `cross-spawn`）；`link:` 安装时这些依赖从本 checkout 的 `node_modules` 解析，所以先在本仓库跑过 `npm install`。
+三条都运行就好，不用管这台机器用的是桌面版还是 `dsh web`。`desktop` 和 `web` 分别对应桌面版和网页版；`acp` 给在这台机器上执行任务的 agent 用，让它能收发文件。不管装进几个 profile，一台机器在网里都只算一台，设置也只有一份。
 
-首次启动保持空闲：`cordis.patch.yml` 不携带 workgroup 或密码，必须先在面板向导里完成 setup（workgroup、密码、监听地址）才会开始监听。监听默认 `127.0.0.1`；要让局域网 peer 直连，在向导里选择 LAN 地址或 `::`。
+**2. 重新打开 DeepSeek Harness**
 
-**在新机器上加入 mesh**：装 DSH，并在 **web profile 与 acp profile 里都装本插件**（`dsh plugin --profile web add …`、`dsh plugin --profile acp add …`），打开面板填同一个 workgroup 与密码，再在任一已在 mesh 里的机器上 `connect` 它的地址（或在它的面板里填已在 mesh 里的机器）。web profile 里的插件跑本机节点、让别的机器能调用；acp profile 里的插件只服务任务子进程，给任务 agent 提供 `orca_pod` 的 `fetch`/`publish`。缺了 acp profile 这一份，任务仍能跑，但交换不了文件。没有无头安装器：要在没有桌面的 Linux 机器上跑，就在那里装 DSH，用它的 Web UI 装本插件（两个 profile 各装一次）。
+侧边栏底部会出现 **Orca Pod** 按钮。
 
-节点只监听节点端口（默认 11811）。**一台机器一个节点**：身份、密码、设置、任务库、工作区整台机器一份，不论有几个 DSH profile；两个 DSH 进程同时开着时，只有先绑定端口的那个跑节点，另一个显示“已在另一个进程中运行”。
+## 第一次设置
 
-## 配置
+**第一台机器：建立网络**
 
-节点设置只在 `src/node/settings.ts` 的 `SettingsSchema` 里声明一次；面板与测试都走同一个解析器。**设置存在 `$DSH_HOME/orca-pod/settings.json`**（不含机密，面板写它，节点原地重启；DSH 的 `configEditor` 只能写当前 profile 的 patch，没法让所有 profile 共用）。profile 的插件配置只剩一个字段 `skill_injection`，旧的节点字段会被忽略（面板里重新填一次）。机密都在 DSH 凭据库：密码是引用 `ORCA_POD_PASSWORD`（固定名字、整台机器一份，也是无头宿主可导出的环境变量名），节点私钥是记录 `orca-pod/node`；workgroup 密钥由密码在启动时派生，只在内存里。运行期加入的 peer 也写进 `settings.json` 的 `peers`，`data_root` 固定为 `$DSH_HOME/orca-pod`。常用字段：
+1. 点侧边栏的 **Orca Pod** 打开面板，第一次会显示设置向导。
+2. 填写 **工作组 id**，比如 `home-lab`。它是这张网的名字，只能用小写字母、数字和连字符。
+3. 填写 **工作组密码**。网里所有机器必须用同一个密码，密码不能为空。
+4. **监听地址**默认是 `127.0.0.1`，这时只有本机能访问。要让其他机器连进来，请选这台机器的局域网地址，或者选 `::` 监听全部网卡。端口一般保持默认的 11811。
+5. 点 **开始**。
 
-| 字段                   | 默认                                   | 含义                                                                                                  |
-| ---------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `workgroup_id`         | 未设置（向导填写）                     | 要加入的 workgroup，`[a-z0-9][a-z0-9-]{1,31}`                                                          |
-| `workgroup_password`   | —                                      | 共享密码，面板里填；存进 DSH 凭据库，**不进设置文件**；不能为空（见 [§7.1](docs/07-security.md#71-workgroup-与密码)） |
-| `display_name`         | 缩略的 orca node id                    | 显示名                                                                                                |
-| `bind_host` / `port`   | `127.0.0.1` / `11811`                  | 监听地址与端口（`port: 0` 自选）                                                                       |
-| `endpoints`            | `[]`（按监听地址推导）                 | 对外宣告的拨号地址，1–8 个，第一个是 primary                                                          |
-| `peers`                | `[]`                                   | 启动时作为种子接触的 peer；没应答的会按退避继续重试                                                    |
-| `acp`                  | 未设置                                 | 本机 ACP 执行器的配置（origin 不能指定执行器），只有 `command`（默认 `dsh`，只是程序名）；子进程固定 `--profile acp`，所以 acp profile 也要装本插件，任务 agent 才有 `orca_pod` 的文件方法 |
-| `permission_mode`      | 未设置（无本机上限）                   | 本机权限上限；生效模式 = 它与 origin 继承值中较窄的                                                    |
-| `task_timeout_s`       | `3600`                                 | 单任务硬上限，对外公布为 `max_task_ttl_s`                                                              |
-| `max_workspace_bytes`  | 5 GiB                                  | 工作区配额（只按字节）；超出时新任务 `507 quota_exceeded`                                              |
-| `allow_public_peers` / `allow_loopback_peers` | `false` / `true`  | 候选端点是否允许公网 / 回环地址                                                                        |
-| `default_reasoning_effort` | 未设置（用 Host 的）               | 默认 reasoning effort，优先于 Host 报告的；模型目录与默认模型不是设置，节点照 DSH Host 报告的来自述 |
-| `skill_injection`      | `true`                                 | **插件配置**里唯一的字段：把内置 skill 注册到 DSH Host 的 skills 服务（不写用户 skill 目录）；`false` 关闭 |
+**之后的每台机器：加入网络**
 
-节点私钥在凭据库，所以 node id 跨重启保持不变；改密码 = 重建组（改了密码的节点在它的下一个请求就被旧 mesh 拒绝）；面板的“完全重置”删掉整台机器的节点（密码、私钥、设置、peers），没有分支。旧版本按 profile 存的身份和任务库不读、不迁移：已装过的机器会得到新身份，需要重新入组。
+1. 按上面的步骤安装插件，在向导里填**同一个工作组 id 和密码**，监听地址同样选局域网地址。
+2. 在面板的"加入 mesh"里，输入网里任意一台机器的地址（端口不是 11811 时一并填写），点 **连接**。
 
-任务的权限模式继承发起会话（没继承到就 `read-only`），显式传的模式只能更窄，本机 `permission_mode` 是上限；任务需要更多权限时请求发起者把本任务升级一档，人在面板或聊天卡上批准后，该任务余下的同类操作不再询问。挂起的权限请求一直等到人答复（没有超时设置）。结论文本内联上限（32 KiB）与单次出站调用超时（30 s）是常量，不是设置。任务只有一跳：任务在 `acp` profile 里运行，执行器拉起的会话带 `ORCA_POD_IN_TASK=1`，插件见到就不启动节点，`orca_pod` 只剩 `fetch` 与 `publish`、经本机节点收发文件——这是防 agent 转手的非对抗性约束，不是密钥隔离。
+也可以反过来，在已经在网里的机器上打开对话，对 agent 说"把 192.168.1.20 加入 mesh"。
 
-## 工具
+连上之后，面板里的"在线节点"会显示其他机器，侧边栏的状态灯会变成绿色。
 
-插件只注册一个 `orca_pod` 工具（一份 schema，按 `method` 分派），返回 JSON 文本，从不阻塞等待远端任务；任务在远端 orca node 异步执行，完成由后台 tracker 通知发起会话。
+## 跨网络连接（家里的电脑 + 云服务器）
 
-| Method    | Extra arguments                                                                       | Result                                                           |
-| --------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `send`    | `peer`, `text`, `model?`, `reasoning_effort?`, `permission_mode?`           | `{task_id, state, peer, node}`，远端接受后立即返回               |
-| `publish` | `path`, `ttl_s?`                                                                      | `{ref, size, expires_at}`：把本机文件复制进本机节点，名字是 `<节点 id>/<sha256>`；默认 7 天过期，`0` 永不过期 |
-| `fetch`   | `ref`, `output`                                                                       | `{path, size}`：把任一成员发布的文件存到 `output`，校验 sha256；写入位置要经会话沙箱允许 |
-| `status`  | `peer`, `task_id`                                                                     | 远端 `TaskView` 加 `terminal` 标志                               |
-| `cancel`  | `peer`, `task_id`                                                                     | 取消时刻的任务视图加 `terminal`                                  |
-| `members` | —                                                                                     | `{self, members, members_digest}`                                |
-| `connect` | `peer`                                                                                | 接触这个地址、记住它以便重启、返回刷新后的成员表                 |
+家庭宽带通常在 NAT（路由器的地址转换）后面：家里的电脑能连出去，外面的机器却连不进来。如果直接把家里的电脑和一台云服务器（VPS）连在一起，只有一个方向是通的：
 
-没有 approve 方法：权限请求只在 UI（会话聊天卡、后台弹窗、面板）里由人批准。`peer` 是**节点 id、唯一的显示名、或该节点宣告过的 URL**（重名时报错并列出候选 id；节点没有宣告的地址，哪怕曾经靠它连上，也只能改用 id 或显示名）；出站调用只到已知的节点，陌生地址要先 `connect`（`connect` 的 `peer` 接受 `http(s)://host:port`、`host:port` 或裸 `host`，端口默认 11811）。`send` 不给 `permission_mode` 时继承当前会话的权限模式（DSH 的 `sandboxPolicy` 服务），显式传入则覆盖（[§7.10](docs/07-security.md#710-权限模式继承)）。
+- 家里的电脑**可以**把任务派给服务器、查看进度、处理审批、取回服务器交回的文件。
+- 服务器**不能**把任务派给家里的电脑，家里的电脑也**不能**把文件交给服务器上的任务。在服务器的面板里，家里的电脑会标出"网络受阻"。
+- 两台分别在不同家庭宽带下的电脑，互相完全连不上。
 
-**文件不是任务的一部分**：要交给任务的文件先 `publish`，把返回的名字写进任务文本；任务里的 agent 用同一个工具 `fetch` 它，要交回的文件也 `publish`、把名字写进结论，你再 `fetch`。任务进程里的 `orca_pod` 只有这两个方法（[§5.6](docs/05-tasks.md#56-文件交换blob-通道)）。需要收文件的任务要以 `workspace-write` 派出：`read-only` 的会话写不了任何地方。
+要让所有机器双向互通，请从下面两种方法里选一种。
 
-## 开发
+**方法一：VPN 组网（推荐）**
+
+用 Tailscale、ZeroTier、WireGuard 这类工具，把所有机器加进同一个虚拟局域网，然后：
+
+1. 每台机器的**监听地址**选 VPN 网卡的地址，或者选 `::` 监听全部网卡。
+2. 用 VPN 分配的地址互相连接。
+
+这样每台机器都能直接连到其他所有机器。VPN 还会加密机器之间的通信，正好弥补 Orca Pod 本身不加密的不足。
+
+**方法二：公网 IPv6**
+
+很多家庭宽带已经分配了公网 IPv6 地址，外面的机器可以直接连进来。需要满足：
+
+1. 云服务器和家里的电脑都有可用的 IPv6 地址，并且能互相 ping 通。
+2. 家里的路由器（或光猫）和电脑的防火墙都放行 TCP 11811 入站。不少家用路由器默认拦截 IPv6 入站连接，需要手动打开。
+3. **监听地址**选 `::`，并确认设置里的"本地节点地址"包含这台机器的公网 IPv6 地址。
+
+使用公网 IPv6 时请注意：
+
+- 这相当于把 Orca Pod 的端口直接暴露在公网上，任务内容和文件都以明文传输。请设置足够复杂的工作组密码，并给每台机器设好"本机权限上限"。
+- 家庭宽带的 IPv6 地址可能会变。变了之后，请到设置里更新"本地节点地址"；也可以改填一个始终指向这台机器的域名（DDNS）。
+
+## 日常使用
+
+不需要记任何命令，在 DeepSeek Harness 的对话里用自然语言说就行：
+
+- "看看 mesh 里现在有哪些机器"
+- "让 office-pc 把这个仓库的测试跑一遍，把失败的用例告诉我"
+- "把 data.csv 交给 build-server，让它画成图表再发回来"
+- "刚才发给 office-pc 的任务进展怎么样了？"
+- "取消发给 build-server 的那个任务"
+
+几点说明：
+
+- **任务在后台运行**：派出去之后你可以继续做别的事，任务结束时结果会自动出现在原来的对话里。
+- **怎么称呼机器**：用设置里的"显示名称"就行，也可以用它的地址。建议给每台机器取一个好认的名字。
+- **一次只转一手**：接到任务的机器不会再把任务转给第三台。需要多台机器分工时，从你所在的对话里分别派出去。
+- **每台机器同一时间只执行一个任务**：正忙的机器会拒绝新任务，agent 会告诉你，你可以稍后再派，或者换一台。面板的成员列表里能看到哪台机器正忙。
+
+### 审批权限
+
+任务默认沿用发起它的那个对话的权限，比如只读。任务执行中需要更多权限时，你会看到一张"请求提升权限"的卡片，它可能出现在原来的对话里、后台弹窗里，或者面板里：
+
+- 点 **允许升级**：这个任务改用更高一级的权限，一直到运行结束，同类操作不会再问你。
+- 点 **拒绝**：任务不会获得这项权限。
+
+审批没有时限，会一直等你处理。有审批在等待时，侧边栏的状态灯会变成橙黄色。
+
+## 设置
+
+面板里的 **设置** 分几组，改完点 **保存并重启**，本机节点会用新设置重新启动。
+
+| 分组 | 可以改什么 |
+| --- | --- |
+| 工作组与身份 | 工作组 id、工作组密码（留空表示保持原密码）、显示名称 |
+| 网络 | 监听地址、监听端口、本地节点地址（其他机器访问本机用的地址，一般会自动识别） |
+| 高级设置 | 任务超时上限（单个任务最长运行多久，默认 1 小时）、工作区大小上限（默认 5 GiB）、本机权限上限、默认 reasoning effort |
+| 危险操作 | 完全重置：清除工作组设置、密码和这台机器的身份，回到首次设置向导；已有的任务记录和文件不受影响 |
+
+需要注意：
+
+- **一台机器只有一个节点**：不管装了几个 profile、开了几个 DeepSeek Harness，这台机器在网里都只算一台，设置也只有一份。同时开着两个 DeepSeek Harness 时，只有先启动的那个运行节点。
+- **改密码等于重建工作组**：网里所有机器都要改成新密码，还在用旧密码的机器会被拒绝。
+
+## 安全须知
+
+- **最好只在你信任的网络里使用**，比如家里或公司的局域网，或者 VPN。机器之间的通信没有加密，经过的网络能看到任务内容和文件。需要跨地域连接时，优先用 VPN；如果用公网 IPv6，请按[跨网络连接](#跨网络连接家里的电脑--云服务器)里的提醒设好密码和权限上限。
+- **工作组密码就是入网凭据**：知道密码的机器可以加入你的网络，并向你的机器派任务。请像保管其他重要密码一样保管它。密码存放在 DeepSeek Harness 的凭据库里，不会写进普通文件。
+- **给别人也能用的机器设一个"本机权限上限"**：别的机器派来的任务在你的机器上运行，任务的权限是由发起方批准的。设置上限之后，不论发起方批准什么，任务在本机都不会超过这个权限。
+
+## 常见问题
+
+**状态灯一直是灰色，连不上其他机器**
+
+- 两边的工作组 id 和密码是否完全一致。
+- 监听地址是不是还停留在 `127.0.0.1`。是的话请改成局域网地址或 `::`。
+- 防火墙是否放行了 11811 端口。
+- 两台机器之间能不能互相访问，比如互相 ping 一下。
+
+**机器显示"可疑"或"离线"**
+
+这表示一段时间没有收到它的心跳。常见原因是那台机器睡眠、关机、DeepSeek Harness 没开，或者网络断了。恢复之后它会自动回到"在线"。
+
+**机器旁边标着"网络受阻"**
+
+本机能收到它的心跳，却连不上它，只能单向通信。最常见的情况是云服务器看家里的电脑：家里的电脑在 NAT 后面，服务器连不进去。这时它仍然可以给本机派任务，本机却不能给它派任务。请按[跨网络连接](#跨网络连接家里的电脑--云服务器)用 VPN 或公网 IPv6 组网，或者检查它那边的防火墙和端口。
+
+**任务能跑，但交不了文件**
+
+那台机器的 `acp` profile 里可能没装插件。请在那台机器上运行 `dsh plugin --profile acp add orca-pod`。
+
+**提示节点已在另一个 DeepSeek Harness 进程中运行**
+
+这台机器上已经有另一个 DeepSeek Harness 在运行节点，这台机器在网里照常在线。请到那个 DeepSeek Harness 里使用 Orca Pod，或者先关掉它，再重新打开当前这个。
+
+## 更新与卸载
+
+**更新到最新版**：运行下面三条命令，然后重新打开 DeepSeek Harness：
 
 ```bash
-npm install         # 同时触发 prepare -> npm run build，产出 lib/
-npm run build       # 先清空 lib/，再 tsc -p tsconfig.build.json + 客户端 Rolldown，产出 lib/（已进 .gitignore）
-npm run watch:client  # 源码一改就重建 lib/client.js；DSH 的 client-hmr 检测到新 bundle 后自动在页面里重载插件
-npm run check       # biome check + tsc --noEmit + vitest run（唯一的验收入口）
-npm run format      # biome format --write
-npm run harness     # 进程内两个节点走真实回环网络的 smoke
+dsh plugin --profile desktop add orca-pod@latest
+dsh plugin --profile web add orca-pod@latest
+dsh plugin --profile acp add orca-pod@latest
 ```
 
-维护注意：
+**卸载**：
 
-- 包导出编译产物（`"exports"` 指向 `./lib/index.js` 与 `./lib/index.d.ts`），并导出 `./locale/*.json` 与 `./icon`；TypeScript 源码只用于开发与类型检查，`src/` 里的 .ts 导入由 `rewriteRelativeImportExtensions` 在构建时改写。
-- `src/` 的依赖方向由 `test/architecture.test.ts` 固化：运行期 import 无环、只能向下（`core ← executor ← task ← mesh ← api ← node ← plugin`），存储实现只由装配点（`node/`、`plugin/`）引用（[§9.1](docs/09-implementation.md#91-单包内的模块划分)）。
-- 抖动/超时类测试的窗口按心跳间隔的倍数给，不按绝对毫秒。
+1. 如果想同时清除密码和这台机器的身份，先在面板的 设置 → 危险操作 里点 **完全重置**。
+2. 从三个 profile 里移除插件：
+
+   ```bash
+   dsh plugin --profile desktop remove orca-pod
+   dsh plugin --profile web remove orca-pod
+   dsh plugin --profile acp remove orca-pod
+   ```
+
+3. 任务记录和传输过的文件保存在 DeepSeek Harness 数据目录下的 `orca-pod` 文件夹里（默认是 `~/.dsh/orca-pod`），不再需要的话可以手动删除。
+
+---
+
+参与开发请阅读 [docs/README.md](docs/README.md)。

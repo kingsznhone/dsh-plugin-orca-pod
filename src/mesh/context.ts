@@ -5,7 +5,7 @@ import type { WorkgroupId } from "../core/ids.ts";
 import type { DispatchLog } from "../task/dispatch-log.ts";
 import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { HttpPeerClient, type FetchLike } from "./peer-client.ts";
-import { EndpointScreen, type DialPolicy } from "./screening.ts";
+import { EndpointScreen } from "./screening.ts";
 import { resolveClock, type MeshClock } from "./timings.ts";
 
 /** What a test may replace: the network and the clock. */
@@ -42,13 +42,11 @@ export class MeshContext {
     readonly blobs: FileBlobRegistry,
     /** The tasks this node runs; a node that is this one reports its slot from here (§6.9). */
     readonly tasks: SingleSlotTaskRunner,
-    /** Which candidate endpoints this node may dial (§7.7). */
-    dialPolicy: DialPolicy,
     readonly logger: NodeLogger,
     options: MeshContextOptions = {},
   ) {
     this.client = new HttpPeerClient(identity, key, workgroupId, options.fetch ?? ((url, init) => fetch(url, init)));
-    this.screening = new EndpointScreen(dialPolicy);
+    this.screening = new EndpointScreen();
     this.clock = resolveClock(options.clock);
   }
 }
