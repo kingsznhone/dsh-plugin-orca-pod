@@ -22,8 +22,24 @@ leave this machine.
 | `connect` | `peer` | joins a peer into the mesh |
 
 `peer` is a host or `host:port`, a node's display name, or its node id.
-`send` does not wait: when the task ends you are told in a follow-up message, so
-do not poll `status` in a loop.
+`send` does not wait: when the task ends you are told in a follow-up message.
+
+## Limits
+
+- A request body is capped at 1 MiB, a task result at 32 KiB, and the completion
+  notice shows 800 characters. Do not put file contents, base64, or long logs into
+  `send`; publish files and name them instead, and read a long result with `status`.
+
+## While a task runs
+
+- Do not poll `status` in a loop, and do not wait with shell loops: the follow-up
+  message is the signal. If you need one check, `status` is the way.
+- If a peer is offline, retry at most once after a few seconds. The tracker stops
+  after five consecutive failures and tells you it gave up.
+- `input-required` is not a failure: the human at the origin must approve, and the
+  same task continues afterwards. Do not resend it or keep polling it.
+- `failed` is this origin's conclusion; the target may still have changed its
+  workspace. A target restart reports `node_restart`. Re-send only deliberately.
 
 ## Files
 
@@ -36,6 +52,9 @@ Files are not part of a task. They are published on a node and named
 - **Take files back**: the task's agent publishes what it hands back and names
   the files in its result. Save one with `method: "fetch"` and `ref` set to that
   name; the session's sandbox must allow writing to `output`.
+- **Taking files back needs a writable task**: dispatch it with
+  `permission_mode: "workspace-write"`; a `read-only` child cannot save a fetched
+  file.
 - A published file stays downloadable for 7 days unless `ttl_s` says otherwise
   (`0`: never expires); then its node deletes it.
 
@@ -53,7 +72,16 @@ Files are not part of a task. They are published on a node and named
   running node) and `acp` (task children; `dsh --profile acp`). A machine
   missing the `acp` copy still runs tasks, but its task agents cannot use
   `orca_pod` to exchange files.
-- For an offline peer, retry at most once after a few seconds. Do not poll for minutes.
+- Address peers by node id when display names may collide; the id is stable, a
+  display name is not.
+- Do not "repair" the node credential: deleting it creates a new `orca_node_id`,
+  and every peer sees a new node.
+- Nodes speak self-signed HTTPS only: check reachability with `curl -k` (Windows
+  Schannel rejects these certificates outright) or Node; `http://` is read as
+  `https://`; the default port is 11811.
+- Replacing or upgrading the plugin needs a DSH restart to load the new modules;
+  in-flight tasks fail `node_restart` and must be re-dispatched. Run the same
+  plugin version on all machines.
 
 ## Adding a machine
 
