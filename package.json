@@ -14,7 +14,7 @@
     "mesh",
     "agent"
   ],
-  "icon": "./icon.svg",
+  "icon": "./icon.png",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
@@ -25,14 +25,15 @@
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg",
+    "./icon": "./icon.png",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "cordis.patch.yml",
     "locale",
-    "icon.svg",
+    "icon.png",
+    "icon-full.webp",
     "skills",
     "README.md"
   ],
