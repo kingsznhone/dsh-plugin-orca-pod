@@ -22,7 +22,7 @@ describe("this node as a row of its own table", () => {
   it("shows the node id as the name until a display name is set", () => {
     const unnamed = node();
     expect(unnamed.mesh.self.view().display_name).toBe(
-      unnamed.mesh.self.id.slice(0, 6) + "…" + unnamed.mesh.self.id.slice(-4),
+      `${unnamed.mesh.self.id.slice(0, 6)}…${unnamed.mesh.self.id.slice(-4)}`,
     );
     expect(node({ display_name: "alpha" }).mesh.self.view().display_name).toBe("alpha");
   });
