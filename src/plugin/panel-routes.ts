@@ -28,6 +28,7 @@ import { ConnectBodySchema, DenyBodySchema, PeerTaskBodySchema, type PodReads } 
 import type { Pod } from "./pod.ts";
 import type { Tracker } from "./tracker.ts";
 import { PanelPatchSchema } from "../node/settings.ts";
+import { DEFAULT_RECENT_LIMIT } from "../task/json-table.ts";
 import { readAll } from "../core/stream.ts";
 import { isRecord, parseOrThrow } from "../core/schema.ts";
 import { errorMessage } from "../core/errors.ts";
@@ -35,8 +36,8 @@ import { errorMessage } from "../core/errors.ts";
 /** Prefix the client polls; keep in sync with `src/client/store.ts`. */
 const POD_API_PREFIX = "/orca-api";
 
-/** Rows of the panel's "all tasks" view. */
-const TASKS_LIMIT = 500;
+/** Rows of the panel's task list view (default 10; older records are queried via the agent). */
+const TASKS_LIMIT = DEFAULT_RECENT_LIMIT;
 
 /** Largest JSON body accepted for one approval action. */
 const MAX_BODY_BYTES = 64 * 1024;

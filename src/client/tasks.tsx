@@ -140,6 +140,7 @@ export function AllTasks({ onOpen, onClose }: { onOpen: (row: PodTaskRow) => voi
   }
   return (
     <Dialog title={t("allTasks")} wide={true} onClose={onClose}>
+      <p className={ui.muted}>{t("allTasksHint")}</p>
       <Loaded
         result={result}
         render={(rows) => <TaskTable rows={rows} busy={busy} onOpen={onOpen} onCancel={cancel} />}

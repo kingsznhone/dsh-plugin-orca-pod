@@ -349,11 +349,11 @@ describe("panel HTTP bridge", () => {
     expect(missing.status).toBe(400);
   });
 
-  it("serves the merged task rows for the all-tasks view, the newest 500", async () => {
+  it("serves the merged task rows for the all-tasks view, the newest 10", async () => {
     const limits: number[] = [];
     const api = fakeApi();
     vi.spyOn(api.panel, "recent").mockImplementation((limit) => {
-      limits.push(limit);
+      limits.push(limit ?? 10);
       return RECENT;
     });
     const handler = apiHandler(api);
@@ -361,7 +361,7 @@ describe("panel HTTP bridge", () => {
     expect(result.status).toBe(200);
     expect(result.body.map((row: PodTaskRow) => row.id)).toEqual(["TASK02", "TASK01"]);
     expect(result.body[0]).toMatchObject({ peer: "NODE02", cancellable: true });
-    expect(limits).toEqual([500]);
+    expect(limits).toEqual([10]);
   });
 
   it("includes the editable config in the state snapshot", async () => {

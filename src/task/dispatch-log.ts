@@ -1,12 +1,24 @@
+import type { SQLInputValue } from "node:sqlite";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 
-import { JsonTable } from "./json-table.ts";
+import { DEFAULT_RECENT_LIMIT, JsonTable } from "./json-table.ts";
 import type { SqliteDb } from "../core/sqlite.ts";
 import type { OrcaNodeId } from "../core/ids.ts";
 import { TERMINAL_STATES, type DispatchEntry, type TaskView } from "./wire.ts";
 
 /** The SQL condition "this entry's task has not ended". */
 const OPEN = `json_extract(payload, '$.state') NOT IN (${TERMINAL_STATES.map((state) => `'${state}'`).join(", ")})`;
+
+/** Partial index keeping tracker polls over open dispatches O(open), not O(history). */
+const OPEN_INDEX = `CREATE INDEX IF NOT EXISTS idx_dispatches_open ON dispatches (updated_at) WHERE ${OPEN}`;
+
+/** Filtering and pagination options for `DispatchLog.recent`. */
+export interface DispatchQueryOptions {
+  offset?: number;
+  before?: string;
+  state?: DispatchEntry["state"];
+  node?: OrcaNodeId;
+}
 
 /**
  * Origin-side dispatch log (§8.3), in the `dispatches` table of the node's
@@ -33,12 +45,38 @@ export class DispatchLog {
       "dispatches",
       (entry) => entry.task_id,
       (entry) => entry.updated_at,
+      [OPEN_INDEX],
     );
+  }
+
+  /** One entry by task id, or undefined if this node never dispatched it. */
+  get(taskId: string): DispatchEntry | undefined {
+    return this.table.get(taskId);
   }
 
   /** Entries, oldest update first. */
   list(): DispatchEntry[] {
     return this.table.list();
+  }
+
+  /** The newest `limit` entries (default 10), newest update first, filtered and paged in SQLite. */
+  recent(limit: number = DEFAULT_RECENT_LIMIT, options: DispatchQueryOptions = {}): DispatchEntry[] {
+    const clauses: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (options.state !== undefined) {
+      clauses.push("json_extract(payload, '$.state') = ?");
+      params.push(options.state);
+    }
+    if (options.node !== undefined) {
+      clauses.push("json_extract(payload, '$.node') = ?");
+      params.push(options.node);
+    }
+    return this.table.recent(limit, {
+      offset: options.offset,
+      before: options.before,
+      where: clauses.length === 0 ? undefined : clauses.join(" AND "),
+      params,
+    });
   }
 
   /** Entries whose task has not ended: what the tracker reads this round. */

@@ -6,17 +6,21 @@
  * the store and tells its listeners.
  */
 
+import type { SQLInputValue } from "node:sqlite";
+
 import { errorMessage, PodError } from "../core/errors.ts";
-import { JsonTable } from "./json-table.ts";
+import { DEFAULT_RECENT_LIMIT, JsonTable } from "./json-table.ts";
 import type { SqliteDb } from "../core/sqlite.ts";
 import type { NodeLogger } from "../core/events.ts";
 import {
   type BusyState,
   isTerminal,
   resumeControlOf,
+  TERMINAL_STATES,
   textMessage,
   type A2AMessage,
   type SubmitTaskInput,
+  type TaskState,
   type TaskView,
 } from "./wire.ts";
 import type { OrcaNodeId } from "../core/ids.ts";
@@ -26,6 +30,20 @@ import { ulid } from "ulid";
 import { WorkspaceQuota } from "./quota.ts";
 import { TaskRecord, type TaskSettings } from "./record.ts";
 import type { Workspace } from "./workspace.ts";
+
+/** The SQL condition "this task has not ended". */
+const NON_TERMINAL = `json_extract(payload, '$.status.state') NOT IN (${TERMINAL_STATES.map((state) => `'${state}'`).join(", ")})`;
+
+/** Partial index keeping startup recovery over unfinished tasks O(active), not O(history). */
+const ACTIVE_INDEX = `CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks (updated_at) WHERE ${NON_TERMINAL}`;
+
+/** Filtering and pagination options for `SingleSlotTaskRunner.list`. */
+export interface TaskListOptions {
+  offset?: number;
+  before?: string;
+  state?: TaskState;
+  origin?: OrcaNodeId;
+}
 
 export class SingleSlotTaskRunner {
   private readonly quota: WorkspaceQuota;
@@ -52,6 +70,7 @@ export class SingleSlotTaskRunner {
       "tasks",
       (view) => view.id,
       (view) => view.status.timestamp,
+      [ACTIVE_INDEX],
     );
     this.quota = new WorkspaceQuota(workspace, settings.max_workspace_bytes, logger);
   }
@@ -97,19 +116,48 @@ export class SingleSlotTaskRunner {
   }
 
   /**
-   * Local tasks for the UI task panel (§9.2): tasks still running first, then
-   * the persisted store fills the remaining budget, newest update first.
+   * Local tasks for the UI task panel (§9.2) and agent history queries: defaults
+   * to the newest 10 records via an indexed `ORDER BY updated_at DESC LIMIT ?`.
+   * Without filters or paging, tasks still running appear first.
    */
-  list(limit: number): TaskView[] {
-    const running = [...this.live.values()]
-      .sort((left, right) => right.id.localeCompare(left.id))
-      .map((record) => record.snapshot());
-    if (running.length >= limit) return running.slice(0, limit);
-    const stored = this.store
-      .list()
-      .filter((view) => !this.live.has(view.id))
-      .sort((left, right) => right.status.timestamp.localeCompare(left.status.timestamp));
-    return [...running, ...stored].slice(0, limit);
+  list(limit: number = DEFAULT_RECENT_LIMIT, options?: TaskListOptions): TaskView[] {
+    if (limit <= 0) return [];
+    const hasFilter =
+      options !== undefined &&
+      (options.offset !== undefined ||
+        options.before !== undefined ||
+        options.state !== undefined ||
+        options.origin !== undefined);
+    if (!hasFilter) {
+      const running = [...this.live.values()]
+        .sort((left, right) => right.id.localeCompare(left.id))
+        .map((record) => record.snapshot());
+      if (running.length >= limit) return running.slice(0, limit);
+      const remaining = limit - running.length;
+      const stored = this.store
+        .recent(remaining + this.live.size)
+        .filter((view) => !this.live.has(view.id))
+        .slice(0, remaining);
+      return [...running, ...stored];
+    }
+    const clauses: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (options.state !== undefined) {
+      clauses.push("json_extract(payload, '$.status.state') = ?");
+      params.push(options.state);
+    }
+    if (options.origin !== undefined) {
+      clauses.push("json_extract(payload, '$.metadata.pod.origin_orca_node') = ?");
+      params.push(options.origin);
+    }
+    return this.store
+      .recent(limit, {
+        offset: options.offset,
+        before: options.before,
+        where: clauses.length === 0 ? undefined : clauses.join(" AND "),
+        params,
+      })
+      .map((view) => this.live.get(view.id)?.snapshot() ?? view);
   }
 
   resume(taskId: string, message: A2AMessage, callerOrcaNode: string): TaskView {
@@ -123,8 +171,6 @@ export class SingleSlotTaskRunner {
       throw new PodError("not_task_origin", `task ${taskId} belongs to another origin`);
     }
     if (record.state !== "input-required") throw new PodError("bad_request", "task is not input-required");
-    // A parked task gave up the slot: while another task holds it, the origin retries later (§6.9).
-    if (this.busy() !== null) throw SingleSlotTaskRunner.busyError();
     // A task only parks on a permission request, so a record without one is a stale or foreign resume.
     const waiting = record.waiting;
     if (waiting === null) throw new PodError("bad_request", "task is not waiting for a permission decision");
@@ -134,6 +180,8 @@ export class SingleSlotTaskRunner {
       throw new PodError("bad_request", "resume of a permission request needs an approval or a denial");
     }
     if ("permission_denied" in control) {
+      // Denial terminates the parked task immediately without re-acquiring the single slot,
+      // so it succeeds even while another task is running.
       record.deny(control.reason);
     } else {
       // An approval answers exactly the request the task is parked on; one for an earlier request is stale.
@@ -143,6 +191,8 @@ export class SingleSlotTaskRunner {
           `the approval answers request ${control.request_id}, not ${waiting.request_id}`,
         );
       }
+      // A parked task gave up the slot: while another task holds it, the origin retries later (§6.9).
+      if (this.busy() !== null) throw SingleSlotTaskRunner.busyError();
       record.grant();
     }
     return record.snapshot();
@@ -188,8 +238,7 @@ export class SingleSlotTaskRunner {
 
   /** §8.3: a restart never silently resumes work; every unfinished task fails. */
   private recover(): void {
-    for (const view of this.store.list()) {
-      if (isTerminal(view.status.state)) continue;
+    for (const view of this.store.select(NON_TERMINAL)) {
       const message = textMessage("task was interrupted by an orca node restart");
       const status = { state: "failed" as const, timestamp: new Date().toISOString(), message, reason: "node_restart" };
       this.store.save({ ...view, status });

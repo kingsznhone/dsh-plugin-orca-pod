@@ -395,4 +395,89 @@ describe("orca_pod tool", () => {
       members_digest: "digest",
     });
   });
+
+  it("queries recent and historical tasks via method tasks, defaulting to 10 with cursor pagination", async () => {
+    const selfId = fakeNodeId("self");
+    const peerId = fakeNodeId("peer");
+    const localViews = Array.from({ length: 12 }, (_, idx) => {
+      const n = 12 - idx;
+      const ts = new Date(Date.UTC(2026, 0, 1, 0, 0, n * 2)).toISOString();
+      return {
+        kind: "task" as const,
+        id: `local-${String(n).padStart(2, "0")}`,
+        contextId: `ctx-${n}`,
+        status: { state: n % 3 === 0 ? ("failed" as const) : ("completed" as const), timestamp: ts },
+        metadata: { pod: { origin_orca_node: peerId } },
+      };
+    });
+    const dispatchedEntries = Array.from({ length: 5 }, (_, idx) => {
+      const n = 5 - idx;
+      const ts = new Date(Date.UTC(2026, 0, 1, 0, 0, n * 2 + 1)).toISOString();
+      return {
+        task_id: `disp-${String(n).padStart(2, "0")}`,
+        node: peerId,
+        state: "completed" as const,
+        created_at: ts,
+        updated_at: ts,
+      };
+    });
+    const fakeNode = {
+      mesh: {
+        self: { id: selfId },
+        resolve: () => ({ id: peerId }),
+      },
+      tasks: {
+        list: (limit: number, options?: { offset?: number; before?: string; state?: string; origin?: string }) =>
+          localViews
+            .filter((view) => (options?.before === undefined ? true : view.status.timestamp < options.before))
+            .filter((view) => (options?.state === undefined ? true : view.status.state === options.state))
+            .filter((view) =>
+              options?.origin === undefined ? true : view.metadata.pod.origin_orca_node === options.origin,
+            )
+            .slice(options?.offset ?? 0, (options?.offset ?? 0) + limit),
+      },
+      dispatches: {
+        recent: (limit: number, options?: { offset?: number; before?: string; state?: string; node?: string }) =>
+          dispatchedEntries
+            .filter((entry) => (options?.before === undefined ? true : entry.updated_at < options.before))
+            .filter((entry) => (options?.state === undefined ? true : entry.state === options.state))
+            .filter((entry) => (options?.node === undefined ? true : entry.node === options.node))
+            .slice(options?.offset ?? 0, (options?.offset ?? 0) + limit),
+      },
+    } as unknown as import("../src/node/orca.ts").Orca;
+
+    const queryTools = createPodTools(podRunning(fakeNode));
+
+    // Default returns 10 newest records merged across local + dispatched, with pagination cursor.
+    const page1 = (await run(queryTools, { method: "tasks" })) as {
+      tasks: Array<{ task_id: string; updated_at: string; scope: string }>;
+      limit: number;
+      has_more: boolean;
+      next_before?: string;
+    };
+    expect(page1.limit).toBe(10);
+    expect(page1.tasks).toHaveLength(10);
+    expect(page1.has_more).toBe(true);
+    expect(page1.next_before).toBe(page1.tasks.at(-1)!.updated_at);
+
+    // Follow next_before to fetch the remaining 7 older records.
+    const page2 = (await run(queryTools, { method: "tasks", before: page1.next_before })) as {
+      tasks: Array<{ task_id: string }>;
+      has_more: boolean;
+      next_before?: string;
+    };
+    expect(page2.tasks).toHaveLength(7);
+    expect(page2.has_more).toBe(false);
+    expect(page2.next_before).toBeUndefined();
+
+    // Filter by scope and state.
+    const failedLocal = (await run(queryTools, {
+      method: "tasks",
+      scope: "local",
+      state: "failed",
+      peer: "peer",
+    })) as { tasks: Array<{ task_id: string; scope: string; state: string }> };
+    expect(failedLocal.tasks.map((row) => row.task_id)).toEqual(["local-12", "local-09", "local-06", "local-03"]);
+    expect(failedLocal.tasks.every((row) => row.scope === "local" && row.state === "failed")).toBe(true);
+  });
 });

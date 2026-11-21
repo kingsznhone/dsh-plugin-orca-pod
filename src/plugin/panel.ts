@@ -11,6 +11,7 @@
  */
 
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";
+import { DEFAULT_RECENT_LIMIT } from "../task/json-table.ts";
 import { type DispatchEntry, type PodTaskMetadata, type TaskView, isTerminal } from "../task/wire.ts";
 import { shortenNodeId } from "../core/identity.ts";
 import { detectLocalEndpoints, type Orca } from "../node/orca.ts";
@@ -55,8 +56,8 @@ export class PanelModel {
     private readonly catalog: ModelCatalogFeed,
   ) {}
 
-  /** Local tasks and dispatched tasks merged, newest first. */
-  recent(limit: number): PodTaskRow[] {
+  /** Local tasks and dispatched tasks merged, newest first (defaults to 10). */
+  recent(limit: number = DEFAULT_RECENT_LIMIT): PodTaskRow[] {
     const current = this.pod.run;
     return current === null ? [] : PanelModel.recentOf(current, new RosterLabels(current), limit);
   }
@@ -110,7 +111,7 @@ export class PanelModel {
     return {
       task,
       origin: new RosterLabels(current).label(PanelModel.podOf(task).origin_orca_node),
-      dispatch: current.dispatches.list().find((entry) => entry.task_id === task.id) ?? null,
+      dispatch: current.dispatches.get(task.id) ?? null,
     };
   }
 
@@ -159,8 +160,7 @@ export class PanelModel {
     const rows: PodTaskRow[] = [
       ...tasks.map((view) => PanelModel.localRow(current, labels, view)),
       ...current.dispatches
-        .list()
-        .slice(-limit)
+        .recent(limit)
         .filter((entry) => !local.has(entry.task_id))
         .map((entry) => PanelModel.dispatchRow(labels, entry)),
     ];

@@ -82,6 +82,30 @@ describe("A2A task surface", () => {
     expect(textOf(await waitForState(origin, targetUrl, parked.id, "completed"))).toBe("done");
   });
 
+  it("allows denying an input-required task even while another task holds the slot", async () => {
+    const { origin, targetUrl } = await twoNodes();
+    const parked = await origin.mesh.resolve(targetUrl).sendTask({
+      message: scriptMessage({
+        steps: [{ at_ms: 10, suspend: { tool: "write_file", requested: { path: "a.txt" } } }],
+        final: { state: "completed", text: "done" },
+      }),
+    });
+    const suspended = await waitForState(origin, targetUrl, parked.id, "input-required");
+    const holder = await origin.mesh.resolve(targetUrl).sendTask({
+      message: scriptMessage({ final: { state: "hang", text: "" } }),
+    });
+    await waitForState(origin, targetUrl, holder.id, "working");
+
+    const denied = await origin.mesh.resolve(targetUrl).deny(suspended, "rejected while busy");
+    expect(denied.status.state).toBe("failed");
+    expect(denied.status.reason).toBe("permission_denied");
+    expect(textOf(denied)).toContain("rejected while busy");
+
+    // The active task holding the slot continues undisturbed.
+    expect((await origin.mesh.resolve(targetUrl).getTask(holder.id)).status.state).toBe("working");
+    await origin.mesh.resolve(targetUrl).cancelTask(holder.id);
+  });
+
   it("returns orca_node_busy when a task is already running", async () => {
     const { origin, targetUrl } = await twoNodes();
     const running = await origin.mesh.resolve(targetUrl).sendTask({

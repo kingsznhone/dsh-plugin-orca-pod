@@ -78,6 +78,93 @@ describe("dispatch log on disk (13.4)", () => {
     expect(byId.get("failed")?.state).toBe("failed");
     db.close();
   });
+
+  it("creates SQLite indexes and serves recent dispatches with default limit 10, paging and filters", () => {
+    const file = join(tempRoot(), "tasks.db");
+    const { log, db } = logAt(file);
+    const otherNode = fakeNodeId("dispatch-other");
+
+    for (let i = 1; i <= 15; i += 1) {
+      const id = `task-${String(i).padStart(2, "0")}`;
+      const ts = new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString();
+      const target = i % 2 === 0 ? otherNode : NODE;
+      const state = i === 15 ? "working" : i % 3 === 0 ? "failed" : "completed";
+      log.recordSend(target, view(id, state));
+      // Pin distinct timestamps so ordering and `before` cursor pagination are deterministic.
+      db.db
+        .prepare(
+          "UPDATE dispatches SET payload = json_set(payload, '$.updated_at', ?), updated_at = ? WHERE task_id = ?",
+        )
+        .run(ts, ts, id);
+    }
+
+    // Default limit is 10, newest first.
+    const firstPage = log.recent();
+    expect(firstPage).toHaveLength(10);
+    expect(firstPage.map((item) => item.task_id)).toEqual([
+      "task-15",
+      "task-14",
+      "task-13",
+      "task-12",
+      "task-11",
+      "task-10",
+      "task-09",
+      "task-08",
+      "task-07",
+      "task-06",
+    ]);
+
+    // Cursor pagination (`before`) fetches older records beyond the default 10.
+    const older = log.recent(10, { before: firstPage.at(-1)!.updated_at });
+    expect(older.map((item) => item.task_id)).toEqual(["task-05", "task-04", "task-03", "task-02", "task-01"]);
+
+    // Point lookup and filters (`state`, `node`).
+    expect(log.get("task-03")).toMatchObject({ task_id: "task-03", state: "failed", node: NODE });
+    expect(log.get("missing")).toBeUndefined();
+    expect(log.recent(10, { state: "failed" }).map((item) => item.task_id)).toEqual([
+      "task-12",
+      "task-09",
+      "task-06",
+      "task-03",
+    ]);
+    expect(log.recent(5, { node: otherNode }).map((item) => item.task_id)).toEqual([
+      "task-14",
+      "task-12",
+      "task-10",
+      "task-08",
+      "task-06",
+    ]);
+
+    // Verify secondary and partial indexes exist and SQLite query planner uses them.
+    const indexes = (
+      db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'dispatches'").all() as Array<{
+        name: string;
+      }>
+    ).map((row) => row.name);
+    expect(indexes).toContain("idx_dispatches_updated_at");
+    expect(indexes).toContain("idx_dispatches_open");
+
+    const recentPlan = (
+      db.db
+        .prepare("EXPLAIN QUERY PLAN SELECT payload FROM dispatches ORDER BY updated_at DESC, task_id DESC LIMIT 10")
+        .all() as Array<{ detail: string }>
+    )
+      .map((row) => row.detail)
+      .join(" ");
+    expect(recentPlan).toContain("idx_dispatches_updated_at");
+
+    const openPlan = (
+      db.db
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT payload FROM dispatches WHERE json_extract(payload, '$.state') NOT IN ('completed', 'failed', 'canceled') ORDER BY updated_at",
+        )
+        .all() as Array<{ detail: string }>
+    )
+      .map((row) => row.detail)
+      .join(" ");
+    expect(openPlan).toContain("idx_dispatches_open");
+    db.close();
+  });
 });
 
 describe("origin dispatch log (13.4)", () => {

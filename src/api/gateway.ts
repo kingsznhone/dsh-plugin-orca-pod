@@ -10,7 +10,7 @@ import type { WorkgroupId } from "../core/ids.ts";
 import type { NodeIdentity } from "../core/identity.ts";
 import type { SingleSlotTaskRunner } from "../task/runner.ts";
 import { A2aRoutes } from "./a2a-routes.ts";
-import { AccessPolicy, parseAuthHeader } from "./access.ts";
+import { AccessPolicy, type VerifiedAuth } from "./access.ts";
 import { BlobRoutes } from "./blob-routes.ts";
 import { ClusterRoutes } from "./cluster-routes.ts";
 
@@ -91,15 +91,18 @@ export class Gateway {
   }
 
   /**
-   * Sign what this node answers (§7.1): the Ed25519 signature covers the nonce of the
-   * request being answered, the status and the body, so a reply can be neither
-   * changed nor moved to answer another request. Errors are signed too, whatever
-   * stopped the request, as long as it named a nonce; a stream (a file) is signed
-   * by its status and name, and the caller checks the bytes against the hash the
-   * file is named by.
+   * Sign what this node answers to an authenticated peer (§7.1): the Ed25519
+   * signature covers the verified request nonce, the status and the body, so a
+   * reply can be neither changed nor moved to answer another request. Unauthenticated
+   * requests (missing/invalid auth, wrong workgroup/target, clock skew, replay,
+   * public/local routes, 404s) have no `request.auth` and are never signed, avoiding
+   * unauthenticated Ed25519 work or signing attacker-supplied nonces. A stream (a
+   * file) is signed by its status and name, and the caller checks the bytes against
+   * the hash the file is named by.
    */
   private signReply(request: FastifyRequest, reply: FastifyReply, payload: unknown): unknown {
-    const nonce = parseAuthHeader(request.headers.authorization)?.claim.nonce;
+    const auth = request.auth as VerifiedAuth | undefined;
+    const nonce = auth?.nonce;
     if (nonce === undefined) return payload;
     let subject: string | undefined;
     if (typeof payload === "string" || Buffer.isBuffer(payload)) subject = bodySha256(payload);
