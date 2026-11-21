@@ -173,13 +173,11 @@ export class Mesh {
     const answer = await OrcaNode.contact(this.ctx, url, known?.id ?? "", this.helloRequest());
     // This node's own address under another name.
     if (answer.from === this.self.id) return this.self;
-    const node = this.admit(
-      answer.from,
-      SelfDescriptionSchema.parse(answer.body.self),
-      answer.body.self.busy,
-      "answered",
-    );
-    if (answer.body.members !== null) this.mergeRemote(answer.body.members, isLoopbackUrl(url));
+    const self = SelfDescriptionSchema.parse(answer.body.self);
+    const overLoopback = isLoopbackUrl(url);
+    const endpoints = await this.screenDeclared(answer.from, self.endpoints, overLoopback);
+    const node = this.admit(answer.from, { ...self, endpoints }, answer.body.self.busy, "answered");
+    if (answer.body.members !== null) this.mergeRemote(answer.body.members, overLoopback);
     return node;
   }
 
@@ -214,13 +212,7 @@ export class Mesh {
    */
   async greeted(caller: OrcaNodeId, request: HelloRequest, overLoopback: boolean): Promise<HelloResponse> {
     if (caller !== this.self.id) {
-      // A node already in the table repeats the same endpoints every few seconds, so its
-      // last verdict may be reused; a first contact is always screened afresh.
-      const declared = request.self.endpoints;
-      const endpoints = await this.ctx.screening.declared(declared, overLoopback, !this.nodes.has(caller));
-      if (endpoints.length === 0) {
-        throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
-      }
+      const endpoints = await this.screenDeclared(caller, request.self.endpoints, overLoopback);
       this.admit(caller, { ...request.self, endpoints }, request.busy, "heard");
     }
     const digest = this.digest();
@@ -229,6 +221,20 @@ export class Mesh {
       members_digest: digest,
       members: request.digest === digest ? null : this.directory(),
     };
+  }
+
+  /**
+   * Screen the endpoints a node declared for itself (in an inbound `hello` or in
+   * the answer to our `probe`) before recording them (§7.7). A node already in the
+   * table repeats the same endpoints every few seconds, so its last verdict may be
+   * reused; a first contact is always screened afresh.
+   */
+  private async screenDeclared(id: OrcaNodeId, declared: readonly string[], overLoopback: boolean): Promise<string[]> {
+    const endpoints = await this.ctx.screening.declared(declared, overLoopback, !this.nodes.has(id));
+    if (endpoints.length === 0) {
+      throw new PodError("endpoint_refused", `none of the declared endpoints may be dialed: ${declared.join(", ")}`);
+    }
+    return endpoints;
   }
 
   // ---- the greeting loop ----

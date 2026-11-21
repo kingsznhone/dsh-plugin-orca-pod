@@ -20,8 +20,8 @@ import { isIPv4, isIPv6 } from "node:net";
 
 type AddressClass = "loopback" | "link-local" | "private" | "public" | "reserved";
 
-function ipv4Class(address: string): AddressClass {
-  const [a = 0, b = 0] = address.split(".").map(Number);
+function ipv4OctetsClass(a: number, b: number): AddressClass {
+  if (a === 127) return "loopback";
   if (a === 169 && b === 254) return "link-local";
   if (a === 10) return "private";
   if (a === 172 && b >= 16 && b <= 31) return "private";
@@ -31,13 +31,50 @@ function ipv4Class(address: string): AddressClass {
   return "public";
 }
 
+function ipv4Class(address: string): AddressClass {
+  const [a = 0, b = 0] = address.split(".").map(Number);
+  return ipv4OctetsClass(a, b);
+}
+
+/** Parse an IPv6 literal (with optional `%zone` or dotted-quad IPv4 tail) into eight 16-bit groups. */
+function parseIpv6(address: string): number[] | null {
+  const bare = address.split("%", 1)[0] ?? "";
+  let normalized = bare;
+  const lastColon = bare.lastIndexOf(":");
+  if (lastColon !== -1 && bare.includes(".")) {
+    const tail = bare.slice(lastColon + 1);
+    if (!isIPv4(tail)) return null;
+    const [a = 0, b = 0, c = 0, d = 0] = tail.split(".").map(Number);
+    normalized = `${bare.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] === "" ? [] : (halves[0]?.split(":") ?? []);
+  const right = halves.length === 2 && halves[1] !== "" ? (halves[1]?.split(":") ?? []) : [];
+  const missing = 8 - left.length - right.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const parts = [...left, ...Array<string>(missing).fill("0"), ...right];
+  const groups: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9a-f]{1,4}$/i.test(part)) return null;
+    groups.push(Number.parseInt(part, 16));
+  }
+  return groups;
+}
+
 function ipv6Class(address: string): AddressClass {
-  const lower = address.toLowerCase();
-  if (lower === "::") return "reserved";
-  if (/^fe[89ab]/.test(lower)) return "link-local";
-  if (/^f[cd]/.test(lower)) return "private";
-  if (/^ff/.test(lower)) return "reserved";
-  if (lower.startsWith("::ffff:")) return ipv4Class(lower.slice("::ffff:".length));
+  const groups = parseIpv6(address);
+  if (groups === null) return "reserved";
+  const [g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0] = groups;
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && g6 === 0 && g7 === 0) return "reserved";
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && g6 === 0 && g7 === 1) return "loopback";
+  // IPv4-mapped IPv6 (`::ffff:0:0/96`), whether spelled as dotted quad or WHATWG-normalized hex.
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff) {
+    return ipv4OctetsClass(g6 >> 8, g6 & 0xff);
+  }
+  if ((g0 & 0xffc0) === 0xfe80) return "link-local";
+  if ((g0 & 0xfe00) === 0xfc00) return "private";
+  if ((g0 & 0xff00) === 0xff00) return "reserved";
   return "public";
 }
 
