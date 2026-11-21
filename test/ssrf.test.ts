@@ -24,14 +24,22 @@ describe("candidate endpoint filtering (§7.7)", () => {
   it("always rejects metadata, link-local, multicast and unspecified addresses", async () => {
     const blocked = [
       "https://169.254.169.254/latest/meta-data",
+      "https://[::ffff:169.254.169.254]:80",
+      "https://[::ffff:a9fe:a9fe]:80",
+      "https://[0:0:0:0:0:ffff:a9fe:a9fe]:80",
       "https://[fe80::1]:11811",
       "https://224.0.0.1:11811",
+      "https://[::ffff:224.0.0.1]:11811",
+      "https://[::ffff:e000:1]:11811",
       "https://0.0.0.0:11811",
+      "https://[::ffff:0.0.0.0]:11811",
+      "https://[::ffff:0:0]:11811",
       "https://[::]:11811",
+      "https://[0:0:0:0:0:0:0:0]:11811",
     ];
     for (const endpoint of blocked) {
-      expect(await fromElsewhere(endpoint)).toBe(false);
-      expect(await fromThisMachine(endpoint)).toBe(false);
+      expect(await fromElsewhere(endpoint), endpoint).toBe(false);
+      expect(await fromThisMachine(endpoint), endpoint).toBe(false);
     }
   });
 
@@ -39,9 +47,22 @@ describe("candidate endpoint filtering (§7.7)", () => {
     // One machine runs one node: another machine's loopback address names this machine.
     expect(await fromElsewhere("https://127.0.0.1:11811")).toBe(false);
     expect(await fromElsewhere("https://[::1]:11811")).toBe(false);
+    expect(await fromElsewhere("https://[::ffff:127.0.0.1]:11811")).toBe(false);
+    expect(await fromElsewhere("https://[::ffff:7f00:1]:11811")).toBe(false);
     // Nodes sharing this machine (tests, development) list each other at loopback.
     expect(await fromThisMachine("https://127.0.0.1:11811")).toBe(true);
     expect(await fromThisMachine("https://[::1]:11811")).toBe(true);
+    expect(await fromThisMachine("https://[::ffff:127.0.0.1]:11811")).toBe(true);
+    expect(await fromThisMachine("https://[::ffff:7f00:1]:11811")).toBe(true);
+  });
+
+  it("allows public and private IPv4-mapped IPv6 and non-prefix short hextets", async () => {
+    expect(await fromElsewhere("https://[::ffff:10.1.2.3]:11811")).toBe(true);
+    expect(await fromElsewhere("https://[::ffff:a01:203]:11811")).toBe(true);
+    expect(await fromElsewhere("https://[::ffff:8.8.8.8]:11811")).toBe(true);
+    // `fe8::1` is `0fe8::1` (public), not `fe80::/10`; `ff::1` is `00ff::1`, not multicast `ff00::/8`.
+    expect(await fromElsewhere("https://[fe8::1]:11811")).toBe(true);
+    expect(await fromElsewhere("https://[ff::1]:11811")).toBe(true);
   });
 
   it("allows public addresses: a mesh may span a cloud server or public IPv6", async () => {
@@ -143,6 +164,50 @@ describe("peer origin (§7.7)", () => {
     const dialed = net.dials.filter((dial) => dial.from === a.id).map((dial) => dial.url);
     expect(dialed.some((url) => url.startsWith("https://127.0.0.1:7001"))).toBe(false);
     expect(dialed.some((url) => url.startsWith("https://127.0.0.1:7002"))).toBe(true);
+  });
+
+  it("screens endpoints declared in a probe response and refuses when none are allowed", async () => {
+    const net = new TestNet();
+    const a = net.node();
+    const replyWith = (
+      endpoints: string[],
+      options?: { peerEndpoints?: string[]; members?: ReturnType<typeof listed>[] },
+    ) => {
+      const peer = net.node(options?.peerEndpoints ? { endpoints: options.peerEndpoints } : {});
+      const honest = peer.mesh.greeted.bind(peer.mesh);
+      vi.spyOn(peer.mesh, "greeted").mockImplementation(async (caller, request, overLoopback) => {
+        const response = await honest(caller, request, overLoopback);
+        return {
+          ...response,
+          self: { ...response.self, endpoints },
+          members: options?.members ?? response.members,
+        };
+      });
+      return peer;
+    };
+
+    // Forbidden link-local, hex IPv4-mapped metadata, and remote loopback are all refused.
+    for (const bad of [
+      ["https://169.254.169.254:80"],
+      ["https://[::ffff:169.254.169.254]:80"],
+      ["https://127.0.0.1:22"],
+    ]) {
+      const bystander = fakeNodeId(`bystander-${bad[0]}`);
+      const peer = replyWith(bad, { members: [listed(bystander, "https://10.0.0.88:11811")] });
+      await expect(a.mesh.probe(peer.url)).rejects.toMatchObject({ code: "endpoint_refused" });
+      expect(a.mesh.get(peer.id)).toBeUndefined();
+      expect(a.mesh.get(bystander)).toBeUndefined();
+    }
+
+    // Mixed declarations keep only the allowed endpoints, so heartbeats never dial the forbidden ones.
+    const mixed = replyWith(["https://169.254.169.254:80", "https://[::ffff:a9fe:a9fe]:80", "https://10.0.0.77:11811"]);
+    const admitted = await a.mesh.probe(mixed.url);
+    expect(admitted.endpoints).toEqual(["https://10.0.0.77:11811"]);
+
+    // Probing a same-machine node over loopback still accepts its loopback endpoint.
+    const local = replyWith(["https://127.0.0.1:7100"], { peerEndpoints: ["https://127.0.0.1:7100"] });
+    const localAdmitted = await a.mesh.probe(local.url);
+    expect(localAdmitted.endpoints).toEqual(["https://127.0.0.1:7100"]);
   });
 });
 
