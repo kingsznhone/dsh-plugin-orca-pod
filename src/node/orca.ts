@@ -165,7 +165,7 @@ export class Orca {
     this.mesh = new Mesh(this.context, this.describeSelf(Orca.endpointsFrom(settings, settings.port)), {
       timings: options.timings,
     });
-    this.gateway = new Gateway(this.mesh, this.tasks, workgroupId, key, identity, this.localToken);
+    this.gateway = new Gateway(this.mesh, this.tasks, workgroupId, key, identity, this.localToken, this.workspace.root);
 
     // A new catalog changes what this node announces about itself (§6.15).
     this.models.changes.subscribe(() => this.mesh.self.describe(this.describeSelf(this.mesh.self.endpoints)));

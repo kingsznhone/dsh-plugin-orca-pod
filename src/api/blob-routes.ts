@@ -1,9 +1,10 @@
-import { isAbsolute } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
-import { BlobIdSchema, type OpenedBlob } from "../core/blobs.ts";
+import { BlobIdSchema, isPathWithinRoot, type OpenedBlob } from "../core/blobs.ts";
 import { errorMessage, PodError } from "../core/errors.ts";
 import { OrcaNodeIdSchema } from "../core/ids.ts";
 import type { Mesh } from "../mesh/mesh.ts";
@@ -30,7 +31,11 @@ const FetchParams = z.object({ node: OrcaNodeIdSchema, blob_id: BlobIdSchema });
  * access is the node's token, which only the executor hands out.
  */
 export class BlobRoutes {
-  constructor(private readonly mesh: Mesh) {}
+  constructor(
+    private readonly mesh: Mesh,
+    /** Only files inside this directory (the workgroup workspace) may be published through `/local/blobs`. */
+    private readonly publishRoot: string,
+  ) {}
 
   register(app: FastifyInstance): void {
     // A file this node published, for a member's signed request. The reply is a
@@ -40,10 +45,12 @@ export class BlobRoutes {
       return BlobRoutes.send(reply, await this.mesh.self.fetchBlob(blobId));
     });
 
-    // Copy a file of this machine into the registry and name it.
+    // Copy a file from this node's workgroup workspace into the registry and name it.
     app.post("/local/blobs", { config: { access: "local" } }, async (request) => {
       const { path, ttl_s } = parseInput(PublishBody, request.body, "body");
-      return this.mesh.self.publish(path, ttl_s).catch((error: unknown) => {
+      const target = await this.resolvePublishPath(path);
+      return this.mesh.self.publish(target, ttl_s).catch((error: unknown) => {
+        if (error instanceof PodError) throw error;
         throw new PodError("bad_request", `cannot publish ${path}: ${errorMessage(error)}`);
       });
     });
@@ -53,6 +60,36 @@ export class BlobRoutes {
       const { node, blob_id: blobId } = parseInput(FetchParams, request.params, "params");
       return BlobRoutes.send(reply, await this.mesh.require(node).fetchBlob(blobId));
     });
+  }
+
+  /** Resolve `path` (following symlinks) and require it to lie strictly inside `this.publishRoot`. */
+  private async resolvePublishPath(path: string): Promise<string> {
+    let realRoot: string;
+    try {
+      realRoot = await realpath(this.publishRoot);
+    } catch {
+      realRoot = resolve(this.publishRoot);
+    }
+    const candidate = resolve(path);
+    let realTarget: string;
+    try {
+      realTarget = await realpath(candidate);
+    } catch (error) {
+      let parent: string;
+      try {
+        parent = await realpath(dirname(candidate));
+      } catch {
+        parent = dirname(candidate);
+      }
+      if (!isPathWithinRoot(realRoot, join(parent, basename(candidate)))) {
+        throw new PodError("path_outside_workspace", `cannot publish ${path}: path is outside the workgroup workspace`);
+      }
+      throw new PodError("bad_request", `cannot publish ${path}: ${errorMessage(error)}`);
+    }
+    if (!isPathWithinRoot(realRoot, realTarget)) {
+      throw new PodError("path_outside_workspace", `cannot publish ${path}: path is outside the workgroup workspace`);
+    }
+    return realTarget;
   }
 
   /** Answer with a file's bytes; the caller checks them against the sha256 it asked for. */

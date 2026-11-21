@@ -4,7 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -82,6 +82,61 @@ describe("orca_pod publish", () => {
       size: 8,
       expires_at: null,
     });
+  });
+
+  it("allows publishing workspace files under read-only and refuses paths outside the workspace or via symlinks", async () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    writeFileSync(join(root, "notes.md"), "notes");
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    symlinkSync(join(outside, "secret.txt"), join(root, "escape.txt"));
+    const published: string[] = [];
+    const node = {
+      mesh: {
+        self: {
+          publish: async (path: string) => {
+            published.push(path);
+            return { ref: formatBlobRef({ node: OWN, blob_id: sha256("notes") }), size: 5, expires_at: null };
+          },
+        },
+      },
+    } as unknown as Orca;
+
+    await toolOf(node, policyOf("read-only", root))({ method: "publish", path: "notes.md" });
+    expect(published).toEqual([join(root, "notes.md")]);
+
+    for (const mode of ["read-only", "workspace-write"]) {
+      const call = toolOf(node, policyOf(mode, root));
+      await expect(call({ method: "publish", path: join(outside, "secret.txt") })).rejects.toThrow(
+        /does not allow publishing/,
+      );
+      await expect(call({ method: "publish", path: "escape.txt" })).rejects.toThrow(/does not allow publishing/);
+    }
+    expect(published).toEqual([join(root, "notes.md")]);
+  });
+
+  it("publishes anywhere under danger-full-access, and nowhere when the sandbox policy cannot be read", async () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    writeFileSync(join(outside, "extra.txt"), "extra");
+    const published: string[] = [];
+    const node = {
+      mesh: {
+        self: {
+          publish: async (path: string) => {
+            published.push(path);
+            return { ref: formatBlobRef({ node: OWN, blob_id: sha256("extra") }), size: 5, expires_at: null };
+          },
+        },
+      },
+    } as unknown as Orca;
+
+    await toolOf(node, policyOf("danger-full-access", root))({ method: "publish", path: join(outside, "extra.txt") });
+    expect(published).toEqual([join(outside, "extra.txt")]);
+
+    await expect(toolOf(node)({ method: "publish", path: join(outside, "extra.txt") })).rejects.toThrow(
+      /sandbox policy is not available/,
+    );
   });
 
   it("needs a path, and a ttl_s that is a whole number of seconds", async () => {
@@ -175,7 +230,7 @@ describe("orca_pod inside a task", () => {
    * task session that reaches it as `LocalNode`, pinned to `node` (the gateway's own id unless given).
    */
   async function taskTool(root: string, options: { token?: string; node?: string } = {}) {
-    const harness = createGatewayHarness();
+    const harness = createGatewayHarness({ publishRoot: root });
     const url = await harness.url();
     expect(url).toMatch(/^https:\/\//);
     const local = new LocalNode(url, options.node ?? harness.orcaNodeId, options.token ?? harness.localToken);

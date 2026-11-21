@@ -91,7 +91,15 @@ export class TestNet {
       { display_name: `node-${this.hosts}`, endpoints, max_task_ttl_s: parseSettings({}).task_timeout_s },
       { timings: { ...this.timings, ...options.timings } },
     );
-    const gateway = new Gateway(mesh, tasks, this.workgroup, this.key, identity, randomBytes(16).toString("base64url"));
+    const gateway = new Gateway(
+      mesh,
+      tasks,
+      this.workgroup,
+      this.key,
+      identity,
+      randomBytes(16).toString("base64url"),
+      tempDir("orca-workspace-"),
+    );
     const [url] = endpoints;
     if (url === undefined) throw new Error("a net node needs an address");
     const node: NetNode = { id: identity.orcaNodeId, url, mesh, gateway };

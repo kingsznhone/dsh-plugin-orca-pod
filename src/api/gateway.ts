@@ -42,6 +42,8 @@ export class Gateway {
     private readonly identity: NodeIdentity,
     /** The token this machine's own processes show the local routes. */
     localToken: string,
+    /** Directory that `/local/blobs` may publish files from (the workgroup workspace). */
+    publishRoot: string,
   ) {
     // https only (§7.7): the certificate is self-signed over the node's identity key,
     // so a caller pins it to the node id it dials. Nothing is served in plaintext,
@@ -61,7 +63,7 @@ export class Gateway {
     new AccessPolicy(mesh.self.id, workgroupId, key, localToken).install(this.app);
     new ClusterRoutes(mesh).register(this.app);
     new A2aRoutes(tasks).register(this.app);
-    new BlobRoutes(mesh).register(this.app);
+    new BlobRoutes(mesh, publishRoot).register(this.app);
   }
 
   /**

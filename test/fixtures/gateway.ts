@@ -47,6 +47,8 @@ export type GatewayHarness = {
   mesh: Mesh;
   tasks: SingleSlotTaskRunner;
   blobs: FileBlobRegistry;
+  /** Directory `/local/blobs` accepts files from. */
+  publishRoot: string;
   /** What the local routes take (`x-orca-local`). */
   localToken: string;
   /** The header a caller holding `identity` and the workgroup key signs a request to this gateway with. */
@@ -63,6 +65,7 @@ export type GatewayHarness = {
 export type GatewayHarnessOptions = {
   tasks?: SingleSlotTaskRunner;
   blobs?: FileBlobRegistry;
+  publishRoot?: string;
   workgroup?: WorkgroupId;
   displayName?: string;
 };
@@ -74,6 +77,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
   const workgroup = options.workgroup ?? wg("orca-dev");
   const db = openDb();
   const blobs = options.blobs ?? new FileBlobRegistry(db, tempDir("orca-blobs-"));
+  const publishRoot = options.publishRoot ?? tempDir("orca-workspace-");
   const localToken = randomBytes(16).toString("base64url");
   const tasks = options.tasks ?? createTestRunner();
   const context = new MeshContext(
@@ -96,7 +100,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     runtime: RUNTIME,
     max_task_ttl_s: parseSettings({}).task_timeout_s,
   });
-  const gateway = new Gateway(mesh, tasks, workgroup, key, identity, localToken);
+  const gateway = new Gateway(mesh, tasks, workgroup, key, identity, localToken, publishRoot);
   const signAs: GatewayHarness["signAs"] = (caller, method, path, extra = {}) =>
     buildAuthHeader(
       caller,
@@ -128,6 +132,7 @@ export function createGatewayHarness(options: GatewayHarnessOptions = {}): Gatew
     mesh,
     tasks,
     blobs,
+    publishRoot,
     localToken,
     sign: (method, path, body) => signAs(identity, method, path, { body }),
     signAs,

@@ -8,8 +8,8 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, rmSync } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { StatementSync } from "node:sqlite";
@@ -19,6 +19,12 @@ import { z } from "zod";
 import { PodError } from "./errors.ts";
 import type { SqliteDb } from "./sqlite.ts";
 import { OrcaNodeIdSchema } from "./ids.ts";
+
+/** True when `target` lies strictly inside `root` (not `root` itself, not escaping via `..` or another drive). */
+export function isPathWithinRoot(root: string, target: string): boolean {
+  const inside = relative(root, target);
+  return inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+}
 
 /** A blob id is the sha256 of the file, as lowercase hex. */
 export const BlobIdSchema = z.string().regex(/^[0-9a-f]{64}$/, "must be a lowercase sha256 hex digest");
@@ -162,13 +168,16 @@ export class FileBlobRegistry {
    * keeps the one copy and the later of the two expiries; a TTL of 0 never expires.
    */
   async register(path: string, ttlS: number = DEFAULT_BLOB_TTL_S): Promise<FileBlob> {
+    const resolved = resolve(path);
+    const info = await stat(resolved);
+    if (!info.isFile()) throw new Error(`${path} is not a regular file`);
     await mkdir(this.dir, { recursive: true });
     const partial = join(this.dir, `.${randomUUID()}.part`);
     const tap = sha256Tap();
     let sha: string;
     let size: number;
     try {
-      await pipeline(createReadStream(resolve(path)), tap.stream, createWriteStream(partial));
+      await pipeline(createReadStream(resolved), tap.stream, createWriteStream(partial));
       ({ sha, size } = tap.digest());
       // The same bytes are already here (and may be streaming to someone): keep that copy.
       if (existsSync(join(this.dir, sha))) await rm(partial, { force: true });
