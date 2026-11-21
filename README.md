@@ -1,6 +1,6 @@
 <div align="center">
 
-![Orca Pod 图标：五只小虎鲸被发光的线两两相连，组成一张全互联的网](icon-full.webp)
+<img src="icon-full.webp" width="256" height="256" alt="Orca Pod 图标：五只小虎鲸被发光的线两两相连，组成一张全互联的网">
 
 # Orca Pod
 
