@@ -122,7 +122,7 @@ export type PodActions = {
 /** The GET routes: the query string each reads and the body it answers with. */
 export type PodReads = {
   state: { query: Record<string, never>; response: PodState };
-  /** Every task this node knows about, for the "all tasks" view (the newest `TASKS_LIMIT`). */
+  /** Recent tasks this node knows about (the newest `TASKS_LIMIT`, default 10; older records are queried via the agent). */
   tasks: { query: Record<string, never>; response: PodTaskRow[] };
   task: { query: { peer: string; task: string }; response: PodTaskDetail };
 };

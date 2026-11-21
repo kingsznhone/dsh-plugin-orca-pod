@@ -26,6 +26,8 @@ import {
   type PublishedFile,
 } from "../core/blobs.ts";
 import { DEFAULT_PORT } from "../core/constants.ts";
+import type { OrcaNodeId } from "../core/ids.ts";
+import { DEFAULT_RECENT_LIMIT } from "../task/json-table.ts";
 import { isTerminal, type SubmitTaskInput, type TaskState } from "../task/wire.ts";
 import { parseModelSpec, ReasoningEffortSchema } from "../executor/model.ts";
 import { narrowPermissionMode, SandboxModeSchema } from "../executor/permission.ts";
@@ -64,12 +66,26 @@ const METHODS_HELP =
   FILES_HELP +
   "status (peer, task_id) reads one task; " +
   "cancel (peer, task_id) requests cancellation; " +
+  "tasks (optional limit default 10 max 100, before, offset, state, peer, scope) queries recent or historical local/dispatched tasks; " +
   "members (no arguments) lists this node and its peers; " +
   `connect (peer; bare host or host:port defaults to ${DEFAULT_PORT}) joins a peer into the mesh.`;
 
 // ---- what a call carries ----
 
-const METHOD_NAMES = ["send", "fetch", "publish", "status", "cancel", "members", "connect"] as const;
+const METHOD_NAMES = ["send", "fetch", "publish", "status", "cancel", "tasks", "members", "connect"] as const;
+
+const TASK_QUERY_STATES = [
+  "submitted",
+  "working",
+  "input-required",
+  "completed",
+  "failed",
+  "canceled",
+  "unknown",
+] as const;
+
+const TASK_QUERY_SCOPES = ["all", "local", "dispatched"] as const;
+const MAX_TASK_QUERY_LIMIT = 100;
 
 /** What a task session may do: move files through this machine's node (§5.6). */
 const TASK_METHOD_NAMES = ["fetch", "publish"] as const;
@@ -89,7 +105,7 @@ const PARAMETERS = {
   peer: {
     type: "string",
     description:
-      "Target node: its id, its display name (when that is unique) or an address it has. Required by send, status and cancel. " +
+      "Target node: its id, its display name (when that is unique) or an address it has. Required by send, status and cancel; optional filter for tasks. " +
       `For connect it is the address of a node to join: https://host:port, host:port, or a bare host (port defaults to ${DEFAULT_PORT}).`,
   },
   text: { type: "string", description: "send: task text sent as an A2A user message part." },
@@ -101,6 +117,29 @@ const PARAMETERS = {
     description: "publish: optional seconds the file stays downloadable; 0 never expires. Default 7 days.",
   },
   task_id: { type: "string", description: 'status/cancel: task id returned by method "send".' },
+  limit: {
+    type: "integer",
+    description: `tasks: maximum records to return (1-${MAX_TASK_QUERY_LIMIT}, default ${DEFAULT_RECENT_LIMIT}).`,
+  },
+  offset: {
+    type: "integer",
+    description: "tasks: number of matching records to skip (default 0). Prefer before for stable pagination.",
+  },
+  before: {
+    type: "string",
+    description: "tasks: ISO-8601 timestamp cursor; return only records updated strictly before this time.",
+  },
+  state: {
+    type: "string",
+    enum: TASK_QUERY_STATES,
+    description: "tasks: optional task state filter.",
+  },
+  scope: {
+    type: "string",
+    enum: TASK_QUERY_SCOPES,
+    description:
+      'tasks: which records to search: "local" (ran on this node), "dispatched" (sent to peers), or "all" (default).',
+  },
   permission_mode: {
     type: "string",
     enum: SANDBOX_MODES,
@@ -148,6 +187,19 @@ const SendCall = z.object({
   model: z.string().optional(),
   reasoning_effort: ReasoningEffortSchema.optional(),
 });
+const TasksCall = z.object({
+  method: z.literal("tasks"),
+  limit: z
+    .int(`must be an integer between 1 and ${MAX_TASK_QUERY_LIMIT}`)
+    .min(1, `must be an integer between 1 and ${MAX_TASK_QUERY_LIMIT}`)
+    .max(MAX_TASK_QUERY_LIMIT, `must be an integer between 1 and ${MAX_TASK_QUERY_LIMIT}`)
+    .optional(),
+  offset: z.int("must be a non-negative integer").min(0, "must be a non-negative integer").optional(),
+  before: Text.optional(),
+  state: z.enum(TASK_QUERY_STATES).optional(),
+  peer: Text.optional(),
+  scope: z.enum(TASK_QUERY_SCOPES).optional(),
+});
 
 /** The calls a task session can make: files only. */
 const FileCallSchema = z.discriminatedUnion("method", [FetchCall, PublishCall]);
@@ -157,6 +209,7 @@ const PodCallSchema = z.discriminatedUnion("method", [
   SendCall,
   FetchCall,
   PublishCall,
+  TasksCall,
   z.object({ method: z.enum(["status", "cancel"]), peer: Text, task_id: Text }),
   z.object({ method: z.literal("connect"), peer: Text }),
   z.object({ method: z.literal("members") }),
@@ -166,6 +219,21 @@ const PodCallSchema = z.discriminatedUnion("method", [
 
 type SendResult = { task_id: string; state: TaskState; peer: string; node: string };
 type FetchResult = { path: string; size: number };
+type TaskSummary = {
+  task_id: string;
+  scope: "local" | "dispatched";
+  peer: OrcaNodeId;
+  state: TaskState | "unknown";
+  updated_at: string;
+  origin?: OrcaNodeId;
+  reason?: string;
+};
+type TasksResult = {
+  tasks: TaskSummary[];
+  limit: number;
+  has_more: boolean;
+  next_before?: string;
+};
 /** The nodes this one knows, and the digest of what it vouches for. */
 type Roster = { members: PeerView[]; members_digest: string };
 type ConnectResult = Roster & { peer: string };
@@ -392,6 +460,80 @@ export class PodTool {
     return { peer, ...PodTool.roster(await PodTool.orca(pod, signal)) };
   }
 
+  /** Query local and/or dispatched tasks with SQLite index + LIMIT paging (default 10). */
+  private async tasks(pod: Pod, call: z.output<typeof TasksCall>, signal: AbortSignal): Promise<TasksResult> {
+    const orca = await PodTool.orca(pod, signal);
+    const limit = call.limit ?? DEFAULT_RECENT_LIMIT;
+    const offset = call.offset ?? 0;
+    const scope = call.scope ?? "all";
+    const peerId = call.peer === undefined ? undefined : orca.mesh.resolve(call.peer).id;
+    const fetchCount = scope === "all" ? offset + limit + 1 : limit + 1;
+    const sqlOffset = scope === "all" ? 0 : offset;
+
+    const local: TaskSummary[] =
+      scope === "dispatched" || call.state === "unknown"
+        ? []
+        : orca.tasks
+            .list(fetchCount, {
+              offset: sqlOffset,
+              before: call.before,
+              state: call.state,
+              origin: peerId,
+            })
+            .map((view) => ({
+              task_id: view.id,
+              scope: "local",
+              peer: orca.mesh.self.id,
+              state: view.status.state,
+              updated_at: view.status.timestamp,
+              ...(view.metadata?.pod?.origin_orca_node === undefined
+                ? {}
+                : { origin: view.metadata.pod.origin_orca_node }),
+              ...(view.status.reason === undefined ? {} : { reason: view.status.reason }),
+            }));
+
+    const localIds = new Set(local.map((row) => row.task_id));
+    const dispatched: TaskSummary[] =
+      scope === "local"
+        ? []
+        : orca.dispatches
+            .recent(fetchCount, {
+              offset: sqlOffset,
+              before: call.before,
+              state: call.state,
+              node: peerId,
+            })
+            .filter((entry) => !localIds.has(entry.task_id))
+            .map((entry) => ({
+              task_id: entry.task_id,
+              scope: "dispatched",
+              peer: entry.node,
+              state: entry.state,
+              updated_at: entry.updated_at,
+              ...(entry.last_error === undefined ? {} : { reason: entry.last_error }),
+            }));
+
+    const merged =
+      scope === "all"
+        ? [...local, ...dispatched].sort(
+            (left, right) =>
+              right.updated_at.localeCompare(left.updated_at) || right.task_id.localeCompare(left.task_id),
+          )
+        : scope === "local"
+          ? local
+          : dispatched;
+    const start = scope === "all" ? offset : 0;
+    const page = merged.slice(start, start + limit);
+    const hasMore = merged.length > start + limit;
+    const last = page.at(-1);
+    return {
+      tasks: page,
+      limit,
+      has_more: hasMore,
+      ...(hasMore && last !== undefined ? { next_before: last.updated_at } : {}),
+    };
+  }
+
   /** Dispatch one call of the host's tool against the running node. */
   private async run(pod: Pod, call: z.output<typeof PodCallSchema>, exec: ToolRunContext): Promise<unknown> {
     const { signal } = exec;
@@ -410,6 +552,8 @@ export class PodTool {
             : await node.cancelTask(call.task_id, signal);
         return { ...view, terminal: isTerminal(view.status.state) };
       }
+      case "tasks":
+        return this.tasks(pod, call, signal);
       case "members": {
         const orca = await PodTool.orca(pod, signal);
         return { self: orca.mesh.self.selfRecord(), ...PodTool.roster(orca) };

@@ -95,10 +95,27 @@ const PEER_TIMEOUT = "PEER_TIMEOUT";
 type Reply = { status: number; ok: boolean; contentType: string; bytes: Buffer; from: OrcaNodeId };
 
 /**
+ * Pre-authentication rejection codes that a gateway answers without signing
+ * `Pod-Reply` (because the caller was not authenticated).
+ */
+const UNSIGNED_AUTH_ERRORS: ReadonlySet<PodErrorCode> = new Set([
+  "missing_auth",
+  "malformed_auth",
+  "clock_skew",
+  "nonce_replay",
+  "bad_signature",
+  "wrong_target",
+  "stale_request",
+  "bad_proof",
+  "workgroup_mismatch",
+]);
+
+/**
  * The outbound client (§4.7): every request carries this node's signature and the
  * workgroup proof, is bound to the node it is addressed to, and runs under a
  * deadline; every reply must be signed by that node, over its status and body and
- * the nonce of the request. Callers name the reply schema they expect, and a body
+ * the nonce of the request (except pre-authentication rejections, which are not
+ * signed by the receiver). Callers name the reply schema they expect, and a body
  * that does not fit it is a `peer_error`. It knows nothing of which nodes exist:
  * who to call, and at which address, is the node object's business.
  */
@@ -142,6 +159,8 @@ export class HttpPeerClient {
       };
       const response = await this.fetch(url, init);
       const bytes = await HttpPeerClient.readCapped(label, response);
+      const authError = HttpPeerClient.unsignedAuthError(label, response, bytes);
+      if (authError !== null) throw authError;
       const from = this.signedBy(label, response, options.target, {
         nonce,
         status: response.status,
@@ -189,6 +208,8 @@ export class HttpPeerClient {
       const { status } = response;
       if (!response.ok || response.body === null) {
         const bytes = await HttpPeerClient.readCapped(path, response);
+        const authError = HttpPeerClient.unsignedAuthError(path, response, bytes);
+        if (authError !== null) throw authError;
         const subject = response.ok ? `blob:${blobId}` : bodySha256(bytes);
         this.signedBy(path, response, call.target, { nonce, status, subject });
         throw HttpPeerClient.unwrapError(path, status, bytes);
@@ -201,6 +222,16 @@ export class HttpPeerClient {
         size: length === null ? undefined : Number(length),
       };
     }).finally(() => route.release());
+  }
+
+  /**
+   * Unauthenticated rejections carry no `Pod-Reply` signature; surface them directly
+   * only when the header is absent and the body carries a known pre-auth error code.
+   */
+  private static unsignedAuthError(label: string, response: Response, bytes: Buffer): PodError | null {
+    if (response.ok || response.headers.get(REPLY_HEADER) !== null) return null;
+    const error = HttpPeerClient.unwrapError(label, response.status, bytes);
+    return UNSIGNED_AUTH_ERRORS.has(error.code) ? error : null;
   }
 
   /**

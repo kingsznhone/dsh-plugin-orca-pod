@@ -317,22 +317,65 @@ describe("signed replies (§7.1)", () => {
     ).toBeNull();
   });
 
-  it("signs errors too, whatever stopped the request", async () => {
+  it("does not sign unauthenticated requests, even when they carry an Authorization header with a nonce", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const path = await probe(harness);
     const stranger = generateNodeIdentity();
-    const authorization = harness.signAs(stranger, "GET", path, {
-      key: deriveWorkgroupKey(WORKGROUP, "wrong"),
-    });
-    const response = await harness.app.inject({ method: "GET", url: path, headers: { authorization } });
-    expect(response.statusCode).toBe(401);
-    expect(
-      verifyReplyHeader(response.headers["pod-reply"] as string, {
-        nonce: nonceOf(authorization),
+
+    const cases = [
+      // Wrong workgroup password (bad_proof)
+      {
+        url: path,
+        authorization: harness.signAs(stranger, "GET", path, {
+          key: deriveWorkgroupKey(WORKGROUP, "wrong"),
+        }),
         status: 401,
-        subject: bodySha256(response.rawPayload),
-      }),
-    ).toBe(harness.orcaNodeId);
+      },
+      // Forged signature (bad_signature)
+      {
+        url: path,
+        authorization: harness.sign("GET", path).replace(/sig=[^;]+/, "sig=AAAA"),
+        status: 401,
+      },
+      // Outside clock skew window (clock_skew)
+      {
+        url: path,
+        authorization: harness.signAs(stranger, "GET", path).replace(/ts=\d+/, "ts=1000"),
+        status: 401,
+      },
+      // Wrong workgroup (workgroup_mismatch)
+      {
+        url: path,
+        authorization: harness.signAs(stranger, "GET", path, { workgroup: wg("orca-other") }),
+        status: 400,
+      },
+      // Public route with spoofed Authorization header
+      {
+        url: "/health",
+        authorization: harness.signAs(stranger, "GET", "/health", {
+          key: deriveWorkgroupKey(WORKGROUP, "wrong"),
+        }),
+        status: 200,
+      },
+      // Unknown 404 route with spoofed Authorization header
+      {
+        url: "/no-such-route",
+        authorization: harness.signAs(stranger, "GET", "/no-such-route", {
+          key: deriveWorkgroupKey(WORKGROUP, "wrong"),
+        }),
+        status: 404,
+      },
+    ];
+
+    for (const entry of cases) {
+      const response = await harness.app.inject({
+        method: "GET",
+        url: entry.url,
+        headers: { authorization: entry.authorization },
+      });
+      expect(response.statusCode).toBe(entry.status);
+      expect(response.headers["pod-reply"]).toBeUndefined();
+    }
   });
 
   it("signs a streamed file by its status and name, not by bytes it has not read yet", async () => {

@@ -232,7 +232,9 @@ export class FileBlobRegistry {
          path TEXT NOT NULL,
          size INTEGER NOT NULL,
          expires_at TEXT
-       )`,
+       );
+       CREATE INDEX IF NOT EXISTS idx_file_blobs_expires_at
+         ON file_blobs (expires_at) WHERE expires_at IS NOT NULL;`,
     );
     this.statements = {
       upsert: db.prepare(

@@ -191,7 +191,7 @@ D（新）                                          A（已在 mesh）
 答复  Pod-Reply: id=<应答方>; sig=<Ed25519("orca-pod/reply" | 请求 nonce | status | sha256(body))>
 ```
 
-校验顺序：解析头（`missing_auth`/`malformed_auth`）→ `ts` 在 ±60s 内且不早于进程启动（`clock_skew`/`stale_request`）→ `target` 是本节点（hello 例外，`wrong_target`）→ `workgroup_mismatch` → 验 `sig`（`bad_signature`）→ 验 `proof`（`bad_proof`，在验签之后）→ nonce 5 分钟窗口内未出现过（进程内 LRU，容量 10k，`nonce_replay`）。没有「查成员表」这一步。
+校验顺序：解析头（`missing_auth`/`malformed_auth`）→ `ts` 在 ±60s 内且不早于进程启动（`clock_skew`/`stale_request`）→ `target` 是本节点（hello 例外，`wrong_target`）→ `workgroup_mismatch` → 验 `sig`（`bad_signature`）→ 验 `proof`（`bad_proof`，在验签之后）→ nonce 5 分钟窗口内未出现过（进程内 LRU，容量 10k，`nonce_replay`）。没有「查成员表」这一步。只有通过全部认证校验的请求（带 `request.auth`）才会生成 `Pod-Reply` Ed25519 签名；未认证拒绝、公开路由、本地路由与 404 不触发签名，避免未认证请求消耗 Ed25519 算力或签发攻击者提供的 nonce。
 
 文件下载的答复是流，签名只覆盖 status 与 `blob_id`（`subject = blob:<blob_id>`），收完按内容 sha256 校验。
 
@@ -393,7 +393,7 @@ Pod gateway (local)
 - 一个节点同一时间只跑一个任务；`busy` 写进 self record 随心跳刷新，origin 的 UI 据此显示「B 正在跑 X」。
 - 槽位被占时新的 `message/send` 直接 `429 orca_node_busy`（带 `retry_after_s: 30` 与 `holder`），不排队、服务端不自动重试；要不要重试、换节点还是回报用户，由调用方的模型决定。
 - 忙时拒绝发生在建 task 之前（不产生 task）；检查顺序：槽位 → 工作区配额。
-- `input-required` 的恢复也要重新拿槽；槽被占同样 429，任务仍停在 input-required，由 origin 决定何时重试。
+- `input-required` 的批准恢复要重新拿槽；槽被占同样 429，任务仍停在 input-required，由 origin 决定何时重试。拒绝（`permission_denied`）不重新占槽，直接终结为 `failed(permission_denied)`，即使有其它任务占槽也能立即执行。
 - `task_timeout_s`（默认 3600）是本机硬上限：到点先置终态再 abort 执行器，`failed("task ttl exceeded", reason="timeout")`；`input-required` 期间暂停。
 - 为什么单槽：两个 agent 同改一棵树的冲突是语义层的；「同一机器跑多件事」争的是同一台机器的 CPU、磁盘与 DSH 状态。
 
@@ -497,7 +497,7 @@ Pod gateway (local)
 
 origin 的 tracker 下一次轮询看到 `input-required`，留着等 UI 作答（**不产生聊天 notice、不唤醒 agent**），三个落点：当前会话聊天卡、后台会话弹窗、面板 Pending approvals。批准 = 同一 task 的后续 `message/send`，data part `{permission_granted: true, request_id}`；拒绝 = `{permission_denied: true, reason}`，任务 `failed(permission_denied)`。默认不超时；挂起期间 TTL 暂停。
 
-target 校验顺序：任务存在且非终态（404/400）→ 调用者是 origin（403）→ 任务在 input-required（400）→ 槽位空闲（429）→ data part 是批准/拒绝（400）→ 批准的 `request_id` 等于挂起那次（400，任务继续等）。通过后批准 → 任务用 `requested_mode` 跑到结束（只对这个任务有效）；拒绝 → `failed(permission_denied)`。批准不可重放：第二次批准会发现任务已不是 input-required 或请求 id 对不上。没有单独的「已用批准」集合。
+target 校验顺序：任务存在且非终态（404/400）→ 调用者是 origin（403）→ 任务在 input-required 且有待决请求（400）→ data part 是批准/拒绝（400）→ 若是拒绝则直接 `failed(permission_denied)`（无需等待槽位空闲）；若是批准则校验 `request_id` 等于挂起那次（400，任务继续等）→ 槽位空闲（429）→ 任务用 `requested_mode` 跑到结束（只对这个任务有效）。批准不可重放：第二次批准会发现任务已不是 input-required 或请求 id 对不上。没有单独的「已用批准」集合。
 
 `orca_pod` 没有 approve/deny 方法，模型无法自批；批准按钮直接调 `OrcaNode.approve/deny`。任务的 agent 侧不做任何事：权限请求来自 ACP，执行器与 runner 负责挂起/恢复，批准后同一轮从卡住处继续。
 

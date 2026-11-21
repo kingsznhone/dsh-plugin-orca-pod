@@ -178,6 +178,47 @@ describe("outbound A2A calls (11)", () => {
     });
   });
 
+  it("surfaces unsigned pre-auth rejections while still refusing unsigned non-auth errors or HTML 401s", async () => {
+    const peer = await makeNode(undefined);
+    await peer.start();
+
+    const badProof = await originAnsweredBy(peer, (init) =>
+      replyTo(init, identityOf(peer), JSON.stringify({ code: "bad_proof", message: "wrong password" }), {
+        status: 401,
+        sign: false,
+      }),
+    );
+    await expect(badProof.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toMatchObject({
+      status: 401,
+      code: "bad_proof",
+    });
+
+    const proxyHtml401 = await originAnsweredBy(peer, (init) =>
+      replyTo(init, identityOf(peer), "<html>401 Unauthorized</html>", {
+        status: 401,
+        contentType: "text/html",
+        sign: false,
+      }),
+    );
+    await expect(proxyHtml401.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toMatchObject({
+      status: 502,
+      code: "peer_error",
+      message: expect.stringMatching(/not signed by its sender/),
+    });
+
+    const unsignedNotFound = await originAnsweredBy(peer, (init) =>
+      replyTo(init, identityOf(peer), JSON.stringify({ code: "task_not_found", message: "missing" }), {
+        status: 404,
+        sign: false,
+      }),
+    );
+    await expect(unsignedNotFound.mesh.resolve(peer.mesh.self.endpoints[0]!).getTask("01TASK")).rejects.toMatchObject({
+      status: 502,
+      code: "peer_error",
+      message: expect.stringMatching(/not signed by its sender/),
+    });
+  });
+
   it("refuses a reply signed by another node than the one addressed", async () => {
     const peer = await makeNode(undefined);
     await peer.start();

@@ -17,6 +17,7 @@ leave this machine.
 | `send` | `peer`, `text`; optional `permission_mode`, `model`, `reasoning_effort` | dispatches a task and returns its `task_id` at once |
 | `status` | `peer`, `task_id` | reads one task: state and result text |
 | `cancel` | `peer`, `task_id` | asks the target to stop the task |
+| `tasks` | optional `limit` (default 10, max 100), `before`, `offset`, `state`, `peer`, `scope` (`all`/`local`/`dispatched`) | queries recent or historical tasks using indexed SQLite paging |
 | `publish` | `path`; optional `ttl_s` | copies a local file into this node and returns its name `<orca node id>/<sha256>` |
 | `fetch` | `ref`, `output` | saves a file any member published, checked against its hash |
 | `connect` | `peer` | joins a peer into the mesh |
@@ -29,6 +30,10 @@ leave this machine.
 - A request body is capped at 1 MiB, a task result at 32 KiB, and the completion
   notice shows 800 characters. Do not put file contents, base64, or long logs into
   `send`; publish files and name them instead, and read a long result with `status`.
+- Default task lists (both the panel and `tasks`) return up to the 10 most recent
+  records. When the user needs earlier history, query it explicitly with `method: "tasks"`
+  using `before` (from `next_before`), `offset`, `state`, `peer`, `scope`, or a larger
+  `limit` (up to 100).
 
 ## While a task runs
 

@@ -137,8 +137,8 @@ class NonceCache {
   }
 }
 
-/** Who sent a request whose proofs held. */
-type VerifiedAuth = { orcaNodeId: OrcaNodeId };
+/** Who sent a request whose proofs held, and the verified nonce its reply binds to. */
+export type VerifiedAuth = { orcaNodeId: OrcaNodeId; nonce: string };
 
 export class AccessPolicy {
   private readonly nonces = new NonceCache();
@@ -223,6 +223,6 @@ export class AccessPolicy {
     if (!this.nonces.remember(`${parsed.orcaNodeId}:${claim.nonce}`)) {
       throw new PodError("nonce_replay", "nonce already used");
     }
-    return { orcaNodeId: parsed.orcaNodeId };
+    return { orcaNodeId: parsed.orcaNodeId, nonce: claim.nonce };
   }
 }
