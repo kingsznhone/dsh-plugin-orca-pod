@@ -9,8 +9,9 @@
  * only, which go through this machine's node (`LocalNode`).
  */
 
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
@@ -18,6 +19,7 @@ import { z } from "zod";
 
 import { LOCAL_TOKEN_HEADER } from "../api/access.ts";
 import {
+  isPathWithinRoot,
   parseBlobRef,
   PublishedFileSchema,
   saveBlob,
@@ -365,12 +367,33 @@ export class PodTool {
 
   /** Copy a local file into this machine's node and name it (§5.6); the copy lives for its TTL. */
   private async publish(args: z.output<typeof PublishCall>, exec: ToolRunContext): Promise<PublishedFile> {
-    const path = resolve(this.sessionPolicy(exec)?.workspaceRoot ?? process.cwd(), args.path);
+    const policy = this.sessionPolicy(exec);
+    if (policy === undefined) {
+      throw new Error(
+        "the session sandbox policy is not available, so it cannot be checked that this path may be published",
+      );
+    }
+    const path = resolve(policy.workspaceRoot, args.path);
+    if (policy.mode !== "danger-full-access") {
+      const target = PodTool.resolvePublishTarget(path);
+      const roots = [canonicalPath(policy.workspaceRoot), ...(policy.additionalWritableRoots ?? []).map(canonicalPath)];
+      const allowed = roots.some((root) => isPathWithinRoot(root, target));
+      if (!allowed) throw new Error(`the session sandbox (${policy.mode}) does not allow publishing ${path}`);
+    }
     const { node } = this;
     if (node.kind === "task") return node.local.publish(path, args.ttl_s, exec.signal);
     // Publishing copies the file: `orca` rejects for a turn that is already gone, so it does not start.
     const { mesh } = await PodTool.orca(node.pod, exec.signal);
     return mesh.self.publish(path, args.ttl_s);
+  }
+
+  /** Resolve symlinks on `path`, falling back to canonicalising its parent so missing targets under symlinked dirs are still checked. */
+  private static resolvePublishTarget(path: string): string {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      return join(canonicalPath(dirname(path)), basename(path));
+    }
   }
 
   /**

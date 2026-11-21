@@ -19,6 +19,8 @@ export const POD_ERROR_STATUS = {
   not_task_origin: 403,
   /** A local route asked from another machine, or through a proxy (§5.6). */
   not_local: 403,
+  /** A local blob publish asked for a path outside the workgroup workspace (§5.6). */
+  path_outside_workspace: 403,
   // Malformed or unsupported requests.
   bad_request: 400,
   unsupported: 400,

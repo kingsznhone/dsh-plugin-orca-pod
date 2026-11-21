@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -125,10 +125,11 @@ describe("the blob registry", () => {
     expect(Buffer.concat(bytes)).toEqual(Buffer.from([1, 2, 3, 4]));
   });
 
-  it("refuses a missing path instead of registering it, and leaves nothing behind", async () => {
+  it("refuses a missing path or directory instead of registering it, and leaves nothing behind", async () => {
     const blobs = registry();
     const dir = await mkdtemp(join(tmpdir(), "orca-blob-file-"));
     await expect(blobs.register(join(dir, "absent.txt"))).rejects.toThrow();
+    await expect(blobs.register(dir)).rejects.toThrow(/not a regular file/);
   });
 
   it("keeps the later expiry when the same bytes are published again; 0 never expires", async () => {
@@ -175,10 +176,11 @@ describe("the blob registry", () => {
 describe("local routes", () => {
   const local = (harness: GatewayHarness, token = harness.localToken) => ({ "x-orca-local": token });
 
-  it("publish a file of this machine and name it by this node", async () => {
+  it("publish a file inside the workgroup workspace and name it by this node", async () => {
     const harness = createHarness();
     const content = Buffer.from("handed back");
-    const path = await localFile(content);
+    const path = join(harness.publishRoot, "result.bin");
+    await writeFile(path, content);
     const response = await harness.app.inject({
       method: "POST",
       url: "/local/blobs",
@@ -190,6 +192,25 @@ describe("local routes", () => {
     expect(response.json()).toMatchObject({ ref: `${harness.orcaNodeId}/${blobId}`, size: content.length });
     // Members fetch it the usual way.
     expect((await signedGet(harness, `/blobs/${blobId}`)).rawPayload.equals(content)).toBe(true);
+  });
+
+  it("refuses paths outside the workgroup workspace, traversal, and symlink escapes", async () => {
+    const harness = createHarness();
+    const secret = await localFile("host secret", "secret.txt");
+    const escaped = join(harness.publishRoot, "link.txt");
+    await symlink(secret, escaped);
+    const traversal = join(harness.publishRoot, "..", "nonexistent.txt");
+
+    for (const path of [secret, escaped, traversal, harness.publishRoot]) {
+      const response = await harness.app.inject({
+        method: "POST",
+        url: "/local/blobs",
+        payload: { path },
+        headers: local(harness),
+      });
+      expect(response.statusCode, path).toBe(403);
+      expect(response.json()).toMatchObject({ code: "path_outside_workspace" });
+    }
   });
 
   it("serve a file through this node, its own or another member's", async () => {

@@ -202,7 +202,7 @@ D（新）                                          A（已在 mesh）
 | 状态 | 错误码 |
 | --- | --- |
 | 401 | `missing_auth`、`malformed_auth`、`clock_skew`、`nonce_replay`、`bad_signature`、`wrong_target`、`stale_request`、`bad_proof` |
-| 403 | `not_task_origin`、`not_local` |
+| 403 | `not_task_origin`、`not_local`、`path_outside_workspace` |
 | 400 | `bad_request`、`unsupported`、`workgroup_mismatch`、`endpoint_refused` |
 | 404 | `task_not_found`、`blob_not_found`、`unknown_orca_node` |
 | 409 | `permission_denied` |
