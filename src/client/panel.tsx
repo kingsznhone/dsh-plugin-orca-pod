@@ -44,7 +44,7 @@ function ConnectCard({ busy }: { busy: boolean }) {
           value={host}
           aria-label={t("host")}
           onChange={(event) => setHost(event.target.value)}
-          placeholder={`192.168.1.12 / peer.example.com / http://host:${DEFAULT_PORT}`}
+          placeholder={`192.168.1.12 / peer.example.com / https://host:${DEFAULT_PORT}`}
         />
         <Button type={"submit"} variant={"primary"} disabled={busy || host.trim() === ""}>
           {t("connect")}

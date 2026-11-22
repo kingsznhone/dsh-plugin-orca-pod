@@ -71,9 +71,24 @@ export function hmacOf(key: Buffer, input: string): string {
   return createHmac("sha256", key).update(input).digest("base64url");
 }
 
+/** Byte length of a generated request nonce (`randomBytes(16).toString("base64url")` = 22 chars). */
+const NONCE_BYTES = 16;
+
+/**
+ * Valid request nonce format: URL-safe base64 without padding, at least 128 bits
+ * (22 chars, matching `newNonce()`) and capped at 64 chars so the replay cache
+ * stays memory-bounded and `|` delimiters cannot be injected into signed inputs.
+ */
+const NONCE_PATTERN = /^[A-Za-z0-9_-]{22,64}$/;
+
+/** True when `nonce` conforms to the bounded base64url request nonce format. */
+export function isValidNonce(nonce: string): boolean {
+  return NONCE_PATTERN.test(nonce);
+}
+
 /** A fresh request nonce. The caller keeps it to check the reply against. */
 export function newNonce(): string {
-  return randomBytes(16).toString("base64url");
+  return randomBytes(NONCE_BYTES).toString("base64url");
 }
 
 /** The `Authorization` header of a request: the claim, the sender's signature, and the proof made with the workgroup `key`. */

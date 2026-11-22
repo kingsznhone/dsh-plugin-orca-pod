@@ -7,7 +7,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { PodError } from "../core/errors.ts";
 import { verifyWithNodeId } from "../core/identity.ts";
 import { OrcaNodeIdSchema, WorkgroupIdSchema, type OrcaNodeId, type WorkgroupId } from "../core/ids.ts";
-import { hmacOf, signatureInput, type RequestClaim } from "../core/signing.ts";
+import { hmacOf, isValidNonce, signatureInput, type RequestClaim } from "../core/signing.ts";
 
 const CLOCK_SKEW_MS = 60_000;
 const NONCE_TTL_MS = 5 * 60_000;
@@ -104,7 +104,17 @@ export function parseAuthHeader(header: string | undefined): AuthHeader | null {
   const nonce = fields.get("nonce");
   const signature = fields.get("sig");
   const proof = fields.get("proof");
-  if (!sender.success || !workgroup.success || !Number.isSafeInteger(ts) || !nonce || !signature || !proof) return null;
+  if (
+    !sender.success ||
+    !workgroup.success ||
+    !Number.isSafeInteger(ts) ||
+    !nonce ||
+    !isValidNonce(nonce) ||
+    !signature ||
+    !proof
+  ) {
+    return null;
+  }
   return {
     orcaNodeId: sender.data,
     claim: { target: fields.get("target") ?? "", workgroupId: workgroup.data, ts, nonce },

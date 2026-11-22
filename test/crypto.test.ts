@@ -1,7 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import type { NodeIdentity } from "../src/core/identity.ts";
-import { bodySha256, buildAuthHeader, buildReplyHeader, newNonce, verifyReplyHeader } from "../src/core/signing.ts";
+import {
+  bodySha256,
+  buildAuthHeader,
+  buildReplyHeader,
+  isValidNonce,
+  newNonce,
+  verifyReplyHeader,
+} from "../src/core/signing.ts";
 import type { PodError, PodErrorCode } from "../src/core/errors.ts";
 import type { OrcaNodeId } from "../src/core/ids.ts";
 import { wg } from "./fixtures/ids.ts";
@@ -192,8 +199,23 @@ describe("buildAuthHeader and the receiver's access policy", () => {
   });
 
   it("rejects a header carrying a non-Ed25519 orca node id", async () => {
-    const forged = `Pod id=ABC123; wg=${WORKGROUP_ID}; ts=1; nonce=n; sig=s; proof=p`;
+    const forged = `Pod id=ABC123; wg=${WORKGROUP_ID}; ts=1; nonce=${newNonce()}; sig=s; proof=p`;
     expect(await receiver().verify({ header: forged })).toEqual({ code: "malformed_auth" });
+  });
+
+  it("rejects nonces outside the bounded base64url format with malformed_auth", async () => {
+    const target = receiver();
+    const identity = generateNodeIdentity();
+    for (const badNonce of [
+      "short",
+      "a".repeat(21),
+      "a".repeat(65),
+      `${"a".repeat(11)}|${"b".repeat(11)}`,
+      `${"a".repeat(21)}=`,
+    ]) {
+      const signed = header(identity, { nonce: badNonce });
+      expect(await target.verify({ header: signed })).toEqual({ code: "malformed_auth" });
+    }
   });
 });
 
@@ -238,7 +260,9 @@ describe("the two proofs of a request", () => {
 describe("parseAuthHeader", () => {
   it("parses the identity, workgroup, target, timestamp, nonce and both proofs", () => {
     const identity = generateNodeIdentity();
-    const signed = header(identity, { target: "target-orca-node", ts: 1_700_000_000_000, nonce: "abc" });
+    const nonce = newNonce();
+    expect(isValidNonce(nonce)).toBe(true);
+    const signed = header(identity, { target: "target-orca-node", ts: 1_700_000_000_000, nonce });
     const parsed = parseAuthHeader(signed);
     expect(parsed).not.toBeNull();
     expect(parsed?.orcaNodeId).toBe(identity.orcaNodeId);
@@ -246,25 +270,39 @@ describe("parseAuthHeader", () => {
       target: "target-orca-node",
       workgroupId: WORKGROUP_ID,
       ts: 1_700_000_000_000,
-      nonce: "abc",
+      nonce,
     });
     expect(parsed?.signature.length).toBeGreaterThan(0);
     expect(parsed?.proof.length).toBeGreaterThan(0);
   });
 
-  it("returns null for garbage", () => {
+  it("returns null for garbage or malformed nonces", () => {
+    const nonce = newNonce();
     expect(parseAuthHeader(undefined)).toBeNull();
     expect(parseAuthHeader("")).toBeNull();
     expect(parseAuthHeader("Bearer token")).toBeNull();
-    expect(parseAuthHeader("Pod id=x; ts=1; nonce=n")).toBeNull();
+    expect(parseAuthHeader(`Pod id=x; ts=1; nonce=${nonce}`)).toBeNull();
     // Both proofs are required: a header without the workgroup proof is not a request of this protocol.
-    expect(parseAuthHeader("Pod id=x; wg=orca-dev; ts=1; nonce=n; sig=s")).toBeNull();
-    // The sender and the workgroup are checked here: a header naming no node or no workgroup is not one.
+    expect(parseAuthHeader(`Pod id=x; wg=orca-dev; ts=1; nonce=${nonce}; sig=s`)).toBeNull();
+    // The sender, workgroup and nonce format are checked here.
     const node = generateNodeIdentity().orcaNodeId;
-    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=n; sig=s; proof=p`)).not.toBeNull();
-    expect(parseAuthHeader("Pod id=ABC123; wg=orca-dev; ts=1; nonce=n; sig=s; proof=p")).toBeNull();
-    expect(parseAuthHeader(`Pod id=${node}; wg=Orca Dev; ts=1; nonce=n; sig=s; proof=p`)).toBeNull();
-    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=; nonce=n; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${nonce}; sig=s; proof=p`)).not.toBeNull();
+    expect(
+      parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(64)}; sig=s; proof=p`),
+    ).not.toBeNull();
+    expect(parseAuthHeader(`Pod id=ABC123; wg=orca-dev; ts=1; nonce=${nonce}; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=Orca Dev; ts=1; nonce=${nonce}; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=; nonce=${nonce}; sig=s; proof=p`)).toBeNull();
+    // Nonce must be 22..64 base64url chars (no delimiters, padding, spaces or unbounded lengths).
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=n; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(21)}; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(65)}; sig=s; proof=p`)).toBeNull();
+    expect(
+      parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(10)}|${"b".repeat(12)}; sig=s; proof=p`),
+    ).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(21)}+; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(21)}/; sig=s; proof=p`)).toBeNull();
+    expect(parseAuthHeader(`Pod id=${node}; wg=orca-dev; ts=1; nonce=${"a".repeat(21)}=; sig=s; proof=p`)).toBeNull();
   });
 });
 

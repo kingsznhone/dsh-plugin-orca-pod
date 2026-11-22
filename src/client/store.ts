@@ -3,7 +3,9 @@
 import { errorMessage } from "../core/errors.ts";
 import React from "react";
 import { POLL_MS } from "./constants.ts";
-import type { LocaleService, PodActions, PodReads, PodState } from "./types.ts";
+import { parseApiResponse } from "./http.ts";
+import { t } from "./i18n.ts";
+import type { PodActions, PodReads, PodState } from "./types.ts";
 
 /** What every slot component reads. */
 export interface Snapshot {
@@ -37,9 +39,7 @@ async function call(path: string, post?: { body: unknown }): Promise<unknown> {
           body: JSON.stringify(post.body),
         };
   const response = await fetch(apiUrl(path), init);
-  const data = (await response.json()) as { error?: string };
-  if (!response.ok) throw new Error(data.error);
-  return data;
+  return parseApiResponse(response, (key) => t(key));
 }
 
 /** GET one panel route; the route name fixes both the query it takes and the shape it answers with. */
@@ -122,8 +122,6 @@ function createStore() {
     return () => set({ docked: snap.docked.filter((id) => id !== sessionId) });
   }
   return {
-    /** Client locale service, bound once by `apply`. */
-    locale: null as LocaleService | null,
     get: () => snap,
     polledAt: () => polledAt,
     subscribe,

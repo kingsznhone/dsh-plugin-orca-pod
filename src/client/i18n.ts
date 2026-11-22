@@ -1,8 +1,7 @@
 /** Panel strings: the baseline English and Chinese dictionaries, and `t`. */
 
 import React from "react";
-import { store } from "./store.ts";
-import type { Translate } from "./types.ts";
+import type { LocaleService, Translate } from "./types.ts";
 
 export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = {
   en: {
@@ -148,6 +147,9 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     cfgPortInvalid: "must be an integer between 0 and 65535",
     cfgMaxWorkspaceGiB: "workspace size limit (GiB)",
     cfgMaxWorkspaceHint: "New tasks are refused while the workgroup workspace holds more than this.",
+    errHttpStatus: "Request failed (HTTP {status})",
+    errHttpStatusDetail: "Request failed (HTTP {status}): {detail}",
+    errInvalidResponse: "Invalid response from host (HTTP {status})",
   },
   zh: {
     nav: "Orca Pod",
@@ -289,6 +291,9 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
     cfgPortInvalid: "必须是 0–65535 之间的整数",
     cfgMaxWorkspaceGiB: "工作区大小上限（GiB）",
     cfgMaxWorkspaceHint: "工作区超过该大小时拒绝新任务。",
+    errHttpStatus: "请求失败（HTTP {status}）",
+    errHttpStatusDetail: "请求失败（HTTP {status}）：{detail}",
+    errInvalidResponse: "服务端返回了无法解析的响应（HTTP {status}）",
   },
 };
 /**
@@ -296,7 +301,13 @@ export const TEXT: { en: Record<string, string>; zh: Record<string, string> } = 
  * bound in `apply`; before that (and in tests) the local dictionaries keep
  * `t` total, so label callbacks are always safe to call.
  */
+let localeService: LocaleService | null = null;
 let translate: Translate | null = null;
+
+/** Bind the Client locale service (called once by `apply`). */
+export function bindLocale(service: LocaleService): void {
+  localeService = service;
+}
 
 /** Route `t` through the Client locale service (called once by `apply`). */
 export function bindTranslate(bound: Translate): void {
@@ -310,6 +321,6 @@ export function t(key: string, params?: Record<string, string | number>): string
 }
 /** Re-render on locale switches while mounted; call it in every slot root. */
 const subscribeLocale = (listener: () => void): (() => void) =>
-  store.locale === null ? () => {} : store.locale.subscribe(listener);
-const activeLocale = (): string => store.locale?.getLocale().active ?? "en";
+  localeService === null ? () => {} : localeService.subscribe(listener);
+const activeLocale = (): string => localeService?.getLocale().active ?? "en";
 export const useLocale = () => React.useSyncExternalStore(subscribeLocale, activeLocale);
