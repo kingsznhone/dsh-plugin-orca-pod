@@ -369,7 +369,7 @@ Pod gateway (local)
       → stdio JSON-RPC（换行分隔）
 ```
 
-- 任务固定用 `acp` profile：只有它在 stdio 上讲 ACP；该 profile 也要装本插件，任务 agent 才有 `orca_pod` 的 `fetch`/`publish`。每台机器要在宿主 profile 与 `acp` profile 各装一次。
+- 任务固定用 `acp` profile：只有它在 stdio 上讲 ACP；该 profile 也要装本插件，任务 agent 才有 `orca_pod` 的 `fetch`/`publish`。每台机器要在宿主 profile 与 `acp` profile 各装一次；该 profile 的默认模型也要指向本机可服务的路由（见 5.6），否则省略 model 的任务会在子进程里失败。
 - 禁止：把 ACP 端口暴露给 peer；peer 直接发 ACP；把 ACP sessionId 当 A2A taskId；原样转发 thought。
 
 映射：
@@ -432,6 +432,7 @@ Pod gateway (local)
 - 节点自述带 `models`/`default_model`/`default_reasoning_effort`，只对同组成员可见；目录来自 Host 的 `llm` 服务与 `agentDefaultModel`，插件用 `ModelCatalogFeed` 装到节点上。
 - `default_model` 只在本机可服务的路由里存在时才广播：Host 配置的默认与 `llm` 路由彼此独立，不匹配时广播 `null` 并记一条警告，免得对端按一个本机跑不了的默认派发；不带 model 的任务此时应由 origin 显式指定路由。
 - 任务用 `metadata.pod.model` / `reasoning_effort` 选择；优先级：任务值 > 节点本地默认（Host 默认 + `default_reasoning_effort`）> ACP/provider 默认。
+- 广播 `null` 时插件不代选模型：不带 model 的任务回落到目标机 `acp` profile 自身的默认（`acp` 条目的 `provider`/`model`，缺省模板是 `deepseek-official`）。接受无 model 任务的机器要把这个默认指向本机可服务的路由；ACP 子进程常驻并缓存 profile 配置，改完需重启节点。
 - ACP 侧在 `session/prompt` 之前用 `session/set_config_option` 设置：按 `category`（`model`、`thought_level`）从会话 `configOptions` 里找，模型取值为 `JSON.stringify([provider, model])`；失败 → `failed(model_unavailable)`，不偷偷用默认模型。
 - 选择是提示、不是授权：目标仍按本机 `permission_mode`、审批与工作区规则执行。
 

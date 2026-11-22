@@ -33,8 +33,10 @@ host cannot serve the model it is configured with).
 
 - Prefer passing `model: "<provider>/<id>"` taken from that peer's `models`; the
   target only guarantees the routes it advertises.
-- Without `model` the task runs on the peer's `default_model`; if that is
-  `null`, the task fails `model_unavailable`, so pass the route explicitly.
+- Without `model` the task runs on the peer's `default_model`; when that is
+  `null`, it falls back to the target's own `acp` profile default, which the
+  advertisement does not describe — do not rely on it unless you control that
+  machine; pass the route explicitly to be sure.
 - `reasoning_effort` (such as `"high"` or `"max"`) narrows the choice; the peer's
   `default_reasoning_effort` applies when the task names none.
 
