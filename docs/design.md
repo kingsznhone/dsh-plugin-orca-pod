@@ -94,7 +94,7 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 - `runtime` 只出现在签名接口里；`state`、`last_recv_at` 是接收方的本地观测，不是对方声明（自己记录里恒为 `online`）。
 - `busy` 为 `null` 或 `{ task_id, origin_orca_node, since }`，本人写、随心跳刷新。
 - `max_task_ttl_s` 是本机单任务硬预算（默认 3600s），随自述记录广播给成员与面板；它只是声明，任务实际按**执行节点**自己的 `task_timeout_s` 计时（见 5.3）。
-- `models` 是 `[{provider, id, name, description?}]`（去重、上限 128），`default_model` 是 DSH 的 `ModelSelection` 或 `null`，`default_reasoning_effort` 可为 `null`。目录与默认模型**不是设置**，而是 DSH Host 报告的：插件通过 `llm` 服务枚举模型、从 `agentDefaultModel.currentSelection()` 取默认；设置里只剩 `default_reasoning_effort`（优先于 Host 的 effort）。它们只对同组成员可见。
+- `models` 是 `[{provider, id, name, description?}]`（去重、上限 128），`default_model` 是 DSH 的 `ModelSelection` 或 `null`，`default_reasoning_effort` 可为 `null`。目录与默认模型**不是设置**，而是 DSH Host 报告的：插件通过 `llm` 服务枚举模型、从 `agentDefaultModel.currentSelection()` 取默认；设置里只剩 `default_reasoning_effort`（优先于 Host 的 effort）。`default_model` 只在本机路由确实包含它时才广播：Host 配置的默认不在 `models` 里时广播 `null`（路由尚未加载时先保留，等下一次刷新再判定）。它们只对同组成员可见。
 - `endpoints` 是 1–8 个 https URL 的有序列表（去重去尾斜杠），第一个是 primary；顺序即拨号优先级，成功的地址下一轮排最前。监听地址由 `bind_host` 决定；`endpoints` 为空时按监听地址推导（`0.0.0.0`/`::` 时枚举本机非 internal 地址，IPv4 在前，跳过 `fe80:`）。
 - runtime 采集一次（`os`/`process`，无外部命令）；`runtime_digest` = sha256(os.family|os.name|os.version|arch|cpu.model|逻辑核数|memory.total|node.version)。
 - 刷新：心跳就是 `hello`，带 `busy`、摘要与完整 `self`；`members_digest` = sha256(排序后的 `id|endpoints|runtime_digest` 行，含自己)。摘要不一致时对端回整张目录（仅作候选）。记录只有本人能写——**其他节点绝不改写某条记录，也不替它声明在线**。
@@ -430,6 +430,7 @@ Pod gateway (local)
 
 - 线上形状就是 DSH 的 `ModelSelection`（`{provider, model, reasoningEffort?}`）与 `ReasoningEffortId`；目录条目取 `LlmModelInfo` 的必要字段。
 - 节点自述带 `models`/`default_model`/`default_reasoning_effort`，只对同组成员可见；目录来自 Host 的 `llm` 服务与 `agentDefaultModel`，插件用 `ModelCatalogFeed` 装到节点上。
+- `default_model` 只在本机可服务的路由里存在时才广播：Host 配置的默认与 `llm` 路由彼此独立，不匹配时广播 `null` 并记一条警告，免得对端按一个本机跑不了的默认派发；不带 model 的任务此时应由 origin 显式指定路由。
 - 任务用 `metadata.pod.model` / `reasoning_effort` 选择；优先级：任务值 > 节点本地默认（Host 默认 + `default_reasoning_effort`）> ACP/provider 默认。
 - ACP 侧在 `session/prompt` 之前用 `session/set_config_option` 设置：按 `category`（`model`、`thought_level`）从会话 `configOptions` 里找，模型取值为 `JSON.stringify([provider, model])`；失败 → `failed(model_unavailable)`，不偷偷用默认模型。
 - 选择是提示、不是授权：目标仍按本机 `permission_mode`、审批与工作区规则执行。

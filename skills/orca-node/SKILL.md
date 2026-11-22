@@ -25,6 +25,19 @@ leave this machine.
 `peer` is a host or `host:port`, a node's display name, or its node id.
 `send` does not wait: when the task ends you are told in a follow-up message.
 
+## Models
+
+`members` shows what each peer can serve: `models` (routes as
+`[{provider, id, name}]`) and `default_model` (which is `null` when the peer's
+host cannot serve the model it is configured with).
+
+- Prefer passing `model: "<provider>/<id>"` taken from that peer's `models`; the
+  target only guarantees the routes it advertises.
+- Without `model` the task runs on the peer's `default_model`; if that is
+  `null`, the task fails `model_unavailable`, so pass the route explicitly.
+- `reasoning_effort` (such as `"high"` or `"max"`) narrows the choice; the peer's
+  `default_reasoning_effort` applies when the task names none.
+
 ## Limits
 
 - A request body is capped at 1 MiB, a task result at 32 KiB, and the completion

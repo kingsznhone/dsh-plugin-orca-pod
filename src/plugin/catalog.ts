@@ -11,6 +11,11 @@
  * them, in which case the catalog stays empty and every task runs with the
  * executor's own default. The feed itself follows both with `OptionalService`
  * (`ctx.inject`) and rebuilds the catalog when either appears or goes away.
+ *
+ * The host's default model is advertised only while its route is one the host
+ * can serve: a default no executor on this machine can select would make peers
+ * send a bare task that dies `model_unavailable`. An empty route list cannot
+ * prove that, so it keeps the default until the routes have loaded.
  */
 
 import type { Context, Logger } from "@deepseek-ai/cordis";
@@ -77,7 +82,7 @@ export class ModelCatalogFeed {
     const generation = ++this.generation;
     // Failures per provider stay local: one broken adapter must not hide the models that other providers report.
     const models = this.llm === undefined ? [] : await this.discoverOffers(this.llm);
-    const defaultModel = this.defaultSelection();
+    const defaultModel = this.servedSelection(models);
     const next = { models, defaultModel, reasoningEfforts: await this.defaultEfforts(defaultModel) };
     if (generation !== this.generation) return;
     this.catalog = next;
@@ -118,6 +123,21 @@ export class ModelCatalogFeed {
       }
     }
     return models;
+  }
+
+  /**
+   * The host's default when the advertised routes can serve it (design.md 5.6).
+   * `null` when they provably cannot: the host's configured default and the
+   * routes its providers expose are independent, so they may not match.
+   */
+  private servedSelection(models: readonly ModelOffer[]): ModelSelection | null {
+    const selection = this.defaultSelection();
+    if (selection === null || models.length === 0) return selection;
+    if (models.some((offer) => offer.provider === selection.provider && offer.id === selection.model)) return selection;
+    this.logger.warn(
+      `orca-pod: default model ${selection.provider}/${selection.model} is not among the ${models.length} routes this host serves; advertising no default`,
+    );
+    return null;
   }
 
   /** What a fresh session starts with, when the host says. */

@@ -188,6 +188,49 @@ describe("model catalog", () => {
     expect(catalog.reasoningEfforts.map((effort) => effort.id)).toEqual(["high", "max"]);
   });
 
+  it("advertises no default the host cannot serve", async () => {
+    const warnings: string[] = [];
+    const services = {
+      llm: {
+        listProviders: () => [{ id: "deepseek-account", name: "DeepSeek Account" }],
+        listModels: async (provider: string) => [{ provider, id: "deepseek-flash", name: "Flash" }],
+        resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: "max", name: "Max" }] } }),
+      },
+      agentDefaultModel: {
+        currentSelection: () => ({ provider: "deepseek-official", model: "deepseek-flash" }),
+      },
+    };
+    const ctx = {
+      inject: (keys: string[], scope: (scope: unknown) => void) => {
+        const [key] = keys;
+        scope({ [key!]: services[key as keyof typeof services], effect: () => {} });
+      },
+    } as unknown as Pick<Context, "inject">;
+    const logger = {
+      info() {},
+      warn: (text: string) => warnings.push(text),
+      error() {},
+      debug() {},
+    } as unknown as Logger;
+    const feed = new ModelCatalogFeed(ctx, logger);
+    await vi.waitFor(() => expect(feed.current().models).toHaveLength(1));
+    // The host's configured default is not one of the routes its providers expose.
+    expect(feed.current().defaultModel).toBeNull();
+    expect(feed.current().reasoningEfforts).toEqual([]);
+    expect(warnings.some((line) => line.includes("deepseek-official/deepseek-flash"))).toBe(true);
+
+    // A default the routes do include is advertised as before.
+    services.agentDefaultModel.currentSelection = () => ({ provider: "deepseek-account", model: "deepseek-flash" });
+    await feed.refresh();
+    expect(feed.current().defaultModel).toEqual({ provider: "deepseek-account", model: "deepseek-flash" });
+
+    // An unloaded catalog cannot prove the default wrong, so it keeps it.
+    services.llm.listProviders = () => [];
+    await feed.refresh();
+    expect(feed.current().models).toEqual([]);
+    expect(feed.current().defaultModel).toEqual({ provider: "deepseek-account", model: "deepseek-flash" });
+  });
+
   it("installs the host's catalog on every node the pod runs and on every later change", async () => {
     const root = await mkdtemp(join(tmpdir(), "orca-catalog-"));
     ROOTS.push(root);
