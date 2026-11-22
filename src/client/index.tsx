@@ -22,10 +22,9 @@
 
 import { ApprovalDock, ApprovalPopup } from "./approvals.tsx";
 import { NS } from "./constants.ts";
-import { TEXT, bindTranslate, t } from "./i18n.ts";
+import { TEXT, bindLocale, bindTranslate, t } from "./i18n.ts";
 import { OverlayPanel, Panel, SidebarAction } from "./panel.tsx";
 import { PodSounds } from "./sound-layer.tsx";
-import { store } from "./store.ts";
 import type { ClientContext } from "./types.ts";
 
 /** Client services the shell must provide before `apply` runs. */
@@ -33,7 +32,7 @@ export const inject = ["slots", "locale"];
 
 /** Register a settings page, a sidebar entry, the floating panel and the approval cards. */
 export function apply(ctx: ClientContext): void {
-  store.locale = ctx.locale;
+  bindLocale(ctx.locale);
   // Strings belong to the Client locale service: register the two
   // baseline dictionaries once, then translate through the bound namespace
   // so the panel follows the same language switch as the rest of the shell.

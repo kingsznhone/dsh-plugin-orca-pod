@@ -301,7 +301,7 @@ function NetworkSection({
                 value={row}
                 aria-label={`${t("cfgAdvertised")} ${index + 1}`}
                 onChange={(event) => edit(index, event.target.value)}
-                placeholder={`http://192.168.1.11:${DEFAULT_PORT}`}
+                placeholder={`https://192.168.1.11:${DEFAULT_PORT}`}
               />
               <Button
                 variant={"ghost"}

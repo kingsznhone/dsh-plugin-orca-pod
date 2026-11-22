@@ -191,7 +191,7 @@ D（新）                                          A（已在 mesh）
 答复  Pod-Reply: id=<应答方>; sig=<Ed25519("orca-pod/reply" | 请求 nonce | status | sha256(body))>
 ```
 
-校验顺序：解析头（`missing_auth`/`malformed_auth`）→ `ts` 在 ±60s 内且不早于进程启动（`clock_skew`/`stale_request`）→ `target` 是本节点（hello 例外，`wrong_target`）→ `workgroup_mismatch` → 验 `sig`（`bad_signature`）→ 验 `proof`（`bad_proof`，在验签之后）→ nonce 5 分钟窗口内未出现过（进程内 LRU，容量 10k，`nonce_replay`）。没有「查成员表」这一步。只有通过全部认证校验的请求（带 `request.auth`）才会生成 `Pod-Reply` Ed25519 签名；未认证拒绝、公开路由、本地路由与 404 不触发签名，避免未认证请求消耗 Ed25519 算力或签发攻击者提供的 nonce。
+校验顺序：解析头（`missing_auth`/`malformed_auth`，其中 `nonce` 限 22–64 字符的 base64url，默认 16 字节随机值）→ `ts` 在 ±60s 内且不早于进程启动（`clock_skew`/`stale_request`）→ `target` 是本节点（hello 例外，`wrong_target`）→ `workgroup_mismatch` → 验 `sig`（`bad_signature`）→ 验 `proof`（`bad_proof`，在验签之后）→ nonce 5 分钟窗口内未出现过（进程内 LRU，容量 10k，`nonce_replay`）。没有「查成员表」这一步。只有通过全部认证校验的请求（带 `request.auth`）才会生成 `Pod-Reply` Ed25519 签名；未认证拒绝、公开路由、本地路由与 404 不触发签名，避免未认证请求消耗 Ed25519 算力或签发攻击者提供的 nonce。
 
 文件下载的答复是流，签名只覆盖 status 与 `blob_id`（`subject = blob:<blob_id>`），收完按内容 sha256 校验。
 
