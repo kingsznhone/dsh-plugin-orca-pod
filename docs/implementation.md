@@ -66,7 +66,7 @@ unconfigured ──configure──► starting ──► running
 | POST | `/orca-api/cancel` | 取消任务 |
 | POST | `/orca-api/reset` | 完全重置（停节点、清设置、删身份记录与状态） |
 
-错误统一为 `{ code, message }`，HTTP 状态来自 `core/errors` 的 code 表；请求体 1 MiB 上限。审批与取消都直接调 `Orca` 方法，不经过模型、不写聊天历史。
+错误统一为 `{ code, message }`，HTTP 状态来自 `core/errors` 的 code 表；面板请求体 64 KiB 上限。审批与取消都直接调 `Orca` 方法，不经过模型、不写聊天历史。
 
 `Orca` 是唯一把 mesh、执行器、tracker、SSE 无关的轮询状态拼起来的地方：面板只读它，`orca_pod` 工具只调它。
 

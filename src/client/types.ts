@@ -5,13 +5,15 @@
  * imported type-only so they are erased from the bundle: what the routes send
  * and what this client draws cannot drift apart.
  *
- * DSH publishes `@deepseek-ai/dsh-client-ui-primitives` types, so the primitives
- * are taken from that package (devDependency, type-only). The browser-side
- * plugin context has no published package: npm's `dsh-client-locale` is the
- * host settings plugin (it exports `apply`/`Config`, not a locale service) and
- * `dsh-client-ui-slots` exports the `SlotCore` ledger, whose jobs and API are
- * the shell's internal ones. The two services below are therefore the smallest
- * surface this panel calls, written from the shell's own call sites.
+ * DSH publishes `@deepseek-ai/dsh-client-ui-primitives` types and components,
+ * and this client imports both (the components at runtime, resolved by the
+ * shell from its platform module table): the devDependency supplies the types,
+ * so it is not a type-only dependency. The browser-side plugin context does
+ * have published packages: `@deepseek-ai/dsh-client-locale/client` declares
+ * `ctx.locale` (`LocaleRuntime`, with `register`/`bind`/`subscribe`/`getLocale`)
+ * and `@deepseek-ai/dsh-client-ui-renderer/client` declares `ctx.slots`
+ * (`SlotRegistry`); `dsh-client-ui-slots` publishes only the `SlotCore` ledger.
+ * The two interfaces below restate the minimal subset this panel calls.
  */
 
 import type { ComponentType } from "react";

@@ -66,7 +66,7 @@ describe("gateway body schemas", () => {
     const noId = await post(self, "/a2a", { method: "tasks/cancel", params: { taskId: "t" } });
     expect(noId.statusCode).toBe(400);
 
-    // Removed with cascading tasks: a node no longer parks a task for a child (§7.9).
+    // Removed with cascading tasks: a node no longer parks a task for a child (design.md 3.6).
     const escalate = await post(self, "/a2a", { method: "tasks/escalate", params: { taskId: "t" } });
     expect(escalate.json()).toMatchObject({ error: { message: "unsupported" } });
 
@@ -155,7 +155,7 @@ describe("gateway body schemas", () => {
       models: [{ provider: "p", id: "m", name: "M" }],
     });
 
-    // Link-local (cloud metadata) is refused on every hello, as on the first one (§7.7).
+    // Link-local (cloud metadata) is refused on every hello, as on the first one (design.md 6.6).
     const refused = await post(
       member,
       "/cluster/hello",

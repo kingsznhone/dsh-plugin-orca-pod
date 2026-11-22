@@ -64,7 +64,7 @@ function hello(
   });
 }
 
-describe("workgroup proof gate (C1)", () => {
+describe("workgroup proof gate (design.md 6.1)", () => {
   it("lets a node with both proofs read a published file", async () => {
     const harness = createGatewayHarness({ workgroup: WORKGROUP });
     const blobId = await publish(harness, Buffer.from("member bytes"));
@@ -183,7 +183,7 @@ describe("workgroup proof gate (C1)", () => {
     expect(joined.statusCode).toBe(200);
     expect(joined.json()).toMatchObject({ self: { orca_node_id: harness.orcaNodeId, workgroup_id: WORKGROUP } });
     expect(harness.mesh.get(stranger.orcaNodeId)?.state).toBe("online");
-    // Every other route insists on being addressed to this node.
+    // Every other signed route insists on being addressed to this node.
     const members = await harness.app.inject({
       method: "GET",
       url: path,
@@ -275,7 +275,7 @@ describe("workgroup proof gate (C1)", () => {
   });
 });
 
-describe("signed replies (§7.1)", () => {
+describe("signed replies (design.md 6.1)", () => {
   /** The nonce a request carried, which its reply is bound to. */
   const nonceOf = (authorization: string): string => parseAuthHeader(authorization)?.claim.nonce ?? "";
 

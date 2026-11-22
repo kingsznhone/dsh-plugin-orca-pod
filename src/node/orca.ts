@@ -30,7 +30,7 @@ import type { Settings } from "./settings.ts";
 
 /**
  * Where a task session reaches this machine's node, the node's id (the key its
- * TLS certificate must carry), and the token the node's local routes take (§5.6).
+ * TLS certificate must carry), and the token the node's local routes take (design.md 4.5).
  * The node hands them to the executor for the task's environment; the plugin
  * inside the task uses them for the `orca_pod` file methods.
  */
@@ -42,7 +42,7 @@ export const NODE_TOKEN_ENV = "ORCA_POD_NODE_TOKEN";
  * The URL a node bound to `host` is dialed at, by DSH's rule for bind literals
  * (`bindUrlHost`: IPv6 bracketed, mapped loopback canonical, host names as
  * they are); undefined when the address has no URL form (an interface zone id).
- * Nodes speak https only (§7.7).
+ * Nodes speak https only (design.md 6.2).
  */
 export function bindUrl(host: string, port: number): string | undefined {
   const urlHost = bindUrlHost(host);
@@ -70,7 +70,7 @@ type OrcaNodeOptions = {
   timings?: Partial<MeshTimings>;
   /** Outbound HTTP for peer calls; tests inject packet loss / delay / partitions. */
   fetch?: MeshContextOptions["fetch"];
-  /** Executor override (tests run scripted ones); defaults to the ACP executor (§6.14). */
+  /** Executor override (tests run scripted ones); defaults to the ACP executor (design.md 5.2). */
   executor?: LocalExecutor;
   /** Where refusals and drops are reported; silent unless the entry point supplies one. */
   logger?: NodeLogger;
@@ -89,28 +89,28 @@ const SILENT: NodeLogger = { warn() {} };
  * until `start()`.
  */
 export class Orca {
-  /** The model routes this node offers and the default a task gets (§6.15). */
+  /** The model routes this node offers and the default a task gets (design.md 5.6). */
   readonly models: ModelCatalog;
   /** The node table; this node is a row of it. */
   readonly mesh: Mesh;
-  /** What this node handed to other nodes, and what it last heard of each task (§8.3). */
+  /** What this node handed to other nodes, and what it last heard of each task (design.md 4.2). */
   readonly dispatches: DispatchLog;
   /** Tasks this node runs for others. */
   readonly tasks: SingleSlotTaskRunner;
   /** Workspace directories, for UI browsing. */
   readonly workspace: Workspace;
-  /** The files this node published (§5.6): the `orca_pod` tool publishes into it, members fetch from the gateway. */
+  /** The files this node published (design.md 4.5): the `orca_pod` tool publishes into it, members fetch from the gateway. */
   private readonly blobs: FileBlobRegistry;
 
   private readonly executor: LocalExecutor;
 
-  /** What this machine's processes (a task session) show the local routes; it lives as long as this instance (§5.6). */
+  /** What this machine's processes (a task session) show the local routes; it lives as long as this instance (design.md 4.5). */
   private readonly localToken = randomBytes(32).toString("base64url");
   /** Where a process on this machine dials this node; known once it listens. */
   private localUrl: string | null = null;
   /** The port the node listens on; known once it listens (a configured 0 picks one). */
   private listening: number | null = null;
-  /** The one database of the data root (§5.5): tasks, published files and dispatches; `start()` opens it. */
+  /** The one database of the data root (design.md 4.4): tasks, published files and dispatches; `start()` opens it. */
   private readonly db: SqliteDb;
   private readonly gateway: Gateway;
   /** What the nodes of the table share; it holds this node's outbound TLS connections. */
@@ -120,11 +120,11 @@ export class Orca {
   constructor(
     /** What the node runs with; the settings must name a workgroup. */
     private readonly settings: Settings,
-    /** Who this node is: its private key signs every request (§7.1). */
+    /** Who this node is: its private key signs every request (design.md 6.1). */
     private readonly identity: NodeIdentity,
-    /** The workgroup key, derived from the password; it lives in memory only (§7.1). */
+    /** The workgroup key, derived from the password; it lives in memory only (design.md 2.2). */
     key: Buffer,
-    /** Where the node keeps its database, workspaces and published files (§3.9). */
+    /** Where the node keeps its database, workspaces and published files (implementation.md 2). */
     dataRoot: string,
     options: OrcaNodeOptions = {},
   ) {
@@ -141,7 +141,7 @@ export class Orca {
     this.executor =
       options.executor ??
       new AcpExecutor(settings.acp ?? {}, this.models, logger, {
-        // The task's plugin reaches this node through its local routes (§5.6).
+        // The task's plugin reaches this node through its local routes (design.md 4.5).
         env: (): Record<string, string> =>
           this.localUrl === null
             ? {}
@@ -167,7 +167,7 @@ export class Orca {
     });
     this.gateway = new Gateway(this.mesh, this.tasks, workgroupId, key, identity, this.localToken, this.workspace.root);
 
-    // A new catalog changes what this node announces about itself (§6.15).
+    // A new catalog changes what this node announces about itself (design.md 5.6).
     this.models.changes.subscribe(() => this.mesh.self.describe(this.describeSelf(this.mesh.self.endpoints)));
   }
 
@@ -177,7 +177,7 @@ export class Orca {
    * Binding the port comes first, and nothing that touches the data root happens
    * before it: the port is the lock that keeps a second process on this machine
    * (another DSH with the same plugin) from recovering the tasks and dispatches
-   * of the one that is running (§3.9). The database is opened, and the
+   * of the one that is running (implementation.md 2). The database is opened, and the
    * interrupted work failed, in the same turn the bind completes in, so no
    * request can reach a store that is not open.
    */
@@ -213,19 +213,20 @@ export class Orca {
 
   /**
    * Where a process on this machine dials a node bound to `host`: loopback for a
-   * wildcard bind, else the bound address (a connection from this machine to its
-   * own address, which the local routes accept, §5.6).
+   * wildcard bind or an address with no URL form, else the bound address (a
+   * connection from this machine to its own address, which the local routes
+   * accept, design.md 4.5).
    */
   private static localUrlOf(host: string, port: number): string {
     return (isWildcardHost(host) ? undefined : bindUrl(host, port)) ?? `https://127.0.0.1:${port}`;
   }
 
-  /** What this node says about itself (§2.5, §3.3): who it is, where it can be dialed, what it runs on, which models it offers. */
+  /** What this node says about itself (design.md 2.3, 2.4): who it is, where it can be dialed, what it runs on, which models it offers. */
   private describeSelf(endpoints: readonly string[]): SelfDescription {
     const offers = this.models.offers();
     const defaults = this.models.defaults();
     return {
-      // A fresh node with no display name shows its shortened id (§9.2 wizard default).
+      // A fresh node with no display name shows its shortened id (implementation.md 4 wizard default).
       display_name: this.settings.display_name ?? shortenNodeId(this.identity.orcaNodeId),
       endpoints: [...endpoints],
       runtime: this.runtime,

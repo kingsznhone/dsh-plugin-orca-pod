@@ -64,7 +64,7 @@ describe("lazy discovery", () => {
     expect(peersOf(c).some((member) => member.orca_node_id === b.mesh.self.id)).toBe(true);
     expect(peersOf(b).some((member) => member.orca_node_id === c.mesh.self.id)).toBe(false);
 
-    // C 心跳 B 撞 404 → 自动重新 join B；拿到目录后 B 也认识 C
+    // C 心跳 B 时 B 还不认识 C：hello 即登记，B 收到这次 hello 就记下 C；摘要不一致时 B 回整张目录，C 据此补齐候选并建立心跳边。
     await waitFor(
       () =>
         [a, b, c].every((orcaNode) => peersOf(orcaNode).length === 2) &&

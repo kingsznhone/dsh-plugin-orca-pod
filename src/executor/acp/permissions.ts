@@ -16,7 +16,7 @@ export const CANCELLED: RequestPermissionResponse = { outcome: { outcome: "cance
 /** The answer to an ask: let the tool run, or refuse it. */
 type PermissionDecision = "allow" | "reject";
 
-/** Whether `mode` lets a tool call of `kind` run without asking (§7.14); a call of no kind only under full access. */
+/** Whether `mode` lets a tool call of `kind` run without asking (design.md 6.4); a call of no kind only under full access. */
 export function modeAllows(mode: SandboxMode, kind: ToolKind | null | undefined): boolean {
   if (mode === "danger-full-access") return true;
   const readable = kind === "read" || kind === "search" || kind === "think";

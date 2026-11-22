@@ -86,8 +86,8 @@ async function signedResume(
     method: "message/send",
     params: { message },
   });
-  // Signatures bind the receiver id (§7.1); the test signs for a real target node, which it
-  // first meets over TLS like any node would (any node's certificate), then dials pinned to it (§7.7).
+  // Signatures bind the receiver id (design.md 6.1); the test signs for a real target node, which it
+  // first meets over TLS like any node would (any node's certificate), then dials pinned to it (design.md 6.2).
   const tls = new PeerTls();
   const contact = tls.route("");
   const health = (await (
@@ -198,7 +198,7 @@ describe("Phase 3 approval round trip", () => {
     const submitted = await origin.mesh.resolve(targetUrl).sendTask({ message: scriptMessage(permissionScript) });
     await waitForState(origin, targetUrl, submitted.id, "input-required");
 
-    // The task TTL is paused while the task waits for a human (§7.12).
+    // The task TTL is paused while the task waits for a human (design.md 6.4).
     await new Promise((resolve) => setTimeout(resolve, 1500));
     const still = await origin.mesh.resolve(targetUrl).getTask(submitted.id);
     expect(still.status.state).toBe("input-required");
@@ -223,7 +223,7 @@ describe("Phase 3 approval round trip", () => {
   });
 });
 
-describe("approval binding (§7.11)", () => {
+describe("approval binding (design.md 6.4)", () => {
   it("refuses an approval for another permission request and keeps the task waiting", async () => {
     const { origin, targetUrl, identity } = await threeNodes();
     const view = await submit(origin, targetUrl);

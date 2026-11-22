@@ -31,7 +31,7 @@ interface Limit {
   key: LimitKey;
   label: string;
   hint?: string;
-  /** Bytes per displayed unit (MiB/GiB); unset means the value is shown as stored. */
+  /** Bytes per displayed unit (currently only GiB); unset means the value is shown as stored. */
   unit?: number;
 }
 
@@ -56,7 +56,7 @@ type Bind = (key: TextKey) => {
   onChange: (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => void;
 };
 
-/** Numeric limits; `unit` converts the displayed MiB/GiB to the bytes the host stores. */
+/** Numeric limits; `unit` converts the displayed GiB to the bytes the host stores. */
 const LIMITS: Limit[] = [
   { key: "task_timeout_s", label: "cfgTaskTimeout", hint: "cfgTaskTimeoutHint" },
   { key: "max_workspace_bytes", label: "cfgMaxWorkspaceGiB", hint: "cfgMaxWorkspaceHint", unit: GIB },
@@ -83,7 +83,7 @@ function selectFields(config: ChoiceSource): SelectField[] {
 const unitText = (value: number | undefined, unit = 1): string =>
   value === undefined ? "" : String(+(value / unit).toFixed(3));
 
-/** The numeric limits as form text, in their display units (MiB/GiB); unset is blank. */
+/** The numeric limits as form text, in their display units (GiB for the workspace limit, plain seconds for the timeout); unset is blank. */
 function limitTexts(settings: ShownSettings): Record<LimitKey, string> {
   return Object.fromEntries(LIMITS.map(({ key, unit }) => [key, unitText(settings[key], unit)])) as Record<
     LimitKey,
@@ -162,7 +162,7 @@ function buildPatch(
   const addresses = form.endpoints.map((row) => row.trim()).filter(Boolean);
   const limits = limitValues(form, config);
   if (limits.error !== undefined) return { error: limits.error };
-  // The choices are free text here (`allow`/`deny`, a mode name); the host checks them against the settings schemas.
+  // The choices here are the <select> values (`permission_mode`, `default_reasoning_effort`); the host checks them against the settings schemas.
   const patch = {
     workgroup_id: form.workgroup_id.trim().toLowerCase(),
     display_name: form.display_name.trim() || null,
@@ -176,7 +176,7 @@ function buildPatch(
   return { patch };
 }
 
-/** One settings row: label and hint on the left, the control on the right (a `<label>` unless it holds several controls). */
+/** One settings row: label and hint on the left, the control on the right (a `<label>`, or a `role="group"` div when the caller passes `group`). */
 function SettingRow({
   label,
   hint,
@@ -401,7 +401,7 @@ function ResetGroup({ busy, onReset }: { busy: boolean; onReset: () => void }) {
   );
 }
 
-/** Node status (or the last error) on the left; back, use-existing and save on the right. */
+/** Node status (or the last error) on the left; back and save on the right. */
 function ConfigFooter({
   config,
   running,

@@ -1,5 +1,5 @@
 /**
- * Model routes a node offers and a task selects (§6.15). The shapes are DSH's:
+ * Model routes a node offers and a task selects (design.md 5.6). The shapes are DSH's:
  * a selection is `ModelSelection` (`@deepseek-ai/dsh-agent`), an offer is the
  * part of `LlmModelInfo` (`@deepseek-ai/dsh-llm`) a peer needs, and an effort
  * is the adapter-owned `ReasoningEffortId`. Only the wire schemas are ours.
@@ -18,7 +18,7 @@ const NonEmptyString = z.string().min(1);
 export type ModelOffer = Pick<LlmModelInfo, "provider" | "id" | "name" | "description">;
 
 /**
- * One advertised model route (§6.15). Unknown keys are dropped: a peer's
+ * One advertised model route (design.md 5.6). Unknown keys are dropped: a peer's
  * catalog is stored and re-broadcast, so they are not carried along.
  */
 const ModelOfferSchema = z.object({
@@ -44,7 +44,7 @@ export const ModelSelectionSchema = z.object({
   reasoningEffort: ReasoningEffortSchema.optional(),
 }) satisfies z.ZodType<ModelSelection>;
 
-/** What a node uses when a task names no model: the route and, separately, the reasoning effort (§6.15). */
+/** What a node uses when a task names no model: the route and, separately, the reasoning effort (design.md 5.6). */
 export type ModelDefaults = { model: ModelSelection | null; reasoningEffort: ReasoningEffortId | null };
 
 /** "model p/m and reasoning effort "e"": how an executor names what a task asked for in its failure text. */
@@ -60,7 +60,7 @@ export function describeModelRequest(
     .join(" and ");
 }
 
-/** Parse a `provider/model` spec, optionally with a reasoning effort (§6.15). */
+/** Parse a `provider/model` spec, optionally with a reasoning effort (design.md 5.6). */
 export function parseModelSpec(spec: string, reasoningEffort?: string): ModelSelection | null {
   const slash = spec.indexOf("/");
   if (slash <= 0 || slash === spec.length - 1) return null;

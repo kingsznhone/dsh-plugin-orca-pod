@@ -1,5 +1,5 @@
 /**
- * A task's prompt (§6.7, §6.14): the node's own trusted preamble, then the
+ * A task's prompt (design.md 6.3, 5.2): the node's own trusted preamble, then the
  * origin's text last, inside an untrusted block. Files are not part of a task:
  * the origin names the ones it hands over in its text. Whether the agent keeps
  * notes, and where, is its own decision.
@@ -15,9 +15,9 @@ type PromptParts = {
 };
 
 /**
- * Task preamble (§6.14, §6.15). The agent runs in the `acp` profile, which loads
- * this plugin too (D60), so the plugin gives it `orca_pod` with the file methods
- * only (§5.6): it fetches what the origin names and publishes what it hands back.
+ * Task preamble (design.md 5.2, 5.6). The agent runs in the `acp` profile, which loads
+ * this plugin too (design.md 5.2), so the plugin gives it `orca_pod` with the file methods
+ * only (design.md 4.5): it fetches what the origin names and publishes what it hands back.
  * A task is single-hop: the agent cannot dispatch, so a task it cannot finish
  * alone ends with a `BLOCKED:` report for the origin.
  */
@@ -38,7 +38,7 @@ function preamble({ taskId, selfOrcaNodeId }: PromptParts): string {
 
 const CLOSING_TAG = "</untrusted-task-input>";
 
-/** Trusted sections first; the origin's text last, so nothing in it can pose as one of ours (§6.7). */
+/** Trusted sections first; the origin's text last, so nothing in it can pose as one of ours (design.md 6.3). */
 export function composePrompt(parts: PromptParts): string {
   const sections = [preamble(parts)];
   const text = parts.text.replaceAll(CLOSING_TAG, `<\\/${CLOSING_TAG.slice(2)}`);

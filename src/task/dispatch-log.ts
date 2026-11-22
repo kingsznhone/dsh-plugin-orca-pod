@@ -21,7 +21,7 @@ export interface DispatchQueryOptions {
 }
 
 /**
- * Origin-side dispatch log (§8.3), in the `dispatches` table of the node's
+ * Origin-side dispatch log (design.md 4.2), in the `dispatches` table of the node's
  * database: entries survive a restart.
  *
  * A task belongs to the node that created it (`origin_orca_node`), and the target

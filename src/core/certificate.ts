@@ -1,5 +1,5 @@
 /**
- * The node's TLS certificate (§7.7): self-signed, over the node's own Ed25519
+ * The node's TLS certificate (design.md 6.2): self-signed, over the node's own Ed25519
  * identity key. The orca node id *is* that public key, so whoever dials a node
  * knows the key its certificate must carry before it connects: no CA, no
  * fingerprint to exchange, no trust on first use.

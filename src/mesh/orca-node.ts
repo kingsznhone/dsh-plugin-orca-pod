@@ -32,11 +32,11 @@ import { CANDIDATE_MAX_FAILURES, recoverDelayMs, type MeshTimings } from "./timi
 
 type SuspectReason = "quiet" | "unreachable";
 
-/** How this orca node learned about a node (§3.5, §7.7). */
+/** How this orca node learned about a node (design.md 2.6, 6.6). */
 type PeerOrigin = "explicit" | "candidate";
 
 /**
- * One row of the node table (§3.1): a node of the mesh, possibly this one. It
+ * One row of the node table (design.md 2.5): a node of the mesh, possibly this one. It
  * holds everything this node knows about it, in one place: what it said about
  * itself, the evidence behind its state, the addresses it can be dialed at and
  * the one that last worked. Using the node is calling it: `hello`, `sendTask`,
@@ -57,13 +57,13 @@ export class OrcaNode {
   private preferred: string | undefined;
   /** Whether a refused candidate address was already logged; one line per node is enough. */
   private warned = false;
-  /** A candidate named in a member list that arrived over loopback: its loopback addresses are this machine's (§7.7). */
+  /** A candidate named in a member list that arrived over loopback: its loopback addresses are this machine's (design.md 6.6). */
   private listedFromThisMachine = false;
 
   private constructor(
     private readonly ctx: MeshContext,
     readonly id: OrcaNodeId,
-    /** What the node last said about itself (§3.3); the rest of its record is what this node observed. */
+    /** What the node last said about itself (design.md 2.4); the rest of its record is what this node observed. */
     private described: SelfDescription,
     private observed: PeerState,
     private busy: BusyState | null,
@@ -139,7 +139,7 @@ export class OrcaNode {
     return this.observed;
   }
 
-  /** Heard, but this node cannot reach it: traffic flows one way only, as with a node behind NAT (§3.3). */
+  /** Heard, but this node cannot reach it: traffic flows one way only, as with a node behind NAT (design.md 2.5). */
   get unreachable(): boolean {
     return this.observed === "suspect" && this.suspectReason === "unreachable";
   }
@@ -191,7 +191,7 @@ export class OrcaNode {
   /**
    * The node's own latest self-description replaces the recorded one, model
    * catalog included: a catalog it no longer advertises must not linger here
-   * (§3.3). A node describing itself is an explicit member. For this node it is
+   * (design.md 2.4). A node describing itself is an explicit member. For this node it is
    * what whoever runs it pushes when something changed.
    */
   describe(description: SelfDescription): void {
@@ -206,7 +206,7 @@ export class OrcaNode {
    * what was recorded, and it was heard just now. It is online again, unless this
    * node cannot reach it: a node behind NAT greets us every round, yet only an
    * answer to our own hello shows it can be dialed, so until then it stays
-   * `suspect(unreachable)` and is not handed tasks (§3.3).
+   * `suspect(unreachable)` and is not handed tasks (design.md 2.5).
    */
   heard(description: SelfDescription, busy: BusyState | null): void {
     if (this.isSelf) return;
@@ -233,7 +233,7 @@ export class OrcaNode {
   /**
    * Our request to the node failed on every address. A candidate never reached is
    * given up after a few tries instead of dialing someone else's memory
-   * forever (§3.5); the caller removes it and tombstones the id.
+   * forever (design.md 2.6); the caller removes it and tombstones the id.
    */
   missed(nowMs: number, timings: MeshTimings): "drop" | "kept" {
     if (this.isSelf) return "kept";
@@ -314,12 +314,12 @@ export class OrcaNode {
       : allowed;
   }
 
-  /** An address from another node's member list is screened before it is dialed (§7.7). */
+  /** An address from another node's member list is screened before it is dialed (design.md 6.6). */
   private async candidateAllowed(endpoint: string): Promise<boolean> {
     const allowed = await this.ctx.screening.candidate(endpoint, this.listedFromThisMachine);
     if (!allowed && !this.warned) {
       this.warned = true;
-      this.ctx.logger.warn(`orca-pod: refusing candidate endpoint ${endpoint} from ${this.id} (§7.7)`);
+      this.ctx.logger.warn(`orca-pod: refusing candidate endpoint ${endpoint} from ${this.id} (design.md 6.6)`);
     }
     return allowed;
   }
@@ -327,8 +327,8 @@ export class OrcaNode {
   // ---- calls ----
 
   /**
-   * Greet the node (§3.3): try its addresses in order (IPv4/IPv6, LAN, public),
-   * because one unreachable address must not make the node look offline (§7.7).
+   * Greet the node (design.md 2.4): try its addresses in order (IPv4/IPv6, LAN, public),
+   * because one unreachable address must not make the node look offline (design.md 6.6).
    * The one that answers is remembered. A node that answers with a refusal has
    * answered for all of its addresses, so that ends the attempt; one that does not
    * answer at any address is an error for the caller to count.
@@ -361,7 +361,11 @@ export class OrcaNode {
     throw unreachable ?? new PodError("peer_not_online", `${this.id} has no address to dial`);
   }
 
-  /** Whether an error is the node saying it no longer shares this node's password (§7.1). */
+  /**
+   * Whether an error is the node rejecting this node's proof (design.md 6.1): a
+   * 401 answer, whether another password, or an unacceptable clock, nonce or
+   * signature.
+   */
   static isRejection(error: unknown): boolean {
     return error instanceof PodError && error.status === 401;
   }
@@ -369,7 +373,7 @@ export class OrcaNode {
   /**
    * Hand this node a task. A node that is not online is not handed one. `agentId`
    * is the DSH session that dispatches it; it goes into the dispatch log with the
-   * entry, so the tracker knows whom to tell when the task ends (§8.3).
+   * entry, so the tracker knows whom to tell when the task ends (design.md 4.2).
    */
   async sendTask(
     input: SubmitTaskInput,
@@ -390,7 +394,7 @@ export class OrcaNode {
     return this.rpc({ method: "tasks/cancel", params: { id: taskId } }, signal);
   }
 
-  /** This node is the origin: approve the request the task is parked on and resume it (§7.11). */
+  /** This node is the origin: approve the request the task is parked on and resume it (design.md 6.4). */
   approve(view: TaskView): Promise<TaskView> {
     const request = permissionRequestOf(view);
     if (request === null) throw new Error("task is not waiting for a permission decision");
@@ -402,7 +406,7 @@ export class OrcaNode {
   }
 
   /**
-   * A file this node published, streamed (§5.6): this node's own from disk, any
+   * A file this node published, streamed (design.md 4.5): this node's own from disk, any
    * other node's fetched from the first of its addresses that answers. A file is
    * named by who published it and its sha256, never by a URL; the caller checks
    * the bytes against the sha256.
@@ -419,7 +423,7 @@ export class OrcaNode {
   }
 
   /**
-   * Publish a file of this machine (§5.6): the registry copies it in, and its
+   * Publish a file of this machine (design.md 4.5): the registry copies it in, and its
    * name is this node's id and the sha256 of its bytes. Only this node publishes.
    */
   async publish(path: string, ttlS?: number): Promise<PublishedFile> {
@@ -442,7 +446,7 @@ export class OrcaNode {
   }
 
   /**
-   * Signed JSON-RPC call to the node's `/a2a` (§4.7); every method answers with a
+   * Signed JSON-RPC call to the node's `/a2a` (design.md 3.5); every method answers with a
    * task view; an answer that is not one is a `peer_error`. Its addresses are tried in
    * order until one answers.
    */

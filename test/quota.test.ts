@@ -1,5 +1,5 @@
 /**
- * Workspace quota (§6.13): a task is refused while the group workspace is over
+ * Workspace quota (design.md 5.7): a task is refused while the group workspace is over
  * its quota.
  */
 

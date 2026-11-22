@@ -1,5 +1,5 @@
 /**
- * The `orca_pod` file methods (§5.6): `publish` and `fetch`, in the host (through the
+ * The `orca_pod` file methods (design.md 4.5): `publish` and `fetch`, in the host (through the
  * pod of this process) and inside a task (through this machine's node, `LocalNode`).
  */
 

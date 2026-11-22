@@ -42,7 +42,7 @@ export type Mesh = {
 const DEFAULT_NODES = 3;
 const DEFAULT_WORKGROUP_ID = "orca-dev";
 
-/** Boot `orcaNodes` in-process orca nodes and converge them on the first orcaNode. */
+/** Boot `orcaNodes` in-process orca nodes and make every node greet every later one. */
 export async function createMesh(options: MeshOptions = {}): Promise<Mesh> {
   const count = options.orcaNodes ?? DEFAULT_NODES;
   const workgroupId = WorkgroupIdSchema.parse(options.workgroupId ?? DEFAULT_WORKGROUP_ID);
@@ -115,11 +115,10 @@ type WaitForOptions = {
 };
 
 /**
- * Poll `probe` until `done` accepts its value or the timeout elapses (§10.7).
+ * Poll `probe` until `done` accepts its value or the timeout elapses (implementation.md 5).
  *
- * Real-process smoke tests observe another process's state through files, HTTP,
- * or CLI output, so there is no promise to await directly. In-process tests can
- * use the same helper for convergence assertions.
+ * In-process tests observe convergence through the mesh, the gateway or a store, so
+ * there is no promise to await directly; the same helper serves convergence assertions.
  */
 export async function waitFor<T>(
   probe: () => T | Promise<T>,

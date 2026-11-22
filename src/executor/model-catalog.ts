@@ -6,20 +6,20 @@ import { ChangeSignal, type NodeLogger } from "../core/events.ts";
 import { ReasoningEffortSchema, type ModelDefaults, type ModelOffer } from "./model.ts";
 
 /**
- * What the node settings may set about models (§6.15): only the default
+ * What the node settings may set about models (design.md 5.6): only the default
  * reasoning effort. The routes and the default model are the DSH host's; the
  * node advertises what the host can serve. Part of the node's settings
  * (`node/settings.ts` spreads it in), declared here, where it is read.
  */
 export const ModelSettingsSchema = z.object({
-  /** Default reasoning effort when a task names none; unset means the host's (§6.15). */
+  /** Default reasoning effort when a task names none; unset means the host's (design.md 5.6). */
   default_reasoning_effort: ReasoningEffortSchema.optional(),
 });
 export type ModelSettings = z.output<typeof ModelSettingsSchema>;
 
 /**
  * The model routes this node offers and the default a task gets when it names
- * none (§6.15). Both come from the DSH host after start-up (`update`); empty
+ * none (design.md 5.6). Both come from the DSH host after start-up (`update`); empty
  * until then. Only the reasoning effort may be set in the settings. The node
  * advertises the catalog to peers, and an ACP session reads its default from
  * here, so both depend on this object and not on each other.

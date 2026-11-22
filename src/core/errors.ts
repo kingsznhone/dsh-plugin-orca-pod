@@ -6,7 +6,7 @@ import { HarnessError } from "@deepseek-ai/dsh-error";
  * from it, so a thrown code that is not listed here does not compile.
  */
 export const POD_ERROR_STATUS = {
-  // Request authentication (§7.1).
+  // Request authentication (design.md 6.1).
   missing_auth: 401,
   malformed_auth: 401,
   clock_skew: 401,
@@ -17,15 +17,15 @@ export const POD_ERROR_STATUS = {
   bad_proof: 401,
   // Authorization.
   not_task_origin: 403,
-  /** A local route asked from another machine, or through a proxy (§5.6). */
+  /** A local route asked from another machine, or through a proxy (design.md 4.5). */
   not_local: 403,
-  /** A local blob publish asked for a path outside the workgroup workspace (§5.6). */
+  /** A local blob publish asked for a path outside the workgroup workspace (design.md 4.5). */
   path_outside_workspace: 403,
   // Malformed or unsupported requests.
   bad_request: 400,
   unsupported: 400,
   workgroup_mismatch: 400,
-  /** A hello whose declared endpoints are all forbidden by the screening policy (§7.7). */
+  /** A hello whose declared endpoints are all forbidden by the screening policy (design.md 6.6). */
   endpoint_refused: 400,
   // Unknown resources.
   task_not_found: 404,

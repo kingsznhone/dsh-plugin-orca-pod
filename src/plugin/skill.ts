@@ -10,7 +10,7 @@
  *
  * The skill is for sessions that may dispatch (this host's own). Sessions the
  * ACP executor spawns run a task: they carry `ORCA_POD_IN_TASK=1`, so the plugin
- * there registers no skill and offers only the file methods (§5.6, §7.9); the
+ * there registers no skill and offers only the file methods (design.md 4.5, 3.6); the
  * task preamble tells that agent what it needs.
  */
 

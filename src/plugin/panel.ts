@@ -1,5 +1,5 @@
 /**
- * The model behind the UI panel (§9.2): what it shows and what it can do.
+ * The model behind the UI panel (implementation.md 3): what it shows and what it can do.
  *
  * The panel renders members, tasks, pending approvals and the workspace root.
  * Everything here is a projection over the pod's running node and the approval
@@ -7,7 +7,7 @@
  * the client holds no business logic. The shapes it
  * answers with are the contract in `panel-api.ts`. Permission
  * decisions bypass the model on purpose, because the human is sitting at this
- * node (see §7.12) and should not need a tool round-trip.
+ * node (see design.md 6.4) and should not need a tool round-trip.
  */
 
 import { SANDBOX_MODES } from "@deepseek-ai/dsh-sandbox-policy";

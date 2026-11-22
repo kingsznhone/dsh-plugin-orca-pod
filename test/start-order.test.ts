@@ -1,5 +1,5 @@
 /**
- * Binding the port is the first thing a node does (§3.9): it is the lock that
+ * Binding the port is the first thing a node does (implementation.md 2): it is the lock that
  * keeps a second process on this machine away from the data root. A process that
  * cannot bind must not have touched what the running one keeps there.
  */

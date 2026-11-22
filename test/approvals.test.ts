@@ -1,5 +1,5 @@
 /**
- * The permission requests a dispatched task waits on (§7.11, §7.12): the tracker
+ * The permission requests a dispatched task waits on (design.md 6.4): the tracker
  * sees them while it follows the task, holds them for the UI, and carries the
  * user's answer to the remote task.
  */

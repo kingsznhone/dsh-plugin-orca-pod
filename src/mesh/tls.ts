@@ -1,6 +1,6 @@
 /**
  * How this node's outbound calls check who is at the other end of the TLS
- * connection (§7.7). Every node serves a self-signed certificate over its own
+ * connection (design.md 6.2). Every node serves a self-signed certificate over its own
  * Ed25519 identity key, so the node id a call is addressed to is the key the
  * certificate must carry: the connection is pinned to it after the handshake,
  * before any request goes out. A first contact (no id yet) takes the key the
@@ -36,7 +36,8 @@ const NODE_SIGALGS = [
 /** One call's way to its node: the dispatcher, and afterwards what the certificate showed. */
 export type TlsRoute = {
   dispatcher: Dispatcher;
-  /** The node whose key the certificate carried; undefined for a CA-issued one, or before any connection. */
+  /** The node whose key the certificate carried; undefined when the connection is
+   * pinned by id, for a CA-issued one, or before any connection. */
   presented(): OrcaNodeId | undefined;
   /** The call is over: a first contact's own connection is closed. */
   release(): void;
@@ -45,7 +46,7 @@ export type TlsRoute = {
 /**
  * The TLS side of this node's outbound calls: one connection pool per node it
  * has addressed by id, kept for reuse, and a one-off connection for each first
- * contact. One per orca instance; `close` ends every connection.
+ * contact. One per orca instance; `close` ends every pooled connection.
  */
 export class PeerTls {
   private readonly pinned = new Map<string, Agent>();
@@ -67,7 +68,7 @@ export class PeerTls {
     return { dispatcher: agent, presented: () => seen, release: () => void agent.close() };
   }
 
-  /** Close every connection this node holds open. */
+  /** Close the pooled connections to nodes this node has addressed by id. */
   async close(): Promise<void> {
     const agents = [...this.pinned.values()];
     this.pinned.clear();

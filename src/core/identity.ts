@@ -3,12 +3,12 @@ import { createPublicKey, sign as edSign, verify as edVerify } from "node:crypto
 import { publicKeyOf, type OrcaNodeId } from "./ids.ts";
 
 /**
- * Per-node identity (§7.1): an Ed25519 keypair created at first start. The
+ * Per-node identity (design.md 2.1): an Ed25519 keypair created at first start. The
  * orca node id *is* the public key, so any request a node signs proves which
  * node sent it — no shared workgroup secret can impersonate another node.
  *
  * This module signs and verifies; making a key, and keeping it (the DSH
- * credential store, §3.6), is the plugin's business (`plugin/stores.ts`).
+ * credential store, design.md 2.2), is the plugin's business (`plugin/stores.ts`).
  */
 export type NodeIdentity = {
   /** base58 of the raw 32-byte Ed25519 public key. */

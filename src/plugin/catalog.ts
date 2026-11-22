@@ -1,5 +1,5 @@
 /**
- * The node's model catalog (§6.15).
+ * The node's model catalog (design.md 5.6).
  *
  * The catalog lives in the DSH host, not in the orca node: `llm` knows which
  * providers and models the running harness can actually serve, and
@@ -9,8 +9,8 @@
  *
  * Both services are optional: headless nodes and smoke hosts start without
  * them, in which case the catalog stays empty and every task runs with the
- * executor's own default. The caller fences on them with `ctx.inject` and
- * passes whatever appeared.
+ * executor's own default. The feed itself follows both with `OptionalService`
+ * (`ctx.inject`) and rebuilds the catalog when either appears or goes away.
  */
 
 import type { Context, Logger } from "@deepseek-ai/cordis";

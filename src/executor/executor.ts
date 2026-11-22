@@ -1,5 +1,5 @@
 /**
- * The executor contract (§6.1): what the task runner hands an executor and the
+ * The executor contract (design.md 5.1): what the task runner hands an executor and the
  * events it gets back. The node's implementation is `acp/executor.ts`; tests bring their own.
  */
 
@@ -23,9 +23,9 @@ type RequestedAccess = z.infer<typeof RequestedAccessSchema>;
 
 /**
  * A running task stops to wait for a permission decision from the origin
- * (§7.11): one tool call needs more than the task's mode allows. That is the
+ * (design.md 6.4): one tool call needs more than the task's mode allows. That is the
  * only reason it waits. An executor that cannot continue for any other reason
- * finishes instead, with `BLOCKED: …` as the first line of its result (§6.14);
+ * finishes instead, with `BLOCKED: …` as the first line of its result (design.md 5.2);
  * there is no "ask the origin a question" suspension.
  */
 export type Suspension = {
@@ -45,17 +45,17 @@ export type ExecuteInput = {
   contextId: string;
   /** The full prompt: trusted preamble, then the origin's text as untrusted data. */
   prompt: string;
-  /** Origin orca node; part of the session binding key (§6.10). */
+  /** Origin orca node; part of the session binding key (design.md 5.4). */
   originOrcaNode: OrcaNodeId;
-  /** Group workspace root `<data_root>/workgroups/<workgroup_id>`; the executor's cwd (§6.7). */
+  /** Group workspace root `<data_root>/workgroups/<workgroup_id>`; the executor's cwd (design.md 5.4). */
   workspaceDir: string;
-  /** Gateway state dir `<data_root>/state/<workgroup_id>` (session bindings); outside the cwd (§6.7). */
+  /** Gateway state dir `<data_root>/state/<workgroup_id>` (session bindings); outside the cwd (design.md 5.4). */
   podDir: string;
-  /** Effective permission mode after origin inheritance and local ceiling (§7.10). */
+  /** Effective permission mode after origin inheritance and local ceiling (design.md 6.4). */
   permissionMode: SandboxMode;
   /** This node's own ceiling; a task never asks to be upgraded past it. Unset means no local ceiling. */
   permissionCeiling: SandboxMode | undefined;
-  /** Model route the origin asks for; an executor that cannot select one fails the task (§6.15). */
+  /** Model route the origin asks for; an executor that cannot select one fails the task (design.md 5.6). */
   model: ModelSelection | undefined;
   /** Reasoning effort for that route, same rule. */
   reasoningEffort: ReasoningEffortId | undefined;

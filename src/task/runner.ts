@@ -1,9 +1,10 @@
 /**
- * The task runner (§6.9): the single slot, the store and the lookups. One orca
- * node runs one task at a time, so a second task is refused with
+ * The task runner (design.md 5.3): the single slot, the store and the lookups.
+ * One orca node runs one task at a time, so a second task is refused with
  * `orca_node_busy`. The runner builds a `TaskRecord` per task and listens to
  * it: whatever the record reports changed, the runner writes the task through to
- * the store and tells its listeners.
+ * the store and drops it once it ends. Origin nodes learn about changes by
+ * polling (design.md 3.5); the runner notifies no one.
  */
 
 import type { SQLInputValue } from "node:sqlite";
@@ -48,7 +49,7 @@ export interface TaskListOptions {
 export class SingleSlotTaskRunner {
   private readonly quota: WorkspaceQuota;
   /**
-   * The `tasks` table (§5.5): each task as the gateway serves it. Its origin is in
+   * The `tasks` table (design.md 4.4): each task as the gateway serves it. Its origin is in
    * its metadata, and its last change is its status timestamp.
    */
   private readonly store: JsonTable<TaskView>;
@@ -56,9 +57,9 @@ export class SingleSlotTaskRunner {
 
   constructor(
     private readonly executor: LocalExecutor,
-    /** The node's database: every task change is written through to its `tasks` table (§5.5). */
+    /** The node's database: every task change is written through to its `tasks` table (design.md 4.4). */
     db: SqliteDb,
-    /** Group workspace: the executor's cwd (§6.7). */
+    /** Group workspace: the executor's cwd (design.md 5.4). */
     private readonly workspace: Workspace,
     private readonly settings: TaskSettings,
     /** This node: the one caller besides the origin that may cancel. */
@@ -75,25 +76,25 @@ export class SingleSlotTaskRunner {
     this.quota = new WorkspaceQuota(workspace, settings.max_workspace_bytes, logger);
   }
 
-  /** Fail what a restart interrupted (§8.3), then take a first look at the workspace. */
+  /** Fail what a restart interrupted (design.md 3.6), then take a first look at the workspace. */
   start(): void {
     this.recover();
     this.quota.measure();
   }
 
-  /** `origin` is the authenticated caller; it is recorded for busy/holder reporting (§6.9). */
+  /** `origin` is the authenticated caller; it is recorded for busy/holder reporting (design.md 5.3). */
   submit(input: SubmitTaskInput, origin: OrcaNodeId): TaskView {
     if (this.busy() !== null) throw SingleSlotTaskRunner.busyError();
     this.quota.assertWithin();
     // A ULID (48-bit millisecond timestamp + 80 random bits from `crypto.getRandomValues`,
-    // Crockford base32): time-ordered, 26 chars, unguessable enough to act as a capability handle (§5.5).
+    // Crockford base32): time-ordered, 26 chars, unguessable enough to act as a capability handle (design.md 4.4).
     const id = ulid();
     const view: TaskView = {
       kind: "task",
       id,
       contextId: input.message.contextId ?? id,
       status: { state: "submitted", timestamp: new Date().toISOString() },
-      // Every reader learns who dispatched the task from the view (§7.6).
+      // Every reader learns who dispatched the task from the view (design.md 4.1).
       metadata: { ...input.metadata, pod: { ...input.metadata?.pod, origin_orca_node: origin } },
     };
     const record: TaskRecord = new TaskRecord(
@@ -116,9 +117,10 @@ export class SingleSlotTaskRunner {
   }
 
   /**
-   * Local tasks for the UI task panel (§9.2) and agent history queries: defaults
-   * to the newest 10 records via an indexed `ORDER BY updated_at DESC LIMIT ?`.
-   * Without filters or paging, tasks still running appear first.
+   * Local tasks for the UI task panel (implementation.md 3, 4) and agent
+   * history queries: defaults to the newest 10 records via an indexed
+   * `ORDER BY updated_at DESC LIMIT ?`. Without filters or paging, tasks still
+   * running appear first.
    */
   list(limit: number = DEFAULT_RECENT_LIMIT, options?: TaskListOptions): TaskView[] {
     if (limit <= 0) return [];
@@ -166,7 +168,7 @@ export class SingleSlotTaskRunner {
       if (this.store.get(taskId) === undefined) throw new PodError("task_not_found", `unknown task ${taskId}`);
       throw new PodError("bad_request", "task is not input-required");
     }
-    // Only the task's origin drives it; other workgroup members may read it (§5.3).
+    // Only the task's origin drives it; other workgroup members may read it (design.md 4.3).
     if (callerOrcaNode !== record.origin) {
       throw new PodError("not_task_origin", `task ${taskId} belongs to another origin`);
     }
@@ -175,7 +177,7 @@ export class SingleSlotTaskRunner {
     const waiting = record.waiting;
     if (waiting === null) throw new PodError("bad_request", "task is not waiting for a permission decision");
     const control = resumeControlOf(message);
-    // A permission suspension ends only with an approval or an explicit denial (§7.11).
+    // A permission suspension ends only with an approval or an explicit denial (design.md 6.4).
     if (control === null) {
       throw new PodError("bad_request", "resume of a permission request needs an approval or a denial");
     }
@@ -191,14 +193,14 @@ export class SingleSlotTaskRunner {
           `the approval answers request ${control.request_id}, not ${waiting.request_id}`,
         );
       }
-      // A parked task gave up the slot: while another task holds it, the origin retries later (§6.9).
+      // A parked task gave up the slot: while another task holds it, the origin retries later (design.md 5.3).
       if (this.busy() !== null) throw SingleSlotTaskRunner.busyError();
       record.grant();
     }
     return record.snapshot();
   }
 
-  /** Only the task's origin, or this node itself (its own control paths), may cancel it (§5.3). */
+  /** Only the task's origin, or this node itself (its own control paths), may cancel it (design.md 4.3). */
   cancel(taskId: string, caller: OrcaNodeId): TaskView {
     const view = this.get(taskId);
     if (view === null) throw new PodError("task_not_found", `unknown task ${taskId}`);
@@ -211,7 +213,7 @@ export class SingleSlotTaskRunner {
     return record.snapshot();
   }
 
-  /** The task holding the single slot (§6.9); null when idle. A task waiting for a permission decision does not hold it. */
+  /** The task holding the single slot (design.md 5.3); null when idle. A task waiting for a permission decision does not hold it. */
   busy(): BusyState | null {
     for (const record of this.live.values()) {
       if (record.state === "submitted" || record.state === "working") {
@@ -236,7 +238,7 @@ export class SingleSlotTaskRunner {
     }
   }
 
-  /** §8.3: a restart never silently resumes work; every unfinished task fails. */
+  /** design.md 3.6: a restart never silently resumes work; every unfinished task fails. */
   private recover(): void {
     for (const view of this.store.select(NON_TERMINAL)) {
       const message = textMessage("task was interrupted by an orca node restart");

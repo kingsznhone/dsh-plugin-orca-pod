@@ -3,7 +3,7 @@ import { isLoopbackHost } from "@deepseek-ai/dsh-host-webserver";
 import { isIPv4, isIPv6 } from "node:net";
 
 /**
- * Endpoint screening (§7.7).
+ * Endpoint screening (design.md 6.6).
  *
  * - Private and public addresses may be dialed: a mesh may span a VPN, public
  *   IPv6 or a cloud server, and only members, who proved the password, declare
@@ -98,7 +98,7 @@ function addressAllowed(address: string, fromThisMachine: boolean): boolean {
   }
 }
 
-/** Whether a URL names this machine by a loopback host (`127.0.0.1`, `[::1]`, `localhost`). */
+/** Whether a URL names this machine by a loopback IP literal (`127.0.0.1`, `[::1]`). */
 export function isLoopbackUrl(endpoint: string): boolean {
   try {
     return isLoopbackHost(new URL(endpoint).hostname.replace(/^\[|\]$/g, ""));
@@ -136,7 +136,7 @@ async function screenEndpoint(endpoint: string, fromThisMachine: boolean): Promi
   return addresses.every((entry) => addressAllowed(entry.address, fromThisMachine)) ? "allowed" : "refused";
 }
 
-/** How long one screening conclusion is reused (§7.7). */
+/** How long one screening conclusion is reused (design.md 6.6). */
 const SCREENING_TTL_MS = 60_000;
 
 type Cached<T> = { value: T; until: number };
@@ -146,7 +146,7 @@ type Cached<T> = { value: T; until: number };
  * lookup per heartbeat would be wasteful, but a conclusion kept for the whole
  * process would never notice that a name now points somewhere else.
  *
- * Two kinds of endpoint come through here (§7.7): a candidate, learned from
+ * Two kinds of endpoint come through here (design.md 6.6): a candidate, learned from
  * someone else's member list, is screened before it is dialed; the endpoints a
  * node declares for itself in its `hello` are screened before they are recorded.
  * Both follow the same rule; `fromThisMachine` says whether the list or the

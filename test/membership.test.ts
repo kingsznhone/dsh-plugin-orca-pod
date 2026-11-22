@@ -32,7 +32,7 @@ function ids(mesh: Mesh): OrcaNodeId[] {
     .sort();
 }
 
-/** What `node` vouches for (§3.5), as a node meeting it for the first time learns it from its answer. */
+/** What `node` vouches for (design.md 2.6), as a node meeting it for the first time learns it from its answer. */
 async function vouchedBy(net: TestNet, node: NetNode): Promise<OrcaNodeId[]> {
   const stranger = net.node();
   await stranger.mesh.probe(node.url);
@@ -136,7 +136,7 @@ describe("the node table", () => {
     await net.advance(TIMINGS.suspectAfterMs + ROUND_MS);
 
     // Sampled through many rounds, its own greetings arriving in between: never back to
-    // online, so the server is not offered it for tasks it could not deliver (§3.3).
+    // online, so the server is not offered it for tasks it could not deliver (design.md 2.5).
     const seen = new Set<string | undefined>();
     for (let step = 0; step < 20; step += 1) {
       await net.advance(ROUND_MS / 4);
@@ -200,7 +200,7 @@ describe("the node table", () => {
     }
   });
 
-  it("gives up on a candidate it never reaches after five tries, until the node greets it itself (B24)", async () => {
+  it("gives up on a candidate it never reaches after five tries, until the node greets it itself (design.md 2.6)", async () => {
     const net = new TestNet(TIMINGS);
     const [a, b] = (await net.started(2)) as [NetNode, NetNode];
     const d = net.node();
@@ -244,7 +244,7 @@ describe("the node table", () => {
     expect(stateOf(b, d)).toBe("offline");
   });
 
-  it("vouches only for itself and the members it hears from, not candidates or offline nodes (B24)", async () => {
+  it("vouches only for itself and the members it hears from, not candidates or offline nodes (design.md 2.6)", async () => {
     const net = new TestNet(TIMINGS);
     const [a, b] = (await net.started(2)) as [NetNode, NetNode];
     const d = net.node();
@@ -262,7 +262,7 @@ describe("the node table", () => {
     expect(await vouchedBy(net, b)).toEqual([b.id]);
   });
 
-  it("stops a dead node from circulating between two members (B24)", async () => {
+  it("stops a dead node from circulating between two members (design.md 2.6)", async () => {
     const net = new TestNet(TIMINGS);
     const [a, c] = (await net.started(2)) as [NetNode, NetNode];
     // a knows d first-hand; d dies before c reaches it, so c knows it only from a's list.

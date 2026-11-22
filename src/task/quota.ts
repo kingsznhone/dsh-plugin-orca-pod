@@ -3,7 +3,7 @@ import type { NodeLogger } from "../core/events.ts";
 import type { Workspace } from "./workspace.ts";
 
 /**
- * The workspace quota (§6.13): a new task is refused while the group workspace
+ * The workspace quota (design.md 5.7): a new task is refused while the group workspace
  * holds more bytes than its limit. Usage is measured in the background: at startup,
  * after every task ends (only a running agent writes there) and after every
  * refusal. It is unknown until the first walk finishes, so a task is only

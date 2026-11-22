@@ -1,5 +1,5 @@
 /**
- * AcpExecutor (§6.14): one `dsh` child process per orca node, driven over ACP
+ * AcpExecutor (design.md 5.2): one `dsh` child process per orca node, driven over ACP
  * v1. One ACP session per (origin orca node, context), resumed from the
  * persisted binding when the child still knows it; a permission prompt
  * suspends the task, and the task's resume message answers the prompt.
@@ -44,13 +44,17 @@ type SessionBindings = z.infer<typeof SessionBindingsSchema>;
 /**
  * Environment variable the task executor sets to "1" in every session it
  * spawns. An agent running a task must not start another one: tasks are
- * single-hop (§7.9), so the plugin's `send` refuses while it is set. This keeps
- * a well-behaved agent from cascading; it is not a security boundary, since the
+ * single-hop (design.md 3.6), so the `orca_pod` tool a task session loads offers
+ * only the file methods (`fetch`, `publish`), not `send`. This keeps a
+ * well-behaved agent from cascading; it is not a security boundary, since the
  * agent runs as the same OS user as the node.
  */
 export const IN_TASK_ENV = "ORCA_POD_IN_TASK";
 
-/** Stop reasons that end a prompt without an answer (§6.14); anything else completes the task. */
+/**
+ * Stop reasons that fail the task (design.md 5.2); `cancelled` aborts the run
+ * before this map is consulted, and any other stop reason completes it.
+ */
 const FAILED_STOP_REASONS: Partial<Record<StopReason, string>> = {
   refusal: "model refused the task",
   max_tokens: "model stopped at its token limit",
@@ -91,7 +95,7 @@ class AcpRun {
   private readonly open = new Set<(outcome: RequestPermissionResponse) => void>();
   private readonly route: SessionRoute;
   private transcript = "";
-  /** The run's effective mode; the origin's approval widens it for the rest of the task (§7.12). */
+  /** The run's effective mode; the origin's approval widens it for the rest of the task (design.md 6.4). */
   private mode: SandboxMode;
   private aborted = false;
 
@@ -159,7 +163,8 @@ class AcpRun {
   /**
    * What this run listens for from the child: message chunks are collected into
    * the transcript; a permission the inherited mode covers is answered at once,
-   * any other is queued for the origin and remembered in `open`.
+   * one past this node's ceiling is refused at once, and any other is queued for
+   * the origin and remembered in `open`.
    */
   private makeRoute(): SessionRoute {
     return {
@@ -231,9 +236,9 @@ class AcpRun {
 }
 
 /**
- * ACP executor options (§6.14): the `dsh` stdio server to start. The child always
+ * ACP executor options (design.md 5.2): the `dsh` stdio server to start. The child always
  * runs the `acp` profile, which must load this plugin too so the task agent can
- * exchange files (D60). Part of the node's settings (`node/settings.ts`).
+ * exchange files (design.md 5.2). Part of the node's settings (`node/settings.ts`).
  */
 export const AcpExecutorConfigSchema = z.object({ command: z.string().min(1).optional() });
 export type AcpExecutorConfig = z.infer<typeof AcpExecutorConfigSchema>;
@@ -248,7 +253,7 @@ export class AcpExecutor implements LocalExecutor {
 
   constructor(
     config: AcpExecutorConfig,
-    /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (§6.15). */
+    /** Local defaults for a task that names no model or effort; a resumed session must not keep an earlier task's selection (design.md 5.6). */
     private readonly models: ModelCatalog,
     private readonly logger: NodeLogger,
     child: {
@@ -258,7 +263,7 @@ export class AcpExecutor implements LocalExecutor {
   ) {
     this.command = config.command ?? "dsh";
     // The acp profile is the only profile that speaks ACP on stdio. It must load
-    // this plugin too: the task agent gets `orca_pod`'s file methods there (D60).
+    // this plugin too: the task agent gets `orca_pod`'s file methods there (design.md 5.2).
     this.args = ["--profile", "acp"];
     this.childEnv = child.env;
   }
@@ -314,7 +319,7 @@ export class AcpExecutor implements LocalExecutor {
   private async connect(cwd: string): Promise<{ connection: AcpConnection; sessions: Map<string, AcpSession> }> {
     if (this.current === null || this.current.connection.isClosed()) {
       // Sessions spawned by this executor carry the in-task marker: the plugin there
-      // starts no node and offers only the file methods, through this node (§7.9, §5.6).
+      // starts no node and offers only the file methods, through this node (design.md 3.6, 4.5).
       const env = { ...process.env, ...this.childEnv(), [IN_TASK_ENV]: "1" };
       this.current = { connection: AcpConnection.spawn(this.command, this.args, cwd, env), sessions: new Map() };
     }
@@ -323,7 +328,11 @@ export class AcpExecutor implements LocalExecutor {
     return joined;
   }
 
-  /** The session's config options after a resume; null when the agent no longer knows it. */
+  /**
+   * The session's config options after a resume; null when the resume fails (the
+   * agent no longer knows the session, or the request itself failed), so a new
+   * session is started.
+   */
   private async resume(
     connection: AcpConnection,
     sessionId: string,

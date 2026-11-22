@@ -1,4 +1,7 @@
-/** The node table on the wire (§3): the records peers list, and the `hello` every contact between two nodes is made of (§3.3). */
+/**
+ * The node table on the wire (design.md 2): the records peers list, and the
+ * `hello` every contact between two nodes is made of (design.md 2.4).
+ */
 
 import { createHash } from "node:crypto";
 
@@ -9,15 +12,15 @@ import { asHttps } from "../core/net.ts";
 import { ModelOffersSchema, ModelSelectionSchema, ReasoningEffortSchema } from "../executor/model.ts";
 import { BusyStateSchema } from "../task/wire.ts";
 
-// ---- the records of the node table (§3) ----
+// ---- the records of the node table (design.md 2) ----
 
 /** Max advertised base URLs per orca node; enough for IPv4/IPv6/LAN/public. */
 const MAX_ENDPOINTS = 8;
 
 /**
- * Dial addresses a node advertises for itself, best first (§3.2): https base
+ * Dial addresses a node advertises for itself, best first (design.md 2.3): https base
  * URLs, kept in the order given, without a trailing slash and without repeats.
- * Nodes serve https only (§7.7); an `http://` URL, which older settings wrote, is
+ * Nodes serve https only (design.md 6.2); an `http://` URL, which older settings wrote, is
  * read as https.
  */
 export const EndpointsSchema = z
@@ -28,7 +31,7 @@ export const EndpointsSchema = z
 const PeerStateSchema = z.enum(["unknown", "online", "suspect", "offline"]);
 export type PeerState = z.infer<typeof PeerStateSchema>;
 
-/** Host facts a node advertises in its hello (§3.3); `runtime_digest` covers them. */
+/** Host facts a node advertises in its hello (design.md 2.4); `runtime_digest` covers them. */
 const RuntimeInfoSchema = z.object({
   os: z.object({ family: z.string(), name: z.string(), version: z.string() }),
   arch: z.string(),
@@ -42,20 +45,23 @@ export type RuntimeInfo = z.infer<typeof RuntimeInfoSchema>;
 const PeerViewSchema = z.object({
   orca_node_id: OrcaNodeIdSchema,
   display_name: z.string(),
-  /** Base URLs peers may dial, best first; one entry is the common case (§3.2). */
+  /** Base URLs peers may dial, best first; one entry is the common case (design.md 2.3). */
   endpoints: z.array(z.string()),
   runtime: RuntimeInfoSchema.nullable(),
   runtime_digest: z.string(),
   state: PeerStateSchema,
   busy: BusyStateSchema.nullable(),
   last_recv_at: z.string().nullable(),
-  /** Per-task time budget this orca node enforces; origins size tasks to it (§6.9). */
+  /**
+   * Per-task time budget this orca node enforces; advertised to peers, which size
+   * their tasks from their own settings.
+   */
   max_task_ttl_s: z.number().positive().optional(),
-  /** Model routes this orca node can switch an ACP session to (§6.15). */
+  /** Model routes this orca node can switch an ACP session to (design.md 5.6). */
   models: ModelOffersSchema.optional(),
-  /** The model an ACP session uses when a task does not name one (§6.15). */
+  /** The model an ACP session uses when a task does not name one (design.md 5.6). */
   default_model: ModelSelectionSchema.nullable().optional(),
-  /** Reasoning effort an ACP session uses when a task does not name one (§6.15). */
+  /** Reasoning effort an ACP session uses when a task does not name one (design.md 5.6). */
   default_reasoning_effort: ReasoningEffortSchema.nullable().optional(),
 });
 export type PeerView = z.infer<typeof PeerViewSchema>;
@@ -64,7 +70,7 @@ const SelfRecordSchema = PeerViewSchema.extend({ workgroup_id: WorkgroupIdSchema
 export type SelfRecord = z.infer<typeof SelfRecordSchema>;
 
 /**
- * The answer to a `hello` (§3.3): the answering node's own record and the digest
+ * The answer to a `hello` (design.md 2.4): the answering node's own record and the digest
  * of the directory it vouches for. `members` is that directory, sent only when
  * the caller's digest differs; they are candidates for the caller, never a claim
  * that anyone is online.
@@ -97,9 +103,9 @@ export function membersDigest(peers: readonly PeerView[]): string {
 }
 
 /**
- * A node's description of itself (§2.5, §3.3). It rides in every `hello`, covered
- * by the sender's request signature, so only the node itself can state it; the
- * latest one replaces what the receiver recorded before.
+ * A node's description of itself (design.md 2.3, 2.4). It rides in every `hello`,
+ * covered by the sender's request signature, so only the node itself can state
+ * it; the latest one replaces what the receiver recorded before.
  */
 export const SelfDescriptionSchema = PeerViewSchema.pick({
   display_name: true,
@@ -113,9 +119,9 @@ export type SelfDescription = z.infer<typeof SelfDescriptionSchema>;
 
 /**
  * Who the sender is and what it knows. There is no admission in the body: that
- * the sender is in the workgroup was proved in the request header (§3.3). A first
- * contact and a heartbeat are the same request, except that a first contact has
- * no digest to compare and no receiver id to sign to.
+ * the sender is in the workgroup was proved in the request header (design.md 2.4).
+ * A first contact and a heartbeat are the same request, except that a first
+ * contact has no receiver id to sign to.
  */
 export const HelloRequestSchema = z.object({
   self: SelfDescriptionSchema.extend({

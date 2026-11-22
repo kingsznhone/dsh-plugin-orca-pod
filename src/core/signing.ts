@@ -19,7 +19,7 @@ export function bodySha256(body?: Uint8Array | string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Request authentication (§7.1): every request carries two proofs in its
+// Request authentication (design.md 6.1): every request carries two proofs in its
 // Authorization header, over the same input. `sig` is the sending node's
 // Ed25519 signature: the orca node id *is* the public key, so verifying it
 // authenticates the node and shows that method, path, receiver and body were not
@@ -32,7 +32,7 @@ export function bodySha256(body?: Uint8Array | string): string {
 /** A request as both proofs cover it: what is sent, and where on the receiver. */
 export type SignedRequest = {
   method: string;
-  /** Request target on the receiver, path *and* query included (§7.1). */
+  /** Request target on the receiver, path *and* query included (design.md 6.1). */
   url: string;
   body?: Uint8Array | string;
 };
@@ -91,7 +91,7 @@ export function buildAuthHeader(
 }
 
 // ---------------------------------------------------------------------------
-// Reply authentication (§7.1): the answering node signs what it says, bound to
+// Reply authentication (design.md 6.1): the answering node signs what it says, bound to
 // the nonce of the request, so a reply can be neither changed nor moved to answer
 // another request. `subject` is the sha256 of the body, or, for a streamed file
 // whose hash is not known before the first byte, `blob:<blob_id>`: the bytes are

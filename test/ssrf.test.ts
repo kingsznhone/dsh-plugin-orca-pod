@@ -12,7 +12,7 @@ const fromElsewhere = (endpoint: string) => new EndpointScreen().candidate(endpo
 /** A candidate named in a member list that arrived over loopback, from a node on this machine. */
 const fromThisMachine = (endpoint: string) => new EndpointScreen().candidate(endpoint, true);
 
-describe("candidate endpoint filtering (§7.7)", () => {
+describe("candidate endpoint filtering (design.md 6.6)", () => {
   it("allows private ranges", async () => {
     expect(await fromElsewhere("https://10.1.2.3:11811")).toBe(true);
     expect(await fromElsewhere("https://172.20.0.9:11811")).toBe(true);
@@ -109,7 +109,7 @@ describe("candidate endpoint filtering (§7.7)", () => {
   });
 });
 
-describe("peer origin (§7.7)", () => {
+describe("peer origin (design.md 6.6)", () => {
   it("screens a candidate's addresses before they are dialed, but not what a node declared for itself", async () => {
     const net = new TestNet();
     const a = net.node();
@@ -186,7 +186,7 @@ describe("peer origin (§7.7)", () => {
       return peer;
     };
 
-    // Forbidden link-local, hex IPv4-mapped metadata, and remote loopback are all refused.
+    // Forbidden link-local, IPv4-mapped metadata, and remote loopback are all refused.
     for (const bad of [
       ["https://169.254.169.254:80"],
       ["https://[::ffff:169.254.169.254]:80"],
@@ -211,7 +211,7 @@ describe("peer origin (§7.7)", () => {
   });
 });
 
-describe("bind address URLs (B21)", () => {
+describe("bind address URLs (design.md 3.1)", () => {
   it("brackets IPv6 literals and keeps host names, by DSH's bind rule", () => {
     expect(bindUrl("192.168.1.2", 11811)).toBe("https://192.168.1.2:11811");
     expect(bindUrl("fd00::5", 11811)).toBe("https://[fd00::5]:11811");

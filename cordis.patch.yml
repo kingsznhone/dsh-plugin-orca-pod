@@ -7,16 +7,16 @@
 #
 # First-party code builds from `src/` into `lib/`; runtime dependencies come
 # from package.json (fastify, ulid, zod, `@agentclientprotocol/sdk`,
-# `cross-spawn` and the `@deepseek-ai/dsh-*` infrastructure packages; see
-# docs/09-implementation.md §9.7).
+# `cross-spawn`, `bs58`, `undici` and the `@deepseek-ai/dsh-*` infrastructure
+# packages; see `docs/implementation.md` 6 for the dependency choices).
 #
-# No credentials are bundled, and this config must never carry
-# `workgroup_password`: the plugin rejects it. The first start waits for the
-# panel wizard, which stores the password in the DSH credential store and saves
-# the workgroup id and listen address into this profile entry through the config
-# editor; until then the node does not listen at all (§7.1). The default listen
-# address is loopback, and the wizard asks which interface should be exposed to
-# peers.
+# No credentials are bundled; no node settings in this config take effect: the
+# plugin's config schema keeps only `skill_injection` and silently drops
+# unknown keys (including `workgroup_password`, `port` and `peers`). The panel
+# stores the password in the DSH credential store and the workgroup id and
+# listen address in `<data_root>/settings.json`; until then the node does not
+# listen at all. The default listen address is loopback, and the panel asks
+# which interface should be exposed to peers.
 - insert:
     - id: dsh-plugin-orca-pod
       name: "dsh-plugin-orca-pod"

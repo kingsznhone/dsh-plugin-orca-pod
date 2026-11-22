@@ -22,7 +22,7 @@ export class AcpSession {
   ) {}
 
   /**
-   * ACP selects the model per session (§6.15) through the session's config
+   * ACP selects the model per session (design.md 5.6) through the session's config
    * options, found by their ACP category (`model`, `thought_level`) rather than
    * by id; the ACP server rejects unknown values. The effort is
    * written only when the task (or the node default) supplies one: DeepSeek

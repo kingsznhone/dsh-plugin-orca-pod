@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { nodeCertificate, nodeOfCertificate } from "../src/core/certificate.ts";
 import { generateNodeIdentity } from "../src/plugin/stores.ts";
 
-describe("node certificate (§7.7)", () => {
+describe("node certificate (design.md 6.2)", () => {
   it("is a self-signed certificate over the node's own identity key", () => {
     const identity = generateNodeIdentity();
     const { key, cert } = nodeCertificate(identity);
@@ -20,8 +20,7 @@ describe("node certificate (§7.7)", () => {
   });
 
   it("is valid DER every time: the random serial never needs padding", () => {
-    // A serial whose first byte came out 0x00 (or needed a sign byte) is invalid
-    // DER; OpenSSL 3 refuses such a certificate. One in 256 would hit it.
+    // The serial's first byte is forced to 0x01–0x7f, so its DER INTEGER is already minimal and needs no padding byte.
     const identity = generateNodeIdentity();
     for (let round = 0; round < 2000; round += 1) {
       const parsed = new X509Certificate(nodeCertificate(identity).cert);

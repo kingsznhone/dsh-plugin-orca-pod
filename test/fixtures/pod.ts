@@ -14,7 +14,7 @@ import { credentialHost, MemoryCredentials } from "./credentials.ts";
 
 export const logger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger;
 
-/** A catalog feed that follows no host services: `watch` is never called on it. */
+/** A catalog feed that follows no host services. */
 export function catalogFeed(): ModelCatalogFeed {
   return new ModelCatalogFeed({ inject() {} } as unknown as Pick<Context, "inject">, logger);
 }

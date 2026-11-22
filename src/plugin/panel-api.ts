@@ -1,6 +1,6 @@
 /**
  * What the Orca panel and its host half say to each other over `/orca-api`
- * (§9.2), in one place: request bodies as schemas the host parses, response
+ * (implementation.md 3, 4), in one place: request bodies as schemas the host parses, response
  * shapes as types the client imports (type-only, so they are erased from the
  * bundle). `panel.ts` fills the shapes, `panel-routes.ts` serves them.
  */
@@ -16,7 +16,7 @@ import type { DispatchEntry, TaskState, TaskView } from "../task/wire.ts";
 /**
  * A node as the panel shows it; `busy_from` is the label of the origin it is busy
  * for. `unreachable`: this node hears it but cannot connect to it, so traffic
- * flows one way only (§3.3); this node's own observation, not part of the wire view.
+ * flows one way only (design.md 2.5); this node's own observation, not part of the wire view.
  */
 export type PodPeer = PeerView & { busy_from: string | null; unreachable: boolean };
 
@@ -87,7 +87,7 @@ export interface PodState {
   /** This node's own record while it runs; null while it does not. */
   self: PodPeer | null;
   config: PodConfigView;
-  /** Reachable members only: offline records are dropped. */
+  /** Non-offline members only: `offline` records are dropped (`unknown` and `suspect` remain). */
   members: PodPeer[];
   approvals: PodApproval[];
   recent: PodTaskRow[];

@@ -1,5 +1,5 @@
 /**
- * Panel HTTP bridge (§9.2): `/orca-api` is a same-origin route on the DSH web
+ * Panel HTTP bridge (implementation.md 3): `/orca-api` is a same-origin route on the DSH web
  * server that admits whoever DSH's own `/api` admits (`ctx.connection.admit`),
  * and of those only the owner, so approvals and workspace paths follow the web
  * UI's login whether the browser is on this machine or another.

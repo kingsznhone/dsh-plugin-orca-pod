@@ -273,7 +273,7 @@ describe("plugin apply", () => {
     // The plugin itself owns only the pod; the panel route and the
     // settings-page policy live in their own inject scopes.
     expect(host.disposers).toHaveLength(1);
-    // agents, permission presets, panel route, settings page, llm, default model.
+    // sandbox policy, agents, panel route, settings page, llm, default model.
     expect(host.scopes.flatMap((scope) => scope.cleanups)).toHaveLength(6);
     for (const dispose of host.disposers) await dispose();
   });
@@ -390,7 +390,7 @@ describe("plugin apply", () => {
   it("listens for changes to the password and the node key, and for nothing else of the credential store", async () => {
     const host = await applied();
     expect(host.credentialEvents().sort()).toEqual(["credentials/record-updated", "credentials/reference-updated"]);
-    // Unrelated credentials are ignored; the pod is not started, so nothing observable happens either way.
+    // Unrelated credentials are ignored; no node is up (nothing is configured), so nothing observable happens either way.
     host.emitCredentialEvent("credentials/reference-updated", "DEEPSEEK_API_KEY");
     host.emitCredentialEvent("credentials/record-updated", "llm-pi-ai/deepseek");
     for (const dispose of host.disposers) await dispose();

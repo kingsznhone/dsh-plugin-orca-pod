@@ -15,16 +15,16 @@ import { BlobRoutes } from "./blob-routes.ts";
 import { ClusterRoutes } from "./cluster-routes.ts";
 
 /**
- * Default cap for signed requests. Authentication needs the body bytes, so the
- * body is buffered before signature verification; keep that buffer small and
- * raise the limit only where large payloads are expected (§7.1).
+ * Default cap for every request: authentication needs the body bytes, so the
+ * body is buffered before signature verification; keep that buffer small (the
+ * cap is global — no route raises it).
  */
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
 const BUSY_RETRY_AFTER_S = 30;
 
 /**
- * The inbound HTTP surface of an orca node (§4): the signed routes of the
+ * The inbound HTTP surface of an orca node (design.md 3): the signed routes of the
  * workgroup, the A2A task API, the file routes and this machine's local routes, behind one access policy and
  * one error format; every answer to a signed request is itself signed. The
  * constructor only builds the routes in memory; `listen` binds the port.
@@ -37,7 +37,7 @@ export class Gateway {
     private readonly mesh: Mesh,
     tasks: SingleSlotTaskRunner,
     workgroupId: WorkgroupId,
-    /** Workgroup key behind the proof of every request (§7.1). */
+    /** Workgroup key behind the proof of every request (design.md 6.1). */
     key: Buffer,
     private readonly identity: NodeIdentity,
     /** The token this machine's own processes show the local routes. */
@@ -45,7 +45,7 @@ export class Gateway {
     /** Directory that `/local/blobs` may publish files from (the workgroup workspace). */
     publishRoot: string,
   ) {
-    // https only (§7.7): the certificate is self-signed over the node's identity key,
+    // https only (design.md 6.2): the certificate is self-signed over the node's identity key,
     // so a caller pins it to the node id it dials. Nothing is served in plaintext,
     // this machine's own processes included.
     // `forceCloseConnections`: a peer may hold an idle keep-alive socket; shutdown
@@ -91,7 +91,7 @@ export class Gateway {
   }
 
   /**
-   * Sign what this node answers to an authenticated peer (§7.1): the Ed25519
+   * Sign what this node answers to an authenticated peer (design.md 6.1): the Ed25519
    * signature covers the verified request nonce, the status and the body, so a
    * reply can be neither changed nor moved to answer another request. Unauthenticated
    * requests (missing/invalid auth, wrong workgroup/target, clock skew, replay,

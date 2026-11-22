@@ -14,7 +14,7 @@ const NONCE_TTL_MS = 5 * 60_000;
 const NONCE_CAPACITY = 10_000;
 
 /**
- * Who may call a route (§7.1). Every route declares one in `config.access`;
+ * Who may call a route (design.md 3.2). Every route declares one in `config.access`;
  * registering a route without it fails at startup.
  *
  * - `public`: anyone (health only; there is no anonymous directory).
@@ -28,7 +28,7 @@ const NONCE_CAPACITY = 10_000;
  *             it only says who is online and where to dial.
  * - `local`:  a process on this machine that holds the node's local token (a task
  *             session, which the executor hands it to). No signature: the token
- *             lives as long as the node and never leaves the machine (§5.6). The
+ *             lives as long as the node and never leaves the machine (design.md 4.5). The
  *             connection must come from this machine as well, so a token that
  *             did leave it (a task can read its own environment and could put
  *             the token in its result) opens nothing from elsewhere.
@@ -76,7 +76,7 @@ declare module "fastify" {
     blobReply?: boolean;
   }
   interface FastifyRequest {
-    /** Set by the access hook on every route except `public`. */
+    /** Set by the access hook on `hello` and `member` routes only; `undefined` at runtime on `public` and `local` routes (and unmatched 404s). */
     auth: VerifiedAuth;
     /** Raw body bytes, kept for signature verification. */
     rawBody?: Buffer;
@@ -142,13 +142,13 @@ export type VerifiedAuth = { orcaNodeId: OrcaNodeId; nonce: string };
 
 export class AccessPolicy {
   private readonly nonces = new NonceCache();
-  /** When this gateway started; requests older than this are replays (§7.1). */
+  /** When this gateway started; requests older than this are replays (design.md 6.1). */
   private readonly startedAt = Date.now();
 
   constructor(
     private readonly selfId: OrcaNodeId,
     private readonly workgroupId: WorkgroupId,
-    /** The workgroup key the proof of every request must have been made with (§7.1). */
+    /** The workgroup key the proof of every request must have been made with (design.md 6.1). */
     private readonly key: Buffer,
     /** What a local route takes (`local`). */
     private readonly localToken: string,
@@ -209,7 +209,7 @@ export class AccessPolicy {
       throw new PodError("workgroup_mismatch", "workgroup_id does not match this orca node");
     }
     // The signature covers the full request target, query included: a captured
-    // request cannot be replayed with different query parameters (§7.1).
+    // request cannot be replayed with different query parameters (design.md 6.1).
     const input = signatureInput({ method: request.method, url: request.url, body: request.rawBody }, claim);
     if (!verifyWithNodeId(parsed.orcaNodeId, input, parsed.signature)) {
       throw new PodError("bad_signature", "signature does not match");

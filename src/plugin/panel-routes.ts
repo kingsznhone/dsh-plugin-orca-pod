@@ -4,7 +4,7 @@
  * The DSH client bundle cannot import host packages and the package-private
  * `host.call` channel has no documented host-side contract, so the panel talks
  * to its own host half over the DSH web server instead: one prefix route on the
- * already-running origin, polled by the client with plain `fetch` (§9.2).
+ * already-running origin, polled by the client with plain `fetch` (implementation.md 3).
  *
  * The route exposes task prompts, workspace paths and approval actions, so it
  * admits exactly who DSH's own `/api` admits: `ctx.connection.admit` checks the
@@ -39,13 +39,15 @@ const POD_API_PREFIX = "/orca-api";
 /** Rows of the panel's task list view (default 10; older records are queried via the agent). */
 const TASKS_LIMIT = DEFAULT_RECENT_LIMIT;
 
-/** Largest JSON body accepted for one approval action. */
+/** Largest JSON body accepted for one panel action (every POST that reads a body; `reset` reads none). */
 const MAX_BODY_BYTES = 64 * 1024;
 
 /**
  * Custom header the panel sends on every call; browsers preflight it cross-origin.
- * DSH's trust check only refuses `cross-site`, and its `SameSite=Strict` cookie
- * still rides a same-site request, so this is what keeps a sibling subdomain's page out.
+ * DSH's trust check already refuses a cross-site request and a foreign `Origin`,
+ * but a same-site page can still send cookie-bearing requests without an `Origin`
+ * (images, navigations), and its `SameSite=Strict` cookie rides those, so this is
+ * what keeps a sibling subdomain's page out.
  */
 const PANEL_HEADER = "x-orca-pod";
 
@@ -126,7 +128,7 @@ export class PanelRoutes {
         if (peer === null || taskId === null) return { status: 400, body: { error: "peer and task are required" } };
         return answer("task", await panel.task(peer, taskId));
       }
-      // Every task this node knows about, for the panel's "all tasks" view.
+      // The newest tasks this node runs or has dispatched, for the panel's "all tasks" view.
       case "/tasks":
         return answer("tasks", panel.recent(TASKS_LIMIT));
       default:

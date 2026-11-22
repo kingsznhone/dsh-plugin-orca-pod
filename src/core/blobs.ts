@@ -1,5 +1,5 @@
 /**
- * How a file is named across the mesh (§5.6): by the member that published it
+ * How a file is named across the mesh (design.md 4.5): by the member that published it
  * and the sha256 of its bytes, written `<orca_node_id>/<sha256>`. The name holds
  * no address: whoever fetches it asks its own node, which dials that member the
  * way its heartbeat does, so a reverse proxy or a second interface in front of
@@ -50,15 +50,18 @@ export function parseBlobRef(text: string): BlobRef | null {
 export const PublishedFileSchema = z.object({ ref: z.string(), size: z.number(), expires_at: z.string().nullable() });
 export type PublishedFile = z.infer<typeof PublishedFileSchema>;
 
-/** How long a published file stays downloadable unless its publisher says otherwise (§5.6): 7 days. */
+/** How long a published file stays downloadable unless its publisher says otherwise (design.md 4.5): 7 days. */
 const DEFAULT_BLOB_TTL_S = 7 * 24 * 60 * 60;
 
-// Published files (§5.6)
+// Published files (design.md 4.5)
 
 type FileBlob = {
   /** sha256 of the file contents; doubles as the content address. */
   blob_id: string;
-  /** Absolute path on this orca node: the registry's own copy of the file. */
+  /**
+   * Absolute path on this orca node: the registry's own copy, or (for a row an older
+   * version wrote) the publisher's own file.
+   */
   path: string;
   size: number;
   expires_at: string | null;
@@ -70,7 +73,7 @@ export type OpenedBlob = { stream: Readable; size: number | undefined };
 /**
  * A pass-through that hashes (sha256) and counts what flows through it: a file
  * is named by this digest when it is published and checked against it when it
- * is fetched (§5.6).
+ * is fetched (design.md 4.5).
  */
 function sha256Tap(): {
   stream: Transform;
@@ -90,7 +93,7 @@ function sha256Tap(): {
 
 /**
  * Write a fetched file to `path`: the bytes go to `<path>.part` first and are
- * moved into place only when their sha256 is the one the file is named by (§5.6).
+ * moved into place only when their sha256 is the one the file is named by (design.md 4.5).
  * Nothing is left behind on failure.
  */
 export async function saveBlob(opened: OpenedBlob, path: string, sha: string): Promise<{ size: number }> {
@@ -115,7 +118,7 @@ export async function saveBlob(opened: OpenedBlob, path: string, sha: string): P
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
- * File-backed blob registry (§5.6).
+ * File-backed blob registry (design.md 4.5).
  *
  * Files move between nodes by link only: a node publishes a file of its own,
  * and whoever needs it pulls the bytes from that node's gateway. A name is
@@ -141,7 +144,7 @@ export class FileBlobRegistry {
 
   constructor(
     /**
-     * The node's database: the `file_blobs` table maps a blob id to its copy (§5.6),
+     * The node's database: the `file_blobs` table maps a blob id to its copy (design.md 4.5),
      * next to the tasks, so one `data_root` holds all node state. This node writes a
      * row when it publishes a file and the gateway reads it, which is why publishing
      * needs no network route at all.
@@ -198,7 +201,7 @@ export class FileBlobRegistry {
     return { ...blob };
   }
 
-  /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (§5.6). */
+  /** The file behind a blob id, or the error the gateway answers: not found, expired, or gone from disk (design.md 4.5). */
   open(blobId: string): OpenedBlob {
     const file = this.row(blobId);
     if (!file) throw new PodError("blob_not_found");

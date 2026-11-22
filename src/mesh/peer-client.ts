@@ -57,7 +57,7 @@ type HttpMethod = "GET" | "POST";
 type CallOptions = {
   /**
    * The node the request is addressed to; the signature is bound to it and the
-   * reply must come from it (§7.1). `""` is a first contact, where the reply's
+   * reply must come from it (design.md 6.1). `""` is a first contact, where the reply's
    * signer is taken as the node's identity.
    */
   target: string;
@@ -81,13 +81,13 @@ type JsonRequest<S extends z.ZodType> = {
 export type Answer<T> = { body: T; from: OrcaNodeId };
 
 /**
- * Deadline of one call unless the caller names its own (§4.7): a peer that
+ * Deadline of one call unless the caller names its own (design.md 3.5): a peer that
  * accepts the connection and then stalls would otherwise hang a tool call or the
  * tracker.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 
-/** A hostile or broken peer must not be able to make us buffer unbounded JSON (§4.7). */
+/** A hostile or broken peer must not be able to make us buffer unbounded JSON (design.md 3.5). */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 /** The code DSH's `deadline` stamps on an outbound call that ran out of time. */
 const PEER_TIMEOUT = "PEER_TIMEOUT";
@@ -111,23 +111,24 @@ const UNSIGNED_AUTH_ERRORS: ReadonlySet<PodErrorCode> = new Set([
 ]);
 
 /**
- * The outbound client (§4.7): every request carries this node's signature and the
- * workgroup proof, is bound to the node it is addressed to, and runs under a
- * deadline; every reply must be signed by that node, over its status and body and
- * the nonce of the request (except pre-authentication rejections, which are not
- * signed by the receiver). Callers name the reply schema they expect, and a body
- * that does not fit it is a `peer_error`. It knows nothing of which nodes exist:
- * who to call, and at which address, is the node object's business.
+ * The outbound client (design.md 3.5): every request carries this node's signature
+ * and the workgroup proof, is bound to the node it is addressed to, and runs under
+ * a deadline; every reply must be signed by that node, over its status, the
+ * request's nonce and its body hash — or, for a streamed file, its blob id —
+ * except pre-authentication rejections, which are not signed by the receiver.
+ * Callers name the reply schema they expect, and a body that does not fit it is a
+ * `peer_error`. It knows nothing of which nodes exist: who to call, and at which
+ * address, is the node object's business.
  */
 export class HttpPeerClient {
   constructor(
     private readonly identity: NodeIdentity,
-    /** The workgroup key behind the proof of every request (§7.1). */
+    /** The workgroup key behind the proof of every request (design.md 6.1). */
     private readonly key: Buffer,
     private readonly workgroupId: WorkgroupId,
     /** Outbound HTTP; tests inject packet loss, delay and partitions. */
     private readonly fetch: FetchLike,
-    /** Pins each call's TLS connection to the node it is addressed to (§7.7). */
+    /** Pins each call's TLS connection to the node it is addressed to (design.md 6.2). */
     private readonly tls: PeerTls,
   ) {}
 
@@ -235,7 +236,7 @@ export class HttpPeerClient {
   }
 
   /**
-   * A first contact's binding (§7.7): the reply must be signed by the node whose
+   * A first contact's binding (design.md 6.2): the reply must be signed by the node whose
    * key the TLS certificate carried, so whoever answered the handshake is the node
    * that answered the request. A known node's connection was pinned before the
    * request went out; a CA-issued certificate (a proxy) carries no node key.

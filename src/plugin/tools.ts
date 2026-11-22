@@ -4,7 +4,7 @@
  * Every operation is a method on `orca_pod` instead of a separate tool, so the
  * agent's context carries one schema. In the host it drives the node of this
  * process: task methods are non-blocking (`send` returns a task id at once,
- * `status` reads it), and the file methods publish and fetch (§5.6). Inside a
+ * `status` reads it), and the file methods publish and fetch (design.md 4.5). Inside a
  * task (another `dsh` process, no node of its own) it has the file methods
  * only, which go through this machine's node (`LocalNode`).
  */
@@ -89,7 +89,7 @@ const TASK_QUERY_STATES = [
 const TASK_QUERY_SCOPES = ["all", "local", "dispatched"] as const;
 const MAX_TASK_QUERY_LIMIT = 100;
 
-/** What a task session may do: move files through this machine's node (§5.6). */
+/** What a task session may do: move files through this machine's node (design.md 4.5). */
 const TASK_METHOD_NAMES = ["fetch", "publish"] as const;
 
 /**
@@ -155,7 +155,8 @@ const PARAMETERS = {
   },
   reasoning_effort: {
     type: "string",
-    description: "send: optional reasoning effort for the selected model; only meaningful together with model.",
+    description:
+      "send: optional reasoning effort for the task's model (the selected model, or the target's default model).",
   },
 } as const satisfies ParameterSchemaSpec;
 
@@ -247,11 +248,11 @@ type ConnectResult = Roster & { peer: string };
 type ToolNode = { kind: "host"; pod: Pod } | { kind: "task"; local: LocalNode };
 
 /**
- * This machine's node as a task session reaches it (§5.6). The plugin inside a
+ * This machine's node as a task session reaches it (design.md 4.5). The plugin inside a
  * task runs in another `dsh` process and has no node of its own, so its file
  * methods go through the node's local routes, at the address and with the token
  * the executor put into the task's environment, over TLS pinned to the node's id
- * like any other call to a node (§7.7).
+ * like any other call to a node (design.md 6.2).
  */
 export class LocalNode {
   private readonly tls = new PeerTls();
@@ -356,7 +357,7 @@ export class PodTool {
   private async execute(exec: ToolRunContext, call: () => Promise<unknown>): Promise<JsonValue> {
     try {
       PodTool.throwIfAborted(exec.signal);
-      // The call's own work observes the signal and settles when it stops (B20).
+      // The call's own work observes the signal and settles when it stops (design.md 4.3).
       const snapshot = snapshotJsonValue(await call());
       if (snapshot === undefined) throw new Error("the result is not lossless JSON");
       return snapshot as JsonValue;
@@ -403,7 +404,7 @@ export class PodTool {
     return { task_id: view.id, state: view.status.state, peer: node.displayName, node: node.id };
   }
 
-  /** Save a file a member published, where the session sandbox lets it write (§5.6). */
+  /** Save a file a member published, where the session sandbox lets it write (design.md 4.5). */
   private async fetch(args: z.output<typeof FetchCall>, exec: ToolRunContext): Promise<FetchResult> {
     const ref = parseBlobRef(args.ref);
     if (ref === null) throw new Error("ref must be <orca node id>/<sha256>");
@@ -433,7 +434,7 @@ export class PodTool {
     return { path: output, size };
   }
 
-  /** Copy a local file into this machine's node and name it (§5.6); the copy lives for its TTL. */
+  /** Copy a local file into this machine's node and name it (design.md 4.5); the copy lives for its TTL. */
   private async publish(args: z.output<typeof PublishCall>, exec: ToolRunContext): Promise<PublishedFile> {
     const policy = this.sessionPolicy(exec);
     if (policy === undefined) {
@@ -602,8 +603,8 @@ export class PodTool {
 
   /**
    * The mode a dispatched task starts with: the session's, or a narrower one the
-   * caller names (P1). A wider one is refused: the target asks the origin for an
-   * upgrade when the task needs it (§7.12). A session whose mode cannot be read
+   * caller names. A wider one is refused: the target asks the origin for an
+   * upgrade when the task needs it (design.md 6.4). A session whose mode cannot be read
    * counts as read-only.
    */
   private static taskMode(explicit: SandboxMode | undefined, session: SandboxMode | undefined): SandboxMode {

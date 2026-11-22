@@ -1,6 +1,6 @@
 /**
  * Architecture guard: the import graph of `src/` stays acyclic and only points
- * downwards through the feature contexts (D41).
+ * downwards through the feature contexts (implementation.md 1).
  *
  *   core ← executor ← task ← mesh ← api ← node ← plugin
  *
@@ -12,7 +12,9 @@
  *   other in a loop even if only a type closes it.
  * - There are no barrel files: an importer names the file that defines what it
  *   uses, so moving code inside a context means updating its callers.
- * - SQLite stores (`Sqlite*`) are constructed only by the assembly points.
+ * - SQLite store classes (`Sqlite*`, other than the `SqliteDb` handle) are
+ *   constructed only by the assembly points; `SqliteDb` itself is only opened
+ *   there too.
  * - `client` is the browser bundle, above everything: nothing imports it, and
  *   at runtime it imports only `core`, so no host code reaches the bundle. Its
  *   type-only imports of the wire shapes are erased like any other.

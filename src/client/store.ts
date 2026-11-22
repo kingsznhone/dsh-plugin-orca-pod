@@ -54,8 +54,9 @@ export async function read<K extends keyof PodReads>(
 /**
  * The one shared snapshot every slot component reads. A single timer polls
  * `/state` while anything is subscribed and stops with the last subscriber;
- * an action refreshes the snapshot for everyone, and an unchanged payload
- * leaves it (and every component) untouched.
+ * an action refreshes the snapshot for everyone; an unchanged payload replaces
+ * it only to clear a previous poll error, and otherwise leaves it (and every
+ * component) untouched.
  */
 function createStore() {
   let snap: Snapshot = { state: null, error: null, actionError: null, busy: false, panelOpen: false, docked: [] };

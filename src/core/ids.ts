@@ -1,4 +1,4 @@
-/** The two ids every context names: an orca node and a workgroup (§7.1). */
+/** The two ids every context names: an orca node and a workgroup (design.md 2.1). */
 
 import bs58 from "bs58";
 import { z } from "zod";
@@ -10,7 +10,7 @@ const PUBLIC_KEY_BYTES = 32;
 
 /**
  * An orca node id is the raw Ed25519 public key in base58 (Bitcoin alphabet,
- * §7.1), so a valid id is self-certifying: whoever signs with the matching
+ * design.md 2.1), so a valid id is self-certifying: whoever signs with the matching
  * private key owns the id, and no shared workgroup secret can stand in for it.
  * Base58 is one-to-one, so each key has exactly one id. A checked id is only
  * made by `OrcaNodeIdSchema` from a plain string.

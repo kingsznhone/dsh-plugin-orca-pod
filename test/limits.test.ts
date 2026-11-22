@@ -1,5 +1,5 @@
 /**
- * Budget and summary limits (§6.9): a task's hard TTL is the local cap, the
+ * Budget and summary limits (design.md 5.3): a task's hard TTL is the local cap, the
  * summary is truncated to 32 KiB, and both the cap and usage are
  * visible/recorded so an origin can size its delegations.
  */
@@ -64,7 +64,7 @@ describe("task hard TTL", () => {
 });
 
 describe("summary limits", () => {
-  /** The inline summary cap (§6.11). */
+  /** The inline summary cap (design.md 5.5). */
   const CAP = 32 * 1024;
 
   it("truncates a summary longer than 32 KiB", async () => {

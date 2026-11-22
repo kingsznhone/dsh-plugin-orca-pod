@@ -2,7 +2,10 @@
 
 import { DEFAULT_PORT } from "./constants.ts";
 
-/** Split `host[:port]` or `[ipv6][:port]` into the host and the port text (`undefined` when there is none). */
+/**
+ * Split `host[:port]` or `[ipv6][:port]` into the host and the port text (`undefined` when there is no colon,
+ * empty string when there is one with nothing after it).
+ */
 function splitHostPort(rest: string, original: string): { host: string; portText: string | undefined } {
   if (rest.startsWith("[")) {
     const close = rest.indexOf("]");
@@ -22,7 +25,7 @@ function splitHostPort(rest: string, original: string): { host: string; portText
 /**
  * The one canonical form of a peer address: `https://host:port` with no path
  * and no trailing slash. Accepts a bare `host`, `host:port` (default port `DEFAULT_PORT`)
- * and bare IPv6 literals. Nodes speak https only (§7.7): `https://` without a
+ * and bare IPv6 literals. Nodes speak https only (design.md 6.2): `https://` without a
  * port means 443 (a node behind a proxy); `http://`, which older settings and
  * peers wrote, is read as https, on the node port when it names none.
  */
@@ -45,7 +48,7 @@ export function normalizePeerUrl(peer: string): string {
   return url;
 }
 
-/** An endpoint as nodes dial it: https, which is all a node serves (§7.7); an `http://` one is read as https. */
+/** An endpoint as nodes dial it: https, which is all a node serves (design.md 6.2); an `http://` one is read as https. */
 export function asHttps(endpoint: string): string {
   return endpoint.replace(/^http:\/\//i, "https://");
 }

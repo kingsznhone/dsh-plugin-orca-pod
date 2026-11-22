@@ -183,9 +183,9 @@ export class AcpConnection {
 
   /**
    * The child's stdout as the SDK's input. It does not end when stdout ends: the
-   * SDK would then close with a bare "connection closed". It errors only once
-   * the child is gone (`close`: exited and stdio drained), with `reason()`, so
-   * pending requests learn the exit code and the stderr tail.
+   * SDK would then close with a bare "ACP connection closed" error. It errors
+   * only once the child is gone (`close`: exited and stdio drained), with
+   * `reason()`, so pending requests learn the exit code and the stderr tail.
    */
   private static childOutput(child: AcpChild, reason: () => Error): ReadableStream<Uint8Array> {
     // The reader can cancel the stream first (the SDK does when the connection closes);
@@ -217,8 +217,9 @@ export class AcpConnection {
     });
   }
   /**
-   * SIGTERM the child's process tree, SIGKILL after the grace period; resolves
-   * once the child has exited, so callers can release its cwd safely.
+   * SIGTERM the child's process tree, SIGKILL after the grace period (on Windows
+   * both phases run `taskkill /T /F`, which kills at once); resolves once the
+   * child has exited, so callers can release its cwd safely.
    */
   private static terminate(child: ChildProcess): Promise<void> {
     if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();

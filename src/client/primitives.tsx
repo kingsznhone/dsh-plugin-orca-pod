@@ -21,7 +21,7 @@ export const stop = (handler: () => void) => (event: React.SyntheticEvent) => {
   handler();
 };
 
-/** A DSH dialog sized for detail views; its body scrolls, the header stays put. */
+/** A DSH dialog sized for detail views; its content area (header included) scrolls and the footer stays fixed. */
 export function Dialog({
   title,
   wide,
@@ -50,7 +50,7 @@ export function Dialog({
   );
 }
 
-/** A titled card; `count` shows as a badge after the title, `action` sits on the right. */
+/** A titled card; a non-zero `count` shows as a badge after the title, `action` sits on the right. */
 export function Section({
   title,
   count,
@@ -115,7 +115,7 @@ export const Row = ({ onClick, children }: { onClick?: () => void; children?: Re
   </tr>
 );
 
-/** Label/value pairs of a detail dialog; `null` values are skipped. */
+/** Label/value pairs of a detail dialog; `null`/`false` rows are skipped. */
 export function Facts({ rows }: { rows: Array<[string, ReactNode] | null | false> }) {
   return (
     <dl className={ui.facts}>

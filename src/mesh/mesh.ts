@@ -19,7 +19,7 @@ import { heartbeatIntervalMsFor, recoverDelayMs, resolveTimings, windowsFor, typ
 type Seed = { fails: number; nextAtMs: number; trying: boolean };
 
 /**
- * The node table (§3.1): every node of the workgroup is an `OrcaNode` in one map,
+ * The node table (design.md 2.5): every node of the workgroup is an `OrcaNode` in one map,
  * and this node is one of them. Using a node is `mesh.resolve(ref)` and then
  * calling it; what takes the whole table is done here: the directory this node
  * vouches for and its digest, the tombstones that keep a stale list from reviving
@@ -75,9 +75,11 @@ export class Mesh {
   }
 
   /**
-   * The node a person or a tool names (§3.4): its id, its display name when that
-   * is unique, or an address it has: one it advertises, or one that reached it.
-   * Anything else is an `unknown_peer`: only `probe` may meet a stranger.
+   * The node a person or a tool names (design.md 2.3, 3.5): its id, its display
+   * name when that is unique, or one of the addresses it advertises.
+   *
+   * Anything else is an `unknown_peer` — or a `bad_request` when a display name
+   * names several nodes: only `probe` may meet a stranger.
    */
   resolve(ref: string): OrcaNode {
     const text = ref.trim();
@@ -104,9 +106,10 @@ export class Mesh {
   }
 
   /**
-   * The directory this node vouches for to others (§3.5): itself and the nodes it
-   * hears from. Candidates it never reached and nodes gone quiet stay in `list()`
-   * but are never passed on.
+   * The directory this node vouches for to others (design.md 2.6): itself and the
+   * nodes it hears from. Candidates it never reached and nodes that have gone
+   * offline stay in `list()` but are never passed on; a node that is merely quiet
+   * or unreachable is still vouched for.
    */
   private directory(): PeerView[] {
     return this.list()
@@ -114,7 +117,7 @@ export class Mesh {
       .map((node) => node.view());
   }
 
-  /** What this node passes on (§3.5); its digest is what peers compare. */
+  /** What this node passes on (design.md 2.6); its digest is what peers compare. */
   digest(): string {
     return membersDigest(this.directory());
   }
@@ -136,13 +139,13 @@ export class Mesh {
 
   /**
    * Remote lists only add records; they never touch online state.
-   * `fromThisMachine`: the list arrived over loopback, so its loopback addresses are ours (§7.7).
+   * `fromThisMachine`: the list arrived over loopback, so its loopback addresses are ours (design.md 6.6).
    */
   private mergeRemote(members: readonly PeerView[], fromThisMachine: boolean): void {
     for (const member of members) {
       if (member.orca_node_id === this.self.id) continue;
       if (this.isTombstoned(member.orca_node_id)) continue;
-      // A third-party roster is only a hint for nodes we have never met (§7.1).
+      // A third-party roster is only a hint for nodes we have never met (design.md 2.6).
       // Once a record exists, only that node's own signed self-description may
       // update its endpoints or profile; otherwise any member could redirect
       // everyone's traffic to itself.
@@ -163,7 +166,7 @@ export class Mesh {
   // ---- contact ----
 
   /**
-   * First contact, or contact again, at an address (§3.3): the one call that may
+   * First contact, or contact again, at an address (design.md 2.4): the one call that may
    * reach a stranger, so only an address someone chose may come here (settings,
    * the panel, the `connect` tool). A node that is already known at the address is
    * greeted as itself, so its answer must be its own; a stranger's answer names it.
@@ -182,7 +185,7 @@ export class Mesh {
   }
 
   /**
-   * Seed the mesh with the addresses this node is configured or remembers (§3.3):
+   * Seed the mesh with the addresses this node is configured or remembers (design.md 2.4):
    * each is contacted now, and one that does not answer is tried again on the
    * recover backoff until it does, instead of being given up at start.
    */
@@ -204,9 +207,9 @@ export class Mesh {
   }
 
   /**
-   * A node greeted this one (§3.3); the route has already checked the request's
+   * A node greeted this one (design.md 2.4); the route has already checked the request's
    * proofs. What the sender declared about itself is still input: its endpoints
-   * are screened before they are recorded (§7.7). It is recorded (or refreshed)
+   * are screened before they are recorded (design.md 6.6). It is recorded (or refreshed)
    * as an explicit member heard just now, and answered with this node's own
    * record and, when its digest differs, the directory.
    */
@@ -225,7 +228,7 @@ export class Mesh {
 
   /**
    * Screen the endpoints a node declared for itself (in an inbound `hello` or in
-   * the answer to our `probe`) before recording them (§7.7). A node already in the
+   * the answer to our `probe`) before recording them (design.md 6.6). A node already in the
    * table repeats the same endpoints every few seconds, so its last verdict may be
    * reused; a first contact is always screened afresh.
    */
@@ -239,7 +242,7 @@ export class Mesh {
 
   // ---- the greeting loop ----
 
-  /** Start greeting the nodes that are due, once per interval (§3.3). */
+  /** Start greeting the nodes that are due, once per interval (design.md 2.5). */
   start(): void {
     this.stopped = false;
     void this.tick();
@@ -261,8 +264,8 @@ export class Mesh {
 
   /**
    * One round: re-evaluate every node, greet the ones that are due and try the
-   * seeds that have not answered. §3.3: the cadence follows the size of the mesh
-   * (one hello per node per second) so cluster traffic stays linear.
+   * seeds that have not answered. Per design.md 2.5, the cadence follows the size
+   * of the mesh (one hello per node per second) so cluster traffic stays linear.
    */
   private async tick(): Promise<void> {
     if (this.stopped) return;
@@ -299,15 +302,16 @@ export class Mesh {
       if (answer.body.members !== null) this.mergeRemote(answer.body.members, node.answersOverLoopback);
     } catch (error) {
       if (OrcaNode.isRejection(error)) {
-        // This node still uses another password: stop answering it and forget it
-        // (§7.1). Its own hellos to us fail identically, so the whole old mesh
-        // drops the changed node instead of keeping it "online" forever.
-        this.ctx.logger.warn(`orca-pod: dropping node ${node.id} (workgroup admission rejected, §7.1)`);
+        // The node rejected our proof: another password, or a clock, nonce or
+        // signature it does not accept (design.md 6.1). Its own hellos to us
+        // fail identically, so the whole old mesh drops the changed node
+        // instead of keeping it "online" forever.
+        this.ctx.logger.warn(`orca-pod: dropping node ${node.id} (workgroup admission rejected, design.md 6.1)`);
         this.remove(node.id);
         return;
       }
       if (node.missed(clock.monotonicMs(), this.current) === "drop") {
-        // The tombstone keeps a stale list from adding it straight back (§3.5).
+        // The tombstone keeps a stale list from adding it straight back (design.md 2.6).
         this.remove(node.id);
       }
     }

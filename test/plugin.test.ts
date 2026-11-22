@@ -10,7 +10,7 @@ import { fakeNodeId } from "./fixtures/ids.ts";
 import { idlePod, podRunning } from "./fixtures/pod.ts";
 import * as plugin from "../src/plugin/bundle.ts";
 
-/** The `orca_pod` tool of a pod; `policy` is the host's sandbox policy, when it has one. */
+/** The `orca_pod` tool of a pod; `policy` reads the host's sandbox policy, when it has one. */
 function createPodTools(pod: Pod, policy?: () => SandboxPolicyService | undefined): ToolDefinition[] {
   // The host's optional service, reduced to the one read the tool makes; a host without it has none.
   const sandbox = { current: policy ?? (() => undefined) } as unknown as OptionalService<"sandboxPolicy">;
@@ -198,7 +198,7 @@ describe("orca_pod tool", () => {
     const explicit = sent[1] as { metadata?: { pod?: Record<string, unknown> } };
     expect(explicit.metadata?.pod?.permission_mode).toBe("read-only");
 
-    // A task can only start narrower than the session; more is asked for as an upgrade (P1).
+    // A task can only start narrower than the session; more is asked for as an upgrade (design.md 6.4).
     await expect(
       run(
         sendTools,
@@ -278,7 +278,7 @@ describe("orca_pod tool", () => {
     expect(cancelled).toEqual(["task-late"]);
   });
 
-  it("settles a cancelled call only after its own work has stopped (B20)", async () => {
+  it("settles a cancelled call only after its own work has stopped (design.md 4.3)", async () => {
     const controller = new AbortController();
     let finishSend: (() => void) | undefined;
     let sendSettled = false;

@@ -5,7 +5,7 @@ import { type HelloResponse, HelloRequestSchema } from "../mesh/wire.ts";
 import type { Mesh } from "../mesh/mesh.ts";
 import { parseInput } from "./input.ts";
 
-/** The routes of the workgroup (§3, §7.1): the public `health` check and `hello`. */
+/** The routes of the workgroup (design.md 2, 3.2): the public `health` check and `hello`. */
 export class ClusterRoutes {
   constructor(private readonly mesh: Mesh) {}
 
@@ -23,7 +23,7 @@ export class ClusterRoutes {
     };
   }
 
-  /** A node greeted this one (§3.3); both proofs already held when it got here. */
+  /** A node greeted this one (design.md 2.4); both proofs already held when it got here. */
   private hello(request: FastifyRequest): Promise<HelloResponse> {
     const body = parseInput(HelloRequestSchema, request.body, "body");
     return this.mesh.greeted(request.auth.orcaNodeId, body, isDirectLoopbackRequest(request));

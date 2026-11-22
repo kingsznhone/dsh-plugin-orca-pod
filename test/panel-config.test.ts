@@ -1,7 +1,7 @@
 /**
- * Panel-driven configuration (§9.2): settings written to the machine's settings
+ * Panel-driven configuration (implementation.md 3): settings written to the machine's settings
  * file, the workgroup password and the node key kept in the credential store,
- * live reconfiguration, peers remembered as runtime state, and the panel read
+ * live reconfiguration, peers joined live kept in the settings file, and the panel read
  * model that never exposes the password.
  */
 
@@ -97,7 +97,7 @@ describe("panel configuration of the pod", () => {
     await handle.orca().catch(() => undefined);
     try {
       // A settings file that names a workgroup is not enough: without a stored
-      // password a fresh install must not listen (§7.1).
+      // password a fresh install must not listen (design.md 2.2).
       expect(handle.configured).toBe(false);
       expect(handle.status.kind).not.toBe("failed");
       expect(handle.run).toBeNull();
@@ -278,8 +278,7 @@ describe("panel configuration of the pod", () => {
       const reconfiguring = handle.reconfigure({ display_name: "late rename" });
       const stopping = handle.stop();
       await Promise.allSettled([reconfiguring, stopping]);
-      // stopPod waits for the queued restart, and that operation must not start
-      // a fresh listener after the host disposed the pod.
+      // Pod.stop() takes its turn after the queued restart and then stops its node, so the pod ends with none.
       expect(handle.run).toBeNull();
     } finally {
       await handle.stop();

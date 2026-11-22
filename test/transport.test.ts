@@ -16,8 +16,8 @@ import type { WorkgroupId } from "../src/core/ids.ts";
 import { ScriptExecutor, scriptMessage } from "./support/script.ts";
 
 /**
- * 压缩时钟：interval 100ms（生产是 2s），但所有抖动窗口都按“心跳间隔的倍数”给，
- * 最少 5 个间隔，避免测出来的只是“一次心跳还没发出去”。
+ * 压缩时钟：interval 100ms（生产不传 intervalMs 时按节点数在 2s–10s 间自适应），
+ * 所有抖动窗口都按“心跳间隔的倍数”给（2–6 个间隔），避免测出来的只是“一次心跳还没发出去”。
  */
 const JITTER: Partial<MeshTimings> = {
   intervalMs: 100,
@@ -30,7 +30,7 @@ const JITTER: Partial<MeshTimings> = {
   heartbeatTimeoutMs: 400,
 };
 
-/** 短暂断链用更长窗口：确认“抖动”只进 suspect，不会掉到 offline。 */
+/** 短暂断链沿用 JITTER 的窗口（suspect 3 个间隔、offline 6 个间隔）：确认“抖动”只进 suspect，不会掉到 offline。 */
 const SHORT_OUTAGE: Partial<MeshTimings> = {
   ...JITTER,
   suspectAfterMs: 300,
@@ -205,7 +205,7 @@ describe("transport jitter during formation", () => {
 
       // c → a 单向断，持续 1.5s = 15 个心跳间隔（例如 a 在 NAT 后面）。a 的心跳仍能到 c，
       // 所以 c 不把 a 判死（不进 offline）；但 c 连不上 a，a 停在 suspect(unreachable)，
-      // 派任务立即得到 peer_not_online，而不是等拨号失败（§3.3）。
+      // 派任务立即得到 peer_not_online，而不是等拨号失败（design.md 2.5）。
       const stateOfA = () => peersOf(c).find((peer) => peer.orca_node_id === a.mesh.self.id)?.state;
       blocked = true;
       await sleep(1500);
@@ -271,7 +271,8 @@ describe("transport jitter during formation", () => {
     const a = await makeNode(workgroupId, "jitter", { timings: JITTER });
     const c = await makeNode(workgroupId, "jitter", {
       timings: JITTER,
-      // A man in the middle on plain HTTP adds a node to the directory it hands back.
+      // A man in the middle rewrites the hello answer in flight (there is no plain HTTP path) and
+      // adds a node to the directory it hands back.
       fetch: rewriteJson("/cluster/hello", (body) => ({
         ...body,
         members: [

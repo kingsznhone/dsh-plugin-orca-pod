@@ -1,14 +1,15 @@
 /**
- * The clocks of the mesh (§3.3): how often a node is greeted, and how long it may
+ * The clocks of the mesh (design.md 2.5): how often a node is greeted, and how long it may
  * stay quiet before it is suspect, offline, forgotten. The only evidence that a
  * node is online is the local arrival time of its `hello`; state lives on the node
  * object here, never in someone else's member list.
  */
 
 /**
- * Adaptive heartbeat cadence (§3.3): one hello per peer per `N` seconds, where N
- * is the number of orca nodes in the workgroup. Cluster-wide traffic is then ~N
- * requests/second (linear) instead of the quadratic cost of a fixed tick.
+ * Adaptive heartbeat cadence: each peer greets its peers once per interval, and
+ * the interval follows the number of orca nodes in the workgroup (N seconds,
+ * clamped to 2–10 s). Cluster-wide traffic stays linear in N instead of the
+ * quadratic cost of a fixed tick.
  */
 const HEARTBEAT_INTERVAL_MIN_MS = 2000;
 const HEARTBEAT_INTERVAL_MAX_MS = 10_000;
@@ -21,7 +22,7 @@ export function heartbeatIntervalMsFor(orcaNodeCount: number): number {
 export type MeshTimings = {
   /** Heartbeat period; each orca node sends one every interval (±10% jitter). */
   intervalMs: number;
-  /** Consecutive missed heartbeats before a peer becomes suspect. */
+  /** How long a peer may stay quiet before it becomes suspect. */
   suspectAfterMs: number;
   /** Missed-heartbeat horizon after which a peer leaves the online set. */
   offlineAfterMs: number;
@@ -40,13 +41,13 @@ export type MeshTimings = {
 /**
  * Consecutive failed heartbeats after which a candidate this node has never
  * reached is dropped (and tombstoned): someone else's memory of a node is not
- * a reason to keep dialing it forever (§3.5).
+ * a reason to keep dialing it forever (design.md 2.6).
  */
 export const CANDIDATE_MAX_FAILURES = 5;
 
 /**
  * How long to wait before trying again an address or a node that did not answer
- * `fails` times in a row (§3.3): `recoverProbeMs`, doubling with every failure,
+ * `fails` times in a row (design.md 2.5): `recoverProbeMs`, doubling with every failure,
  * at most `maxRecoverProbeMs`. Seeds and offline nodes back off alike.
  */
 export function recoverDelayMs(fails: number, timings: MeshTimings): number {
@@ -54,7 +55,7 @@ export function recoverDelayMs(fails: number, timings: MeshTimings): number {
 }
 
 /**
- * The windows that follow from a cadence (§3.3): one missed tick is suspect and
+ * The windows that follow from a cadence (design.md 2.5): one missed tick is suspect and
  * three are offline, with slack for jitter; a heartbeat may take half a tick, at
  * least 100 ms.
  */
@@ -80,7 +81,7 @@ export function resolveTimings(overrides: Partial<MeshTimings> = {}): MeshTiming
     maxRecoverProbeMs: 30000,
     recordTtlMs: 7 * 24 * 60 * 60 * 1000,
     tombstoneMs: 10 * 60 * 1000,
-    // A lone node starts at the shortest cadence; the adaptive tick retargets it (§3.3).
+    // A lone node starts at the shortest cadence; the adaptive tick retargets it (design.md 2.5).
     ...windowsFor(overrides.intervalMs ?? HEARTBEAT_INTERVAL_MIN_MS),
     ...overrides,
   };

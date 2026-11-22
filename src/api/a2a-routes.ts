@@ -11,7 +11,7 @@ import { parseInput } from "./input.ts";
 /** The methods this node answers; any other is `unsupported`, not a malformed request. */
 const METHODS: ReadonlySet<unknown> = new Set(A2ARequestSchema.options.map((option) => option.shape.method.value));
 
-/** The A2A JSON-RPC surface (§4.7): submit, read and cancel tasks. */
+/** The A2A JSON-RPC surface (design.md 3.5): submit, read and cancel tasks. */
 export class A2aRoutes {
   constructor(private readonly tasks: SingleSlotTaskRunner) {}
 

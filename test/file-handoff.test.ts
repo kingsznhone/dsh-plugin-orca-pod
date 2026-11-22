@@ -1,5 +1,5 @@
 /**
- * Files between two real nodes (§5.6): files are not part of a task. The origin
+ * Files between two real nodes (design.md 4.5): files are not part of a task. The origin
  * publishes one and names it in the task text; the task fetches it by that name
  * and publishes what it hands back, naming it in its result; the origin fetches
  * that. The agent here does what the task's `orca_pod` file methods have the

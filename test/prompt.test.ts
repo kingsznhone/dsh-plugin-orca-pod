@@ -1,9 +1,9 @@
 /**
- * The task prompt (§6.7, §6.14): the node's trusted preamble first and the
+ * The task prompt (design.md 5.4, 5.2): the node's trusted preamble first and the
  * origin's text last inside an untrusted block. Notes are the agent's own
  * business: the node neither asks for them nor lists them. Files
  * the origin shares are links in that text; nothing is materialized for the
- * agent (§5.6).
+ * agent (design.md 4.5).
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";

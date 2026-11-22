@@ -1,11 +1,11 @@
 /**
- * One task's life (§6.9), a state machine
+ * One task's life (design.md 5.3), a state machine
  *
  *   submitted -> working <-> input-required -> completed | failed | canceled
  *
  * where every transition goes through `move` (live states) or `finish` (the
  * single exit, which also releases everything the record itself holds). The
- * executor loop, the permission wait (§7.11, §7.12) and the timers all live
+ * executor loop, the permission wait (design.md 6.4) and the timers all live
  * here. What does not: the single slot and the store belong to the runner,
  * which the record calls after every change and which reads the state.
  */
@@ -42,20 +42,23 @@ const PositiveInteger = z.number().int().min(1);
  * they are read: the runner and every record it builds read the same object.
  */
 export const TaskSettingsSchema = z.object({
-  /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (§7.10). */
+  /** Local ceiling for tasks this orca node runs; origin sessions can only narrow it (design.md 6.4). */
   permission_mode: SandboxModeSchema.optional(),
-  /** Hard cap on a task's lifetime (§6.9). */
+  /**
+   * Hard cap on a task's working lifetime (design.md 5.3); the clock pauses while it
+   * waits for a permission decision (design.md 6.4).
+   */
   task_timeout_s: PositiveNumber.default(3600),
-  /** A new task is refused while the group workspace holds more bytes than this (§6.13). */
+  /** A new task is refused while the group workspace holds more bytes than this (design.md 5.7). */
   max_workspace_bytes: PositiveInteger.default(5 * 1024 ** 3),
 });
 export type TaskSettings = z.output<typeof TaskSettingsSchema>;
 
-/** Inline result summary cap in bytes; a longer summary is truncated (§6.11). */
+/** Inline result summary cap in bytes; a longer summary is truncated (design.md 5.5). */
 const RESULT_MAX_BYTES = 32 * 1024;
 
 type RecordInit = {
-  /** The task as accepted; its `metadata.pod` is what the origin asked for (§5.1). */
+  /** The task as accepted; its `metadata.pod` is what the origin asked for (design.md 4.1). */
   view: TaskView;
   origin: OrcaNodeId;
   /** The origin's message: the task text. */
@@ -73,7 +76,7 @@ export class TaskRecord {
   private ttlDeadline: number | null = null;
   private readonly text: string;
   private readonly abort = new AbortController();
-  /** Effective mode: inherited and capped at the start, widened by the origin's approval (§7.12). */
+  /** Effective mode: inherited and capped at the start, widened by the origin's approval (design.md 6.4). */
   private mode: SandboxMode;
   /** The executor run; created by `begin()` before the first `drive()`. */
   private iterator!: AsyncGenerator<ExecutorEvent, void, void>;
@@ -96,10 +99,10 @@ export class TaskRecord {
     this.createdAt = init.view.status.timestamp;
     this.text = messageText(init.message);
     const { permission_mode: asked = "read-only" } = this.pod;
-    // A task lives as long as this node allows (§6.9).
+    // A task lives as long as this node allows (design.md 5.3).
     this.ttlLeftMs = settings.task_timeout_s * 1000;
     // A task that names no mode runs read-only. The ceiling only narrows what the origin
-    // asked for (§7.10); an approval widens it later (§7.12).
+    // asked for (design.md 6.4); an approval widens it later (design.md 6.4).
     this.mode = settings.permission_mode === undefined ? asked : narrowPermissionMode(settings.permission_mode, asked);
   }
 
@@ -130,7 +133,7 @@ export class TaskRecord {
 
   /**
    * The origin approved the parked request: the task runs with the mode it asked
-   * for until it ends (§7.12); nothing else inherits it.
+   * for until it ends (design.md 6.4); nothing else inherits it.
    */
   grant(): void {
     if (this.request !== null) this.mode = this.request.requested_mode;
@@ -192,7 +195,7 @@ export class TaskRecord {
 
   // ---- running ----
 
-  /** What the origin asked for (§5.1). */
+  /** What the origin asked for (design.md 4.1). */
   private get pod(): PodTaskMetadata {
     return this.view.metadata?.pod ?? {};
   }
@@ -213,7 +216,7 @@ export class TaskRecord {
       permissionMode: this.mode,
       permissionCeiling: settings.permission_mode,
       model,
-      // The `reasoning_effort` field, else the effort pinned in `model` (§6.15).
+      // The `reasoning_effort` field, else the effort pinned in `model` (design.md 5.6).
       reasoningEffort: reasoning_effort ?? model?.reasoningEffort,
     };
   }
@@ -241,7 +244,7 @@ export class TaskRecord {
     }
   }
 
-  /** Ask the origin to let this task continue with a wider mode (§7.12); the executor waits for the answer. */
+  /** Ask the origin to let this task continue with a wider mode (design.md 6.4); the executor waits for the answer. */
   private requestPermission({ tool, requested, requestedMode }: Suspension): void {
     const request: PermissionRequest = {
       request_id: randomUUID(),
@@ -253,7 +256,7 @@ export class TaskRecord {
       requested_mode: requestedMode,
     };
     this.request = request;
-    // `input-required`: the TTL stands still while the task waits, however long the human takes (§7.12).
+    // `input-required`: the TTL stands still while the task waits, however long the human takes (design.md 6.4).
     this.clearTtl();
     this.move("input-required", { role: "agent", parts: [{ kind: "data", data: { permission_request: request } }] });
   }
@@ -292,7 +295,7 @@ export class TaskRecord {
     }
   }
 
-  /** Keep the inline summary under the local cap; longer text is cut with a marker (§6.11). */
+  /** Keep the inline summary under the local cap; longer text is cut with a marker (design.md 5.5). */
   private static truncateMessage(message: A2AMessage, maxBytes: number): A2AMessage {
     const text = messageText(message);
     if (Buffer.byteLength(text, "utf8") <= maxBytes) return message;

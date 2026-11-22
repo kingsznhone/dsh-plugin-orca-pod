@@ -86,7 +86,7 @@ const INTERVAL_MS = 1000;
 const COALESCE_MS = 2000;
 /** Consecutive wake-ups allowed without the agent running in between. */
 const MAX_CONSECUTIVE_WAKES = 3;
-/** Consecutive poll failures (no answer, 5xx) tolerated before the task is recorded as failed. */
+/** Consecutive poll failures (no answer, 5xx): at this count the task is recorded as failed. */
 const MAX_TRANSIENT_FAILURES = 5;
 const MAX_RETRY_DELAY_MS = 30_000;
 
@@ -102,7 +102,7 @@ function nodeLabel(node: OrcaNode | undefined, id: OrcaNodeId): string {
 function taskNoticeLine(view: TaskView, who: string): string {
   const text = view.status.message === undefined ? undefined : messageText(view.status.message).trim();
   // A peer that cannot be reached ends its own task as completed with a
-  // "BLOCKED:" report (§6.14); surface that to the origin instead of claiming
+  // "BLOCKED:" report (design.md 5.2); surface that to the origin instead of claiming
   // the work itself finished.
   const blocked = text !== undefined && /^BLOCKED\b/i.test(text);
   const state = blocked && view.status.state === "completed" ? "completed with a blocker report" : view.status.state;
@@ -210,7 +210,7 @@ class NoticeDelivery {
  *
  * Rounds run one at a time, the next one only after the previous finished,
  * instead of `setInterval`: a slow peer cannot stack overlapping rounds that
- * deliver the same terminal state twice (§8.3).
+ * deliver the same terminal state twice (design.md 4.2).
  */
 export class Tracker {
   /** Backoff of the tasks whose last reads failed, by task key. */

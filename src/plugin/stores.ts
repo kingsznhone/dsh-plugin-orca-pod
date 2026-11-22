@@ -1,8 +1,8 @@
 /**
- * What the pod keeps in the DSH credential store (§3.6): the workgroup password
+ * What the pod keeps in the DSH credential store (design.md 2.2): the workgroup password
  * and the node's private key. Both are machine-wide, because a machine has one
- * node however many DSH profiles it runs (§3.9). Settings are not secrets and
- * live in `settings-file.ts`; the peers joined at runtime in `peers-file.ts`.
+ * node however many DSH profiles it runs (implementation.md 2). Settings are not secrets and
+ * live in `settings-file.ts`, including the peers joined at runtime (its `peers` field).
  */
 
 import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject } from "node:crypto";
@@ -20,7 +20,7 @@ const RAW_KEY_BYTES = 32;
 /** PKCS#8 header of an Ed25519 private key (RFC 8410) up to the 32-byte seed. */
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 
-/** The identity of a private key: its node id is the raw public key in base58 (§7.1). */
+/** The identity of a private key: its node id is the raw public key in base58 (design.md 2.1). */
 function identityOfKey(privateKey: KeyObject): NodeIdentity {
   return {
     // The raw public key is the last bytes of its SPKI encoding.

@@ -39,7 +39,7 @@ afterEach(async () => {
 });
 
 /**
- * An in-process workgroup for the table's rules (§3): every node is a real mesh
+ * An in-process workgroup for the table's rules (design.md 2): every node is a real mesh
  * behind its real gateway, and a node's outbound call is handed to the gateway
  * at the address it dials (Fastify's `inject`), so nothing listens on a socket.
  * Time is the fake timers': the meshes' clocks read the faked `Date`, and the

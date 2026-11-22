@@ -45,7 +45,7 @@ const SettingsSchema = z.object({
   bind_host: NonEmpty.default("127.0.0.1"),
   /** Listen port; 0 picks a free one. */
   port: z.number().int().min(0).max(65535).default(DEFAULT_PORT),
-  /** Advertised dial URLs, best first; empty derives them from the listen address (§3.2). */
+  /** Advertised dial URLs, best first; empty derives them from the listen address (design.md 2.3). */
   endpoints: EndpointsSchema.default([]),
   /** Peers joined on startup. */
   peers: PeersSchema.default([]),
@@ -73,7 +73,7 @@ export const PanelPatchSchema = z.object({
   workgroup_id: clearable(shape.workgroup_id.unwrap()),
   /**
    * Plaintext; it derives the workgroup key. The stored password is a DSH credential
-   * (§3.6). Leave it out to keep the stored one; a passwordless mesh is not supported.
+   * (design.md 2.2). Leave it out to keep the stored one; a passwordless mesh is not supported.
    */
   workgroup_password: z
     .string()

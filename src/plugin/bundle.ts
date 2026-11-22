@@ -1,10 +1,10 @@
 /**
  * `orca-pod` — DeepSeek Harness host-side bundle for Orca.
  *
- * The bundle creates one pod from the plugin config, starts it without
- * blocking the DSH host, registers the `orca_pod` tool, and stops the pod when
- * the plugin fiber unloads. There are no module-level side effects: everything
- * is created inside `apply`.
+ * The bundle creates one pod, starts it without blocking the DSH host,
+ * registers the `orca_pod` tool, and stops the pod when the plugin fiber
+ * unloads. There are no module-level side effects: everything is created
+ * inside `apply`.
  *
  * Optional host services are declared with `ctx.inject`. Each callback runs in
  * its own child scope and may run again when the service is replaced, so every
@@ -35,7 +35,7 @@ import { IN_TASK_ENV } from "../executor/acp/executor.ts";
  * Configuration of the `orca-pod` DSH plugin: only what does not belong to the
  * node. The node's settings are one file for the whole machine, written by the
  * panel (`settings-file.ts`), because a profile's plugin config cannot be shared
- * by every profile (§3.9); the password is a DSH credential (§3.6).
+ * by every profile (implementation.md 2); the password is a DSH credential (design.md 2.2).
  *
  * Cordis validates it with the schema's Standard Schema interface before `apply`
  * runs. Keys it does not know are dropped, so an older profile patch that still
@@ -70,9 +70,9 @@ export const inject: Inject<Context> = ["tools", "credentials"];
  * running"), while `apply` returns immediately.
  *
  * A session the task executor spawned loads this plugin too: the executor starts
- * the `acp` profile, which must load this plugin as well (D60). There it starts
+ * the `acp` profile, which must load this plugin as well (design.md 5.2). There it starts
  * no node and offers `orca_pod` with the file methods only, which go through this
- * machine's node (§5.6, §7.9).
+ * machine's node (design.md 4.5, 3.6).
  */
 export function apply(ctx: Context, config: Config): void {
   const sandbox = new OptionalService(ctx, "sandboxPolicy", "orca-pod.sandbox-policy");
@@ -84,7 +84,7 @@ export function apply(ctx: Context, config: Config): void {
     return;
   }
 
-  // Build. One node per machine (§3.9): its data lives in `orca-pod` under the DSH
+  // Build. One node per machine (implementation.md 2): its data lives in `orca-pod` under the DSH
   // home the host resolved (`$DSH_HOME`, default `~/.dsh`), read the way DSH tells
   // host plugins to (the launcher's snapshot, `.env` layers included), whichever
   // profile this plugin was loaded from. There is no fallback to an earlier location.
@@ -117,7 +117,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on("credentials/reference-updated", (ref) => pod.credentialsChanged(ref));
   ctx.on("credentials/record-updated", (key) => pod.credentialsChanged(key));
   // The tool is only visible once the workgroup credentials exist: before that
-  // every call would fail with "not configured" and clutter the tool list.
+  // every call would fail with "orca node is not running: the workgroup and its
+  // password are not set up yet" and clutter the tool list.
   ctx.tools.register(new PodTool({ kind: "host", pod }, sandbox).definition(), { when: () => pod.configured });
   new PanelRoutes(pod, tracker, feed).register(ctx);
   // The skill ships inside the package and is registered in memory; no copy is

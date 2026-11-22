@@ -1,7 +1,8 @@
 /**
- * Orca Pod panel — DSH client bundle entry (§9.2).
+ * Orca Pod panel — DSH client bundle entry (implementation.md 4).
  *
- * `npm run build` (through `scripts/build-client.ts`) bundles this module and its imports into
+ * `npm run build` (through `tsc` and `rolldown -c --configLoader native`, configured by
+ * `rolldown.config.ts`) bundles this module and its imports into
  * `lib/client.js`, a classic script that registers a lazy factory with
  * `window.__ModuleLoader__`. The factory's `require` resolves only the shell's
  * platform module table (`react`, `react/jsx-runtime` and DSH's shared UI
@@ -12,10 +13,11 @@
  * cancellable); the client only draws it and posts the user's actions back.
  *
  * UI rules: render inside a Slot, build on DSH's client UI primitives (types from `@deepseek-ai/dsh-client-ui-primitives`),
- * lay out with CSS modules that use only `--dsw-*` theme tokens, never touch
- * `document.body`, and keep all DOM work inside React. The one exception is
+ * lay out with CSS modules that use DSH theme tokens (the `--dsw-*` family plus
+ * the host's `--dsh-*` and `--ds-*` tokens where DSH's own layout needs them),
+ * never touch `document.body`, and keep all DOM work inside React. The one exception is
  * each CSS module's `<style>` tag, injected into `<head>` at materialization
- * the way DSH's own plugins do (see `scripts/build-client.ts`).
+ * the way DSH's own plugins do (see `rolldown.config.ts`).
  */
 
 import { ApprovalDock, ApprovalPopup } from "./approvals.tsx";

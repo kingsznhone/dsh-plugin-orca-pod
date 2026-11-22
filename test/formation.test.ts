@@ -114,7 +114,7 @@ describe("mesh formation", () => {
       const bootstrap = urls[0];
       if (!bootstrap) throw new Error("bootstrap did not start");
 
-      // 五个 orca node 同时 join 同一个 bootstrap：后到者与先到者互相补齐。
+      // 五个 orca node 同时启动，其中四台同时 join 同一个 bootstrap：后到者与先到者互相补齐。
       await Promise.all(orcaNodes.slice(1).map((orcaNode) => orcaNode.mesh.probe(bootstrap)));
 
       await waitFor(() =>

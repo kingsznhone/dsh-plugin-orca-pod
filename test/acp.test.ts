@@ -125,14 +125,14 @@ describe("AcpExecutor", () => {
     expect(taskText(view)).toBe("acp done");
     const entries = await logEntries(join(root, "acp.log"));
     const initialize = entries.find((entry) => entry.method === "initialize");
-    // The agent runs inside a task: the plugin there refuses to send (§7.9) and moves
+    // The agent runs inside a task: the plugin there refuses to send (design.md 3.6) and moves
     // files through this node, which it reaches at its loopback address over TLS pinned to
-    // the node's id, with a token (§5.6, §7.7).
+    // the node's id, with a token (design.md 4.5, 6.2).
     expect(initialize?.inTask).toBe("1");
     expect(initialize?.nodeUrl).toBe(`https://127.0.0.1:${new URL(node.mesh.self.endpoints[0]!).port}`);
     expect(initialize?.nodeId).toBe(node.mesh.self.id);
     expect(initialize?.hasNodeToken).toBe(true);
-    // It runs in the acp profile, which loads this plugin too (D60).
+    // It runs in the acp profile, which loads this plugin too (design.md 5.2).
     expect(initialize?.extraArgs).toEqual(["--profile", "acp"]);
     const created = entries.find((entry) => entry.method === "session/new");
     expect(created?.cwd?.endsWith(join("workgroups", "acp-test"))).toBe(true);

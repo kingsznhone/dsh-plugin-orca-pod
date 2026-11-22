@@ -5,7 +5,7 @@ import type { SqliteDb } from "../core/sqlite.ts";
 /** Default row cap for recent task and dispatch queries. */
 export const DEFAULT_RECENT_LIMIT = 10;
 
-/** Filtering and pagination options pushed down to SQLite `ORDER BY updated_at DESC LIMIT ? OFFSET ?`. */
+/** Filtering and pagination options pushed down to SQLite `ORDER BY updated_at DESC, task_id DESC LIMIT ? OFFSET ?`. */
 export interface RecentOptions {
   offset?: number;
   /** Return only records with `updated_at < before` (ISO timestamp cursor). */

@@ -1,4 +1,4 @@
-/** A2A task surface (§4.7, §4.8, §5.1). */
+/** A2A task surface (design.md 3.5, 3.6, 4.1). */
 
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import { z } from "zod";
@@ -8,10 +8,10 @@ import { SandboxModeSchema } from "../executor/permission.ts";
 import { OrcaNodeIdSchema, type OrcaNodeId } from "../core/ids.ts";
 import { RequestedAccessSchema } from "../executor/executor.ts";
 
-// ---- permission requests and decisions (§7.11, §7.12) ----
+// ---- permission requests and decisions (design.md 6.4) ----
 
 /**
- * A suspended task's ask to run with a wider permission mode (§7.11, §7.12):
+ * A suspended task's ask to run with a wider permission mode (design.md 6.4):
  * one tool call needed more than `current_mode` allows, and `requested_mode` is
  * the narrowest mode that covers it. It lives in `status.message`, so the origin
  * discovers it by reading task state; nothing is pushed to it.
@@ -31,7 +31,7 @@ const PermissionRequestSchema = z.object({
 export type PermissionRequest = z.infer<typeof PermissionRequestSchema>;
 
 /**
- * What the origin sends back to a suspended task (§7.11), as the one data part
+ * What the origin sends back to a suspended task (design.md 6.4), as the one data part
  * of a resume message: its human's approval of the request the task is parked
  * on (named by `request_id`; the task then runs with that request's
  * `requested_mode` until it ends), or a refusal. The resume request itself is
@@ -60,7 +60,7 @@ export function isTerminal(state: string): boolean {
 /**
  * One part of an A2A message. Loose objects keep the fields this node does not
  * read, so a newer peer's extras survive; the kinds themselves are closed. There
- * is no `file` part: files are not part of a task, its text names them (§5.6).
+ * is no `file` part: files are not part of a task, its text names them (design.md 4.5).
  */
 const MessagePartSchema = z.discriminatedUnion("kind", [
   z.looseObject({ kind: z.literal("text"), text: z.string() }),
@@ -71,7 +71,7 @@ const A2AMessageSchema = z.looseObject({
   role: z.enum(["user", "agent"]),
   parts: z.array(MessagePartSchema),
   messageId: z.string().optional(),
-  /** Set when this message continues an input-required task (§4.8). */
+  /** Set when this message continues an input-required task (design.md 3.6). */
   taskId: z.string().optional(),
   contextId: z.string().optional(),
 });
@@ -90,7 +90,7 @@ export function messageText(message: A2AMessage): string {
     .join("\n");
 }
 
-/** The decision a resume message carries (§7.11); null when it carries none. */
+/** The decision a resume message carries (design.md 6.4); null when it carries none. */
 export function resumeControlOf(message: A2AMessage): ResumeControl | null {
   for (const part of message.parts) {
     if (part.kind !== "data") continue;
@@ -101,9 +101,9 @@ export function resumeControlOf(message: A2AMessage): ResumeControl | null {
 }
 
 /**
- * The `pod` block of a task's metadata (§5.1). Unknown keys are kept: another
+ * The `pod` block of a task's metadata (design.md 4.1). Unknown keys are kept: another
  * node may be newer; a task's lifetime is the target's own cap, not the
- * origin's to set (§6.9). A task is always single-hop: an agent running a task
+ * origin's to set (design.md 5.3). A task is always single-hop: an agent running a task
  * cannot dispatch another one, so there is no delegation chain to carry.
  */
 const PodTaskMetadataSchema = z.looseObject({
@@ -112,11 +112,11 @@ const PodTaskMetadataSchema = z.looseObject({
    * from the authenticated caller; whatever a caller sends is overwritten.
    */
   origin_orca_node: OrcaNodeIdSchema.optional(),
-  /** Origin session mode; the target never runs above it (§7.10). */
+  /** Origin session mode; the run starts at this mode, and only an origin approval can widen it, bounded by the target's own ceiling (design.md 6.4). */
   permission_mode: SandboxModeSchema.optional(),
-  /** Model route the target's ACP executor should select for this task (§6.15). */
+  /** Model route the target's ACP executor should select for this task (design.md 5.6). */
   model: ModelSelectionSchema.optional(),
-  /** Reasoning effort override; when omitted the target's local default applies (§6.15). */
+  /** Reasoning effort override; when omitted the effort pinned in `model` applies, and the target's local default only when neither names one (design.md 5.6). */
   reasoning_effort: ReasoningEffortSchema.optional(),
 });
 export type PodTaskMetadata = z.infer<typeof PodTaskMetadataSchema>;
@@ -128,7 +128,7 @@ export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
 const TaskStatusSchema = z.object({
   state: TaskStateSchema,
   timestamp: z.string(),
-  /** Suspended payload lives in `status.message`; it is task state, not a push (§4.7). */
+  /** Suspended payload lives in `status.message`; it is task state, not a push (design.md 3.5). */
   message: A2AMessageSchema.optional(),
   reason: z.string().optional(),
 });
@@ -142,7 +142,7 @@ const TaskViewSchema = z.object({
 });
 export type TaskView = z.infer<typeof TaskViewSchema>;
 
-/** Read the permission request a suspended task carries, if any (§7.11). */
+/** Read the permission request a suspended task carries, if any (design.md 6.4). */
 export function permissionRequestOf(view: TaskView): PermissionRequest | null {
   for (const part of view.status.message?.parts ?? []) {
     if (part.kind !== "data") continue;
@@ -152,7 +152,7 @@ export function permissionRequestOf(view: TaskView): PermissionRequest | null {
   return null;
 }
 
-// ---- JSON-RPC (§4.7) ----
+// ---- JSON-RPC (design.md 3.5) ----
 
 /** What every JSON-RPC request carries besides its method: the `id` the answer echoes. */
 const RpcEnvelope = z.object({ id: z.unknown().optional() });
@@ -178,9 +178,9 @@ export type A2ARequest = z.input<typeof A2ARequestSchema>;
 /** The success envelope of an A2A call. */
 export const RpcResultSchema = z.object({ result: TaskViewSchema });
 
-// ---- dispatch log entries (§8.3) ----
+// ---- dispatch log entries (design.md 4.2) ----
 
-/** What an origin remembers about a task it handed to a peer (§8.3). */
+/** What an origin remembers about a task it handed to a peer (design.md 4.2). */
 export type DispatchEntry = {
   /** Task id returned by the target. */
   task_id: string;
@@ -190,7 +190,7 @@ export type DispatchEntry = {
   state: TaskState | "unknown";
   last_error?: string;
   /**
-   * DSH session that dispatched the task (§8.3): where the tracker sends the
+   * DSH session that dispatched the task (design.md 4.2): where the tracker sends the
    * notice when the task ends, if that session is open then.
    */
   agent_id?: SessionId;
@@ -198,7 +198,7 @@ export type DispatchEntry = {
   updated_at: string;
 };
 
-/** The task holding a node's single slot (§6.9). */
+/** The task holding a node's single slot (design.md 5.3). */
 export const BusyStateSchema = z.object({
   task_id: z.string(),
   origin_orca_node: OrcaNodeIdSchema,

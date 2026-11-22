@@ -93,7 +93,7 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 
 - `runtime` 只出现在签名接口里；`state`、`last_recv_at` 是接收方的本地观测，不是对方声明（自己记录里恒为 `online`）。
 - `busy` 为 `null` 或 `{ task_id, origin_orca_node, since }`，本人写、随心跳刷新。
-- `max_task_ttl_s` 是本机单任务硬预算（默认 3600s），origin 据此拆任务。
+- `max_task_ttl_s` 是本机单任务硬预算（默认 3600s），随自述记录广播给成员与面板；它只是声明，任务实际按**执行节点**自己的 `task_timeout_s` 计时（见 5.3）。
 - `models` 是 `[{provider, id, name, description?}]`（去重、上限 128），`default_model` 是 DSH 的 `ModelSelection` 或 `null`，`default_reasoning_effort` 可为 `null`。目录与默认模型**不是设置**，而是 DSH Host 报告的：插件通过 `llm` 服务枚举模型、从 `agentDefaultModel.currentSelection()` 取默认；设置里只剩 `default_reasoning_effort`（优先于 Host 的 effort）。它们只对同组成员可见。
 - `endpoints` 是 1–8 个 https URL 的有序列表（去重去尾斜杠），第一个是 primary；顺序即拨号优先级，成功的地址下一轮排最前。监听地址由 `bind_host` 决定；`endpoints` 为空时按监听地址推导（`0.0.0.0`/`::` 时枚举本机非 internal 地址，IPv4 在前，跳过 `fe80:`）。
 - runtime 采集一次（`os`/`process`，无外部命令）；`runtime_digest` = sha256(os.family|os.name|os.version|arch|cpu.model|逻辑核数|memory.total|node.version)。
@@ -101,7 +101,7 @@ k = scrypt(password, salt = "orca-pod\0" + workgroup_id, N = 2^15, r = 8, p = 1,
 
 ### 2.4 接触（hello）
 
-接触与保活是同一个请求，区别只是有没有可比对摘要、签名里有没有接收方 id：
+接触与保活是同一个请求，区别只是签名里有没有接收方 id（首次接触不知道对方 id，签名为 `""`）：
 
 ```text
 D（新）                                          A（已在 mesh）
@@ -146,7 +146,7 @@ D（新）                                          A（已在 mesh）
 - 单向不通：suspect(unreachable)，提示查防火墙/端口或改用 VPN；典型是 NAT 后的家宽节点与公网服务器。
 - 机器休眠：单调时钟判定，唤醒后按正常看门狗恢复。脑裂不存在：没有主节点、没有多数派状态。
 - 改 id：以新身份 hello，旧记录按看门狗变 offline，靠 record_ttl 消失。
-- **没有「离开」请求**（D53）：持有 workgroup key 的节点怎么声明离开都会被下一次 hello 带回来。离开 = 改 workgroup 或密码（下一次证明被拒，当即删除并记墓碑），或面板重置。
+- **没有「离开」请求**：持有 workgroup key 的节点怎么声明离开都会被下一次 hello 带回来。离开 = 改 workgroup 或密码（下一次证明被拒，当即删除并记墓碑），或面板重置。
 
 ## 3. 传输与接口
 
@@ -285,7 +285,7 @@ origin: 终态 → 合并成一条 notice 交还发起会话 → 停止轮询
 - **轮询归 Host，不归 agent**：agent 只看到薄工具 `orca_pod`（`send`/`status`/`cancel`/`members`/`connect`；任务进程里只有 `fetch`/`publish`）。**没有等待方法**，也没有 approve/deny 方法。
 - tracker：固定 1s、自调度、不重叠；工作集是派发日志里未结束且记着节点的条目。瞬时失败（超时/网络/5xx/节点不在线）按 1s 起翻倍、上限 30s 重试；连续 5 次记 `failed`（`last_error`）并告知 agent「读不到，停止跟踪」。确定性失败（404、节点已不在表、401/403）第一次就记 failed。终态照常通知；`BLOCKED` 开头的 completed 标「completed with a blocker report」。
 - **权限请求不产生聊天 notice**，也不唤醒 agent；tracker 留着等 UI 作答。
-- 与会话无关（D45）：轮询只看派发日志，不看宿主开着哪些会话；交付 notice 时才按 `agent_id` 找会话，找不到就不通知（结果留在派发日志与面板）。
+- 与会话无关：轮询只看派发日志，不看宿主开着哪些会话；交付 notice 时才按 `agent_id` 找会话，找不到就不通知（结果留在派发日志与面板）。
 - notice 是 `source.kind = "orca-pod"` 的 user 角色消息：`[orca-pod] task <id> on <peer> is completed; …`，远端结论放在 `<untrusted-remote-result>` 块里并截断到 800 字符。
 
 状态回到会话：
@@ -314,7 +314,7 @@ origin: 终态 → 合并成一条 notice 交还发起会话 → 停止轮询
 
 ### 4.5 文件通道（blob）
 
-文件不走 JSON 内联、不在节点间推送：**节点只发布自己机器上的文件，谁需要谁拉**。文件不是任务的一部分（D46）：把名字写进任务文本或结论。
+文件不走 JSON 内联、不在节点间推送：**节点只发布自己机器上的文件，谁需要谁拉**。文件不是任务的一部分：把名字写进任务文本或结论。
 
 - 名字是 `<orca_node_id>/<sha256>`，不含地址。发布方把文件**复制**进 `<data_root>/blobs/<sha256>`（临时文件 + 边写边算哈希 + 改名），`file_blobs` 记映射；登记默认 7 天过期（`ttl_s=0` 永不过期）；同样的字节再登记沿用已有副本，过期时间取较晚。节点启动时清扫一次，之后每小时一次；过期 `410 blob_expired`，副本没了 `410 blob_file_missing`，没登记 `404 blob_not_found`。
 - 获取：`mesh.get(发布方).fetchBlob(blob_id)`。发布方是自己就直接读盘；别人按拨号顺序逐个地址试，对方一旦作答（含 404）以它为准，全都连不上 → `503 peer_not_online`，不是成员 → `404 unknown_orca_node`。流式下载不受 4 MiB 响应上限约束；写 `.part` 边写边算 sha256，一致才改名，不一致删掉报错。
@@ -369,7 +369,7 @@ Pod gateway (local)
       → stdio JSON-RPC（换行分隔）
 ```
 
-- 任务固定用 `acp` profile（D60）：只有它在 stdio 上讲 ACP；该 profile 也要装本插件，任务 agent 才有 `orca_pod` 的 `fetch`/`publish`。每台机器要在宿主 profile 与 `acp` profile 各装一次。
+- 任务固定用 `acp` profile：只有它在 stdio 上讲 ACP；该 profile 也要装本插件，任务 agent 才有 `orca_pod` 的 `fetch`/`publish`。每台机器要在宿主 profile 与 `acp` profile 各装一次。
 - 禁止：把 ACP 端口暴露给 peer；peer 直接发 ACP；把 ACP sessionId 当 A2A taskId；原样转发 thought。
 
 映射：

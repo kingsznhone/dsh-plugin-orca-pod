@@ -1,5 +1,5 @@
 /**
- * The node's settings, kept in `<data_root>/settings.json` (§3.9): one file for
+ * The node's settings, kept in `<data_root>/settings.json` (implementation.md 2): one file for
  * the whole machine, shared by every DSH profile. They cannot live in a profile's
  * plugin config, which the config editor writes per profile. The file holds no
  * secret: the password is a DSH credential and never reaches it.

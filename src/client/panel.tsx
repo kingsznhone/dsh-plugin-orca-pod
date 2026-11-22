@@ -68,7 +68,7 @@ function Stat({ label, tone, children }: { label: string; tone?: "warning"; chil
 /** The four numbers that say how this node is doing. */
 function Stats({ state }: { state: PodState }) {
   const { self, members, approvals, recent } = state;
-  // The host marks the tasks still holding a slot: they are the ones that can be cancelled.
+  // The host marks the tasks that are still live (not yet in a terminal state): they are the ones that can be cancelled.
   const active = recent.filter((row) => row.cancellable).length;
   return (
     <div className={css.stats}>

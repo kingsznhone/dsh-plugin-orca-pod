@@ -43,7 +43,7 @@ function seenBy(observer: Orca, subject: Orca) {
   return peersOf(observer).find((peer) => peer.orca_node_id === subject.mesh.self.id);
 }
 
-describe("self-description after join (G13)", () => {
+describe("self-description after join (design.md 2.5)", () => {
   it("reaches a peer that already knows the node with its next heartbeat", async () => {
     const [a, b] = await pair();
     expect(seenBy(a, b)?.models).toBeUndefined();

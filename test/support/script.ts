@@ -1,5 +1,5 @@
 /**
- * A scripted executor for tests and the loopback scripts: the task text says
+ * A scripted executor for tests: the task text says
  * when to suspend for a permission and how the task ends, so the network, the
  * state machine, the approval loop and the file path run without an agent.
  * The script rides in the task's text, one `SCRIPT <json>` line, and reaches

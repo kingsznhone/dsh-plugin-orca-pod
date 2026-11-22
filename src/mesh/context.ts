@@ -17,7 +17,7 @@ export type MeshContextOptions = {
 };
 
 /**
- * What every node of one mesh shares (§3.1): built once by whoever assembles the
+ * What every node of one mesh shares (design.md 2.5): built once by whoever assembles the
  * node and handed to each `OrcaNode` as it is made, so a node needs no further
  * collaborators to act on its own behalf. The outbound client, the endpoint
  * screen and the clock are its own; the stores it is given. One per orca
@@ -27,23 +27,23 @@ export type MeshContextOptions = {
 export class MeshContext {
   /** Signs and sends; it knows no node, the target is always named. */
   readonly client: HttpPeerClient;
-  /** The TLS connections the client's calls go over, each pinned to the node it is addressed to (§7.7). */
+  /** The TLS connections the client's calls go over, each pinned to the node it is addressed to (design.md 6.2). */
   private readonly tls = new PeerTls();
-  /** What this node concluded about the endpoints it was told of (§7.7). */
+  /** What this node concluded about the endpoints it was told of (design.md 6.6). */
   readonly screening: EndpointScreen;
   readonly clock: MeshClock;
 
   constructor(
-    /** Who this node is: its private key signs every request (§7.1). */
+    /** Who this node is: its private key signs every request (design.md 6.1). */
     readonly identity: NodeIdentity,
     readonly workgroupId: WorkgroupId,
-    /** The workgroup key behind the proof of every request (§7.1). */
+    /** The workgroup key behind the proof of every request (design.md 6.1). */
     key: Buffer,
-    /** What this node handed to others, and what it last heard of it (§8.3). */
+    /** What this node handed to others, and what it last heard of it (design.md 4.2). */
     readonly dispatches: DispatchLog,
-    /** Files this node published (§5.6); a node that is this one serves from here. */
+    /** Files this node published (design.md 4.5); a node that is this one serves from here. */
     readonly blobs: FileBlobRegistry,
-    /** The tasks this node runs; a node that is this one reports its slot from here (§6.9). */
+    /** The tasks this node runs; a node that is this one reports its slot from here (design.md 5.3). */
     readonly tasks: SingleSlotTaskRunner,
     readonly logger: NodeLogger,
     options: MeshContextOptions = {},

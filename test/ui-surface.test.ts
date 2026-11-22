@@ -1,5 +1,5 @@
 /**
- * UI data surface (§9.2): the panel needs local task lists, change events,
+ * UI data surface (implementation.md 3): the panel needs local task lists, change events,
  * pending approvals, workspace browsing and file links without driving the
  * model through a tool round-trip.
  */
@@ -66,7 +66,7 @@ async function makeNode(workgroupId: WorkgroupId, password: string): Promise<Orc
   return node;
 }
 
-/** A file `node` published (§5.6), as its sha256. */
+/** A file `node` published (design.md 4.5), as its sha256. */
 async function published(node: Orca): Promise<string> {
   const path = join(tempDir(), "out.txt");
   writeFileSync(path, "hello");

@@ -45,7 +45,7 @@ function logAt(file: string): { log: DispatchLog; db: SqliteDb } {
   return { log: new DispatchLog(db), db };
 }
 
-describe("dispatch log on disk (13.4)", () => {
+describe("dispatch log on disk (design.md 4.2)", () => {
   it("survives a reopen, with the node and the dispatching session", () => {
     const file = join(tempRoot(), "tasks.db");
     const first = logAt(file);
@@ -167,7 +167,7 @@ describe("dispatch log on disk (13.4)", () => {
   });
 });
 
-describe("origin dispatch log (13.4)", () => {
+describe("origin dispatch log (design.md 4.2)", () => {
   it("records a dispatched task and its last known state", async () => {
     const peerRoot = tempRoot();
     const peerConfig = nodeParts({

@@ -2,17 +2,17 @@
  * The pod of the Orca DSH bundle: this machine's settings, password, peers and orca node.
  *
  * The DSH host must not block on an orca node: `start()` returns at once and
- * performs settings loading, `orcaNode.start()` and the initial `join`s on a
- * promise that never rejects. Failures become the `failed` status and are
- * logged, so `apply` always returns quickly.
+ * performs settings loading, `Orca.start()` and the initial peer seeding
+ * (`mesh.seed`) on a promise that never rejects. Failures become the `failed`
+ * status and are logged, so `apply` always returns quickly.
  *
- * A machine has one node however many DSH profiles it runs (§3.9), so
+ * A machine has one node however many DSH profiles it runs (implementation.md 2), so
  * everything the pod keeps is machine-wide:
  * - **settings** are `<data_root>/settings.json` (`SettingsFile`); the panel
  *   writes it and the pod restarts its node in place. A peer joined at runtime
  *   is added to its `peers` without a restart: the node already has it;
  * - **the workgroup password and the node's private key** are DSH credentials
- *   (`PodStores`, §3.6); nothing secret is written to a file, and the workgroup
+ *   (`PodStores`, design.md 2.2); nothing secret is written to a file, and the workgroup
  *   key derived from the password lives in memory only.
  *
  * Two DSH processes on one machine share all of this, and the listen port is the
@@ -58,7 +58,7 @@ export class SerialQueue {
 }
 
 const KEY_DERIVATION_SALT = "orca-pod";
-/** scrypt parameters: ~32 MiB, one derivation per start, ~100ms (§7.1). */
+/** scrypt parameters: ~32 MiB, one derivation per start, ~100ms (design.md 2.2). */
 const KEY_DERIVATION_N = 1 << 15;
 const KEY_DERIVATION_R = 8;
 const KEY_DERIVATION_P = 1;
@@ -68,10 +68,10 @@ const KEY_DERIVATION_MAX_MEM = 64 * 1024 * 1024;
  * scrypt(password, salt="orca-pod\x00<workgroup_id>") -> 32 bytes.
  *
  * Memory-hard on purpose: the workgroup key backs the HMAC proof of every
- * request over plaintext HTTP, so HKDF's cheap output made every sniffed proof
- * an offline dictionary target. scrypt is paid once per process start; the
- * salt binds the derivation to the workgroup id so the same password yields a
- * different key in another group.
+ * request, so HKDF's cheap output would make a stolen proof an offline
+ * dictionary target. scrypt is paid once per node start (each restart derives
+ * it again); the salt binds the derivation to the workgroup id so the same
+ * password yields a different key in another group.
  */
 export function deriveWorkgroupKey(workgroupId: WorkgroupId, password: string): Buffer {
   const salt = Buffer.concat([
@@ -121,7 +121,11 @@ type PodStatus =
 export class Pod {
   private readonly queue = new SerialQueue();
   private readonly file: SettingsFile;
-  /** The settings as the pod last read or wrote them; the panel's edits are applied to the file and read back by the next start. */
+  /**
+   * The settings as the last (re)start read them; a panel patch is written and read
+   * back by the same restart, and a peer added at runtime is written to the file
+   * but picked up by the next start.
+   */
   private saved: Settings = parseSettings({});
   /** The stored workgroup password as the last start read it; in memory only. */
   private password: string | undefined;
@@ -134,10 +138,10 @@ export class Pod {
 
   constructor(
     private readonly logger: Logger,
-    /** The host's credential store: the workgroup password and the node's private key (§3.6). */
+    /** The host's credential store: the workgroup password and the node's private key (design.md 2.1, 2.2). */
     host: Pick<Context, "credentials">,
     private readonly catalog: ModelCatalogFeed,
-    /** The data directory of this machine's node (§3.9). */
+    /** The data directory of this machine's node (implementation.md 2). */
     readonly dataRoot: string,
   ) {
     this.stores = new PodStores(host);
@@ -189,7 +193,7 @@ export class Pod {
    * Stop the pod; safe to call after a failed startup and safe to await twice.
    * It takes its turn in the queue: a restart queued after it finds the pod
    * stopped and starts nothing, so shutdown cannot race a new listener into
-   * existence after the host disposed us (§9.2).
+   * existence after the host disposed us (implementation.md 2).
    */
   async stop(): Promise<void> {
     await this.queue.run(async () => {
@@ -225,9 +229,9 @@ export class Pod {
   }
 
   /**
-   * `join` one peer now and add it to the settings' `peers`, so it is joined on
-   * every start; answers the address in its canonical form. The node already has
-   * it, so nothing restarts.
+   * `connect` to one peer now and add it to the settings' `peers`, so it is
+   * contacted again on every start; answers the address in its canonical form.
+   * The node already has it, so nothing restarts.
    */
   async addPeer(address: string): Promise<string> {
     const peer = normalizePeerUrl(address);
@@ -241,9 +245,10 @@ export class Pod {
   }
 
   /**
-   * Back to the first-run wizard: delete everything this machine's node has, with
-   * no exceptions (§3.9): the node, its password, its private key and its
-   * settings. Without a stored password the restart starts nothing.
+   * Back to the first-run wizard: forget the workgroup, delete the stored password
+   * and the node's private key, and remove the settings file; the data root (tasks,
+   * blobs and workspaces) is kept. Without a stored password the restart starts
+   * nothing.
    */
   reset(): Promise<void> {
     return this.restart(async () => {
@@ -369,7 +374,7 @@ export class Pod {
       ...this.saved,
       endpoints: this.saved.endpoints.every(isLoopbackEndpoint) ? [] : this.saved.endpoints,
     };
-    // One scrypt derivation per start; the key stays in memory (§7.1).
+    // One scrypt derivation per start; the key stays in memory (design.md 2.2).
     const key = deriveWorkgroupKey(workgroupId, password);
     const node = new Orca(settings, identity, key, this.dataRoot, { logger: this.logger });
 
@@ -382,7 +387,7 @@ export class Pod {
       } catch {
         // The node never finished starting; nothing useful to report here.
       }
-      // Another process holding the port is another DSH running this machine's node (§3.9).
+      // Another process holding the port is another DSH running this machine's node (implementation.md 2).
       throw (error as { code?: unknown } | null)?.code === "EADDRINUSE"
         ? new Error(
             `an orca node is already running on this machine, in another DSH process (port ${settings.port} is in use)`,
@@ -392,7 +397,7 @@ export class Pod {
     this.logger.info(`orca-pod: orca node ${node.mesh.self.id} listening on ${info.url} (workgroup ${workgroupId})`);
 
     // The node carries the catalog from its first join on, so the self record
-    // peers receive and every heartbeat advertise it (§6.15).
+    // peers receive and every heartbeat advertise it (design.md 5.6).
     this.advertise(node);
     return node;
   }

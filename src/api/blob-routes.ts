@@ -20,7 +20,7 @@ const PublishBody = z.object({
 const FetchParams = z.object({ node: OrcaNodeIdSchema, blob_id: BlobIdSchema });
 
 /**
- * Files move by name, never by URL (§5.6): a file is the sha256 a member
+ * Files move by name, never by URL (design.md 4.5): a file is the sha256 a member
  * published, and whoever needs it asks the node that published it, which its own
  * node finds the way its heartbeat does. The gateway never accepts bytes pushed by
  * a peer: there is no upload route.
