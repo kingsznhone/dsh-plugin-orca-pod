@@ -9,6 +9,8 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-plugin-orca-pod)](https://www.npmjs.com/package/dsh-plugin-orca-pod)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/kingsznhone/dsh-plugin-orca-pod)
 
+[English](README.en.md) · 简体中文
+
 **把你自己的几台电脑连成一张网，分布式哦鲸鲸**
 
 Windows / Linux / MacOS · 2–10 台机器 · 全程 HTTPS 加密

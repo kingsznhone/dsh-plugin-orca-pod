@@ -9,7 +9,7 @@ Orca Pod 是 DeepSeek Harness 的一个插件：把 2–10 台装了 DSH 的机�
 | [design.md](design.md) | 它是什么、为什么这样设计：身份与组网、传输与接口、任务、执行、安全、可靠性、未决项 |
 | [implementation.md](implementation.md) | 代码在哪、怎么装配、面板与客户端 bundle、测试与构建发布 |
 
-装好插件后的使用说明在仓库根 [README.md](../README.md)。
+装好插件后的使用说明在仓库根 [README.md](../README.md)（英文版：[README.en.md](../README.en.md)）。
 
 ## 快速开始
 
