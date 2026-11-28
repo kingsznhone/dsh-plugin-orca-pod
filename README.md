@@ -241,3 +241,7 @@ dsh plugin --profile acp add dsh-plugin-orca-pod@latest
 ## 许可证
 
 本项目以 **GPL-3.0-only** 发布，详见 [LICENSE](LICENSE)。
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/chart?repos=kingsznhone/dsh-plugin-orca-pod&type=date&legend=top-left)](https://www.star-history.com/?repos=kingsznhone%2Fdsh-plugin-orca-pod&type=date&legend=top-left)
